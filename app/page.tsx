@@ -260,8 +260,8 @@ const ORDER_TYPE_CARDS: Array<{ id: WorkflowMode; code: string; title: string; d
     description: "Aktív kötegek visszakeresése és lejelentése END kóddal.",
   },
 ];
-const SUPABASE_URL = "https://hghvhsrjfwvaafkfhiyj.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_Gdq5SHUVJpLRs6sDNqLXrw_23wBl3O8";
+const SUPABASE_URL = "https://vzvhseckrevqyzlurkjn.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_eSfCm5MtLoTqwzHJLruzow_3Qt3YJBm";
 const ADMIN_RESET_PIN = "4826";
 const REPORT_SETTINGS_STORAGE_KEY = "work-report-settings-v2";
 const REPORT_AUTO_SEND_MARKER_KEY = "work-report-last-auto-send-v1";
