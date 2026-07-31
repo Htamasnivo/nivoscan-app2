@@ -219,6 +219,13 @@ type DashboardStationEfficiencyRow = {
   efficiencyPct: number | null;
 };
 
+type DashboardStationWorkerPerformance = {
+  stationName: string;
+  workerRows: DashboardWorkerPerformanceRow[];
+  totalMinutes: number;
+  dailyEfficiencyPct: number;
+};
+
 type DashboardScrapRow = {
   orderNumber: string;
   scrapQty: number;
@@ -247,6 +254,7 @@ type DashboardData = {
   productTypeRows: DashboardProductTypeRow[];
   exportRows: DashboardExportRow[];
   stationEfficiencyRows: DashboardStationEfficiencyRow[];
+  stationWorkerPerformance: DashboardStationWorkerPerformance[];
   totalMinutes: number;
   totalScrap: number;
   dailyEfficiencyPct: number;
@@ -1858,6 +1866,112 @@ function inferDashboardProductType(orderNumber: string, logs: WorkLogRow[]): str
   return prefixMatch?.[0] || "Nem kategorizált";
 }
 
+function buildDashboardWorkerPerformanceForStation(
+  logs: WorkLogRow[],
+  workers: Worker[],
+  range: { startIso: string; endIso: string },
+  stationName: string
+): Omit<DashboardStationWorkerPerformance, "stationName"> {
+  const normalizedStation = normalizeLooseText(stationName);
+  const stationLogs = logs.filter(
+    (log) => normalizeLooseText(String(log.machine_id || "").trim()) === normalizedStation
+  );
+  const stationOrderRows = buildOrderStatistics(stationLogs, workers);
+  const workerMap = new Map<number, Worker>();
+  workers.forEach((worker) => workerMap.set(worker.id, worker));
+
+  const rangeStartMs = new Date(range.startIso).getTime();
+  const rangeEndMs = new Date(range.endIso).getTime();
+  const workerIntervalsByDay = new Map<string, Map<string, DashboardTimeInterval[]>>();
+  const workerClosedRows = new Map<string, number>();
+
+  for (const log of stationLogs) {
+    const explicitStart = log.start_time || log.start_timestamp || null;
+    const explicitEnd = log.end_time || log.end_timestamp || (String(log.action || "").toUpperCase() === "END" ? log.created_at : null);
+    const worker = workerMap.get(Number(log.worker_id));
+    const workerName = String(log.worker_name || worker?.["Teljes nev"] || `Dolgozó #${log.worker_id}`).trim();
+
+    if (explicitEnd) {
+      const endMs = new Date(explicitEnd).getTime();
+      if (Number.isFinite(endMs) && endMs >= rangeStartMs && endMs < rangeEndMs) {
+        workerClosedRows.set(workerName, (workerClosedRows.get(workerName) || 0) + 1);
+      }
+    }
+
+    if (explicitStart && explicitEnd) {
+      const rawStartMs = new Date(explicitStart).getTime();
+      const rawEndMs = new Date(explicitEnd).getTime();
+      const clippedStartMs = Math.max(rawStartMs, rangeStartMs);
+      const clippedEndMs = Math.min(rawEndMs, rangeEndMs);
+      if (Number.isFinite(clippedStartMs) && Number.isFinite(clippedEndMs) && clippedEndMs > clippedStartMs) {
+        if (!workerIntervalsByDay.has(workerName)) workerIntervalsByDay.set(workerName, new Map());
+        const dayMap = workerIntervalsByDay.get(workerName)!;
+        splitDashboardIntervalByLocalDay(clippedStartMs, clippedEndMs).forEach(({ dayKey, interval }) => {
+          if (!dayMap.has(dayKey)) dayMap.set(dayKey, []);
+          dayMap.get(dayKey)!.push(interval);
+        });
+      }
+    }
+  }
+
+  for (const row of stationOrderRows) {
+    for (const segment of row.segments) {
+      if (normalizeLooseText(segment.station) !== normalizedStation) continue;
+      if (segment.status !== "lezárt" || !segment.endAt) continue;
+
+      const rawStartMs = new Date(segment.startAt).getTime();
+      const rawEndMs = new Date(segment.endAt).getTime();
+      if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs)) continue;
+      const clippedStartMs = Math.max(rawStartMs, rangeStartMs);
+      const clippedEndMs = Math.min(rawEndMs, rangeEndMs);
+      if (clippedEndMs <= clippedStartMs) continue;
+
+      const workerName = segment.workerName || "Ismeretlen dolgozó";
+      if (!workerIntervalsByDay.has(workerName)) workerIntervalsByDay.set(workerName, new Map());
+      const dayMap = workerIntervalsByDay.get(workerName)!;
+      splitDashboardIntervalByLocalDay(clippedStartMs, clippedEndMs).forEach(({ dayKey, interval }) => {
+        if (!dayMap.has(dayKey)) dayMap.set(dayKey, []);
+        dayMap.get(dayKey)!.push(interval);
+      });
+    }
+  }
+
+  const workerNames = new Set<string>([
+    ...Array.from(workerIntervalsByDay.keys()),
+    ...Array.from(workerClosedRows.keys()),
+  ]);
+  const workerRows = Array.from(workerNames)
+    .map((workerName) => {
+      const dayMap = workerIntervalsByDay.get(workerName) || new Map<string, DashboardTimeInterval[]>();
+      const dailyMinutes = Array.from(dayMap.values())
+        .map((intervals) => mergeDashboardIntervals(intervals))
+        .filter((minutes) => minutes > 0);
+      const totalMinutes = dailyMinutes.reduce((sum, minutes) => sum + minutes, 0);
+      const activeDayCount = dailyMinutes.length;
+      const efficiencyPct = activeDayCount > 0
+        ? Math.round((totalMinutes / (420 * activeDayCount)) * 100)
+        : null;
+      return {
+        workerName,
+        totalMinutes,
+        totalDurationLabel: formatDuration(totalMinutes),
+        closedSegments: workerClosedRows.get(workerName) || 0,
+        activeDayCount,
+        efficiencyPct,
+      };
+    })
+    .filter((row) => row.totalMinutes > 0 || row.closedSegments > 0)
+    .sort((a, b) => b.totalMinutes - a.totalMinutes || b.closedSegments - a.closedSegments);
+
+  const totalMinutes = workerRows.reduce((sum, row) => sum + row.totalMinutes, 0);
+  const totalActiveWorkerDays = workerRows.reduce((sum, row) => sum + row.activeDayCount, 0);
+  const dailyEfficiencyPct = totalActiveWorkerDays > 0
+    ? Math.round((totalMinutes / (420 * totalActiveWorkerDays)) * 100)
+    : 0;
+
+  return { workerRows, totalMinutes, dailyEfficiencyPct };
+}
+
 function buildDashboardData(
   logs: WorkLogRow[],
   workers: Worker[],
@@ -1974,6 +2088,20 @@ function buildDashboardData(
     .filter((row) => row.totalMinutes > 0 || row.closedSegments > 0)
     .sort((a, b) => b.totalMinutes - a.totalMinutes || b.closedSegments - a.closedSegments);
 
+  const stationNameMap = new Map<string, string>();
+  logs.forEach((log) => {
+    const stationName = String(log.machine_id || "").trim();
+    const normalized = normalizeLooseText(stationName);
+    if (stationName && normalized && normalized !== normalizeLooseText(DEFAULT_MACHINE_ID)) {
+      stationNameMap.set(normalized, stationName);
+    }
+  });
+  const stationWorkerPerformance: DashboardStationWorkerPerformance[] = Array.from(stationNameMap.values())
+    .map((stationName) => ({
+      stationName,
+      ...buildDashboardWorkerPerformanceForStation(logs, workers, range, stationName),
+    }));
+
   const scrapRows = Array.from(scrapTotals.entries())
     .map(([orderNumber, scrapQty]) => ({ orderNumber, scrapQty }))
     .sort((a, b) => b.scrapQty - a.scrapQty);
@@ -2022,6 +2150,7 @@ function buildDashboardData(
     productTypeRows,
     exportRows,
     stationEfficiencyRows: [],
+    stationWorkerPerformance,
     totalMinutes,
     totalScrap: scrapRows.reduce((sum, row) => sum + row.scrapQty, 0),
     dailyEfficiencyPct,
@@ -2185,6 +2314,7 @@ export default function Page() {
   const [dashboardDate, setDashboardDate] = useState(getLocalDateKey(new Date()));
   const [dashboardDateTo, setDashboardDateTo] = useState(getLocalDateKey(new Date()));
   const [dashboardSelectedStation, setDashboardSelectedStation] = useState("all");
+  const [dashboardSelectedWorker, setDashboardSelectedWorker] = useState("all");
   const [dashboardData, setDashboardData] = useState<DashboardData>({
     logs: [],
     orderRows: [],
@@ -2194,6 +2324,7 @@ export default function Page() {
     productTypeRows: [],
     exportRows: [],
     stationEfficiencyRows: [],
+    stationWorkerPerformance: [],
     totalMinutes: 0,
     totalScrap: 0,
     dailyEfficiencyPct: 0,
@@ -4367,11 +4498,10 @@ export default function Page() {
 
     const dashboardRange = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
     const availableStationRows = dashboardData.stationEfficiencyRows;
-    const selectedStationValue = dashboardSelectedStation === "all" || availableStationRows.some(
-      (row) => normalizeLooseText(row.stationName) === normalizeLooseText(dashboardSelectedStation)
-    )
-      ? dashboardSelectedStation
-      : "all";
+    const filteredWorkerStats = getFilteredDashboardWorkerStats();
+    const selectedStationValue = filteredWorkerStats.selectedStationValue;
+    const selectedWorkerValue = filteredWorkerStats.selectedWorkerValue;
+    const visibleWorkerRows = filteredWorkerStats.workerRows;
     const visibleStationRows = selectedStationValue === "all"
       ? availableStationRows
       : availableStationRows.filter(
@@ -4383,7 +4513,8 @@ export default function Page() {
       ? Math.round((completedStationItems / plannedStationItems) * 100)
       : null;
     const selectedStationLabel = selectedStationValue === "all" ? "Összes munkaállomás" : selectedStationValue;
-    const activeWorkerCount = dashboardData.workerRows.filter((row) => row.totalMinutes > 0).length;
+    const selectedWorkerLabel = selectedWorkerValue === "all" ? "Összes dolgozó" : selectedWorkerValue;
+    const activeWorkerCount = visibleWorkerRows.filter((row) => row.totalMinutes > 0).length;
 
     const dashboardCards: Array<{ label: string; value: string | number; helper: string }> = [
       {
@@ -4403,8 +4534,8 @@ export default function Page() {
       },
       {
         label: "Dolgozói munkaidő",
-        value: formatDuration(dashboardData.totalMinutes),
-        helper: `${activeWorkerCount} dolgozó, átfedések csak egyszer számolva`,
+        value: formatDuration(filteredWorkerStats.totalMinutes),
+        helper: `${activeWorkerCount} dolgozó · ${selectedStationLabel} · ${selectedWorkerLabel}`,
       },
     ];
 
@@ -4492,13 +4623,27 @@ export default function Page() {
             <button type="button" onClick={resetDashboardToToday} style={buttonSecondary}>Mai nap</button>
             <select
               value={selectedStationValue}
-              onChange={(event) => setDashboardSelectedStation(event.target.value)}
+              onChange={(event) => {
+                setDashboardSelectedStation(event.target.value);
+                setDashboardSelectedWorker("all");
+              }}
               style={{ ...fieldStyle, width: 240 }}
               aria-label="Munkaállomás szűrése"
             >
               <option value="all">Összes munkaállomás</option>
               {availableStationRows.map((row) => (
                 <option key={row.stationName} value={row.stationName}>{row.stationName}</option>
+              ))}
+            </select>
+            <select
+              value={selectedWorkerValue}
+              onChange={(event) => setDashboardSelectedWorker(event.target.value)}
+              style={{ ...fieldStyle, width: 220 }}
+              aria-label="Dolgozó szűrése"
+            >
+              <option value="all">Összes dolgozó</option>
+              {filteredWorkerStats.availableWorkerNames.map((workerName) => (
+                <option key={workerName} value={workerName}>{workerName}</option>
               ))}
             </select>
             <button type="button" onClick={() => void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo)} disabled={loadingDashboard} style={buttonSecondary}>
@@ -4532,7 +4677,7 @@ export default function Page() {
                 </div>
               </div>
               <div style={{ padding: "6px 10px", borderRadius: 999, background: "#082f49", color: "#bae6fd", border: "1px solid #0369a1", fontSize: 12, fontWeight: 800 }}>
-                Összesített hatékonyság: {dashboardData.workerRows.length > 0 ? `${dashboardData.dailyEfficiencyPct}%` : "–"}
+                Összesített hatékonyság: {visibleWorkerRows.length > 0 ? `${filteredWorkerStats.dailyEfficiencyPct}%` : "–"}
               </div>
             </div>
             <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
@@ -4546,7 +4691,7 @@ export default function Page() {
                   </tr>
                 </thead>
                 <tbody>
-                  {dashboardData.workerRows.map((row) => {
+                  {visibleWorkerRows.map((row) => {
                     const efficiencyColor = row.efficiencyPct === null
                       ? "#94a3b8"
                       : row.efficiencyPct >= 100
@@ -4568,8 +4713,8 @@ export default function Page() {
                       </tr>
                     );
                   })}
-                  {dashboardData.workerRows.length === 0 && (
-                    <tr><td colSpan={4} style={{ padding: 14, color: "#94a3b8" }}>Az időszakban nincs lezárt, mérhető munkaidő.</td></tr>
+                  {visibleWorkerRows.length === 0 && (
+                    <tr><td colSpan={4} style={{ padding: 14, color: "#94a3b8" }}>A kiválasztott időszakban, munkaállomáson és dolgozónál nincs lezárt, mérhető munkaidő.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -6446,6 +6591,61 @@ export default function Page() {
     }
   }
 
+  function getFilteredDashboardWorkerStats(): {
+    selectedStationValue: string;
+    selectedWorkerValue: string;
+    availableWorkerNames: string[];
+    workerRows: DashboardWorkerPerformanceRow[];
+    totalMinutes: number;
+    dailyEfficiencyPct: number;
+  } {
+    const availableStationRows = dashboardData.stationEfficiencyRows;
+    const selectedStationValue = dashboardSelectedStation === "all" || availableStationRows.some(
+      (row) => normalizeLooseText(row.stationName) === normalizeLooseText(dashboardSelectedStation)
+    )
+      ? dashboardSelectedStation
+      : "all";
+
+    const stationStats = selectedStationValue === "all"
+      ? {
+          workerRows: dashboardData.workerRows,
+          totalMinutes: dashboardData.totalMinutes,
+          dailyEfficiencyPct: dashboardData.dailyEfficiencyPct,
+        }
+      : dashboardData.stationWorkerPerformance.find(
+          (item) => normalizeLooseText(item.stationName) === normalizeLooseText(selectedStationValue)
+        ) || { workerRows: [], totalMinutes: 0, dailyEfficiencyPct: 0 };
+
+    const availableWorkerNames = stationStats.workerRows
+      .map((row) => row.workerName)
+      .filter((name, index, items) => items.findIndex((item) => normalizeLooseText(item) === normalizeLooseText(name)) === index)
+      .sort((a, b) => a.localeCompare(b, "hu"));
+    const selectedWorkerValue = dashboardSelectedWorker === "all" || availableWorkerNames.some(
+      (name) => normalizeLooseText(name) === normalizeLooseText(dashboardSelectedWorker)
+    )
+      ? dashboardSelectedWorker
+      : "all";
+    const workerRows = selectedWorkerValue === "all"
+      ? stationStats.workerRows
+      : stationStats.workerRows.filter(
+          (row) => normalizeLooseText(row.workerName) === normalizeLooseText(selectedWorkerValue)
+        );
+    const totalMinutes = workerRows.reduce((sum, row) => sum + row.totalMinutes, 0);
+    const totalActiveWorkerDays = workerRows.reduce((sum, row) => sum + row.activeDayCount, 0);
+    const dailyEfficiencyPct = totalActiveWorkerDays > 0
+      ? Math.round((totalMinutes / (420 * totalActiveWorkerDays)) * 100)
+      : 0;
+
+    return {
+      selectedStationValue,
+      selectedWorkerValue,
+      availableWorkerNames,
+      workerRows,
+      totalMinutes,
+      dailyEfficiencyPct,
+    };
+  }
+
   function exportDashboardAsExcel(): void {
     const XLSX = window.XLSX;
     if (!XLSX?.utils?.book_new) {
@@ -6454,9 +6654,10 @@ export default function Page() {
     }
 
     const workbook = XLSX.utils.book_new();
+    const filteredWorkerStats = getFilteredDashboardWorkerStats();
     const workerRows: Array<Array<string | number>> = [
       ["Dolgozó neve", "Ledolgozott idő", "Ledolgozott perc", "Lezárt work_logs sorok", "Munkával érintett napok", "Hatékonyság %"],
-      ...dashboardData.workerRows.map((row) => [
+      ...filteredWorkerStats.workerRows.map((row) => [
         row.workerName,
         row.totalDurationLabel,
         row.totalMinutes,
@@ -6516,7 +6717,8 @@ export default function Page() {
       doc.setFont(PDF_FONT_FAMILY, "normal");
       doc.text("Dolgozó | Ledolgozott idő | Lezárt tételek | Hatékonyság", 40, y);
       y += 16;
-      dashboardData.workerRows.slice(0, 18).forEach((row) => {
+      const filteredWorkerStats = getFilteredDashboardWorkerStats();
+      filteredWorkerStats.workerRows.slice(0, 18).forEach((row) => {
         doc.text(`${row.workerName} | ${row.totalDurationLabel} | ${row.closedSegments} | ${row.efficiencyPct === null ? "-" : `${row.efficiencyPct}%`}`, 40, y);
         y += 15;
       });
