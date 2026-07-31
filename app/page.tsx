@@ -54,6 +54,11 @@ declare global {
         book_new: () => unknown;
         aoa_to_sheet: (rows: Array<Array<string | number>>) => unknown;
         book_append_sheet: (workbook: unknown, worksheet: unknown, name: string) => void;
+        sheet_to_json: <T = Record<string, unknown>>(worksheet: unknown, options?: Record<string, unknown>) => T[];
+      };
+      read: (data: ArrayBuffer, options: { type: string }) => {
+        SheetNames: string[];
+        Sheets: Record<string, unknown>;
       };
       write: (workbook: unknown, options: { bookType: string; type: string }) => ArrayBuffer;
     };
@@ -71,6 +76,16 @@ type Worker = {
   jelszo_hash?: string | null;
   Esemeny_Koteg?: number | string | null;
   esemeny_koteg?: number | string | null;
+};
+
+type MachineIdRow = {
+  id?: number | string | null;
+  name?: string | null;
+  Name?: string | null;
+  machine_name?: string | null;
+  machine_id?: string | null;
+  megnevezes?: string | null;
+  [key: string]: unknown;
 };
 
 type WorkAction = "START" | "END";
@@ -108,6 +123,8 @@ type ProductionBatchRow = {
   id?: number | string;
   batch_code: string;
   created_at: string;
+  start_time?: string | null;
+  machine_id?: string | null;
   order_ids: string[];
   worker_name?: string | null;
 };
@@ -132,12 +149,17 @@ type WorkLogRow = {
   created_at: string;
   note?: string | null;
   scrap_qty?: number | null;
+  darab?: number | null;
+  szal?: number | null;
   worker_name?: string | null;
   batch_code?: string | null;
   event_name?: string | null;
   event_code?: string | null;
   start_timestamp?: string | null;
   end_timestamp?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  machine_id?: string | null;
 };
 
 type GroupedLogs = Record<string, WorkLogRow[]>;
@@ -218,6 +240,60 @@ type DashboardData = {
 };
 
 type DashboardFilterMode = "daily" | "weekly" | "custom";
+type ManagementSection = "dashboard" | "production-plan" | "production-monitor";
+type ProductionMonitorStatus = "waiting" | "in-progress" | "done";
+
+type ProductionPlanRow = {
+  id: number | string;
+  plan_date: string;
+  name: string;
+  is_active: boolean;
+  uploaded_by?: number | string | null;
+  created_at?: string | null;
+};
+
+type ProductionPlanItemRow = {
+  id?: number | string;
+  plan_id: number | string;
+  order_number: string;
+  sequence_number: number;
+  planned_quantity?: number | null;
+  product_name?: string | null;
+  created_at?: string | null;
+};
+
+type ProductionPlanUploadRow = {
+  orderNumber: string;
+  sequenceNumber: number;
+  plannedQuantity: number | null;
+  productName: string;
+};
+
+type ProductionMonitorCell = {
+  status: ProductionMonitorStatus;
+  label: string;
+  workerName: string;
+  startedAt: string | null;
+  endedAt: string | null;
+};
+
+type ProductionMonitorRow = {
+  itemId?: number | string;
+  orderNumber: string;
+  sequenceNumber: number;
+  plannedQuantity: number | null;
+  productName: string;
+  overallStatus: ProductionMonitorStatus;
+  stations: Record<string, ProductionMonitorCell>;
+};
+
+type ProductionMonitorData = {
+  plan: ProductionPlanRow | null;
+  stations: string[];
+  rows: ProductionMonitorRow[];
+  logs: WorkLogRow[];
+  lastUpdatedAt: string;
+};
 
 type ReportFormat = "pdf" | "excel" | "both";
 type ReportFrequency = "daily" | "weekly";
@@ -260,9 +336,130 @@ const ORDER_TYPE_CARDS: Array<{ id: WorkflowMode; code: string; title: string; d
     description: "Aktív kötegek visszakeresése és lejelentése END kóddal.",
   },
 ];
-const SUPABASE_URL = "https://vzvhseckrevqyzlurkjn.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_eSfCm5MtLoTqwzHJLruzow_3Qt3YJBm";
+const SUPABASE_URL = "https://hghvhsrjfwvaafkfhiyj.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_Gdq5SHUVJpLRs6sDNqLXrw_23wBl3O8";
 const ADMIN_RESET_PIN = "4826";
+const MACHINE_ID_STORAGE_KEY = "nivoscan-machine-id-v1";
+const DEFAULT_MACHINE_ID = "Mobil eszköz";
+type MachineIdOption = string;
+
+function normalizeMachineId(value: string | null | undefined): MachineIdOption {
+  const cleanValue = String(value || "").trim();
+  return cleanValue || DEFAULT_MACHINE_ID;
+}
+
+function readMachineIdFromStorage(): MachineIdOption {
+  if (typeof window === "undefined") return DEFAULT_MACHINE_ID;
+  try {
+    const stored = window.localStorage.getItem(MACHINE_ID_STORAGE_KEY);
+    const normalized = normalizeMachineId(stored);
+    if (!stored) {
+      window.localStorage.setItem(MACHINE_ID_STORAGE_KEY, normalized);
+    }
+    return normalized;
+  } catch {
+    return DEFAULT_MACHINE_ID;
+  }
+}
+
+function writeMachineIdToStorage(value: string): MachineIdOption {
+  const normalized = normalizeMachineId(value);
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(MACHINE_ID_STORAGE_KEY, normalized);
+    } catch {
+      // localStorage hiba esetén a rendszer továbbra is Mobil eszközként tud lejelenteni.
+    }
+  }
+  return normalized;
+}
+
+function normalizeMachineIdFromOptions(value: string | null | undefined, options: string[]): string {
+  const cleanValue = String(value || "").trim();
+  const normalizedOptions = [DEFAULT_MACHINE_ID, ...options.filter((option) => option.trim())];
+  const matched = normalizedOptions.find((option) => option.toLowerCase() === cleanValue.toLowerCase());
+  return matched || DEFAULT_MACHINE_ID;
+}
+
+function buildMachineOptions(rows: MachineIdRow[]): string[] {
+  const unique = new Map<string, string>();
+
+  for (const row of rows) {
+    const rawName =
+      row.name ??
+      row.Name ??
+      row.machine_name ??
+      row.machine_id ??
+      row.megnevezes ??
+      null;
+
+    const name = String(rawName || "").trim();
+    if (name) unique.set(name.toLowerCase(), name);
+  }
+
+  return Array.from(unique.values()).sort((a, b) => a.localeCompare(b, "hu"));
+}
+
+async function fetchMachineIdRowsDirectly(): Promise<MachineIdRow[]> {
+  if (typeof fetch === "undefined") return [];
+
+  const endpoints = [
+    `${SUPABASE_URL}/rest/v1/machine_id?select=id,name&order=id.asc`,
+    `${SUPABASE_URL}/rest/v1/machine_id?select=*&order=id.asc`,
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        method: "GET",
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+          Accept: "application/json",
+        },
+      });
+
+      if (!response.ok) continue;
+
+      const json = await response.json();
+      if (Array.isArray(json) && json.length > 0) {
+        return json as MachineIdRow[];
+      }
+    } catch (error) {
+      console.error("SUPABASE REST fallback machine_id hiba:", error);
+    }
+  }
+
+  return [];
+}
+
+async function ensureProductionBatchStartMachineSaved(
+  supabase: SupabaseClient,
+  params: {
+    id?: string | number | null;
+    batchCode?: string | null;
+    startTime: string;
+    machineId: string;
+  }
+): Promise<void> {
+  const payload = {
+    start_time: params.startTime,
+    machine_id: params.machineId,
+  };
+
+  let query = supabase.from("production_batches").update(payload);
+
+  if (params.id !== undefined && params.id !== null && String(params.id).trim() !== "") {
+    query = query.eq("id", params.id);
+  } else if (params.batchCode && params.batchCode.trim()) {
+    query = query.eq("batch_code", params.batchCode.trim());
+  } else {
+    return;
+  }
+
+  const { error } = await query;
+  if (error) throw error;
+}
 const REPORT_SETTINGS_STORAGE_KEY = "work-report-settings-v2";
 const REPORT_AUTO_SEND_MARKER_KEY = "work-report-last-auto-send-v1";
 const DEFAULT_REPORT_SETTINGS: ReportSettings = {
@@ -390,6 +587,11 @@ function getWorkerStation(worker: Worker | null | undefined): string {
 
 function normalizeFlag(value: string | null | undefined): string {
   return (value || "").trim().toLowerCase();
+}
+
+function isWorkerPasswordRequired(value: string | null | undefined): boolean {
+  const normalized = normalizeFlag(value);
+  return normalized === "igaz" || normalized === "true" || normalized === "1" || normalized === "igen" || normalized === "yes" || normalized === "on";
 }
 
 function normalizeLooseText(value: string | null | undefined): string {
@@ -626,6 +828,67 @@ function isEndBarcode(value: string): boolean {
   return ["end", "stop", "vége", "vege", "lezár", "lezar", "close"].some((item) => v.includes(item));
 }
 
+function normalizeSpreadsheetHeader(value: string): string {
+  return normalizeLooseText(value).replace(/[^a-z0-9]+/g, "");
+}
+
+function readSpreadsheetValue(row: Record<string, unknown>, aliases: string[]): unknown {
+  const aliasSet = new Set(aliases.map(normalizeSpreadsheetHeader));
+  const entry = Object.entries(row).find(([key]) => aliasSet.has(normalizeSpreadsheetHeader(key)));
+  return entry?.[1];
+}
+
+function parseSpreadsheetNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const normalized = String(value).trim().replace(/\s+/g, "").replace(",", ".");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function resolveLogStation(log: WorkLogRow, workerRows: Worker[]): string {
+  const machine = String(log.machine_id || "").trim();
+  if (machine && normalizeLooseText(machine) !== normalizeLooseText(DEFAULT_MACHINE_ID)) return machine;
+  const worker = workerRows.find((item) => Number(item.id) === Number(log.worker_id));
+  return getWorkerStation(worker) || (worker?.Munkakor || "").trim() || "Ismeretlen munkaállomás";
+}
+
+function getMonitorCellFromLogs(logs: WorkLogRow[]): ProductionMonitorCell {
+  if (!logs.length) {
+    return { status: "waiting", label: "Várakozik", workerName: "", startedAt: null, endedAt: null };
+  }
+
+  const ordered = [...logs].sort((a, b) => {
+    const aTime = new Date(a.end_time || a.end_timestamp || a.created_at).getTime();
+    const bTime = new Date(b.end_time || b.end_timestamp || b.created_at).getTime();
+    return aTime - bTime;
+  });
+  const latest = ordered[ordered.length - 1];
+  const hasExplicitEnd = Boolean(latest.end_time || latest.end_timestamp) || String(latest.action || "").toUpperCase() === "END";
+  const hasStart = Boolean(latest.start_time || latest.start_timestamp) || String(latest.action || "").toUpperCase() === "START";
+
+  if (hasExplicitEnd) {
+    return {
+      status: "done",
+      label: "Kész",
+      workerName: latest.worker_name || "",
+      startedAt: latest.start_time || latest.start_timestamp || null,
+      endedAt: latest.end_time || latest.end_timestamp || latest.created_at || null,
+    };
+  }
+
+  if (hasStart) {
+    return {
+      status: "in-progress",
+      label: "Folyamatban",
+      workerName: latest.worker_name || "",
+      startedAt: latest.start_time || latest.start_timestamp || latest.created_at || null,
+      endedAt: null,
+    };
+  }
+
+  return { status: "waiting", label: "Várakozik", workerName: "", startedAt: null, endedAt: null };
+}
+
 function Code128Barcode({ value, height = 42, compact = false }: { value: string; height?: number; compact?: boolean }): React.JSX.Element {
   const svgRef = useRef<SVGSVGElement | null>(null);
 
@@ -744,7 +1007,7 @@ function buildOrderStatistics(logs: WorkLogRow[], workers: Worker[]): OrderStats
 
   for (const [orderNumber, orderLogs] of logsByOrder.entries()) {
     const orderedLogs = [...orderLogs].sort(
-      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      (a, b) => new Date(a.start_time || a.start_timestamp || a.created_at).getTime() - new Date(b.start_time || b.start_timestamp || b.created_at).getTime()
     );
 
     const openSessions: Array<{
@@ -760,8 +1023,27 @@ function buildOrderStatistics(logs: WorkLogRow[], workers: Worker[]): OrderStats
     for (const log of orderedLogs) {
       const worker = workerMap.get(log.worker_id);
       const role = (worker?.Munkakor || "Ismeretlen munkakör").trim();
-      const station = getWorkerStation(worker) || "Ismeretlen munkaállomás";
-      const workerName = (worker?.["Teljes nev"] || `Dolgozó #${log.worker_id}`).trim();
+      const station = (log.machine_id || getWorkerStation(worker) || "Ismeretlen munkaállomás").trim();
+      const workerName = (log.worker_name || worker?.["Teljes nev"] || `Dolgozó #${log.worker_id}`).trim();
+      const startAt = log.start_time || log.start_timestamp || log.created_at;
+      const endAt = log.end_time || log.end_timestamp || null;
+
+      if (log.action === "START" && endAt) {
+        const durationMinutes = diffMinutes(startAt, endAt);
+        segments.push({
+          orderNumber,
+          role,
+          station,
+          workerName,
+          startAt,
+          endAt,
+          durationMinutes,
+          durationLabel: formatDuration(durationMinutes),
+          startDateLabel: formatDateOnly(startAt),
+          status: "lezárt",
+        });
+        continue;
+      }
 
       if (log.action === "START") {
         openSessions.push({
@@ -769,7 +1051,7 @@ function buildOrderStatistics(logs: WorkLogRow[], workers: Worker[]): OrderStats
           role,
           station,
           workerName,
-          startAt: log.created_at,
+          startAt,
         });
         continue;
       }
@@ -794,14 +1076,15 @@ function buildOrderStatistics(logs: WorkLogRow[], workers: Worker[]): OrderStats
       }
       if (matchIndex !== -1) {
         const session = openSessions.splice(matchIndex, 1)[0];
-        const durationMinutes = diffMinutes(session.startAt, log.created_at);
+        const resolvedEndAt = endAt || log.created_at;
+        const durationMinutes = diffMinutes(session.startAt, resolvedEndAt);
         segments.push({
           orderNumber,
           role: session.role,
           station: session.station,
           workerName: session.workerName,
           startAt: session.startAt,
-          endAt: log.created_at,
+          endAt: resolvedEndAt,
           durationMinutes,
           durationLabel: formatDuration(durationMinutes),
           startDateLabel: formatDateOnly(session.startAt),
@@ -850,7 +1133,6 @@ function buildOrderStatistics(logs: WorkLogRow[], workers: Worker[]): OrderStats
   rows.sort((a, b) => new Date(b.lastEventTime).getTime() - new Date(a.lastEventTime).getTime());
   return rows;
 }
-
 function getDashboardDateRange(filterMode: DashboardFilterMode, dateKey: string, dateToKey?: string): { startIso: string; endIso: string; label: string } {
   const baseDate = dateKey ? new Date(`${dateKey}T00:00:00`) : new Date();
   const start = filterMode === "weekly" ? getStartOfWeek(baseDate) : new Date(baseDate);
@@ -1050,6 +1332,33 @@ export default function Page() {
   const [endBatchNote, setEndBatchNote] = useState("");
   const [terminalView, setTerminalView] = useState<"scanner" | "management">("scanner");
   const [managementSelection, setManagementSelection] = useState<EventCard | null>(null);
+  const [managementSection, setManagementSection] = useState<ManagementSection>("dashboard");
+  const [standaloneProductionMonitor, setStandaloneProductionMonitor] = useState(false);
+  const [productionPlanDate, setProductionPlanDate] = useState(getLocalDateKey(new Date()));
+  const [productionPlanName, setProductionPlanName] = useState("Napi termelési terv");
+  const [productionPlanFileName, setProductionPlanFileName] = useState("");
+  const [productionPlanPreview, setProductionPlanPreview] = useState<ProductionPlanUploadRow[]>([]);
+  const [productionPlans, setProductionPlans] = useState<ProductionPlanRow[]>([]);
+  const [selectedProductionPlanId, setSelectedProductionPlanId] = useState<string>("");
+  const [productionPlanItems, setProductionPlanItems] = useState<ProductionPlanItemRow[]>([]);
+  const [productionMonitorDate, setProductionMonitorDate] = useState(getLocalDateKey(new Date()));
+  const [productionMonitorData, setProductionMonitorData] = useState<ProductionMonitorData>({
+    plan: null,
+    stations: [],
+    rows: [],
+    logs: [],
+    lastUpdatedAt: "",
+  });
+  const [loadingProductionPlan, setLoadingProductionPlan] = useState(false);
+  const [savingProductionPlan, setSavingProductionPlan] = useState(false);
+  const [loadingProductionMonitor, setLoadingProductionMonitor] = useState(false);
+
+  const [machineId, setMachineId] = useState<MachineIdOption>(DEFAULT_MACHINE_ID);
+  const [machineOptions, setMachineOptions] = useState<string[]>([]);
+  const [machineAdminOpen, setMachineAdminOpen] = useState(false);
+  const [machineAdminUnlocked, setMachineAdminUnlocked] = useState(false);
+  const [machineAdminPin, setMachineAdminPin] = useState("");
+  const [machineDraftId, setMachineDraftId] = useState<MachineIdOption>(DEFAULT_MACHINE_ID);
 
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
@@ -1066,6 +1375,8 @@ export default function Page() {
   const [endBarcodeConfirmed, setEndBarcodeConfirmed] = useState(false);
   const [endNote, setEndNote] = useState("");
   const [scrapQty, setScrapQty] = useState("");
+  const [endDarab, setEndDarab] = useState("");
+  const [endSzal, setEndSzal] = useState("");
 
   const [statsRows, setStatsRows] = useState<OrderStatsRow[]>([]);
   const [statsFilter, setStatsFilter] = useState("");
@@ -1111,6 +1422,7 @@ export default function Page() {
   const orderTypeInputRef = useRef<HTMLInputElement | null>(null);
   const activeBatchInputRef = useRef<HTMLInputElement | null>(null);
   const endBatchCommandInputRef = useRef<HTMLInputElement | null>(null);
+  const productionPlanFileInputRef = useRef<HTMLInputElement | null>(null);
   const workerScanStartedAtRef = useRef<number | null>(null);
   const eventBarcodeProcessingRef = useRef(false);
   const orderTypeProcessingRef = useRef(false);
@@ -1147,7 +1459,7 @@ export default function Page() {
     return `${workers.length} műhely dolgozó betöltve`;
   }, [loadingWorkers, workers.length]);
 
-  const passwordRequired = !!activeWorker && normalizeFlag(activeWorker.Jelszo) !== "hamis";
+  const passwordRequired = !!activeWorker && isWorkerPasswordRequired(activeWorker.Jelszo);
   const activeWorkerIsWorkshop = useMemo(
     () => isWorkshopStation(getWorkerStation(activeWorker)),
     [activeWorker]
@@ -1284,7 +1596,295 @@ export default function Page() {
     });
   }, [rawWorkLogs, statsDateFrom, statsDateTo]);
 
+  function ManagementNavigation(): React.JSX.Element {
+    const items: Array<{ id: ManagementSection; label: string }> = [
+      { id: "dashboard", label: "Vezetői műszerfal" },
+      { id: "production-plan", label: "Termelési terv" },
+      { id: "production-monitor", label: "Termelési monitor" },
+    ];
+
+    return (
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18, padding: 6, borderRadius: 14, background: "#0f172a", border: "1px solid #334155" }}>
+        {items.map((item) => {
+          const active = managementSection === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => {
+                setManagementSection(item.id);
+                if (item.id === "dashboard") {
+                  void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo);
+                } else if (item.id === "production-plan") {
+                  void loadProductionPlans(productionPlanDate);
+                } else {
+                  void loadProductionMonitor(productionMonitorDate);
+                }
+              }}
+              style={{
+                border: active ? "1px solid #38bdf8" : "1px solid transparent",
+                background: active ? "#0c4a6e" : "transparent",
+                color: active ? "#e0f2fe" : "#cbd5e1",
+                borderRadius: 10,
+                padding: "10px 14px",
+                fontWeight: 800,
+                cursor: "pointer",
+              }}
+            >
+              {item.label}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function ProductionPlanAdmin(): React.JSX.Element {
+    return (
+      <div style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 18, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 18 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
+          <div>
+            <div style={{ fontSize: 13, color: "#38bdf8", fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Irodai modul</div>
+            <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: "#f8fafc" }}>Termelési terv feltöltése</h2>
+            <div style={{ color: "#94a3b8" }}>Excelből vagy CSV-ből töltheted fel a napi sorrendet. Kötelező oszlop: Sorszám vagy Rendelésszám.</div>
+          </div>
+          <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
+        </div>
+
+        <ManagementNavigation />
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 16 }}>
+          <div>
+            <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Terv dátuma</label>
+            <input
+              type="date"
+              value={productionPlanDate}
+              onChange={(event) => {
+                const nextDate = event.target.value;
+                setProductionPlanDate(nextDate);
+                void loadProductionPlans(nextDate);
+              }}
+              style={fieldStyle}
+            />
+          </div>
+          <div>
+            <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Terv neve</label>
+            <input value={productionPlanName} onChange={(event) => setProductionPlanName(event.target.value)} style={fieldStyle} />
+          </div>
+        </div>
+
+        <input
+          ref={productionPlanFileInputRef}
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          style={{ display: "none" }}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void handleProductionPlanFile(file);
+            event.currentTarget.value = "";
+          }}
+        />
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+          <button type="button" onClick={() => productionPlanFileInputRef.current?.click()} disabled={loadingProductionPlan || savingProductionPlan} style={buttonPrimary}>
+            {loadingProductionPlan ? "Fájl beolvasása..." : "Excel / CSV kiválasztása"}
+          </button>
+          <button type="button" onClick={downloadProductionPlanTemplate} style={buttonSecondary}>Minta Excel letöltése</button>
+          {productionPlanPreview.length > 0 && (
+            <button type="button" onClick={() => { setProductionPlanPreview([]); setProductionPlanFileName(""); }} style={buttonSecondary}>Előnézet törlése</button>
+          )}
+        </div>
+
+        {productionPlanFileName && (
+          <div style={{ marginBottom: 14, padding: 12, borderRadius: 12, background: "#0f172a", border: "1px solid #334155", color: "#cbd5e1" }}>
+            Beolvasott fájl: <strong>{productionPlanFileName}</strong> · {productionPlanPreview.length} rendelés
+          </div>
+        )}
+
+        {productionPlanPreview.length > 0 && (
+          <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 16, padding: 16, marginBottom: 18 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+              <h3 style={{ margin: 0, color: "#f8fafc" }}>Feltöltési előnézet</h3>
+              <button type="button" onClick={() => void saveProductionPlan()} disabled={savingProductionPlan} style={buttonPrimary}>
+                {savingProductionPlan ? "Terv mentése..." : "Terv mentése és aktiválása"}
+              </button>
+            </div>
+            <div style={{ overflowX: "auto", maxHeight: 430, overflowY: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 780 }}>
+                <thead>
+                  <tr style={{ color: "#94a3b8", textAlign: "left" }}>
+                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Sorrend</th>
+                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Sorszám</th>
+                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Tervezett db</th>
+                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Megnevezés</th>
+                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }} />
+                  </tr>
+                </thead>
+                <tbody>
+                  {productionPlanPreview.map((row, index) => (
+                    <tr key={`${row.orderNumber}-${index}`}>
+                      <td style={{ padding: 8, borderBottom: "1px solid #1e293b", width: 110 }}>
+                        <input
+                          type="number"
+                          min={1}
+                          value={row.sequenceNumber}
+                          onChange={(event) => updateProductionPlanPreviewRow(index, { sequenceNumber: Math.max(1, Number(event.target.value) || index + 1) })}
+                          style={{ ...fieldStyle, minWidth: 80, padding: "8px 10px" }}
+                        />
+                      </td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
+                        <input value={row.orderNumber} onChange={(event) => updateProductionPlanPreviewRow(index, { orderNumber: event.target.value })} style={{ ...fieldStyle, minWidth: 190, padding: "8px 10px" }} />
+                      </td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #1e293b", width: 150 }}>
+                        <input
+                          type="number"
+                          value={row.plannedQuantity ?? ""}
+                          onChange={(event) => updateProductionPlanPreviewRow(index, { plannedQuantity: event.target.value === "" ? null : Number(event.target.value) })}
+                          style={{ ...fieldStyle, minWidth: 110, padding: "8px 10px" }}
+                        />
+                      </td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
+                        <input value={row.productName} onChange={(event) => updateProductionPlanPreviewRow(index, { productName: event.target.value })} style={{ ...fieldStyle, minWidth: 230, padding: "8px 10px" }} />
+                      </td>
+                      <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
+                        <button type="button" onClick={() => setProductionPlanPreview((previous) => previous.filter((_, rowIndex) => rowIndex !== index))} style={{ ...buttonSecondary, padding: "8px 10px" }}>Törlés</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 16, padding: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+            <div>
+              <h3 style={{ margin: 0, color: "#f8fafc" }}>Mentett tervek – {productionPlanDate}</h3>
+              <div style={{ marginTop: 4, color: "#64748b", fontSize: 13 }}>Egy dátumhoz egyszerre egy aktív terv tartozik.</div>
+            </div>
+            <button type="button" onClick={() => void loadProductionPlans(productionPlanDate)} disabled={loadingProductionPlan} style={buttonSecondary}>Frissítés</button>
+          </div>
+
+          {productionPlans.length === 0 ? (
+            <div style={{ color: "#94a3b8", padding: "12px 0" }}>Erre a napra még nincs feltöltött termelési terv.</div>
+          ) : (
+            <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+              {productionPlans.map((plan) => (
+                <div key={String(plan.id)} style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap", padding: 12, borderRadius: 12, border: plan.is_active ? "1px solid #22c55e" : "1px solid #334155", background: plan.is_active ? "#052e16" : "#020617" }}>
+                  <button type="button" onClick={() => void loadProductionPlanItems(plan)} style={{ border: 0, background: "transparent", color: "#f8fafc", textAlign: "left", cursor: "pointer", padding: 0 }}>
+                    <div style={{ fontWeight: 900 }}>{plan.name}</div>
+                    <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 3 }}>{plan.created_at ? formatDateTime(plan.created_at) : "-"} {plan.is_active ? "· AKTÍV" : ""}</div>
+                  </button>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {!plan.is_active && <button type="button" onClick={() => void activateProductionPlan(plan)} style={buttonPrimary}>Aktiválás</button>}
+                    <button type="button" onClick={() => void deleteProductionPlan(plan)} style={buttonSecondary}>Törlés</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {productionPlanItems.length > 0 && (
+            <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 650 }}>
+                <thead><tr style={{ color: "#94a3b8", textAlign: "left" }}><th style={{ padding: 8, borderBottom: "1px solid #334155" }}>Sorrend</th><th style={{ padding: 8, borderBottom: "1px solid #334155" }}>Sorszám</th><th style={{ padding: 8, borderBottom: "1px solid #334155" }}>Tervezett db</th><th style={{ padding: 8, borderBottom: "1px solid #334155" }}>Megnevezés</th></tr></thead>
+                <tbody>
+                  {productionPlanItems.map((item) => <tr key={String(item.id || `${item.plan_id}-${item.order_number}`)}><td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{item.sequence_number}</td><td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{item.order_number}</td><td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{item.planned_quantity ?? "-"}</td><td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{item.product_name || "-"}</td></tr>)}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function ProductionPlanMonitor({ standalone = false }: { standalone?: boolean }): React.JSX.Element {
+    const completed = productionMonitorData.rows.filter((row) => row.overallStatus === "done").length;
+    const inProgress = productionMonitorData.rows.filter((row) => row.overallStatus === "in-progress").length;
+    const waiting = productionMonitorData.rows.filter((row) => row.overallStatus === "waiting").length;
+    const showQuantity = productionMonitorData.rows.some((row) => row.plannedQuantity !== null);
+    const showProductName = productionMonitorData.rows.some((row) => row.productName.trim());
+
+    const getCellStyle = (status: ProductionMonitorStatus): React.CSSProperties => {
+      if (status === "done") return { background: "#00ef2d", color: "#052e16", borderColor: "#22c55e" };
+      if (status === "in-progress") return { background: "#fbbf24", color: "#451a03", borderColor: "#f59e0b" };
+      return { background: "#e2e8f0", color: "#475569", borderColor: "#cbd5e1" };
+    };
+
+    return (
+      <div style={{ minHeight: standalone ? "100vh" : undefined, background: standalone ? "#e5e7eb" : "#020617", color: standalone ? "#111827" : "#e2e8f0", border: standalone ? "none" : "1px solid #334155", borderRadius: standalone ? 0 : 18, padding: standalone ? 18 : 18, boxShadow: standalone ? "none" : "0 18px 45px rgba(0,0,0,0.28)", marginTop: standalone ? 0 : 18, boxSizing: "border-box" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 16, background: "#ffffff", padding: 16, borderRadius: 14, boxShadow: "0 8px 22px rgba(15,23,42,0.12)" }}>
+          <div>
+            <div style={{ fontSize: 13, color: "#f59e0b", fontWeight: 900, letterSpacing: 1, textTransform: "uppercase" }}>NÍVÓ termelési monitor</div>
+            <h2 style={{ margin: "6px 0 4px", fontSize: standalone ? 36 : 30, color: "#1f2937" }}>Rendelések nyomonkövetése</h2>
+            <div style={{ color: "#64748b" }}>{productionMonitorData.plan ? `${productionMonitorData.plan.name} · ${productionMonitorData.plan.plan_date}` : `Nincs aktív terv · ${productionMonitorDate}`}</div>
+            <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>Utolsó frissítés: {productionMonitorData.lastUpdatedAt ? formatDateTime(productionMonitorData.lastUpdatedAt) : "-"}</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <input type="date" value={productionMonitorDate} onChange={(event) => { setProductionMonitorDate(event.target.value); void loadProductionMonitor(event.target.value); }} style={{ ...fieldStyle, width: 170, background: "#ffffff", color: "#111827" }} />
+            <button type="button" onClick={() => void loadProductionMonitor(productionMonitorDate)} disabled={loadingProductionMonitor} style={buttonSecondary}>{loadingProductionMonitor ? "Frissítés..." : "Frissítés"}</button>
+            {!standalone && <button type="button" onClick={openProductionMonitorWindow} style={buttonPrimary}>Megnyitás külön monitoron</button>}
+            <button type="button" onClick={() => void toggleProductionMonitorFullscreen()} style={buttonSecondary}>Teljes képernyő</button>
+            {!standalone && <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>}
+          </div>
+        </div>
+
+        {!standalone && <ManagementNavigation />}
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(140px, 1fr))", gap: 10, marginBottom: 14 }}>
+          <div style={{ background: "#ffffff", borderRadius: 12, padding: 14, color: "#1f2937", boxShadow: "0 5px 16px rgba(15,23,42,0.10)" }}><div style={{ color: "#64748b", fontSize: 12 }}>Napi terv</div><div style={{ fontSize: 28, fontWeight: 900 }}>{productionMonitorData.rows.length}</div></div>
+          <div style={{ background: "#dcfce7", borderRadius: 12, padding: 14, color: "#14532d" }}><div style={{ fontSize: 12 }}>Kész</div><div style={{ fontSize: 28, fontWeight: 900 }}>{completed}</div></div>
+          <div style={{ background: "#fef3c7", borderRadius: 12, padding: 14, color: "#78350f" }}><div style={{ fontSize: 12 }}>Folyamatban</div><div style={{ fontSize: 28, fontWeight: 900 }}>{inProgress}</div></div>
+          <div style={{ background: "#e2e8f0", borderRadius: 12, padding: 14, color: "#475569" }}><div style={{ fontSize: 12 }}>Várakozik</div><div style={{ fontSize: 28, fontWeight: 900 }}>{waiting}</div></div>
+        </div>
+
+        <div style={{ background: "#ffffff", borderRadius: 14, padding: 12, boxShadow: "0 10px 28px rgba(15,23,42,0.14)", overflow: "hidden" }}>
+          {!productionMonitorData.plan ? (
+            <div style={{ padding: 36, color: "#64748b", textAlign: "center", fontSize: 18 }}>A kiválasztott naphoz nincs aktív termelési terv.</div>
+          ) : productionMonitorData.rows.length === 0 ? (
+            <div style={{ padding: 36, color: "#64748b", textAlign: "center", fontSize: 18 }}>Az aktív termelési terv nem tartalmaz rendeléseket.</div>
+          ) : (
+            <div style={{ overflow: "auto", maxHeight: standalone ? "calc(100vh - 285px)" : 650 }}>
+              <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: Math.max(760, 260 + productionMonitorData.stations.length * 165) }}>
+                <thead style={{ position: "sticky", top: 0, zIndex: 5 }}>
+                  <tr>
+                    <th style={{ position: "sticky", left: 0, zIndex: 7, padding: "12px 10px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "left", minWidth: 150 }}>Sorszám</th>
+                    {showQuantity && <th style={{ padding: "12px 10px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "center", minWidth: 100 }}>Napi terv</th>}
+                    {showProductName && <th style={{ padding: "12px 10px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "left", minWidth: 190 }}>Megnevezés</th>}
+                    {productionMonitorData.stations.map((station) => <th key={station} style={{ padding: "12px 10px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "center", minWidth: 165, whiteSpace: "normal" }}>{station}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {productionMonitorData.rows.map((row) => (
+                    <tr key={String(row.itemId || row.orderNumber)}>
+                      <td style={{ position: "sticky", left: 0, zIndex: 2, padding: "10px 9px", background: "#ffffff", color: "#1f2937", borderBottom: "1px solid #cbd5e1", fontWeight: 900, whiteSpace: "nowrap" }}>{row.orderNumber}</td>
+                      {showQuantity && <td style={{ padding: "10px 9px", color: "#1f2937", borderBottom: "1px solid #cbd5e1", textAlign: "center", fontWeight: 800 }}>{row.plannedQuantity ?? "-"}</td>}
+                      {showProductName && <td style={{ padding: "10px 9px", color: "#475569", borderBottom: "1px solid #cbd5e1" }}>{row.productName || "-"}</td>}
+                      {productionMonitorData.stations.map((station) => {
+                        const cell = row.stations[station] || getMonitorCellFromLogs([]);
+                        return (
+                          <td key={`${row.orderNumber}-${station}`} title={[cell.workerName, cell.startedAt ? `START: ${formatDateTime(cell.startedAt)}` : "", cell.endedAt ? `END: ${formatDateTime(cell.endedAt)}` : ""].filter(Boolean).join(" | ")} style={{ ...getCellStyle(cell.status), padding: "10px 9px", borderBottom: "1px solid #cbd5e1", borderRight: "1px solid #d1d5db", textAlign: "center", fontWeight: 900, whiteSpace: "nowrap" }}>
+                            {cell.label}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   function ManagementDashboard(): React.JSX.Element {
+    if (managementSection === "production-plan") return <ProductionPlanAdmin />;
+    if (managementSection === "production-monitor") return <ProductionPlanMonitor />;
+
     const completedOrders = dashboardData.orderRows.filter((row) => !row.hasOpenSegments).length;
     const activeProcesses = dashboardData.openRows.length;
     const dashboardRange = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
@@ -1350,6 +1950,8 @@ export default function Page() {
             <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
           </div>
         </div>
+
+        <ManagementNavigation />
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 18 }}>
           {dashboardCards.map((card) => (
@@ -1502,6 +2104,24 @@ export default function Page() {
   useEffect(() => {
     if (!supabase) return;
     void refreshWorkers();
+    void refreshMachineOptions();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("view") !== "termeles-monitor") return;
+    const requestedDate = params.get("date");
+    if (requestedDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+      setProductionMonitorDate(requestedDate);
+    }
+    setStandaloneProductionMonitor(true);
+  }, []);
+
+  useEffect(() => {
+    const storedMachineId = readMachineIdFromStorage();
+    setMachineId(storedMachineId);
+    setMachineDraftId(storedMachineId);
   }, []);
 
   useEffect(() => {
@@ -1754,6 +2374,10 @@ export default function Page() {
   useEffect(() => {
     if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
 
+    // A vezetői dashboardra csak a jelszóellenőrzés sikeres befejezése után
+    // szabad átlépni. A 2. lépés a jelszó megadásának vagy létrehozásának képernyője.
+    if (passwordRequired && step === 2) return;
+
     const isAlreadyLockedToDashboard =
       terminalView === "management" &&
       flowStage === "dashboard" &&
@@ -1793,6 +2417,7 @@ export default function Page() {
     dashboardFilterMode,
     dashboardDate,
     dashboardDateTo,
+    passwordRequired,
   ]);
 
   useEffect(() => {
@@ -1878,7 +2503,7 @@ export default function Page() {
 
   useEffect(() => {
     if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
-    if (terminalView !== "management" || flowStage !== "dashboard") return;
+    if (terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "dashboard") return;
 
     void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo);
     const intervalId = window.setInterval(() => {
@@ -1886,7 +2511,52 @@ export default function Page() {
     }, 30 * 1000);
 
     return () => window.clearInterval(intervalId);
-  }, [activeWorker?.id, terminalView, flowStage, dashboardFilterMode, dashboardDate, dashboardDateTo]);
+  }, [activeWorker?.id, terminalView, flowStage, managementSection, dashboardFilterMode, dashboardDate, dashboardDateTo]);
+
+  useEffect(() => {
+    const monitorVisible = standaloneProductionMonitor || (
+      Boolean(activeWorker && isManagementDashboardWorker(activeWorker)) &&
+      terminalView === "management" &&
+      flowStage === "dashboard" &&
+      managementSection === "production-monitor"
+    );
+    if (!monitorVisible) return;
+
+    void loadProductionMonitor(productionMonitorDate);
+    const intervalId = window.setInterval(() => {
+      void loadProductionMonitor(productionMonitorDate);
+    }, 20 * 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [standaloneProductionMonitor, activeWorker?.id, terminalView, flowStage, managementSection, productionMonitorDate, workers.length, machineOptions.length]);
+
+  useEffect(() => {
+    if (!supabase) return;
+    const monitorVisible = standaloneProductionMonitor || (
+      Boolean(activeWorker && isManagementDashboardWorker(activeWorker)) &&
+      terminalView === "management" &&
+      flowStage === "dashboard" &&
+      managementSection === "production-monitor"
+    );
+    if (!monitorVisible) return;
+
+    const channel = supabase
+      .channel(`production-monitor-${productionMonitorDate}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, () => {
+        void loadProductionMonitor(productionMonitorDate);
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "production_plans" }, () => {
+        void loadProductionMonitor(productionMonitorDate);
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, () => {
+        void loadProductionMonitor(productionMonitorDate);
+      })
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [standaloneProductionMonitor, activeWorker?.id, terminalView, flowStage, managementSection, productionMonitorDate]);
 
   async function testConnection(): Promise<void> {
     if (!supabase) {
@@ -1938,10 +2608,469 @@ export default function Page() {
     }
   }
 
+
+  async function refreshMachineOptions(): Promise<void> {
+    if (!supabase) return;
+
+    try {
+      let rows: MachineIdRow[] = [];
+
+      const primaryResponse = await supabase
+        .from("machine_id")
+        .select("id, name")
+        .order("id", { ascending: true });
+
+      if (primaryResponse.error) {
+        console.error("SUPABASE HIBA machine_id első lekérés:", primaryResponse.error);
+      } else {
+        rows = (primaryResponse.data as MachineIdRow[]) || [];
+      }
+
+      let options = buildMachineOptions(rows);
+
+      if (options.length === 0) {
+        const fallbackResponse = await supabase
+          .from("machine_id")
+          .select("*")
+          .order("id", { ascending: true });
+
+        if (fallbackResponse.error) {
+          console.error("SUPABASE HIBA machine_id teljes lekérés:", fallbackResponse.error);
+        } else {
+          rows = (fallbackResponse.data as MachineIdRow[]) || [];
+          options = buildMachineOptions(rows);
+        }
+      }
+
+      if (options.length === 0) {
+        const directRows = await fetchMachineIdRowsDirectly();
+        options = buildMachineOptions(directRows);
+      }
+
+      setMachineOptions(options);
+
+      const storedMachineId = readMachineIdFromStorage();
+
+      if (options.length === 0) {
+        setMachineId(storedMachineId || DEFAULT_MACHINE_ID);
+        setMachineDraftId(storedMachineId || DEFAULT_MACHINE_ID);
+        setMessage({
+          type: "error",
+          text: "A machine_id tábla lekérdezése lefutott, de a böngésző nem kapott vissza választható name értéket. Ellenőrizd Supabase-ben, hogy a machine_id tábla public schema alatt van-e, a name oszlop pontosan name-e, és az anon kulcs tud SELECT-et futtatni.",
+        });
+        return;
+      }
+
+      const normalizedStoredMachineId = normalizeMachineIdFromOptions(storedMachineId, options);
+      setMachineId(normalizedStoredMachineId);
+      setMachineDraftId(normalizedStoredMachineId === DEFAULT_MACHINE_ID ? options[0] : normalizedStoredMachineId);
+    } catch (error) {
+      console.error("SUPABASE HIBA refreshMachineOptions:", error);
+      setMachineOptions([]);
+      const storedMachineId = readMachineIdFromStorage();
+      setMachineId(storedMachineId || DEFAULT_MACHINE_ID);
+      setMachineDraftId(storedMachineId || DEFAULT_MACHINE_ID);
+      setMessage({ type: "error", text: `A machine_id tábla betöltése sikertelen: ${normalizeError(error)}` });
+    }
+  }
+
+  function updateProductionPlanPreviewRow(index: number, patch: Partial<ProductionPlanUploadRow>): void {
+    setProductionPlanPreview((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row));
+  }
+
+  async function handleProductionPlanFile(file: File): Promise<void> {
+    setLoadingProductionPlan(true);
+    try {
+      const XLSX = await waitForXlsx();
+      if (!XLSX.read || !XLSX.utils.sheet_to_json) {
+        throw new Error("Az XLSX könyvtár nem támogatja az Excel beolvasását.");
+      }
+
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const firstSheetName = workbook.SheetNames[0];
+      const firstSheet = firstSheetName ? workbook.Sheets[firstSheetName] : null;
+      if (!firstSheet) throw new Error("A kiválasztott fájl nem tartalmaz olvasható munkalapot.");
+
+      const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(firstSheet, { defval: "", raw: true });
+      if (!rawRows.length) throw new Error("A kiválasztott munkalap üres.");
+
+      const parsedRows = rawRows.map((row, index): ProductionPlanUploadRow | null => {
+        const orderValue = readSpreadsheetValue(row, [
+          "Sorszám",
+          "Sorszam",
+          "Rendelésszám",
+          "Rendelesszam",
+          "Rendelés",
+          "Rendeles",
+          "order_number",
+          "order number",
+          "Vonalkód",
+          "Vonalkod",
+        ]);
+        const orderNumber = String(orderValue ?? "").trim();
+        if (!orderNumber) return null;
+
+        const sequenceValue = readSpreadsheetValue(row, ["Sorrend", "Sorszám sorrend", "sequence", "sequence_number", "Prioritás", "Prioritas"]);
+        const quantityValue = readSpreadsheetValue(row, ["Tervezett darab", "Tervezett db", "Napi terv", "Darab", "Mennyiség", "Mennyiseg", "planned_quantity", "quantity", "qty"]);
+        const productValue = readSpreadsheetValue(row, ["Megnevezés", "Megnevezes", "Termék", "Termek", "Terméknév", "Termeknev", "product_name", "product"]);
+
+        return {
+          orderNumber,
+          sequenceNumber: Math.max(1, Math.trunc(parseSpreadsheetNumber(sequenceValue) || index + 1)),
+          plannedQuantity: parseSpreadsheetNumber(quantityValue),
+          productName: String(productValue ?? "").trim(),
+        };
+      }).filter((row): row is ProductionPlanUploadRow => Boolean(row));
+
+      if (!parsedRows.length) {
+        throw new Error("Nem találtam Sorszám vagy Rendelésszám oszlopot, illetve kitöltött rendeléseket a fájlban.");
+      }
+
+      const uniqueRows = new Map<string, ProductionPlanUploadRow>();
+      parsedRows.forEach((row) => {
+        const key = row.orderNumber.toLowerCase();
+        const existing = uniqueRows.get(key);
+        if (!existing) {
+          uniqueRows.set(key, row);
+          return;
+        }
+        const mergedQuantity = existing.plannedQuantity !== null || row.plannedQuantity !== null
+          ? Number(existing.plannedQuantity || 0) + Number(row.plannedQuantity || 0)
+          : null;
+        uniqueRows.set(key, {
+          ...existing,
+          sequenceNumber: Math.min(existing.sequenceNumber, row.sequenceNumber),
+          plannedQuantity: mergedQuantity,
+          productName: existing.productName || row.productName,
+        });
+      });
+
+      const normalizedRows = Array.from(uniqueRows.values())
+        .sort((a, b) => a.sequenceNumber - b.sequenceNumber || a.orderNumber.localeCompare(b.orderNumber, "hu"))
+        .map((row, index) => ({ ...row, sequenceNumber: index + 1 }));
+
+      setProductionPlanFileName(file.name);
+      setProductionPlanPreview(normalizedRows);
+      setMessage({ type: "success", text: `${normalizedRows.length} egyedi rendelés beolvasva a termelési tervből.` });
+    } catch (error) {
+      console.error("TERMELÉSI TERV FÁJL HIBA:", error);
+      setProductionPlanFileName("");
+      setProductionPlanPreview([]);
+      setMessage({ type: "error", text: normalizeError(error) });
+    } finally {
+      setLoadingProductionPlan(false);
+    }
+  }
+
+  function downloadProductionPlanTemplate(): void {
+    const XLSX = window.XLSX;
+    if (!XLSX?.utils?.book_new) {
+      setMessage({ type: "error", text: "Az Excel könyvtár még nem töltődött be." });
+      return;
+    }
+    const rows: Array<Array<string | number>> = [
+      ["Sorrend", "Sorszám", "Tervezett darab", "Megnevezés"],
+      [1, "R260722217", 35, "Minta rendelés"],
+      [2, "R260722214", 20, "Minta rendelés 2"],
+    ];
+    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Termelési terv");
+    const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    downloadBlob("termelesi_terv_minta.xlsx", new Blob([output]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  }
+
+  async function loadProductionPlanItems(plan: ProductionPlanRow): Promise<void> {
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from("production_plan_items")
+      .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, created_at")
+      .eq("plan_id", plan.id)
+      .order("sequence_number", { ascending: true });
+    if (error) throw error;
+    setSelectedProductionPlanId(String(plan.id));
+    setProductionPlanItems(((data as ProductionPlanItemRow[]) || []).map((item) => ({
+      ...item,
+      sequence_number: Number(item.sequence_number || 0),
+      planned_quantity: item.planned_quantity === null || item.planned_quantity === undefined ? null : Number(item.planned_quantity),
+    })));
+  }
+
+  async function loadProductionPlans(dateKey = productionPlanDate): Promise<void> {
+    if (!supabase || !dateKey) return;
+    setLoadingProductionPlan(true);
+    try {
+      const { data, error } = await supabase
+        .from("production_plans")
+        .select("id, plan_date, name, is_active, uploaded_by, created_at")
+        .eq("plan_date", dateKey)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+
+      const plans = (data as ProductionPlanRow[]) || [];
+      setProductionPlans(plans);
+      const selected = plans.find((plan) => String(plan.id) === selectedProductionPlanId) || plans.find((plan) => plan.is_active) || plans[0];
+      if (selected) {
+        await loadProductionPlanItems(selected);
+      } else {
+        setSelectedProductionPlanId("");
+        setProductionPlanItems([]);
+      }
+    } catch (error) {
+      console.error("SUPABASE HIBA loadProductionPlans:", error);
+      setProductionPlans([]);
+      setProductionPlanItems([]);
+      setMessage({ type: "error", text: `A termelési tervek betöltése sikertelen. Futtasd le a mellékelt Supabase SQL-t. Részletek: ${normalizeError(error)}` });
+    } finally {
+      setLoadingProductionPlan(false);
+    }
+  }
+
+  async function saveProductionPlan(): Promise<void> {
+    if (!supabase) {
+      setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
+      return;
+    }
+    const cleanRows = productionPlanPreview
+      .map((row) => ({ ...row, orderNumber: row.orderNumber.trim(), productName: row.productName.trim() }))
+      .filter((row) => row.orderNumber)
+      .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
+      .map((row, index) => ({ ...row, sequenceNumber: index + 1 }));
+    if (!productionPlanDate) {
+      setMessage({ type: "error", text: "Válaszd ki a termelési terv dátumát." });
+      return;
+    }
+    if (!cleanRows.length) {
+      setMessage({ type: "error", text: "A termelési terv nem tartalmaz menthető rendelést." });
+      return;
+    }
+
+    setSavingProductionPlan(true);
+    try {
+      const { data: insertedPlan, error: planError } = await supabase
+        .from("production_plans")
+        .insert([{
+          plan_date: productionPlanDate,
+          name: productionPlanName.trim() || `Termelési terv ${productionPlanDate}`,
+          is_active: false,
+          uploaded_by: activeWorker?.id ?? null,
+        }])
+        .select("id, plan_date, name, is_active, uploaded_by, created_at")
+        .single();
+      if (planError) throw planError;
+      const plan = insertedPlan as ProductionPlanRow;
+
+      const payload = cleanRows.map((row) => ({
+        plan_id: plan.id,
+        order_number: row.orderNumber,
+        sequence_number: row.sequenceNumber,
+        planned_quantity: row.plannedQuantity,
+        product_name: row.productName || null,
+      }));
+
+      for (let index = 0; index < payload.length; index += 500) {
+        const { error: itemError } = await supabase.from("production_plan_items").insert(payload.slice(index, index + 500));
+        if (itemError) throw itemError;
+      }
+
+      const { error: deactivateError } = await supabase
+        .from("production_plans")
+        .update({ is_active: false })
+        .eq("plan_date", productionPlanDate)
+        .neq("id", plan.id);
+      if (deactivateError) throw deactivateError;
+
+      const { error: activateError } = await supabase
+        .from("production_plans")
+        .update({ is_active: true })
+        .eq("id", plan.id);
+      if (activateError) throw activateError;
+
+      setProductionPlanPreview([]);
+      setProductionPlanFileName("");
+      setProductionMonitorDate(productionPlanDate);
+      await loadProductionPlans(productionPlanDate);
+      await loadProductionMonitor(productionPlanDate);
+      setMessage({ type: "success", text: `A ${productionPlanDate} napi termelési terv ${cleanRows.length} rendelésével elmentve és aktiválva lett.` });
+    } catch (error) {
+      console.error("SUPABASE HIBA saveProductionPlan:", error);
+      setMessage({ type: "error", text: `A termelési terv mentése sikertelen: ${normalizeError(error)}` });
+    } finally {
+      setSavingProductionPlan(false);
+    }
+  }
+
+  async function activateProductionPlan(plan: ProductionPlanRow): Promise<void> {
+    if (!supabase) return;
+    setLoadingProductionPlan(true);
+    try {
+      const { error: deactivateError } = await supabase.from("production_plans").update({ is_active: false }).eq("plan_date", plan.plan_date);
+      if (deactivateError) throw deactivateError;
+      const { error: activateError } = await supabase.from("production_plans").update({ is_active: true }).eq("id", plan.id);
+      if (activateError) throw activateError;
+      setProductionMonitorDate(plan.plan_date);
+      await loadProductionPlans(plan.plan_date);
+      await loadProductionMonitor(plan.plan_date);
+      setMessage({ type: "success", text: `Aktív termelési terv: ${plan.name}` });
+    } catch (error) {
+      setMessage({ type: "error", text: normalizeError(error) });
+    } finally {
+      setLoadingProductionPlan(false);
+    }
+  }
+
+  async function deleteProductionPlan(plan: ProductionPlanRow): Promise<void> {
+    if (!supabase) return;
+    if (!window.confirm(`Biztosan törlöd ezt a termelési tervet?\n${plan.name} · ${plan.plan_date}`)) return;
+    setLoadingProductionPlan(true);
+    try {
+      const { error } = await supabase.from("production_plans").delete().eq("id", plan.id);
+      if (error) throw error;
+      await loadProductionPlans(plan.plan_date);
+      await loadProductionMonitor(plan.plan_date);
+      setMessage({ type: "success", text: "A termelési terv törölve lett." });
+    } catch (error) {
+      setMessage({ type: "error", text: normalizeError(error) });
+    } finally {
+      setLoadingProductionPlan(false);
+    }
+  }
+
+  async function fetchProductionMonitorData(dateKey: string): Promise<ProductionMonitorData> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    let planResponse = await supabase
+      .from("production_plans")
+      .select("id, plan_date, name, is_active, uploaded_by, created_at")
+      .eq("plan_date", dateKey)
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (planResponse.error) throw planResponse.error;
+    if (!planResponse.data) {
+      planResponse = await supabase
+        .from("production_plans")
+        .select("id, plan_date, name, is_active, uploaded_by, created_at")
+        .eq("plan_date", dateKey)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+    }
+    if (planResponse.error) throw planResponse.error;
+
+    const plan = (planResponse.data as ProductionPlanRow | null) || null;
+    if (!plan) {
+      return { plan: null, stations: machineOptions.filter((item) => normalizeLooseText(item) !== normalizeLooseText(DEFAULT_MACHINE_ID)), rows: [], logs: [], lastUpdatedAt: new Date().toISOString() };
+    }
+
+    const { data: itemData, error: itemError } = await supabase
+      .from("production_plan_items")
+      .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, created_at")
+      .eq("plan_id", plan.id)
+      .order("sequence_number", { ascending: true });
+    if (itemError) throw itemError;
+    const items = ((itemData as ProductionPlanItemRow[]) || []).filter((item) => String(item.order_number || "").trim());
+
+    const orderNumbers = Array.from(new Set(items.map((item) => String(item.order_number).trim())));
+    const logs: WorkLogRow[] = [];
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id";
+    for (let index = 0; index < orderNumbers.length; index += 100) {
+      const orderChunk = orderNumbers.slice(index, index + 100);
+      const { data: logData, error: logError } = await supabase
+        .from("work_logs")
+        .select(selectColumns)
+        .in("order_number", orderChunk)
+        .order("created_at", { ascending: true })
+        .limit(10000);
+      if (logError) throw logError;
+      logs.push(...(((logData as WorkLogRow[]) || []).map((log) => ({
+        ...log,
+        worker_name: log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || null,
+      }))));
+    }
+
+    const stationMap = new Map<string, string>();
+    machineOptions.forEach((station) => {
+      const clean = String(station || "").trim();
+      if (clean && normalizeLooseText(clean) !== normalizeLooseText(DEFAULT_MACHINE_ID)) stationMap.set(normalizeLooseText(clean), clean);
+    });
+    logs.forEach((log) => {
+      const station = resolveLogStation(log, workers);
+      if (station && normalizeLooseText(station) !== normalizeLooseText(DEFAULT_MACHINE_ID)) stationMap.set(normalizeLooseText(station), station);
+    });
+    const stations = Array.from(stationMap.values());
+
+    const rows: ProductionMonitorRow[] = items.map((item) => {
+      const orderNumber = String(item.order_number).trim();
+      const orderLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(orderNumber));
+      const stationCells: Record<string, ProductionMonitorCell> = {};
+      stations.forEach((station) => {
+        const stationLogs = orderLogs.filter((log) => normalizeLooseText(resolveLogStation(log, workers)) === normalizeLooseText(station));
+        stationCells[station] = getMonitorCellFromLogs(stationLogs);
+      });
+      const statuses = Object.values(stationCells).map((cell) => cell.status);
+      const overallStatus: ProductionMonitorStatus = statuses.length > 0 && statuses.every((status) => status === "done")
+        ? "done"
+        : statuses.some((status) => status === "done" || status === "in-progress")
+          ? "in-progress"
+          : "waiting";
+
+      return {
+        itemId: item.id,
+        orderNumber,
+        sequenceNumber: Number(item.sequence_number || 0),
+        plannedQuantity: item.planned_quantity === null || item.planned_quantity === undefined ? null : Number(item.planned_quantity),
+        productName: String(item.product_name || "").trim(),
+        overallStatus,
+        stations: stationCells,
+      };
+    });
+
+    return { plan, stations, rows, logs, lastUpdatedAt: new Date().toISOString() };
+  }
+
+  async function loadProductionMonitor(dateKey = productionMonitorDate): Promise<void> {
+    if (!supabase || !dateKey) return;
+    setLoadingProductionMonitor(true);
+    try {
+      const data = await fetchProductionMonitorData(dateKey);
+      setProductionMonitorData(data);
+    } catch (error) {
+      console.error("SUPABASE HIBA loadProductionMonitor:", error);
+      setProductionMonitorData({ plan: null, stations: [], rows: [], logs: [], lastUpdatedAt: new Date().toISOString() });
+      setMessage({ type: "error", text: `A termelési monitor betöltése sikertelen. Futtasd le a mellékelt Supabase SQL-t. Részletek: ${normalizeError(error)}` });
+    } finally {
+      setLoadingProductionMonitor(false);
+    }
+  }
+
+  function openProductionMonitorWindow(): void {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", "termeles-monitor");
+    url.searchParams.set("date", productionMonitorDate);
+    window.open(url.toString(), "_blank", "noopener,noreferrer");
+  }
+
+  async function toggleProductionMonitorFullscreen(): Promise<void> {
+    if (typeof document === "undefined") return;
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch (error) {
+      setMessage({ type: "error", text: `A teljes képernyős mód nem indítható: ${normalizeError(error)}` });
+    }
+  }
+
   async function fetchDashboardData(range: { startIso: string; endIso: string }): Promise<DashboardData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, batch_code, event_name, event_code, start_timestamp, end_timestamp";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id";
     let response = await supabase
       .from("work_log")
       .select(selectColumns)
@@ -2062,7 +3191,7 @@ export default function Page() {
     try {
       const { data, error } = await supabase
         .from("work_logs")
-        .select("worker_id, order_number, action, created_at, note, scrap_qty")
+        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id")
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) throw error;
@@ -2102,7 +3231,7 @@ export default function Page() {
     try {
       const { data, error } = await supabase
         .from("work_logs")
-        .select("worker_id, order_number, action, created_at, note, scrap_qty")
+        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id")
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) throw error;
@@ -2181,6 +3310,81 @@ START: ${formatDateTime(startAt)}`
     }
   }
 
+  function openMachineAdminPanel(): void {
+    setMachineAdminOpen(true);
+    setMachineAdminUnlocked(false);
+    setMachineAdminPin("");
+    setMachineDraftId(machineId);
+    void refreshMachineOptions();
+  }
+
+  function closeMachineAdminPanel(): void {
+    setMachineAdminOpen(false);
+    setMachineAdminUnlocked(false);
+    setMachineAdminPin("");
+    setMachineDraftId(machineId);
+  }
+
+  async function unlockMachineAdminPanel(): Promise<void> {
+    const enteredCode = machineAdminPin.trim();
+    if (!enteredCode) {
+      setMessage({ type: "error", text: "Add meg Horváth Tamás Dániel kódját." });
+      return;
+    }
+
+    let allowed = enteredCode === ADMIN_RESET_PIN;
+
+    if (!allowed) {
+      const normalizedTargetName = normalizeLooseText("Horváth Tamás Dániel");
+      const targetWorker = workers.find((worker) => normalizeLooseText(worker["Teljes nev"] || "") === normalizedTargetName);
+      if (targetWorker) {
+        const enteredHash = await sha256(enteredCode);
+        const storedHash = String(targetWorker.jelszo_hash || "").trim();
+        const legacyPlainCode = String(targetWorker.Jelszo || "").trim();
+        allowed = Boolean(storedHash && storedHash === enteredHash) || Boolean(legacyPlainCode && legacyPlainCode === enteredCode);
+      }
+    }
+
+    if (!allowed) {
+      setMessage({ type: "error", text: "Hibás kód. Csak Horváth Tamás Dániel kódjával módosítható a munkaállomás." });
+      return;
+    }
+
+    await refreshMachineOptions();
+    setMachineAdminUnlocked(true);
+    setMessage({ type: "info", text: "Azonosítás sikeres. A munkaállomás módosítható." });
+  }
+
+  function saveMachineAdminPanel(): void {
+    const selectedMachine = normalizeMachineIdFromOptions(machineDraftId, machineOptions);
+    if (selectedMachine === DEFAULT_MACHINE_ID || !machineOptions.some((option) => option.toLowerCase() === selectedMachine.toLowerCase())) {
+      setMessage({ type: "error", text: "Válassz munkaállomást a machine_id táblából betöltött listából." });
+      return;
+    }
+
+    const savedMachineId = writeMachineIdToStorage(selectedMachine);
+    setMachineId(savedMachineId);
+    setMachineDraftId(savedMachineId);
+    setMachineAdminOpen(false);
+    setMachineAdminUnlocked(false);
+    setMachineAdminPin("");
+    setMessage({ type: "success", text: `Munkaállomás mentve: ${savedMachineId}` });
+  }
+
+  function getCurrentMachineIdForInsert(): MachineIdOption {
+    const storedRawMachineId = readMachineIdFromStorage();
+    const storedMachineId = machineOptions.length > 0
+      ? normalizeMachineIdFromOptions(storedRawMachineId, machineOptions)
+      : normalizeMachineId(storedRawMachineId);
+
+    if (storedMachineId !== machineId) {
+      setMachineId(storedMachineId);
+      setMachineDraftId(storedMachineId);
+    }
+
+    return storedMachineId || DEFAULT_MACHINE_ID;
+  }
+
   function handleBackToName(): void {
     setEntryPermissionDenied(false);
     setMessage(null);
@@ -2234,6 +3438,8 @@ START: ${formatDateTime(startAt)}`
     setEndBarcodeConfirmed(false);
     setScrapQty("");
     setEndNote("");
+    setEndDarab("");
+    setEndSzal("");
     setShowIncompleteBatches(false);
     setIncompleteBatches([]);
     setActiveProductionBatches([]);
@@ -3411,6 +4617,8 @@ body {
     setEndBarcodeConfirmed(false);
     setEndNote("");
     setScrapQty("");
+    setEndDarab("");
+    setEndSzal("");
     setShowIncompleteBatches(false);
     setIncompleteBatches([]);
     setTerminalView("scanner");
@@ -3460,6 +4668,8 @@ body {
     setActionBarcode("");
     setEndNote("");
     setScrapQty("");
+    setEndDarab("");
+    setEndSzal("");
     setWorkflowMode(null);
     setFlowStage("idle");
     setWorkerEventKoteg(1);
@@ -3520,6 +4730,8 @@ body {
     setEndBarcodeConfirmed(false);
     setScrapQty("");
     setEndNote("");
+    setEndDarab("");
+    setEndSzal("");
     setShowIncompleteBatches(false);
     setIncompleteBatches([]);
     resetReportFlow();
@@ -3579,6 +4791,8 @@ body {
     setEndBarcodeConfirmed(false);
     setScrapQty("");
     setEndNote("");
+    setEndDarab("");
+    setEndSzal("");
     setShowIncompleteBatches(false);
     setIncompleteBatches([]);
     setTerminalView("scanner");
@@ -3804,6 +5018,8 @@ body {
       setEndBarcodeConfirmed(false);
       setScrapQty("");
       setEndNote("");
+      setEndDarab("");
+      setEndSzal("");
       orderTypeLatestValueRef.current = "";
       setOrderTypeInput("");
       setOrderTypeScanError("");
@@ -3875,11 +5091,12 @@ body {
       id: row?.id,
       batch_code: String(row?.batch_code || ""),
       created_at: String(row?.created_at || new Date().toISOString()),
+      start_time: row?.start_time ? String(row.start_time) : null,
+      machine_id: row?.machine_id ? String(row.machine_id) : null,
       order_ids: normalizeProductionBatchOrders(row?.order_ids),
       worker_name: row?.worker_name ? String(row.worker_name) : null,
     };
   }
-
   async function loadActiveProductionBatches(): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
@@ -3887,16 +5104,23 @@ body {
     }
     setBusy(true);
     try {
+      const currentMachineId = getCurrentMachineIdForInsert();
       const { data, error } = await supabase
         .from("production_batches")
-        .select("id,batch_code,worker_name,order_ids,created_at")
+        .select("id,batch_code,worker_name,order_ids,created_at,start_time,machine_id")
         .order("created_at", { ascending: false });
       if (error) throw error;
       const batches = (Array.isArray(data) ? data : [])
         .map(hydrateProductionBatch)
-        .filter((batch) => batch.batch_code && batch.order_ids.length > 0);
+        .filter((batch) => batch.batch_code && batch.order_ids.length > 0)
+        .filter((batch) => !batch.machine_id || batch.machine_id.toLowerCase() === currentMachineId.toLowerCase());
       setActiveProductionBatches(batches);
-      setMessage({ type: "info", text: batches.length > 0 ? `${batches.length} folyamatban lévő köteg betöltve.` : "Nincs folyamatban lévő köteg a production_batches táblában." });
+      setMessage({
+        type: "info",
+        text: batches.length > 0
+          ? `${batches.length} folyamatban lévő köteg betöltve ezen a munkaállomáson: ${currentMachineId}.`
+          : `Nincs folyamatban lévő köteg ezen a munkaállomáson: ${currentMachineId}.`,
+      });
     } catch (error) {
       console.error("SUPABASE HIBA loadActiveProductionBatches:", error);
       setMessage({ type: "error", text: normalizeError(error) });
@@ -3904,7 +5128,6 @@ body {
       setBusy(false);
     }
   }
-
   async function handleEndModuleSelection(): Promise<void> {
     setWorkflowMode("end");
     setFlowStage("active-batch-list");
@@ -3919,6 +5142,8 @@ body {
     setEndReadyMap({});
     setEndOrderNotes({});
     setEndBatchNote("");
+    setEndDarab("");
+    setEndSzal("");
     setStep(5);
     await loadActiveProductionBatches();
     window.setTimeout(() => focusAndSelectInput(activeBatchInputRef), 0);
@@ -3936,6 +5161,8 @@ body {
     setEndReadyMap(readyMap);
     setEndOrderNotes(notes);
     setEndBatchNote("");
+    setEndDarab("");
+    setEndSzal("");
     setEndBatchCommandInput("");
     setFlowStage("end-batch-detail");
     setMessage({ type: "info", text: `Köteg kiválasztva: . Jelöld készre a tételeket, majd olvasd be az END kódot.` });
@@ -3990,38 +5217,64 @@ body {
       return;
     }
 
+    const finalDarab = parseDarabValue(endDarab);
+    const finalSzal = parseSzalValue(endSzal);
+
+    if (finalDarab !== null && !Number.isFinite(finalDarab)) {
+      setMessage({ type: "error", text: "A Darab mező 0 vagy nagyobb egész szám legyen." });
+      return;
+    }
+
+    if (finalSzal !== null && !Number.isFinite(finalSzal)) {
+      setMessage({ type: "error", text: "A Szál mező 0 vagy nagyobb szám legyen." });
+      return;
+    }
+
     batchFinalizeInFlightRef.current = true;
     setBusy(true);
     try {
       const nowIso = new Date().toISOString();
       const workerNameForSave = activeWorker["Teljes nev"];
       const batchNoteClean = endBatchNote.trim();
+      const currentMachineId = getCurrentMachineIdForInsert();
+      const batchStartTime = selectedEndBatch.start_time || selectedEndBatch.created_at || nowIso;
 
       const logs = readyOrders.map((order) => {
         const orderNoteClean = (endOrderNotes[order] || "").trim();
         return {
           worker_id: activeWorker.id,
           worker_name: workerNameForSave,
+          machine_id: currentMachineId,
           order_number: order,
           action: "END" as WorkAction,
           created_at: nowIso,
           batch_code: selectedEndBatch.batch_code,
           event_name: "Köteg lejelentés",
           event_code: "END",
+          start_timestamp: batchStartTime,
+          start_time: batchStartTime,
           end_timestamp: nowIso,
+          end_time: nowIso,
           order_note: orderNoteClean || null,
           batch_note: batchNoteClean || null,
           note: buildStructuredNote([orderNoteClean, batchNoteClean].filter(Boolean).join(" | ") || null, {
             worker_name: workerNameForSave,
             worker_id: activeWorker.id,
+            machine_id: currentMachineId,
             original_batch_code: selectedEndBatch.batch_code,
+            original_batch_start_time: batchStartTime,
+            original_batch_machine_id: selectedEndBatch.machine_id || null,
             order_number: order,
             order_note: orderNoteClean || null,
             batch_note: batchNoteClean || null,
+            darab: finalDarab,
+            szal: finalSzal,
             action: "END" as WorkAction,
             split_remainder_count: remainingOrders.length,
           }),
           scrap_qty: null,
+          darab: finalDarab,
+          szal: finalSzal,
         };
       });
 
@@ -4031,13 +5284,22 @@ body {
       let newBatchCode: string | null = null;
       if (remainingOrders.length > 0) {
         newBatchCode = `BATCH-${Date.now()}-REM`;
-        const { error: insertRemainderError } = await supabase.from("production_batches").insert([{
+        const remainderMachineId = selectedEndBatch.machine_id || currentMachineId;
+        const { data: remainderData, error: insertRemainderError } = await supabase.from("production_batches").insert([{
           batch_code: newBatchCode,
           order_ids: remainingOrders,
           worker_name: selectedEndBatch.worker_name || workerNameForSave || "Ismeretlen",
           created_at: nowIso,
-        }]);
+          start_time: batchStartTime,
+          machine_id: remainderMachineId,
+        }]).select("id,batch_code,start_time,machine_id").single();
         if (insertRemainderError) throw insertRemainderError;
+        await ensureProductionBatchStartMachineSaved(supabase, {
+          id: remainderData?.id,
+          batchCode: newBatchCode,
+          startTime: batchStartTime,
+          machineId: remainderMachineId,
+        });
       }
 
       const deleteQuery = supabase.from("production_batches").delete();
@@ -4060,7 +5322,6 @@ body {
       }, 320);
     }
   }
-
   async function handleEndBatchCommand(scannedValue?: string): Promise<void> {
     const command = (scannedValue ?? endBatchCommandInput).trim();
     if (!command) {
@@ -4318,16 +5579,20 @@ body {
     if (!supabase || !activeWorker) throw new Error("Nincs kiválasztott dolgozó.");
     const nowIso = timestampIso || new Date().toISOString();
     const workerNameForSave = activeWorker["Teljes nev"];
+    const currentMachineId = getCurrentMachineIdForInsert();
     const cleanOrderId = orderId.trim();
     const resolvedBatchCode = existingBatchCode || batchCode || null;
     const auditMetadata = {
       worker_name: workerNameForSave,
       worker_id: activeWorker.id,
+      machine_id: currentMachineId,
       order_number: cleanOrderId,
       batch_code: resolvedBatchCode,
       event_label: selectedEventCard?.label || null,
       event_code: selectedEventCard?.barcodeValue || null,
       action: "END" as WorkAction,
+      end_timestamp: nowIso,
+      end_time: nowIso,
       existing_order_updated_at: nowIso,
       status: "COMPLETED",
     };
@@ -4336,6 +5601,7 @@ body {
       {
         worker_id: activeWorker.id,
         worker_name: workerNameForSave,
+        machine_id: currentMachineId,
         order_number: cleanOrderId,
         action: "END" as WorkAction,
         created_at: nowIso,
@@ -4343,51 +5609,58 @@ body {
         event_name: selectedEventCard?.label || null,
         event_code: selectedEventCard?.barcodeValue || null,
         end_timestamp: nowIso,
+        end_time: nowIso,
         note: buildStructuredNote("Rendelés frissítve / készre jelentve", auditMetadata),
         scrap_qty: null,
+        darab: null,
+        szal: null,
       },
     ]);
     if (error) throw error;
   }
+  async function findOpenWorkLogForOrderAtCurrentMachine(orderId: string): Promise<{ id: string | number; start_time?: string | null; start_timestamp?: string | null; created_at?: string | null } | null> {
+    if (!supabase) return null;
 
-  async function hasOpenStartForOrderAtActiveStation(orderId: string): Promise<boolean> {
-    if (!supabase || !activeWorker) return false;
+    const cleanOrderId = orderId.trim();
+    const currentMachineId = getCurrentMachineIdForInsert();
+    if (!cleanOrderId || !currentMachineId) return null;
 
-    const activeRoleKey = getWorkerRoleKey(activeWorker);
-    if (!activeRoleKey) return false;
-
-    const { data, error } = await supabase
+    let response = await supabase
       .from("work_logs")
-      .select("worker_id, order_number, action, created_at")
-      .eq("order_number", orderId)
-      .order("created_at", { ascending: true });
+      .select("id, order_number, machine_id, start_time, end_time, start_timestamp, end_timestamp, action, created_at")
+      .eq("order_number", cleanOrderId)
+      .eq("machine_id", currentMachineId)
+      .not("start_time", "is", null)
+      .is("end_time", null)
+      .order("start_time", { ascending: false })
+      .limit(1);
 
-    if (error) throw error;
+    if (response.error) throw response.error;
 
-    const orderedLogs = Array.isArray(data) ? data : [];
-    const openStartsByRole = new Map<string, number>();
+    let row = Array.isArray(response.data) && response.data.length > 0 ? response.data[0] : null;
 
-    for (const log of orderedLogs as Array<{ worker_id: number | null; action: WorkAction | string | null; created_at?: string | null }>) {
-      const logWorker = workers.find((worker) => Number(worker.id) === Number(log.worker_id));
-      const roleKey = getWorkerRoleKey(logWorker);
-      if (!roleKey) continue;
-
-      if (log.action === "START") {
-        openStartsByRole.set(roleKey, (openStartsByRole.get(roleKey) || 0) + 1);
-        continue;
-      }
-
-      if (log.action === "END") {
-        const currentCount = openStartsByRole.get(roleKey) || 0;
-        if (currentCount > 0) {
-          openStartsByRole.set(roleKey, currentCount - 1);
-        }
-      }
+    if (!row) {
+      response = await supabase
+        .from("work_logs")
+        .select("id, order_number, machine_id, start_time, end_time, start_timestamp, end_timestamp, action, created_at")
+        .eq("order_number", cleanOrderId)
+        .eq("machine_id", currentMachineId)
+        .eq("action", "START")
+        .is("end_time", null)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (response.error) throw response.error;
+      row = Array.isArray(response.data) && response.data.length > 0 ? response.data[0] : null;
     }
 
-    return (openStartsByRole.get(activeRoleKey) || 0) > 0;
+    if (!row || row.id === null || row.id === undefined) return null;
+
+    return row as { id: string | number; start_time?: string | null; start_timestamp?: string | null; created_at?: string | null };
   }
 
+  async function hasOpenStartForOrderAtActiveStation(orderId: string): Promise<boolean> {
+    return !!(await findOpenWorkLogForOrderAtCurrentMachine(orderId));
+  }
   function routeSingleOrderToEndReporting(orderId: string): void {
     setOrderNumber(orderId);
     setWorkflowMode("single");
@@ -4397,10 +5670,12 @@ body {
     setEndBarcodeConfirmed(false);
     setEndNote("");
     setScrapQty("");
+    setEndDarab("");
+    setEndSzal("");
     setStep(6);
     setMessage({
       type: "info",
-      text: `A ${orderId} rendelés ezen az állomáson már fut. Új START helyett automatikusan a lejelentő felületre irányítottam. Olvasd be az END kódot, adj meg megjegyzést/selejtet, majd mentsd.`,
+      text: `A ${orderId} rendelés ezen az állomáson már fut. Új START helyett automatikusan a lejelentő felületre irányítottam. Olvasd be az END kódot, add meg a Darab, Szál, selejt és megjegyzés értékeket, ha szükséges, majd mentsd.`,
     });
     window.setTimeout(() => {
       focusAndSelectInput(actionBarcodeInputRef);
@@ -4463,11 +5738,13 @@ body {
     try {
       const nowIso = new Date().toISOString();
       const workerNameForSave = activeWorker["Teljes nev"];
+      const currentMachineId = getCurrentMachineIdForInsert();
 
       const { error } = await supabase.from("work_logs").insert([
         {
           worker_id: activeWorker.id,
           worker_name: workerNameForSave,
+          machine_id: currentMachineId,
           order_number: finalOrder,
           action: "START" as WorkAction,
           created_at: nowIso,
@@ -4475,17 +5752,22 @@ body {
           event_name: selectedEventCard?.label || null,
           event_code: selectedEventCard?.barcodeValue || null,
           start_timestamp: nowIso,
+          start_time: nowIso,
+          end_timestamp: null,
+          end_time: null,
           note: buildStructuredNote("Egyedi rendelés azonnali rögzítése", {
             worker_name: workerNameForSave,
             worker_id: activeWorker.id,
             worker_role: activeWorker.Munkakor || null,
             worker_station: getWorkerStation(activeWorker) || null,
+            machine_id: currentMachineId,
             order_number: finalOrder,
             batch_code: batchCode || null,
             event_label: selectedEventCard?.label || null,
             event_code: selectedEventCard?.barcodeValue || null,
             action: "START" as WorkAction,
             start_timestamp: nowIso,
+            start_time: nowIso,
             single_order_saved_at: nowIso,
           }),
           scrap_qty: null,
@@ -4507,7 +5789,6 @@ body {
       }, 320);
     }
   }
-
   async function finalizeBatchCreation(): Promise<void> {
     if (batchFinalizeInFlightRef.current) return;
     if (!supabase || !activeWorker) {
@@ -4518,8 +5799,8 @@ body {
     const ordersForSave = [...batchOrders].map((order) => String(order).trim()).filter(Boolean);
     const workerForSave = activeWorker;
     const workerNameForSave = workerForSave["Teljes nev"];
-    const workerIdForSave = workerForSave.id;
     const nowIso = new Date().toISOString();
+    const currentMachineId = getCurrentMachineIdForInsert();
 
     if (ordersForSave.length === 0) {
       setMessage({ type: "error", text: "Nincs beolvasott rendelés!" });
@@ -4561,8 +5842,10 @@ body {
           order_ids: ordersForSave,
           worker_name: workerNameForSave || "Ismeretlen",
           created_at: nowIso,
+          start_time: nowIso,
+          machine_id: currentMachineId,
         }])
-        .select("id, batch_code, created_at, order_ids")
+        .select("id, batch_code, created_at, start_time, machine_id, order_ids")
         .single();
 
       if (error) throw error;
@@ -4571,7 +5854,10 @@ body {
         id: data?.id,
         batch_code: data?.batch_code ?? generatedBatchCode,
         created_at: data?.created_at ?? nowIso,
+        start_time: data?.start_time ?? nowIso,
+        machine_id: data?.machine_id ?? currentMachineId,
         order_ids: ordersForSave,
+        worker_name: workerNameForSave || "Ismeretlen",
       };
 
       setCreatedBatch(savedBatch);
@@ -4600,7 +5886,6 @@ body {
       }, 320);
     }
   }
-
   async function handleNameSubmit(scannedValue?: string): Promise<void> {
     if (workerSubmitInFlightRef.current) return;
     workerSubmitInFlightRef.current = true;
@@ -4651,7 +5936,7 @@ body {
       resetReportFlow();
       clearForgotFields();
 
-      const mustAskPassword = normalizeFlag(matchedWorker.Jelszo) !== "hamis";
+      const mustAskPassword = isWorkerPasswordRequired(matchedWorker.Jelszo);
       if (!mustAskPassword) {
         setNeedsRegistration(false);
         await continueAfterWorkerValidated(matchedWorker);
@@ -4801,21 +6086,9 @@ body {
   }
 
   async function resolveActionForOrder(orderNo: string): Promise<WorkAction> {
-    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
-    const { data, error } = await supabase
-      .from("work_logs")
-      .select("action, created_at")
-      .eq("order_number", orderNo.trim())
-      .order("created_at", { ascending: false })
-      .limit(1);
-    if (error) throw error;
-    const latestAction = data?.[0]?.action;
-    return latestAction === "START" ? "END" : "START";
+    const openLog = await findOpenWorkLogForOrderAtCurrentMachine(orderNo.trim());
+    return openLog ? "END" : "START";
   }
-
-
-  // A korábbi sebességalapú scanner-felismerés ki lett vezetve.
-  // Minden input kizárólag onKeyDown Enter eseményre validál.
 
   function clearOrderScanTimer(): void {
     if (orderScanTimerRef.current) {
@@ -4888,6 +6161,22 @@ body {
     return Math.trunc(parsed);
   }
 
+  function parseDarabValue(value: string): number | null {
+    const normalized = value.trim();
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    if (!Number.isFinite(parsed) || parsed < 0 || !Number.isInteger(parsed)) return Number.NaN;
+    return parsed;
+  }
+
+  function parseSzalValue(value: string): number | null {
+    const normalized = value.trim();
+    if (!normalized) return null;
+    const parsed = Number(normalized.replace(/,/g, "."));
+    if (!Number.isFinite(parsed) || parsed < 0) return Number.NaN;
+    return parsed;
+  }
+
   function getMissingRouteParts(finalOrderNumber?: string): string[] {
     const missing: string[] = [];
     if ((workerEventKoteg === 3 || workerEventKoteg === 4) && !selectedEventCard) missing.push("Esemény");
@@ -4918,9 +6207,21 @@ body {
     const finalScrapQty = action === "END"
       ? (overrides?.scrapQty ?? parseScrapQtyValue(scrapQty))
       : null;
+    const finalDarab = action === "END" ? parseDarabValue(endDarab) : null;
+    const finalSzal = action === "END" ? parseSzalValue(endSzal) : null;
 
     if (action === "END" && finalScrapQty !== null && (!Number.isFinite(finalScrapQty) || finalScrapQty < 0)) {
       setMessage({ type: "error", text: "A selejt darabszám 0 vagy nagyobb egész szám legyen." });
+      return;
+    }
+
+    if (action === "END" && finalDarab !== null && !Number.isFinite(finalDarab)) {
+      setMessage({ type: "error", text: "A Darab mező 0 vagy nagyobb egész szám legyen." });
+      return;
+    }
+
+    if (action === "END" && finalSzal !== null && !Number.isFinite(finalSzal)) {
+      setMessage({ type: "error", text: "A Szál mező 0 vagy nagyobb szám legyen." });
       return;
     }
 
@@ -4938,44 +6239,100 @@ body {
             event_source: null,
           };
 
+      const currentMachineId = getCurrentMachineIdForInsert();
+      const nowForSave = getLocalTimestampWithOffset();
+      let linkedStartTime: string | null = null;
+
       const auditMetadata = {
         worker_name: activeWorker["Teljes nev"],
         worker_id: activeWorker.id,
         worker_role: activeWorker.Munkakor || null,
         worker_station: getWorkerStation(activeWorker) || null,
+        machine_id: currentMachineId,
         order_number: finalOrderNumber,
         batch_code: batchCode || null,
         event_label: eventMetadata.event_label,
         event_code: eventMetadata.event_code,
+        darab: finalDarab,
+        szal: finalSzal,
         action,
-        start_timestamp: action === "START" ? getLocalTimestampWithOffset() : null,
-        end_timestamp: action === "END" ? getLocalTimestampWithOffset() : null,
+        start_timestamp: action === "START" ? nowForSave : null,
+        end_timestamp: action === "END" ? nowForSave : null,
       };
 
-      const payloadBase = {
-        worker_id: activeWorker.id,
-        order_number: finalOrderNumber,
-        action,
-        created_at: new Date().toISOString(),
-        note: buildStructuredNote(finalNote, auditMetadata),
-        scrap_qty: finalScrapQty,
-      };
+      if (action === "END") {
+        const openLog = await findOpenWorkLogForOrderAtCurrentMachine(finalOrderNumber);
+        if (!openLog) {
+          throw new Error(`Nincs nyitott START sor ehhez a rendeléshez ezen a gépen: ${finalOrderNumber} | Gép: ${currentMachineId}`);
+        }
 
-      const { error: insertError } = await supabase.from("work_logs").insert([payloadBase]);
-      if (insertError) throw insertError;
+        linkedStartTime = openLog.start_time || openLog.start_timestamp || openLog.created_at || null;
+
+        const { error: updateError } = await supabase
+          .from("work_logs")
+          .update({
+            end_time: nowForSave,
+            end_timestamp: nowForSave,
+            note: buildStructuredNote(finalNote, {
+              ...auditMetadata,
+              action: "END" as WorkAction,
+              start_time: linkedStartTime,
+              end_timestamp: nowForSave,
+              end_time: nowForSave,
+              closed_by_worker_name: activeWorker["Teljes nev"],
+              closed_by_worker_id: activeWorker.id,
+              darab: finalDarab,
+              szal: finalSzal,
+            }),
+            scrap_qty: finalScrapQty,
+            darab: finalDarab,
+            szal: finalSzal,
+          })
+          .eq("id", openLog.id);
+
+        if (updateError) throw updateError;
+      } else {
+        const payloadBase = {
+          worker_id: activeWorker.id,
+          worker_name: activeWorker["Teljes nev"],
+          machine_id: currentMachineId,
+          order_number: finalOrderNumber,
+          action,
+          created_at: nowForSave,
+          batch_code: batchCode || null,
+          event_name: eventMetadata.event_label,
+          event_code: eventMetadata.event_code,
+          start_time: nowForSave,
+          end_time: null,
+          start_timestamp: nowForSave,
+          end_timestamp: null,
+          note: buildStructuredNote(finalNote, {
+            ...auditMetadata,
+            start_timestamp: nowForSave,
+            start_time: nowForSave,
+          }),
+          scrap_qty: finalScrapQty,
+        };
+
+        const { error: insertError } = await supabase.from("work_logs").insert([payloadBase]);
+        if (insertError) throw insertError;
+      }
+
       const savedTime = new Date().toLocaleString("hu-HU");
       const savedWorker = activeWorker["Teljes nev"];
       const savedOrder = finalOrderNumber;
       const savedNoteText = finalNote ? ` | Megjegyzés: ${finalNote}` : "";
       const savedScrapText = action === "END" ? ` | Selejt: ${finalScrapQty ?? 0}` : "";
+      const savedDarabText = action === "END" && finalDarab !== null ? ` | Darab: ${finalDarab}` : "";
+      const savedSzalText = action === "END" && finalSzal !== null ? ` | Szál: ${finalSzal}` : "";
       resetAfterSave();
       setEndBarcodeConfirmed(false);
       setMessage({
         type: "success",
         text:
           action === "START"
-            ? `START automatikusan rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Időpont: ${savedTime}`
-            : `END sikeresen rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Időpont: ${savedTime}${savedScrapText}${savedNoteText}`,
+            ? `START automatikusan rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}`
+            : `END sikeresen rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}${savedDarabText}${savedSzalText}${savedScrapText}${savedNoteText}`,
       });
     } catch (error) {
       console.error("SUPABASE HIBA saveWorkLog:", error);
@@ -4984,7 +6341,6 @@ body {
       setBusy(false);
     }
   }
-
   async function handleOrderStep(autoAfterScan = false, scannedValue?: string): Promise<void> {
     const finalOrder = (scannedValue ?? orderNumber).trim();
     if (!finalOrder) {
@@ -5030,6 +6386,8 @@ body {
     setPendingAction(resolvedAction);
     setEndNote("");
     setScrapQty("");
+    setEndDarab("");
+    setEndSzal("");
     setEndBarcodeConfirmed(true);
 
     if (resolvedAction === "START") {
@@ -5041,8 +6399,8 @@ body {
     setMessage({
       type: "info",
       text: autoAfterScan
-        ? "A rendelés be lett olvasva. Add meg a selejtet és a megjegyzést, ha szükséges, majd mentsd az END-et."
-        : "Add meg a selejtet és a megjegyzést, ha szükséges, majd mentsd az END-et.",
+        ? "A rendelés be lett olvasva. Add meg a Darab, Szál, selejt és megjegyzés értékeket, ha szükséges, majd mentsd az END-et."
+        : "Add meg a Darab, Szál, selejt és megjegyzés értékeket, ha szükséges, majd mentsd az END-et.",
     });
   }
 
@@ -5080,7 +6438,7 @@ body {
       }
       setMessage({
         type: "info",
-        text: "Az END kód rendben megadva. Add meg a selejt darabszámot és a megjegyzést, ha szükséges, majd kattints az END mentése gombra.",
+        text: "Az END kód rendben megadva. Add meg a Darab, Szál, selejt és megjegyzés értékeket, ha szükséges, majd kattints az END mentése gombra.",
       });
       return;
     }
@@ -5115,9 +6473,19 @@ body {
 
     const finalNote = endNote.trim() || null;
     const finalScrapQty = parseScrapQtyValue(scrapQty);
+    const finalDarab = parseDarabValue(endDarab);
+    const finalSzal = parseSzalValue(endSzal);
     if (finalScrapQty !== null && !Number.isFinite(finalScrapQty)) {
       setMessage({ type: "error", text: "A selejt darabszám 0 vagy nagyobb egész szám legyen." });
       window.setTimeout(() => focusAndSelectInput(actionBarcodeInputRef, { force: true }), 0);
+      return;
+    }
+    if (finalDarab !== null && !Number.isFinite(finalDarab)) {
+      setMessage({ type: "error", text: "A Darab mező 0 vagy nagyobb egész szám legyen." });
+      return;
+    }
+    if (finalSzal !== null && !Number.isFinite(finalSzal)) {
+      setMessage({ type: "error", text: "A Szál mező 0 vagy nagyobb szám legyen." });
       return;
     }
 
@@ -5153,8 +6521,18 @@ body {
 
     const finalNote = endNote.trim() || null;
     const finalScrapQty = parseScrapQtyValue(scrapQty);
+    const finalDarab = parseDarabValue(endDarab);
+    const finalSzal = parseSzalValue(endSzal);
     if (finalScrapQty !== null && !Number.isFinite(finalScrapQty)) {
       setMessage({ type: "error", text: "A selejt darabszám 0 vagy nagyobb egész szám legyen." });
+      return;
+    }
+    if (finalDarab !== null && !Number.isFinite(finalDarab)) {
+      setMessage({ type: "error", text: "A Darab mező 0 vagy nagyobb egész szám legyen." });
+      return;
+    }
+    if (finalSzal !== null && !Number.isFinite(finalSzal)) {
+      setMessage({ type: "error", text: "A Szál mező 0 vagy nagyobb szám legyen." });
       return;
     }
 
@@ -5364,6 +6742,10 @@ body {
     }
   }
 
+  if (standaloneProductionMonitor) {
+    return <ProductionPlanMonitor standalone />;
+  }
+
   return (
     <main
       style={{
@@ -5418,6 +6800,94 @@ body {
           </div>
         )}
 
+        {machineAdminOpen && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 9998,
+              background: "rgba(2, 6, 23, 0.86)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 24,
+            }}
+          >
+            <div
+              style={{
+                width: "100%",
+                maxWidth: 460,
+                background: "#0f172a",
+                border: "1px solid #334155",
+                borderRadius: 18,
+                padding: 22,
+                boxShadow: "0 24px 80px rgba(0,0,0,0.55)",
+              }}
+            >
+              <div style={{ fontSize: 20, fontWeight: 900, color: "#f8fafc", marginBottom: 8 }}>
+                Munkaállomás beállítása
+              </div>
+              <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 16 }}>
+                A lista a Supabase machine_id táblából töltődik. A kiválasztott munkaállomás ezen a számítógépen a localStorage-ban tárolódik, és minden work_logs mentésnél a machine_id oszlopba kerül.
+              </div>
+
+              {!machineAdminUnlocked ? (
+                <>
+                  <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>Horváth Tamás Dániel kódja</label>
+                  <input
+                    value={machineAdminPin}
+                    onChange={(event) => setMachineAdminPin(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void unlockMachineAdminPanel();
+                    }}
+                    type="password"
+                    inputMode="numeric"
+                    autoFocus
+                    style={fieldStyle}
+                    placeholder="Kód"
+                  />
+                  <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16, flexWrap: "wrap" }}>
+                    <button type="button" onClick={closeMachineAdminPanel} style={buttonSecondary}>
+                      Mégsem
+                    </button>
+                    <button type="button" onClick={() => void unlockMachineAdminPanel()} style={buttonPrimary}>
+                      Feloldás
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>Munkaállomás</label>
+                  <select
+                    value={machineOptions.some((option) => option.toLowerCase() === machineDraftId.toLowerCase()) ? machineDraftId : ""}
+                    onChange={(event) => setMachineDraftId(event.target.value)}
+                    style={fieldStyle}
+                    disabled={machineOptions.length === 0}
+                  >
+                    <option value="">-- válassz gépet a machine_id táblából --</option>
+                    {machineOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 10 }}>
+                    A választómező a Supabase <b>machine_id</b> tábla <b>name</b> oszlopából töltődik. A mentés csak ezen a számítógépen módosítja a kiválasztott munkaállomást.
+                  </div>
+                  <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16, flexWrap: "wrap" }}>
+                    <button type="button" onClick={closeMachineAdminPanel} style={buttonSecondary}>
+                      Mégsem
+                    </button>
+                    <button type="button" onClick={saveMachineAdminPanel} style={buttonPrimary} disabled={machineOptions.length === 0}>
+                      Mentés
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
         {message && (
           <div
             style={{
@@ -5459,17 +6929,36 @@ body {
                       : "7. lépés: Statisztika"}
               </div>
             </div>
-            <div
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                fontSize: 12,
-                background: connectionOk === true ? "#052e16" : connectionOk === false ? "#450a0a" : "#1e293b",
-                color: connectionOk === true ? "#86efac" : connectionOk === false ? "#fca5a5" : "#cbd5e1",
-                border: connectionOk === true ? "1px solid #16a34a" : connectionOk === false ? "1px solid #dc2626" : "1px solid #334155",
-              }}
-            >
-              {connectionOk === true ? "Kapcsolat OK" : connectionOk === false ? "Kapcsolati hiba" : "Kapcsolat teszteletlen"}
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <div
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  fontSize: 12,
+                  background: connectionOk === true ? "#052e16" : connectionOk === false ? "#450a0a" : "#1e293b",
+                  color: connectionOk === true ? "#86efac" : connectionOk === false ? "#fca5a5" : "#cbd5e1",
+                  border: connectionOk === true ? "1px solid #16a34a" : connectionOk === false ? "1px solid #dc2626" : "1px solid #334155",
+                }}
+              >
+                {connectionOk === true ? "Kapcsolat OK" : connectionOk === false ? "Kapcsolati hiba" : "Kapcsolat teszteletlen"}
+              </div>
+              <button
+                type="button"
+                onClick={openMachineAdminPanel}
+                title="Munkaállomás beállítása"
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  fontSize: 12,
+                  background: "#0f172a",
+                  color: "#e2e8f0",
+                  border: "1px solid #475569",
+                  cursor: "pointer",
+                  fontWeight: 700,
+                }}
+              >
+                Gép: {machineId}
+              </button>
             </div>
           </div>
 
@@ -5509,6 +6998,17 @@ body {
                     workerNameLatestValueRef.current = nextName;
                     setWorkerName(nextName);
                     setWorkerEventKoteg(found ? normalizeEsemenyKotegValue(getWorkerEsemenyKotegValue(found)) : 1);
+                  }}
+                  onKeyDown={(e) => {
+                    if (!isScannerSubmitKey(e)) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const found = filteredWorkers.find((worker) => String(worker.id) === String(e.currentTarget.value));
+                    if (!found) return;
+                    const submittedName = found["Teljes nev"].trim();
+                    workerNameLatestValueRef.current = submittedName;
+                    setWorkerName(submittedName);
+                    void handleNameSubmit(submittedName);
                   }}
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => e.stopPropagation()}
@@ -6173,6 +7673,39 @@ body {
                         </div>
                       </div>
 
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 16 }}>
+                        <div>
+                          <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>Darab</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            inputMode="numeric"
+                            value={endDarab}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              if (value === "" || /^\d+$/.test(value)) setEndDarab(value);
+                            }}
+                            placeholder="Egész szám, opcionális"
+                            style={fieldStyle}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>Szál</label>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={endSzal}
+                            onChange={(e) => {
+                              const value = e.target.value.replace(/,/g, ".");
+                              if (value === "" || /^\d+(?:\.\d*)?$/.test(value)) setEndSzal(value);
+                            }}
+                            placeholder="Tizedes szám is lehet, opcionális"
+                            style={fieldStyle}
+                          />
+                        </div>
+                      </div>
+
                       <div style={{ marginBottom: 16 }}>
                         <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>Kötegszintű megjegyzés</label>
                         <textarea
@@ -6416,6 +7949,45 @@ body {
                     />
                     <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 8 }}>
                       A fizikai szkenner Enterrel zárja a beolvasást; END beolvasásakor a lejelentés azonnal mentésre kerül.
+                    </div>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 18 }}>
+                    <div>
+                      <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>Darab</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        inputMode="numeric"
+                        value={endDarab}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          if (value === "" || /^\d+$/.test(value)) setEndDarab(value);
+                        }}
+                        onBlur={() => {
+                          if (step === 6 && pendingAction === "END") focusScannerInputAfterEditableBlur(actionBarcodeInputRef);
+                        }}
+                        placeholder="Egész szám, opcionális"
+                        style={fieldStyle}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>Szál</label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={endSzal}
+                        onChange={(e) => {
+                          const value = e.target.value.replace(/,/g, ".");
+                          if (value === "" || /^\d+(?:\.\d*)?$/.test(value)) setEndSzal(value);
+                        }}
+                        onBlur={() => {
+                          if (step === 6 && pendingAction === "END") focusScannerInputAfterEditableBlur(actionBarcodeInputRef);
+                        }}
+                        placeholder="Tizedes szám is lehet, opcionális"
+                        style={fieldStyle}
+                      />
                     </div>
                   </div>
 
