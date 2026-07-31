@@ -85,6 +85,10 @@ type MachineIdRow = {
   machine_name?: string | null;
   machine_id?: string | null;
   megnevezes?: string | null;
+  "megjelenési_sorrend"?: number | string | null;
+  megjelenesi_sorrend?: number | string | null;
+  display_order?: number | string | null;
+  sorrend?: number | string | null;
   [key: string]: unknown;
 };
 
@@ -422,8 +426,8 @@ async function fetchMachineIdRowsDirectly(): Promise<MachineIdRow[]> {
   if (typeof fetch === "undefined") return [];
 
   const endpoints = [
-    `${SUPABASE_URL}/rest/v1/machine_id?select=id,name&order=id.asc`,
     `${SUPABASE_URL}/rest/v1/machine_id?select=*&order=id.asc`,
+    `${SUPABASE_URL}/rest/v1/machine_id?select=id,name&order=id.asc`,
   ];
 
   for (const endpoint of endpoints) {
@@ -1469,6 +1473,7 @@ export default function Page() {
 
   const [machineId, setMachineId] = useState<MachineIdOption>(DEFAULT_MACHINE_ID);
   const [machineOptions, setMachineOptions] = useState<string[]>([]);
+  const [machineIdRows, setMachineIdRows] = useState<MachineIdRow[]>([]);
   const [machineAdminOpen, setMachineAdminOpen] = useState(false);
   const [machineAdminUnlocked, setMachineAdminUnlocked] = useState(false);
   const [machineAdminPin, setMachineAdminPin] = useState("");
@@ -2313,8 +2318,11 @@ export default function Page() {
     const completed = productionMonitorData.rows.filter((row) => row.overallStatus === "done").length;
     const inProgress = productionMonitorData.rows.filter((row) => row.overallStatus === "in-progress").length;
     const waiting = productionMonitorData.rows.filter((row) => row.overallStatus === "waiting").length;
-    const showQuantity = productionMonitorData.rows.some((row) => row.plannedQuantity !== null);
-    const showProductName = productionMonitorData.rows.some((row) => row.productName.trim());
+    const stationCount = Math.max(productionMonitorData.stations.length, 1);
+    const orderNumberColumnPercent = stationCount >= 9 ? 15 : stationCount >= 7 ? 17 : 20;
+    const stationColumnPercent = (100 - orderNumberColumnPercent) / stationCount;
+    const monitorHeaderFontSize = stationCount >= 10 ? 11 : stationCount >= 8 ? 12 : 13;
+    const monitorCellFontSize = stationCount >= 10 ? 11 : stationCount >= 8 ? 12 : 13;
 
     const getCellStyle = (status: ProductionMonitorStatus): React.CSSProperties => {
       if (status === "done") return { background: "#00ef2d", color: "#052e16", borderColor: "#22c55e" };
@@ -2357,26 +2365,32 @@ export default function Page() {
           ) : productionMonitorData.rows.length === 0 ? (
             <div style={{ padding: 36, color: "#64748b", textAlign: "center", fontSize: 18 }}>Az aktív termelési terv nem tartalmaz rendeléseket.</div>
           ) : (
-            <div style={{ overflow: "auto", maxHeight: standalone ? "calc(100vh - 285px)" : 650 }}>
-              <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: Math.max(700, 235 + productionMonitorData.stations.length * 130) }}>
+            <div style={{ overflowX: "hidden", overflowY: "auto", maxHeight: standalone ? "calc(100vh - 285px)" : 650 }}>
+              <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "separate", borderSpacing: 0 }}>
+                <colgroup>
+                  <col style={{ width: `${orderNumberColumnPercent}%` }} />
+                  {productionMonitorData.stations.map((station) => (
+                    <col key={`col-${station}`} style={{ width: `${stationColumnPercent}%` }} />
+                  ))}
+                </colgroup>
                 <thead style={{ position: "sticky", top: 0, zIndex: 5 }}>
                   <tr>
-                    <th style={{ position: "sticky", left: 0, zIndex: 7, padding: "10px 8px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "left", minWidth: 130 }}>Sorszám</th>
-                    {showQuantity && <th style={{ padding: "10px 8px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "center", minWidth: 85 }}>Napi terv</th>}
-                    {showProductName && <th style={{ padding: "10px 8px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "left", minWidth: 165 }}>Megnevezés</th>}
-                    {productionMonitorData.stations.map((station) => <th key={station} style={{ padding: "10px 8px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "center", minWidth: 130, whiteSpace: "normal" }}>{station}</th>)}
+                    <th style={{ position: "sticky", left: 0, zIndex: 7, padding: "9px 8px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "left", fontSize: monitorHeaderFontSize }}>Sorszám</th>
+                    {productionMonitorData.stations.map((station) => (
+                      <th key={station} style={{ padding: "9px 5px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "center", fontSize: monitorHeaderFontSize, lineHeight: 1.15, whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "normal" }}>
+                        {station}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
                   {productionMonitorData.rows.map((row) => (
                     <tr key={String(row.itemId || row.orderNumber)}>
-                      <td style={{ position: "sticky", left: 0, zIndex: 2, padding: "10px 9px", background: "#ffffff", color: "#1f2937", borderBottom: "1px solid #cbd5e1", fontWeight: 900, whiteSpace: "nowrap" }}>{row.orderNumber}</td>
-                      {showQuantity && <td style={{ padding: "10px 9px", color: "#1f2937", borderBottom: "1px solid #cbd5e1", textAlign: "center", fontWeight: 800 }}>{row.plannedQuantity ?? "-"}</td>}
-                      {showProductName && <td style={{ padding: "10px 9px", color: "#475569", borderBottom: "1px solid #cbd5e1" }}>{row.productName || "-"}</td>}
+                      <td style={{ position: "sticky", left: 0, zIndex: 2, padding: "9px 8px", background: "#ffffff", color: "#1f2937", borderBottom: "1px solid #cbd5e1", fontWeight: 900, fontSize: monitorCellFontSize, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={row.orderNumber}>{row.orderNumber}</td>
                       {productionMonitorData.stations.map((station) => {
                         const cell = row.stations[station] || getMonitorCellFromLogs([]);
                         return (
-                          <td key={`${row.orderNumber}-${station}`} title={[cell.workerName, cell.startedAt ? `START: ${formatDateTime(cell.startedAt)}` : "", cell.endedAt ? `END: ${formatDateTime(cell.endedAt)}` : ""].filter(Boolean).join(" | ")} style={{ ...getCellStyle(cell.status), padding: "8px 7px", borderBottom: "1px solid #cbd5e1", borderRight: "1px solid #d1d5db", textAlign: "center", fontWeight: 900, whiteSpace: "nowrap" }}>
+                          <td key={`${row.orderNumber}-${station}`} title={[cell.workerName, cell.startedAt ? `START: ${formatDateTime(cell.startedAt)}` : "", cell.endedAt ? `END: ${formatDateTime(cell.endedAt)}` : ""].filter(Boolean).join(" | ")} style={{ ...getCellStyle(cell.status), padding: "8px 4px", borderBottom: "1px solid #cbd5e1", borderRight: "1px solid #d1d5db", textAlign: "center", fontWeight: 900, fontSize: monitorCellFontSize, lineHeight: 1.15, whiteSpace: "normal", overflowWrap: "anywhere" }}>
                             {cell.label}
                           </td>
                         );
@@ -3129,7 +3143,7 @@ export default function Page() {
 
       const primaryResponse = await supabase
         .from("machine_id")
-        .select("id, name")
+        .select("*")
         .order("id", { ascending: true });
 
       if (primaryResponse.error) {
@@ -3156,9 +3170,11 @@ export default function Page() {
 
       if (options.length === 0) {
         const directRows = await fetchMachineIdRowsDirectly();
+        rows = directRows;
         options = buildMachineOptions(directRows);
       }
 
+      setMachineIdRows(rows);
       setMachineOptions(options);
 
       const storedMachineId = readMachineIdFromStorage();
@@ -3178,6 +3194,7 @@ export default function Page() {
       setMachineDraftId(normalizedStoredMachineId === DEFAULT_MACHINE_ID ? options[0] : normalizedStoredMachineId);
     } catch (error) {
       console.error("SUPABASE HIBA refreshMachineOptions:", error);
+      setMachineIdRows([]);
       setMachineOptions([]);
       const storedMachineId = readMachineIdFromStorage();
       setMachineId(storedMachineId || DEFAULT_MACHINE_ID);
@@ -3723,14 +3740,50 @@ export default function Page() {
     }
     if (planResponse.error) throw planResponse.error;
 
+    const orderedMonitorStations = machineIdRows
+      .map((row, originalIndex) => {
+        const rawName = row.name ?? row.Name ?? row.machine_name ?? row.machine_id ?? row.megnevezes ?? null;
+        const name = String(rawName || "").trim();
+        const rawDisplayOrder =
+          row["megjelenési_sorrend"] ??
+          row.megjelenesi_sorrend ??
+          row.display_order ??
+          row.sorrend ??
+          row.id ??
+          originalIndex;
+        const numericDisplayOrder = Number(rawDisplayOrder);
+        return {
+          name,
+          displayOrder: Number.isFinite(numericDisplayOrder) ? numericDisplayOrder : Number.MAX_SAFE_INTEGER,
+          originalIndex,
+        };
+      })
+      .filter((item) => {
+        const normalized = normalizeLooseText(item.name);
+        return Boolean(item.name) &&
+          normalized !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
+          !normalized.includes("iroda");
+      })
+      .sort((left, right) =>
+        left.displayOrder - right.displayOrder || left.originalIndex - right.originalIndex
+      )
+      .filter((item, index, items) =>
+        items.findIndex((candidate) => normalizeLooseText(candidate.name) === normalizeLooseText(item.name)) === index
+      )
+      .map((item) => item.name);
+
+    const monitorStations = orderedMonitorStations.length > 0
+      ? orderedMonitorStations
+      : machineOptions.filter((item) =>
+          normalizeLooseText(item) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
+          !normalizeLooseText(item).includes("iroda")
+        );
+
     const plan = (planResponse.data as ProductionPlanRow | null) || null;
     if (!plan) {
       return {
         plan: null,
-        stations: machineOptions.filter((item) =>
-          normalizeLooseText(item) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
-          !normalizeLooseText(item).includes("iroda")
-        ),
+        stations: monitorStations,
         rows: [],
         logs: [],
         lastUpdatedAt: new Date().toISOString(),
@@ -3772,30 +3825,7 @@ export default function Page() {
       }))));
     }
 
-    const stationMap = new Map<string, string>();
-    machineOptions.forEach((station) => {
-      const clean = String(station || "").trim();
-      const normalized = normalizeLooseText(clean);
-      if (
-        clean &&
-        normalized !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
-        !normalized.includes("iroda")
-      ) {
-        stationMap.set(normalized, clean);
-      }
-    });
-    logs.forEach((log) => {
-      const station = resolveLogStation(log, workers);
-      const normalized = normalizeLooseText(station);
-      if (
-        station &&
-        normalized !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
-        !normalized.includes("iroda")
-      ) {
-        stationMap.set(normalized, station);
-      }
-    });
-    const stations = Array.from(stationMap.values());
+    const stations = monitorStations;
 
     const rows: ProductionMonitorRow[] = items.map((item) => {
       const orderNumber = String(item.order_number).trim();
