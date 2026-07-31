@@ -208,6 +208,15 @@ type DashboardWorkerPerformanceRow = {
   totalMinutes: number;
   totalDurationLabel: string;
   closedSegments: number;
+  activeDayCount: number;
+  efficiencyPct: number | null;
+};
+
+type DashboardStationEfficiencyRow = {
+  stationName: string;
+  plannedItems: number;
+  completedItems: number;
+  efficiencyPct: number | null;
 };
 
 type DashboardScrapRow = {
@@ -237,13 +246,14 @@ type DashboardData = {
   scrapRows: DashboardScrapRow[];
   productTypeRows: DashboardProductTypeRow[];
   exportRows: DashboardExportRow[];
+  stationEfficiencyRows: DashboardStationEfficiencyRow[];
   totalMinutes: number;
   totalScrap: number;
   dailyEfficiencyPct: number;
   lastUpdatedAt: string;
 };
 
-type DashboardFilterMode = "daily" | "weekly" | "custom";
+type DashboardFilterMode = "daily" | "weekly" | "monthly" | "custom";
 type ManagementSection = "dashboard" | "production-plan" | "production-monitor";
 type ProductionMonitorStatus = "waiting" | "in-progress" | "done" | "not-required";
 
@@ -1731,12 +1741,22 @@ function buildOrderStatistics(logs: WorkLogRow[], workers: Worker[]): OrderStats
 }
 function getDashboardDateRange(filterMode: DashboardFilterMode, dateKey: string, dateToKey?: string): { startIso: string; endIso: string; label: string } {
   const baseDate = dateKey ? new Date(`${dateKey}T00:00:00`) : new Date();
-  const start = filterMode === "weekly" ? getStartOfWeek(baseDate) : new Date(baseDate);
+  let start: Date;
+
+  if (filterMode === "weekly") {
+    start = getStartOfWeek(baseDate);
+  } else if (filterMode === "monthly") {
+    start = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+  } else {
+    start = new Date(baseDate);
+  }
   start.setHours(0, 0, 0, 0);
 
   const end = new Date(start);
   if (filterMode === "weekly") {
     end.setDate(end.getDate() + 7);
+  } else if (filterMode === "monthly") {
+    end.setMonth(end.getMonth() + 1, 1);
   } else if (filterMode === "custom") {
     const customEnd = dateToKey ? new Date(`${dateToKey}T00:00:00`) : new Date(baseDate);
     customEnd.setHours(0, 0, 0, 0);
@@ -1750,10 +1770,55 @@ function getDashboardDateRange(filterMode: DashboardFilterMode, dateKey: string,
     end.setDate(end.getDate() + 1);
   }
 
-  const label = filterMode === "weekly" || filterMode === "custom"
-    ? `${formatDateOnly(start.toISOString())} - ${formatDateOnly(new Date(end.getTime() - 1).toISOString())}`
-    : formatDateOnly(start.toISOString());
+  const lastIncludedDay = new Date(end.getTime() - 1);
+  const label = filterMode === "daily"
+    ? formatDateOnly(start.toISOString())
+    : filterMode === "monthly"
+      ? `${start.getFullYear()}. ${String(start.getMonth() + 1).padStart(2, "0")} hónap`
+      : `${formatDateOnly(start.toISOString())} - ${formatDateOnly(lastIncludedDay.toISOString())}`;
   return { startIso: start.toISOString(), endIso: end.toISOString(), label };
+}
+
+type DashboardTimeInterval = { startMs: number; endMs: number };
+
+function splitDashboardIntervalByLocalDay(startMs: number, endMs: number): Array<{ dayKey: string; interval: DashboardTimeInterval }> {
+  const result: Array<{ dayKey: string; interval: DashboardTimeInterval }> = [];
+  let cursor = startMs;
+  while (cursor < endMs) {
+    const current = new Date(cursor);
+    const nextMidnight = new Date(current.getFullYear(), current.getMonth(), current.getDate() + 1).getTime();
+    const partEnd = Math.min(endMs, nextMidnight);
+    result.push({
+      dayKey: getLocalDateKey(current),
+      interval: { startMs: cursor, endMs: partEnd },
+    });
+    cursor = partEnd;
+  }
+  return result;
+}
+
+function mergeDashboardIntervals(intervals: DashboardTimeInterval[]): number {
+  if (intervals.length === 0) return 0;
+  const ordered = intervals
+    .filter((interval) => Number.isFinite(interval.startMs) && Number.isFinite(interval.endMs) && interval.endMs > interval.startMs)
+    .sort((left, right) => left.startMs - right.startMs);
+  if (ordered.length === 0) return 0;
+
+  let mergedStart = ordered[0].startMs;
+  let mergedEnd = ordered[0].endMs;
+  let totalMs = 0;
+  for (let index = 1; index < ordered.length; index += 1) {
+    const interval = ordered[index];
+    if (interval.startMs <= mergedEnd) {
+      mergedEnd = Math.max(mergedEnd, interval.endMs);
+    } else {
+      totalMs += mergedEnd - mergedStart;
+      mergedStart = interval.startMs;
+      mergedEnd = interval.endMs;
+    }
+  }
+  totalMs += mergedEnd - mergedStart;
+  return Math.round(totalMs / 60000);
 }
 
 function inferDashboardProductType(orderNumber: string, logs: WorkLogRow[]): string {
@@ -1769,13 +1834,20 @@ function inferDashboardProductType(orderNumber: string, logs: WorkLogRow[]): str
   return prefixMatch?.[0] || "Nem kategorizált";
 }
 
-function buildDashboardData(logs: WorkLogRow[], workers: Worker[]): DashboardData {
+function buildDashboardData(
+  logs: WorkLogRow[],
+  workers: Worker[],
+  range: { startIso: string; endIso: string }
+): DashboardData {
   const orderRows = buildOrderStatistics(logs, workers);
   const workerMap = new Map<number, Worker>();
   workers.forEach((worker) => workerMap.set(worker.id, worker));
 
+  const rangeStartMs = new Date(range.startIso).getTime();
+  const rangeEndMs = new Date(range.endIso).getTime();
   const openRows: DashboardOpenWorkRow[] = [];
-  const workerTotals = new Map<string, { totalMinutes: number; closedSegments: number }>();
+  const workerIntervalsByDay = new Map<string, Map<string, DashboardTimeInterval[]>>();
+  const workerClosedRows = new Map<string, number>();
   const scrapTotals = new Map<string, number>();
   const productTypeTotals = new Map<string, { totalMinutes: number; closedOrders: number }>();
 
@@ -1786,41 +1858,97 @@ function buildDashboardData(logs: WorkLogRow[], workers: Worker[]): DashboardDat
     if (Number.isFinite(scrap) && scrap > 0) {
       scrapTotals.set(orderNumber, (scrapTotals.get(orderNumber) || 0) + scrap);
     }
+
+    const explicitStart = log.start_time || log.start_timestamp || null;
+    const explicitEnd = log.end_time || log.end_timestamp || (String(log.action || "").toUpperCase() === "END" ? log.created_at : null);
+    const worker = workerMap.get(Number(log.worker_id));
+    const workerName = String(log.worker_name || worker?.["Teljes nev"] || `Dolgozó #${log.worker_id}`).trim();
+    if (explicitEnd) {
+      const endMs = new Date(explicitEnd).getTime();
+      if (Number.isFinite(endMs) && endMs >= rangeStartMs && endMs < rangeEndMs) {
+        workerClosedRows.set(workerName, (workerClosedRows.get(workerName) || 0) + 1);
+      }
+    }
+    if (explicitStart && explicitEnd) {
+      const rawStartMs = new Date(explicitStart).getTime();
+      const rawEndMs = new Date(explicitEnd).getTime();
+      const clippedStartMs = Math.max(rawStartMs, rangeStartMs);
+      const clippedEndMs = Math.min(rawEndMs, rangeEndMs);
+      if (Number.isFinite(clippedStartMs) && Number.isFinite(clippedEndMs) && clippedEndMs > clippedStartMs) {
+        if (!workerIntervalsByDay.has(workerName)) workerIntervalsByDay.set(workerName, new Map());
+        const dayMap = workerIntervalsByDay.get(workerName)!;
+        splitDashboardIntervalByLocalDay(clippedStartMs, clippedEndMs).forEach(({ dayKey, interval }) => {
+          if (!dayMap.has(dayKey)) dayMap.set(dayKey, []);
+          dayMap.get(dayKey)!.push(interval);
+        });
+      }
+    }
   }
 
   for (const row of orderRows) {
     for (const segment of row.segments) {
       if (segment.status === "folyamatban") {
-        const relatedLogs = logs
-          .filter((log) => (log.order_number || "").trim() === row.orderNumber)
-          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-        const lastNote = relatedLogs.find((log) => (log.note || "").trim())?.note || "";
-        openRows.push({
-          orderNumber: row.orderNumber,
-          workerName: segment.workerName,
-          role: segment.role,
-          station: segment.station,
-          startedAt: segment.startAt,
-          lastNote,
-        });
+        const segmentStartMs = new Date(segment.startAt).getTime();
+        if (Number.isFinite(segmentStartMs) && segmentStartMs < rangeEndMs) {
+          const relatedLogs = logs
+            .filter((log) => (log.order_number || "").trim() === row.orderNumber)
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+          const lastNote = relatedLogs.find((log) => (log.note || "").trim())?.note || "";
+          openRows.push({
+            orderNumber: row.orderNumber,
+            workerName: segment.workerName,
+            role: segment.role,
+            station: segment.station,
+            startedAt: segment.startAt,
+            lastNote,
+          });
+        }
       }
-      if (segment.status === "lezárt") {
-        const current = workerTotals.get(segment.workerName) || { totalMinutes: 0, closedSegments: 0 };
-        current.totalMinutes += segment.durationMinutes;
-        current.closedSegments += 1;
-        workerTotals.set(segment.workerName, current);
-      }
+
+      if (segment.status !== "lezárt" || !segment.endAt) continue;
+      const rawStartMs = new Date(segment.startAt).getTime();
+      const rawEndMs = new Date(segment.endAt).getTime();
+      if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs)) continue;
+      const clippedStartMs = Math.max(rawStartMs, rangeStartMs);
+      const clippedEndMs = Math.min(rawEndMs, rangeEndMs);
+      if (clippedEndMs <= clippedStartMs) continue;
+
+      const workerName = segment.workerName || "Ismeretlen dolgozó";
+      if (!workerIntervalsByDay.has(workerName)) workerIntervalsByDay.set(workerName, new Map());
+      const dayMap = workerIntervalsByDay.get(workerName)!;
+      splitDashboardIntervalByLocalDay(clippedStartMs, clippedEndMs).forEach(({ dayKey, interval }) => {
+        if (!dayMap.has(dayKey)) dayMap.set(dayKey, []);
+        dayMap.get(dayKey)!.push(interval);
+      });
     }
   }
 
-  const workerRows = Array.from(workerTotals.entries())
-    .map(([workerName, value]) => ({
-      workerName,
-      totalMinutes: value.totalMinutes,
-      totalDurationLabel: formatDuration(value.totalMinutes),
-      closedSegments: value.closedSegments,
-    }))
-    .sort((a, b) => b.totalMinutes - a.totalMinutes);
+  const workerNames = new Set<string>([
+    ...Array.from(workerIntervalsByDay.keys()),
+    ...Array.from(workerClosedRows.keys()),
+  ]);
+  const workerRows: DashboardWorkerPerformanceRow[] = Array.from(workerNames)
+    .map((workerName) => {
+      const dayMap = workerIntervalsByDay.get(workerName) || new Map<string, DashboardTimeInterval[]>();
+      const dailyMinutes = Array.from(dayMap.values())
+        .map((intervals) => mergeDashboardIntervals(intervals))
+        .filter((minutes) => minutes > 0);
+      const totalMinutes = dailyMinutes.reduce((sum, minutes) => sum + minutes, 0);
+      const activeDayCount = dailyMinutes.length;
+      const efficiencyPct = activeDayCount > 0
+        ? Math.round((totalMinutes / (420 * activeDayCount)) * 100)
+        : null;
+      return {
+        workerName,
+        totalMinutes,
+        totalDurationLabel: formatDuration(totalMinutes),
+        closedSegments: workerClosedRows.get(workerName) || 0,
+        activeDayCount,
+        efficiencyPct,
+      };
+    })
+    .filter((row) => row.totalMinutes > 0 || row.closedSegments > 0)
+    .sort((a, b) => b.totalMinutes - a.totalMinutes || b.closedSegments - a.closedSegments);
 
   const scrapRows = Array.from(scrapTotals.entries())
     .map(([orderNumber, scrapQty]) => ({ orderNumber, scrapQty }))
@@ -1855,10 +1983,10 @@ function buildDashboardData(logs: WorkLogRow[], workers: Worker[]): DashboardDat
     workerName: row.lastWorkerName,
   }));
 
-  const completedOrders = orderRows.filter((row) => !row.hasOpenSegments).length;
-  const activeProcesses = openRows.length;
-  const dailyEfficiencyPct = completedOrders + activeProcesses > 0
-    ? Math.round((completedOrders / (completedOrders + activeProcesses)) * 100)
+  const totalMinutes = workerRows.reduce((sum, row) => sum + row.totalMinutes, 0);
+  const totalActiveWorkerDays = workerRows.reduce((sum, row) => sum + row.activeDayCount, 0);
+  const dailyEfficiencyPct = totalActiveWorkerDays > 0
+    ? Math.round((totalMinutes / (420 * totalActiveWorkerDays)) * 100)
     : 0;
 
   return {
@@ -1869,7 +1997,8 @@ function buildDashboardData(logs: WorkLogRow[], workers: Worker[]): DashboardDat
     scrapRows,
     productTypeRows,
     exportRows,
-    totalMinutes: orderRows.reduce((sum, row) => sum + row.totalMinutes, 0),
+    stationEfficiencyRows: [],
+    totalMinutes,
     totalScrap: scrapRows.reduce((sum, row) => sum + row.scrapQty, 0),
     dailyEfficiencyPct,
     lastUpdatedAt: new Date().toISOString(),
@@ -2031,6 +2160,7 @@ export default function Page() {
   const [dashboardFilterMode, setDashboardFilterMode] = useState<DashboardFilterMode>("daily");
   const [dashboardDate, setDashboardDate] = useState(getLocalDateKey(new Date()));
   const [dashboardDateTo, setDashboardDateTo] = useState(getLocalDateKey(new Date()));
+  const [dashboardSelectedStation, setDashboardSelectedStation] = useState("all");
   const [dashboardData, setDashboardData] = useState<DashboardData>({
     logs: [],
     orderRows: [],
@@ -2039,6 +2169,7 @@ export default function Page() {
     scrapRows: [],
     productTypeRows: [],
     exportRows: [],
+    stationEfficiencyRows: [],
     totalMinutes: 0,
     totalScrap: 0,
     dailyEfficiencyPct: 0,
@@ -4210,63 +4341,142 @@ export default function Page() {
     if (managementSection === "production-plan") return ProductionPlanAdmin();
     if (managementSection === "production-monitor") return ProductionPlanMonitor({});
 
-    const completedOrders = dashboardData.orderRows.filter((row) => !row.hasOpenSegments).length;
-    const activeProcesses = dashboardData.openRows.length;
     const dashboardRange = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
-    const efficiency = dashboardData.dailyEfficiencyPct;
+    const availableStationRows = dashboardData.stationEfficiencyRows;
+    const selectedStationValue = dashboardSelectedStation === "all" || availableStationRows.some(
+      (row) => normalizeLooseText(row.stationName) === normalizeLooseText(dashboardSelectedStation)
+    )
+      ? dashboardSelectedStation
+      : "all";
+    const visibleStationRows = selectedStationValue === "all"
+      ? availableStationRows
+      : availableStationRows.filter(
+          (row) => normalizeLooseText(row.stationName) === normalizeLooseText(selectedStationValue)
+        );
+    const plannedStationItems = visibleStationRows.reduce((sum, row) => sum + row.plannedItems, 0);
+    const completedStationItems = visibleStationRows.reduce((sum, row) => sum + row.completedItems, 0);
+    const planEfficiencyPct = plannedStationItems > 0
+      ? Math.round((completedStationItems / plannedStationItems) * 100)
+      : null;
+    const selectedStationLabel = selectedStationValue === "all" ? "Összes munkaállomás" : selectedStationValue;
+    const activeWorkerCount = dashboardData.workerRows.filter((row) => row.totalMinutes > 0).length;
 
     const dashboardCards: Array<{ label: string; value: string | number; helper: string }> = [
-      { label: "Befejezett", value: completedOrders, helper: "Lezárt START/END párok" },
-      { label: "Folyamatban", value: activeProcesses, helper: "Nyitott START események" },
-      { label: "Összes Selejt", value: dashboardData.totalScrap, helper: "scrap_qty összesen" },
-      { label: "Napi Hatékonyság", value: `${efficiency}%`, helper: "Befejezett / összes aktív" },
+      {
+        label: "Tervezett állomásfeladatok",
+        value: plannedStationItems,
+        helper: selectedStationLabel,
+      },
+      {
+        label: "Elkészült tervfeladatok",
+        value: completedStationItems,
+        helper: plannedStationItems > 0 ? `${Math.max(0, plannedStationItems - completedStationItems)} tétel van még hátra` : "Nincs feltöltött terv az időszakra",
+      },
+      {
+        label: "Terv szerinti hatékonyság",
+        value: planEfficiencyPct === null ? "–" : `${planEfficiencyPct}%`,
+        helper: "Elkészült / előírt munkaállomási tételek",
+      },
+      {
+        label: "Dolgozói munkaidő",
+        value: formatDuration(dashboardData.totalMinutes),
+        helper: `${activeWorkerCount} dolgozó, átfedések csak egyszer számolva`,
+      },
     ];
 
+    const cardStyle: React.CSSProperties = {
+      background: "linear-gradient(145deg, #0f172a 0%, #111c31 100%)",
+      border: "1px solid #334155",
+      borderRadius: 16,
+      padding: 16,
+      boxShadow: "0 10px 28px rgba(0,0,0,0.16)",
+    };
+    const tableHeaderStyle: React.CSSProperties = {
+      padding: "11px 10px",
+      borderBottom: "1px solid #334155",
+      color: "#94a3b8",
+      fontSize: 12,
+      textTransform: "uppercase",
+      letterSpacing: 0.4,
+      whiteSpace: "nowrap",
+    };
+    const tableCellStyle: React.CSSProperties = {
+      padding: "11px 10px",
+      borderBottom: "1px solid #1e293b",
+      color: "#e2e8f0",
+    };
+
     return (
-      <div className="bg-slate-900 text-slate-100" style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 18, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 18 }}>
+      <div
+        className="bg-slate-900 text-slate-100"
+        style={{
+          background: "#020617",
+          border: "1px solid #334155",
+          borderRadius: 18,
+          padding: 18,
+          boxShadow: "0 18px 45px rgba(0,0,0,0.28)",
+          marginBottom: 18,
+        }}
+      >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
           <div>
             <div style={{ fontSize: 13, color: "#38bdf8", fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Management Dashboard</div>
             <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: "#f8fafc" }}>Vezetői műszerfal</h2>
-            <div style={{ color: "#94a3b8" }}>Élő termelési statisztika a work_log / work_logs START és END eseményei alapján.</div>
+            <div style={{ color: "#94a3b8" }}>Termelési terv, munkaállomási teljesítés és dolgozói munkaidő egyetlen nézetben.</div>
             <div style={{ color: "#64748b", fontSize: 13, marginTop: 6 }}>Aktuális időszak: {dashboardRange.label}</div>
             <div style={{ color: "#64748b", fontSize: 13, marginTop: 4 }}>Utolsó frissítés: {dashboardData.lastUpdatedAt ? formatDateTime(dashboardData.lastUpdatedAt) : "-"}</div>
           </div>
 
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", maxWidth: 980 }}>
             <select
               value={dashboardFilterMode}
-              onChange={(e) => {
-                const nextMode = e.target.value as DashboardFilterMode;
+              onChange={(event) => {
+                const nextMode = event.target.value as DashboardFilterMode;
                 setDashboardFilterMode(nextMode);
                 void loadManagementDashboardView(nextMode, dashboardDate, dashboardDateTo);
               }}
-              style={{ ...fieldStyle, width: 170 }}
+              style={{ ...fieldStyle, width: 185 }}
+              aria-label="Időszak típusa"
             >
-              <option value="daily">Ma</option>
-              <option value="weekly">Eheti</option>
+              <option value="daily">Napi nézet</option>
+              <option value="weekly">Heti nézet</option>
+              <option value="monthly">Havi nézet</option>
               <option value="custom">Egyedi intervallum</option>
             </select>
+            <button type="button" onClick={() => shiftDashboardPeriod(-1)} style={{ ...buttonSecondary, minWidth: 44 }} title="Előző időszak">←</button>
             <input
               type="date"
               value={dashboardDate}
-              onChange={(e) => {
-                setDashboardDate(e.target.value);
-                void loadManagementDashboardView(dashboardFilterMode, e.target.value, dashboardDateTo);
+              onChange={(event) => {
+                setDashboardDate(event.target.value);
+                void loadManagementDashboardView(dashboardFilterMode, event.target.value, dashboardDateTo);
               }}
-              style={{ ...fieldStyle, width: 180 }}
+              style={{ ...fieldStyle, width: 175 }}
             />
             {dashboardFilterMode === "custom" && (
               <input
                 type="date"
                 value={dashboardDateTo}
-                onChange={(e) => {
-                  setDashboardDateTo(e.target.value);
-                  void loadManagementDashboardView("custom", dashboardDate, e.target.value);
+                onChange={(event) => {
+                  setDashboardDateTo(event.target.value);
+                  void loadManagementDashboardView("custom", dashboardDate, event.target.value);
                 }}
-                style={{ ...fieldStyle, width: 180 }}
+                style={{ ...fieldStyle, width: 175 }}
               />
             )}
+            <button type="button" onClick={() => shiftDashboardPeriod(1)} style={{ ...buttonSecondary, minWidth: 44 }} title="Következő időszak">→</button>
+            <button type="button" onClick={resetDashboardToToday} style={buttonSecondary}>Mai nap</button>
+            <select
+              value={selectedStationValue}
+              onChange={(event) => setDashboardSelectedStation(event.target.value)}
+              style={{ ...fieldStyle, width: 240 }}
+              aria-label="Munkaállomás szűrése"
+            >
+              <option value="all">Összes munkaállomás</option>
+              {availableStationRows.map((row) => (
+                <option key={row.stationName} value={row.stationName}>{row.stationName}</option>
+              ))}
+            </select>
             <button type="button" onClick={() => void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo)} disabled={loadingDashboard} style={buttonSecondary}>
               {loadingDashboard ? "Frissítés..." : "Frissítés"}
             </button>
@@ -4280,7 +4490,7 @@ export default function Page() {
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 18 }}>
           {dashboardCards.map((card) => (
-            <div key={card.label} className="bg-slate-800" style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 16, padding: 16 }}>
+            <div key={card.label} style={cardStyle}>
               <div style={{ color: "#94a3b8", fontSize: 13 }}>{card.label}</div>
               <div style={{ color: "#f8fafc", fontSize: 32, fontWeight: 900, marginTop: 6 }}>{card.value}</div>
               <div style={{ color: "#64748b", fontSize: 12, marginTop: 6 }}>{card.helper}</div>
@@ -4288,59 +4498,106 @@ export default function Page() {
           ))}
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 16, marginBottom: 18 }}>
-          <div className="bg-slate-800" style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 16, padding: 16 }}>
-            <h3 style={{ margin: "0 0 12px", color: "#f8fafc" }}>Dolgozói teljesítmény</h3>
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(440px, 1fr))", gap: 16, marginBottom: 18 }}>
+          <div style={cardStyle}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}>
+              <div>
+                <h3 style={{ margin: 0, color: "#f8fafc" }}>Dolgozói teljesítmény</h3>
+                <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>
+                  A munkaidő átfedései dolgozónként csak egyszer számítanak. A hatékonyság alapja 7 óra minden olyan napon, amikor volt munkavégzés.
+                </div>
+              </div>
+              <div style={{ padding: "6px 10px", borderRadius: 999, background: "#082f49", color: "#bae6fd", border: "1px solid #0369a1", fontSize: 12, fontWeight: 800 }}>
+                Összesített hatékonyság: {dashboardData.workerRows.length > 0 ? `${dashboardData.dailyEfficiencyPct}%` : "–"}
+              </div>
+            </div>
+            <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}>
                 <thead>
-                  <tr style={{ color: "#94a3b8", textAlign: "left" }}>
-                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Dolgozó neve</th>
-                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Ledolgozott idő</th>
-                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Lezárt tételek</th>
+                  <tr style={{ textAlign: "left" }}>
+                    <th style={tableHeaderStyle}>Dolgozó neve</th>
+                    <th style={tableHeaderStyle}>Ledolgozott idő</th>
+                    <th style={tableHeaderStyle}>Lezárt tételek</th>
+                    <th style={tableHeaderStyle}>Napi hatékonyság</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {dashboardData.workerRows.map((row) => (
-                    <tr key={row.workerName}>
-                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{row.workerName}</td>
-                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #1e293b" }}>{row.totalDurationLabel}</td>
-                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #1e293b" }}>{row.closedSegments}</td>
-                    </tr>
-                  ))}
+                  {dashboardData.workerRows.map((row) => {
+                    const efficiencyColor = row.efficiencyPct === null
+                      ? "#94a3b8"
+                      : row.efficiencyPct >= 100
+                        ? "#86efac"
+                        : row.efficiencyPct >= 70
+                          ? "#fde68a"
+                          : "#fca5a5";
+                    return (
+                      <tr key={row.workerName}>
+                        <td style={{ ...tableCellStyle, fontWeight: 800 }}>{row.workerName}</td>
+                        <td style={tableCellStyle}>{row.totalDurationLabel}</td>
+                        <td style={tableCellStyle}>{row.closedSegments}</td>
+                        <td style={{ ...tableCellStyle, color: efficiencyColor, fontWeight: 900 }}>
+                          {row.efficiencyPct === null ? "–" : `${row.efficiencyPct}%`}
+                          {row.activeDayCount > 1 && (
+                            <div style={{ color: "#64748b", fontSize: 11, fontWeight: 600, marginTop: 3 }}>{row.activeDayCount} munkával érintett nap</div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                   {dashboardData.workerRows.length === 0 && (
-                    <tr><td colSpan={3} style={{ padding: 12, color: "#94a3b8" }}>Nincs lezárt munkaidő az időszakban.</td></tr>
+                    <tr><td colSpan={4} style={{ padding: 14, color: "#94a3b8" }}>Az időszakban nincs lezárt, mérhető munkaidő.</td></tr>
                   )}
                 </tbody>
               </table>
             </div>
           </div>
 
-          <div className="bg-slate-800" style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 16, padding: 16 }}>
-            <h3 style={{ margin: "0 0 12px", color: "#f8fafc" }}>Folyamatban lévő munkák</h3>
-            <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+          <div style={cardStyle}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}>
+              <div>
+                <h3 style={{ margin: 0, color: "#f8fafc" }}>Terv szerinti hatékonyság munkaállomásonként</h3>
+                <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>
+                  A napi tervben szereplő sorszámok közül azt tekinti késznek, amelyhez az adott munkaállomáson lezárt work_logs sor tartozik.
+                </div>
+              </div>
+              <div style={{ padding: "6px 10px", borderRadius: 999, background: "#052e16", color: "#bbf7d0", border: "1px solid #15803d", fontSize: 12, fontWeight: 800 }}>
+                {selectedStationLabel}: {planEfficiencyPct === null ? "nincs terv" : `${planEfficiencyPct}%`}
+              </div>
+            </div>
+            <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 650 }}>
                 <thead>
-                  <tr style={{ color: "#94a3b8", textAlign: "left" }}>
-                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Rendelésszám</th>
-                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Állomás</th>
-                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Munkatárs</th>
-                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Kezdés</th>
-                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Megjegyzés</th>
+                  <tr style={{ textAlign: "left" }}>
+                    <th style={tableHeaderStyle}>Munkaállomás</th>
+                    <th style={tableHeaderStyle}>Terv</th>
+                    <th style={tableHeaderStyle}>Kész</th>
+                    <th style={tableHeaderStyle}>Hátralévő</th>
+                    <th style={tableHeaderStyle}>Hatékonyság</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {dashboardData.openRows.map((row) => (
-                    <tr key={`${row.orderNumber}-${row.startedAt}-${row.workerName}`}>
-                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{row.orderNumber}</td>
-                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #1e293b" }}>{row.station || row.role || "-"}</td>
-                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #1e293b" }}>{row.workerName}</td>
-                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #1e293b" }}>{formatDateTime(row.startedAt)}</td>
-                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #1e293b", color: "#cbd5e1" }}>{row.lastNote || "-"}</td>
-                    </tr>
-                  ))}
-                  {dashboardData.openRows.length === 0 && (
-                    <tr><td colSpan={5} style={{ padding: 12, color: "#94a3b8" }}>Nincs folyamatban lévő munka az időszakban.</td></tr>
+                  {visibleStationRows.map((row) => {
+                    const pct = row.efficiencyPct;
+                    const barWidth = Math.max(0, Math.min(100, pct || 0));
+                    return (
+                      <tr key={row.stationName}>
+                        <td style={{ ...tableCellStyle, fontWeight: 800 }}>{row.stationName}</td>
+                        <td style={tableCellStyle}>{row.plannedItems}</td>
+                        <td style={{ ...tableCellStyle, color: "#86efac", fontWeight: 800 }}>{row.completedItems}</td>
+                        <td style={tableCellStyle}>{Math.max(0, row.plannedItems - row.completedItems)}</td>
+                        <td style={{ ...tableCellStyle, minWidth: 170 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <div style={{ flex: 1, height: 9, background: "#1e293b", borderRadius: 999, overflow: "hidden" }}>
+                              <div style={{ width: `${barWidth}%`, height: "100%", background: pct !== null && pct >= 100 ? "#22c55e" : "#38bdf8", borderRadius: 999 }} />
+                            </div>
+                            <strong style={{ minWidth: 48, color: pct === null ? "#94a3b8" : pct >= 100 ? "#86efac" : "#bae6fd" }}>{pct === null ? "–" : `${pct}%`}</strong>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {visibleStationRows.length === 0 && (
+                    <tr><td colSpan={5} style={{ padding: 14, color: "#94a3b8" }}>Nem található munkaállomási terv az időszakban.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -4348,39 +4605,70 @@ export default function Page() {
           </div>
         </div>
 
-        <div className="bg-slate-800" style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 16, padding: 16 }}>
-          <h3 style={{ margin: "0 0 12px", color: "#f8fafc" }}>Élő eseménynapló</h3>
-          <div style={{ overflowX: "auto", maxHeight: 440, overflowY: "auto" }}>
+        <div style={{ ...cardStyle, marginBottom: 18 }}>
+          <h3 style={{ margin: "0 0 12px", color: "#f8fafc" }}>Folyamatban lévő munkák</h3>
+          <div style={{ overflowX: "auto", maxHeight: 340, overflowY: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+              <thead>
+                <tr style={{ textAlign: "left" }}>
+                  <th style={tableHeaderStyle}>Rendelésszám</th>
+                  <th style={tableHeaderStyle}>Állomás</th>
+                  <th style={tableHeaderStyle}>Munkatárs</th>
+                  <th style={tableHeaderStyle}>Kezdés</th>
+                  <th style={tableHeaderStyle}>Megjegyzés</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dashboardData.openRows.map((row) => (
+                  <tr key={`${row.orderNumber}-${row.startedAt}-${row.workerName}`}>
+                    <td style={{ ...tableCellStyle, fontWeight: 800 }}>{row.orderNumber}</td>
+                    <td style={tableCellStyle}>{row.station || row.role || "-"}</td>
+                    <td style={tableCellStyle}>{row.workerName}</td>
+                    <td style={tableCellStyle}>{formatDateTime(row.startedAt)}</td>
+                    <td style={{ ...tableCellStyle, color: "#cbd5e1" }}>{row.lastNote || "-"}</td>
+                  </tr>
+                ))}
+                {dashboardData.openRows.length === 0 && (
+                  <tr><td colSpan={5} style={{ padding: 14, color: "#94a3b8" }}>Nincs folyamatban lévő munka az időszakban.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style={cardStyle}>
+          <h3 style={{ margin: "0 0 12px", color: "#f8fafc" }}>Eseménynapló</h3>
+          <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
               <thead>
-                <tr style={{ color: "#94a3b8", textAlign: "left" }}>
-                  <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Időpont</th>
-                  <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Munkatárs</th>
-                  <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Rendelésszám</th>
-                  <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Esemény</th>
-                  <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Megjegyzés</th>
+                <tr style={{ textAlign: "left" }}>
+                  <th style={tableHeaderStyle}>Időpont</th>
+                  <th style={tableHeaderStyle}>Munkatárs</th>
+                  <th style={tableHeaderStyle}>Rendelésszám</th>
+                  <th style={tableHeaderStyle}>Esemény</th>
+                  <th style={tableHeaderStyle}>Megjegyzés</th>
                 </tr>
               </thead>
               <tbody>
                 {dashboardData.logs.slice(0, 250).map((log, index) => {
                   const action = String(log.action || "").toUpperCase();
-                  const isEnd = action === "END";
+                  const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
                   return (
                     <tr key={`${log.created_at}-${log.order_number}-${log.worker_id}-${index}`}>
-                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #1e293b", whiteSpace: "nowrap" }}>{formatDateTime(log.created_at)}</td>
-                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #1e293b" }}>{log.worker_name || workers.find((worker) => worker.id === log.worker_id)?.["Teljes nev"] || "-"}</td>
-                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{log.order_number || "-"}</td>
-                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #1e293b" }}>
+                      <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{formatDateTime(log.created_at)}</td>
+                      <td style={tableCellStyle}>{log.worker_name || workers.find((worker) => worker.id === log.worker_id)?.["Teljes nev"] || "-"}</td>
+                      <td style={{ ...tableCellStyle, fontWeight: 800 }}>{log.order_number || "-"}</td>
+                      <td style={tableCellStyle}>
                         <span style={{ display: "inline-flex", alignItems: "center", borderRadius: 999, padding: "4px 10px", fontSize: 12, fontWeight: 900, background: isEnd ? "#064e3b" : "#1d4ed8", color: isEnd ? "#bbf7d0" : "#dbeafe" }}>
-                          {action || "-"}
+                          {isEnd ? "END" : action || "START"}
                         </span>
                       </td>
-                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #1e293b", color: "#cbd5e1" }}>{log.note || "-"}</td>
+                      <td style={{ ...tableCellStyle, color: "#cbd5e1" }}>{log.note || "-"}</td>
                     </tr>
                   );
                 })}
                 {dashboardData.logs.length === 0 && (
-                  <tr><td colSpan={5} style={{ padding: 12, color: "#94a3b8" }}>Nincs esemény az időszakban.</td></tr>
+                  <tr><td colSpan={5} style={{ padding: 14, color: "#94a3b8" }}>Nincs esemény az időszakban.</td></tr>
                 )}
               </tbody>
             </table>
@@ -5807,23 +6095,243 @@ export default function Page() {
     }
   }
 
+  function getOrderedDashboardStations(): string[] {
+    const ordered = machineIdRows
+      .map((row, originalIndex) => {
+        const rawName = row.name ?? row.Name ?? row.machine_name ?? row.machine_id ?? row.megnevezes ?? null;
+        const name = String(rawName || "").trim();
+        const rawDisplayOrder =
+          row["megjelenési_sorrend"] ??
+          row.megjelenesi_sorrend ??
+          row.display_order ??
+          row.sorrend ??
+          row.id ??
+          originalIndex;
+        const numericDisplayOrder = Number(rawDisplayOrder);
+        return {
+          name,
+          displayOrder: Number.isFinite(numericDisplayOrder) ? numericDisplayOrder : Number.MAX_SAFE_INTEGER,
+          originalIndex,
+        };
+      })
+      .filter((item) => {
+        const normalized = normalizeLooseText(item.name);
+        return Boolean(item.name) &&
+          normalized !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
+          !normalized.includes("iroda");
+      })
+      .sort((left, right) => left.displayOrder - right.displayOrder || left.originalIndex - right.originalIndex)
+      .filter((item, index, items) =>
+        items.findIndex((candidate) => normalizeLooseText(candidate.name) === normalizeLooseText(item.name)) === index
+      )
+      .map((item) => item.name);
+
+    if (ordered.length > 0) return ordered;
+    return machineOptions.filter((station, index, items) => {
+      const normalized = normalizeLooseText(station);
+      return normalized !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
+        !normalized.includes("iroda") &&
+        items.findIndex((candidate) => normalizeLooseText(candidate) === normalized) === index;
+    });
+  }
+
+  async function fetchDashboardPlanEfficiency(
+    range: { startIso: string; endIso: string }
+  ): Promise<DashboardStationEfficiencyRow[]> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    const stations = getOrderedDashboardStations();
+    const planOrdersByStation = new Map<string, Set<string>>();
+    stations.forEach((station) => planOrdersByStation.set(station, new Set<string>()));
+
+    const startDateKey = getLocalDateKey(new Date(range.startIso));
+    const endDateKey = getLocalDateKey(new Date(range.endIso));
+    let stationTablePlanCount = 0;
+
+    for (const station of stations) {
+      const tableName = buildStationPlanTableName(station);
+      const response = await supabase
+        .from(tableName)
+        .select("sorszam, elkeszules_datum")
+        .gte("elkeszules_datum", startDateKey)
+        .lt("elkeszules_datum", endDateKey)
+        .limit(10000);
+
+      if (response.error) {
+        console.warn(`A ${tableName} tábla nem olvasható a vezetői műszerfalhoz:`, response.error);
+        continue;
+      }
+
+      const target = planOrdersByStation.get(station)!;
+      ((response.data || []) as Array<{ sorszam?: string | null }>).forEach((row) => {
+        const orderNumber = String(row.sorszam || "").trim();
+        if (orderNumber) target.add(orderNumber);
+      });
+      stationTablePlanCount += target.size;
+    }
+
+    // Kompatibilitási tartalék: ha a munkaállomásonkénti *_terv táblák még üresek,
+    // a korábbi production_plans / production_plan_items napi terveit használjuk.
+    if (stationTablePlanCount === 0 && stations.length > 0) {
+      const planResponse = await supabase
+        .from("production_plans")
+        .select("id, plan_date")
+        .gte("plan_date", startDateKey)
+        .lt("plan_date", endDateKey)
+        .order("plan_date", { ascending: true })
+        .limit(10000);
+
+      if (!planResponse.error) {
+        const planIds = ((planResponse.data || []) as Array<{ id: string | number }>).map((plan) => plan.id);
+        for (let index = 0; index < planIds.length; index += 100) {
+          const chunk = planIds.slice(index, index + 100);
+          let itemResponse = await supabase
+            .from("production_plan_items")
+            .select("plan_id, order_number, required_stations")
+            .in("plan_id", chunk)
+            .limit(10000);
+
+          if (itemResponse.error && isMissingRequiredStationsColumnError(itemResponse.error)) {
+            itemResponse = await supabase
+              .from("production_plan_items")
+              .select("plan_id, order_number")
+              .in("plan_id", chunk)
+              .limit(10000);
+          }
+          if (itemResponse.error) continue;
+
+          ((itemResponse.data || []) as Array<{ order_number?: string | null; required_stations?: string[] | null }>).forEach((item) => {
+            const orderNumber = String(item.order_number || "").trim();
+            if (!orderNumber) return;
+            const requiredStations = Array.isArray(item.required_stations) && item.required_stations.length > 0
+              ? item.required_stations
+              : stations;
+            requiredStations.forEach((requiredStation) => {
+              const canonicalStation = stations.find(
+                (station) => normalizeLooseText(station) === normalizeLooseText(requiredStation)
+              );
+              if (canonicalStation) planOrdersByStation.get(canonicalStation)?.add(orderNumber);
+            });
+          });
+        }
+      }
+    }
+
+    const allPlannedOrders = Array.from(new Set(
+      Array.from(planOrdersByStation.values()).flatMap((orders) => Array.from(orders))
+    ));
+    const planLogs: WorkLogRow[] = [];
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id";
+
+    for (let index = 0; index < allPlannedOrders.length; index += 100) {
+      const orderChunk = allPlannedOrders.slice(index, index + 100);
+      let logResponse = await supabase
+        .from("work_logs")
+        .select(selectColumns)
+        .in("order_number", orderChunk)
+        .order("created_at", { ascending: true })
+        .limit(10000);
+      if (logResponse.error) {
+        logResponse = await supabase
+          .from("work_log")
+          .select(selectColumns)
+          .in("order_number", orderChunk)
+          .order("created_at", { ascending: true })
+          .limit(10000);
+      }
+      if (logResponse.error) throw logResponse.error;
+      planLogs.push(...(((logResponse.data || []) as WorkLogRow[])));
+    }
+
+    const rangeEndMs = new Date(range.endIso).getTime();
+    const completedOrdersByStation = new Map<string, Set<string>>();
+    stations.forEach((station) => completedOrdersByStation.set(station, new Set<string>()));
+
+    planLogs.forEach((log) => {
+      const orderNumber = String(log.order_number || "").trim();
+      if (!orderNumber) return;
+      const endAt = log.end_time || log.end_timestamp || (String(log.action || "").toUpperCase() === "END" ? log.created_at : null);
+      if (!endAt) return;
+      const endMs = new Date(endAt).getTime();
+      if (!Number.isFinite(endMs) || endMs >= rangeEndMs) return;
+      const resolvedStation = resolveLogStation(log, workers);
+      const canonicalStation = stations.find(
+        (station) => normalizeLooseText(station) === normalizeLooseText(resolvedStation)
+      );
+      if (!canonicalStation) return;
+      if (planOrdersByStation.get(canonicalStation)?.has(orderNumber)) {
+        completedOrdersByStation.get(canonicalStation)?.add(orderNumber);
+      }
+    });
+
+    return stations.map((station) => {
+      const plannedItems = planOrdersByStation.get(station)?.size || 0;
+      const completedItems = completedOrdersByStation.get(station)?.size || 0;
+      return {
+        stationName: station,
+        plannedItems,
+        completedItems,
+        efficiencyPct: plannedItems > 0 ? Math.round((completedItems / plannedItems) * 100) : null,
+      };
+    });
+  }
+
+  function shiftDashboardPeriod(direction: -1 | 1): void {
+    const current = dashboardDate ? new Date(`${dashboardDate}T00:00:00`) : new Date();
+    const next = new Date(current);
+
+    if (dashboardFilterMode === "monthly") {
+      next.setMonth(next.getMonth() + direction, 1);
+    } else if (dashboardFilterMode === "weekly") {
+      next.setDate(next.getDate() + (7 * direction));
+    } else if (dashboardFilterMode === "custom") {
+      const currentTo = dashboardDateTo ? new Date(`${dashboardDateTo}T00:00:00`) : new Date(current);
+      const intervalDays = Math.max(1, Math.round((currentTo.getTime() - current.getTime()) / 86400000) + 1);
+      next.setDate(next.getDate() + (intervalDays * direction));
+      const nextTo = new Date(currentTo);
+      nextTo.setDate(nextTo.getDate() + (intervalDays * direction));
+      const nextDateKey = getLocalDateKey(next);
+      const nextToKey = getLocalDateKey(nextTo);
+      setDashboardDate(nextDateKey);
+      setDashboardDateTo(nextToKey);
+      void loadManagementDashboardView("custom", nextDateKey, nextToKey);
+      return;
+    } else {
+      next.setDate(next.getDate() + direction);
+    }
+
+    const nextDateKey = getLocalDateKey(next);
+    setDashboardDate(nextDateKey);
+    void loadManagementDashboardView(dashboardFilterMode, nextDateKey, dashboardDateTo);
+  }
+
+  function resetDashboardToToday(): void {
+    const today = getLocalDateKey(new Date());
+    setDashboardDate(today);
+    setDashboardDateTo(today);
+    void loadManagementDashboardView(dashboardFilterMode, today, today);
+  }
+
   async function fetchDashboardData(range: { startIso: string; endIso: string }): Promise<DashboardData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
     const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id";
+    const bufferedStart = new Date(range.startIso);
+    bufferedStart.setDate(bufferedStart.getDate() - 1);
+
     let response = await supabase
-      .from("work_log")
+      .from("work_logs")
       .select(selectColumns)
-      .gte("created_at", range.startIso)
+      .gte("created_at", bufferedStart.toISOString())
       .lt("created_at", range.endIso)
       .order("created_at", { ascending: false })
       .limit(10000);
 
     if (response.error) {
       response = await supabase
-        .from("work_logs")
+        .from("work_log")
         .select(selectColumns)
-        .gte("created_at", range.startIso)
+        .gte("created_at", bufferedStart.toISOString())
         .lt("created_at", range.endIso)
         .order("created_at", { ascending: false })
         .limit(10000);
@@ -5831,22 +6339,34 @@ export default function Page() {
 
     if (response.error) throw response.error;
 
-    const visibleLogs: WorkLogRow[] = ((response.data as WorkLogRow[]) || [])
+    const allFetchedLogs: WorkLogRow[] = ((response.data as WorkLogRow[]) || [])
       .filter((row) => !!String(row.order_number || "").trim())
       .map((row) => ({
         ...row,
         action: (String(row.action || "").toUpperCase() === "END" ? "END" : "START") as WorkAction,
         scrap_qty: Number(row.scrap_qty || 0),
+        worker_name: row.worker_name || workers.find((worker) => Number(worker.id) === Number(row.worker_id))?.["Teljes nev"] || null,
       }));
 
-    const calculationLogs = [...visibleLogs].sort(
+    const rangeStartMs = new Date(range.startIso).getTime();
+    const rangeEndMs = new Date(range.endIso).getTime();
+    const visibleLogs = allFetchedLogs.filter((log) => {
+      const eventMs = new Date(log.created_at).getTime();
+      return Number.isFinite(eventMs) && eventMs >= rangeStartMs && eventMs < rangeEndMs;
+    });
+
+    const calculationLogs = [...allFetchedLogs].sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
-    const built = buildDashboardData(calculationLogs, workers);
+    const [built, stationEfficiencyRows] = await Promise.all([
+      Promise.resolve(buildDashboardData(calculationLogs, workers, range)),
+      fetchDashboardPlanEfficiency(range),
+    ]);
 
     return {
       ...built,
       logs: visibleLogs,
+      stationEfficiencyRows,
       totalScrap: visibleLogs.reduce((sum, row) => sum + (Number(row.scrap_qty || 0) || 0), 0),
       lastUpdatedAt: new Date().toISOString(),
     };
@@ -5885,13 +6405,46 @@ export default function Page() {
       setMessage({ type: "error", text: "Az Excel export könyvtár még nem töltődött be." });
       return;
     }
-    const rows: Array<Array<string | number>> = [
-      ["Rendelésszám", "Munkaidő", "Selejt", "Dolgozó"],
-      ...dashboardData.exportRows.map((row) => [row.orderNumber, row.workTime, row.scrapQty, row.workerName]),
-    ];
-    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Dashboard");
+    const workerRows: Array<Array<string | number>> = [
+      ["Dolgozó neve", "Ledolgozott idő", "Ledolgozott perc", "Lezárt work_logs sorok", "Munkával érintett napok", "Hatékonyság %"],
+      ...dashboardData.workerRows.map((row) => [
+        row.workerName,
+        row.totalDurationLabel,
+        row.totalMinutes,
+        row.closedSegments,
+        row.activeDayCount,
+        row.efficiencyPct ?? "",
+      ]),
+    ];
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(workerRows), "Dolgozói teljesítmény");
+
+    const stationRows: Array<Array<string | number>> = [
+      ["Munkaállomás", "Tervezett tételek", "Elkészült tételek", "Hátralévő tételek", "Terv szerinti hatékonyság %"],
+      ...dashboardData.stationEfficiencyRows.map((row) => [
+        row.stationName,
+        row.plannedItems,
+        row.completedItems,
+        Math.max(0, row.plannedItems - row.completedItems),
+        row.efficiencyPct ?? "",
+      ]),
+    ];
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(stationRows), "Munkaállomási terv");
+
+    const eventRows: Array<Array<string | number>> = [
+      ["Időpont", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
+      ...dashboardData.logs.map((log) => [
+        formatDateTime(log.created_at),
+        log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || "-",
+        log.order_number || "-",
+        log.end_time || log.end_timestamp || String(log.action || "").toUpperCase() === "END" ? "END" : "START",
+        resolveLogStation(log, workers),
+        log.note || "",
+      ]),
+    ];
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(eventRows), "Eseménynapló");
+
     const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
     downloadBlob(`vezetoi_dashboard_${dashboardDate}.xlsx`, new Blob([output]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   }
@@ -5908,13 +6461,31 @@ export default function Page() {
       doc.setFontSize(10);
       const range = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
       doc.text(`Időszak: ${range.label}`, 40, 60);
-      let y = 90;
-      doc.text("Rendelésszám | Munkaidő | Selejt | Dolgozó", 40, y);
+
+      let y = 88;
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.text("Dolgozói teljesítmény", 40, y);
       y += 18;
-      dashboardData.exportRows.slice(0, 32).forEach((row) => {
-        doc.text(`${row.orderNumber} | ${row.workTime} | ${row.scrapQty} | ${row.workerName}`, 40, y);
-        y += 16;
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.text("Dolgozó | Ledolgozott idő | Lezárt tételek | Hatékonyság", 40, y);
+      y += 16;
+      dashboardData.workerRows.slice(0, 18).forEach((row) => {
+        doc.text(`${row.workerName} | ${row.totalDurationLabel} | ${row.closedSegments} | ${row.efficiencyPct === null ? "-" : `${row.efficiencyPct}%`}`, 40, y);
+        y += 15;
       });
+
+      y += 14;
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.text("Terv szerinti hatékonyság munkaállomásonként", 40, y);
+      y += 18;
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.text("Munkaállomás | Terv | Kész | Hátralévő | Hatékonyság", 40, y);
+      y += 16;
+      dashboardData.stationEfficiencyRows.slice(0, 18).forEach((row) => {
+        doc.text(`${row.stationName} | ${row.plannedItems} | ${row.completedItems} | ${Math.max(0, row.plannedItems - row.completedItems)} | ${row.efficiencyPct === null ? "-" : `${row.efficiencyPct}%`}`, 40, y);
+        y += 15;
+      });
+
       const blob = doc.output("blob");
       downloadBlob(`vezetoi_dashboard_${dashboardDate}.pdf`, blob, "application/pdf");
     } catch (error) {
@@ -9645,6 +10216,8 @@ body {
           </div>
         )}
 
+        {flowStage === "dashboard" && activeWorker && isManagementDashboardWorker(activeWorker) && ManagementDashboard()}
+
         <div style={panelStyle}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
             <div>
@@ -11035,9 +11608,6 @@ body {
             </div>
           )}
         </div>
-
-        {flowStage === "dashboard" && ManagementDashboard()}
-
 
         {scanModalOpen && (
           <div
