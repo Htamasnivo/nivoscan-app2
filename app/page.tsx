@@ -241,7 +241,7 @@ type DashboardData = {
 
 type DashboardFilterMode = "daily" | "weekly" | "custom";
 type ManagementSection = "dashboard" | "production-plan" | "production-monitor";
-type ProductionMonitorStatus = "waiting" | "in-progress" | "done";
+type ProductionMonitorStatus = "waiting" | "in-progress" | "done" | "not-required";
 
 type ProductionPlanRow = {
   id: number | string;
@@ -259,6 +259,7 @@ type ProductionPlanItemRow = {
   sequence_number: number;
   planned_quantity?: number | null;
   product_name?: string | null;
+  required_stations?: string[] | null;
   created_at?: string | null;
 };
 
@@ -267,6 +268,21 @@ type ProductionPlanUploadRow = {
   sequenceNumber: number;
   plannedQuantity: number | null;
   productName: string;
+  requiredStations: string[];
+};
+
+type StationPlanUploadRow = {
+  sorszam: string;
+  megnevezes: string;
+  mennyiseg: number;
+  elkeszules_datum: string;
+  tipus: string;
+};
+
+type StationPlanFileSelection = {
+  file: File;
+  fileName: string;
+  rows: StationPlanUploadRow[];
 };
 
 type ProductionMonitorCell = {
@@ -283,6 +299,7 @@ type ProductionMonitorRow = {
   sequenceNumber: number;
   plannedQuantity: number | null;
   productName: string;
+  requiredStations: string[];
   overallStatus: ProductionMonitorStatus;
   stations: Record<string, ProductionMonitorCell>;
 };
@@ -845,6 +862,64 @@ function parseSpreadsheetNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseSpreadsheetDate(value: unknown): string | null {
+  if (value === null || value === undefined || value === "") return null;
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const excelEpoch = Date.UTC(1899, 11, 30);
+    const date = new Date(excelEpoch + Math.round(value * 86400000));
+    if (!Number.isNaN(date.getTime())) {
+      return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+    }
+  }
+
+  const textValue = String(value).trim();
+  if (!textValue) return null;
+
+  if (/^\d+(?:[.,]\d+)?$/.test(textValue)) {
+    const serial = Number(textValue.replace(",", "."));
+    if (Number.isFinite(serial) && serial > 20000) {
+      return parseSpreadsheetDate(serial);
+    }
+  }
+
+  let match = textValue.match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/);
+  if (match) {
+    const candidate = `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+    const parsed = new Date(`${candidate}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? null : candidate;
+  }
+
+  match = textValue.match(/^(\d{1,2})[-./](\d{1,2})[-./](\d{4})$/);
+  if (match) {
+    const candidate = `${match[3]}-${match[2].padStart(2, "0")}-${match[1].padStart(2, "0")}`;
+    const parsed = new Date(`${candidate}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? null : candidate;
+  }
+
+  const parsed = new Date(textValue);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}-${String(parsed.getDate()).padStart(2, "0")}`;
+}
+
+function buildStationPlanTableName(stationName: string): string {
+  const normalized = stationName
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return `${normalized || "munkaallomas"}_terv`;
+}
+
 function resolveLogStation(log: WorkLogRow, workerRows: Worker[]): string {
   const machine = String(log.machine_id || "").trim();
   if (machine && normalizeLooseText(machine) !== normalizeLooseText(DEFAULT_MACHINE_ID)) return machine;
@@ -1341,6 +1416,10 @@ export default function Page() {
   const [manualProductionOrderNumber, setManualProductionOrderNumber] = useState("");
   const [manualProductionQuantity, setManualProductionQuantity] = useState("");
   const [manualProductionProductName, setManualProductionProductName] = useState("");
+  const [manualProductionStations, setManualProductionStations] = useState<string[]>([]);
+  const [stationPlanFiles, setStationPlanFiles] = useState<Record<string, StationPlanFileSelection>>({});
+  const [loadingStationPlanFile, setLoadingStationPlanFile] = useState("");
+  const [uploadingStationPlans, setUploadingStationPlans] = useState(false);
   const [productionPlans, setProductionPlans] = useState<ProductionPlanRow[]>([]);
   const [selectedProductionPlanId, setSelectedProductionPlanId] = useState<string>("");
   const [productionPlanItems, setProductionPlanItems] = useState<ProductionPlanItemRow[]>([]);
@@ -1426,6 +1505,7 @@ export default function Page() {
   const activeBatchInputRef = useRef<HTMLInputElement | null>(null);
   const endBatchCommandInputRef = useRef<HTMLInputElement | null>(null);
   const productionPlanFileInputRef = useRef<HTMLInputElement | null>(null);
+  const stationPlanFileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const workerScanStartedAtRef = useRef<number | null>(null);
   const eventBarcodeProcessingRef = useRef(false);
   const orderTypeProcessingRef = useRef(false);
@@ -1672,6 +1752,14 @@ export default function Page() {
       flex: "0 0 auto",
     };
 
+    const availableProductionStations = machineOptions.filter(
+      (option) => normalizeLooseText(option) !== normalizeLooseText(DEFAULT_MACHINE_ID)
+    );
+    const stationPlanUploadStations = availableProductionStations.filter(
+      (option) => !normalizeLooseText(option).includes("iroda")
+    );
+    const selectedStationPlanCount = stationPlanUploadStations.filter((station) => Boolean(stationPlanFiles[station])).length;
+
     return (
       <div style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 20, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
@@ -1691,6 +1779,133 @@ export default function Page() {
           <section style={sectionCardStyle}>
             <div style={sectionHeaderStyle}>
               <div style={sectionNumberStyle}>1</div>
+              <div>
+                <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Excel / CSV feltöltés</h3>
+                <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13, lineHeight: 1.45 }}>
+                  Válaszd ki külön-külön a machine_id tábla munkaállomásaihoz tartozó napi tervet. Az iroda nem jelenik meg a listában, a kiválasztott fájlokat pedig egyetlen gombbal töltheted fel a megfelelő Supabase-táblákba.
+                </div>
+              </div>
+            </div>
+
+            {stationPlanUploadStations.length === 0 ? (
+              <div style={{ padding: 16, borderRadius: 12, background: "#020617", border: "1px dashed #475569", color: "#fca5a5" }}>
+                Nem található feltölthető munkaállomás. Ellenőrizd a Supabase machine_id tábla name oszlopát. Az „iroda” nevű sor szándékosan nincs felsorolva.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 12 }}>
+                {stationPlanUploadStations.map((station, index) => {
+                  const selection = stationPlanFiles[station];
+                  const tableName = buildStationPlanTableName(station);
+                  const isReading = loadingStationPlanFile === station;
+                  return (
+                    <div
+                      key={station}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(240px, 1fr) minmax(260px, 1.2fr) auto",
+                        gap: 14,
+                        alignItems: "center",
+                        padding: 15,
+                        borderRadius: 13,
+                        background: "#020617",
+                        border: selection ? "1px solid #0ea5e9" : "1px solid #334155",
+                      }}
+                    >
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+                          <span style={{ width: 28, height: 28, borderRadius: 9, display: "inline-flex", alignItems: "center", justifyContent: "center", background: "#0c4a6e", color: "#e0f2fe", fontWeight: 900 }}>
+                            {index + 1}
+                          </span>
+                          <strong style={{ color: "#f8fafc", fontSize: 15 }}>{station}</strong>
+                        </div>
+                        <div style={{ marginTop: 7, color: "#64748b", fontSize: 12 }}>
+                          Supabase-tábla: <code style={{ color: "#7dd3fc" }}>{tableName}</code>
+                        </div>
+                      </div>
+
+                      <div style={{ minWidth: 0 }}>
+                        {selection ? (
+                          <div style={{ padding: "10px 12px", borderRadius: 10, background: "#0f172a", border: "1px solid #334155" }}>
+                            <div style={{ color: "#e2e8f0", fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={selection.fileName}>
+                              {selection.fileName}
+                            </div>
+                            <div style={{ marginTop: 4, color: "#4ade80", fontSize: 12 }}>
+                              {selection.rows.length} sor ellenőrizve, feltöltésre kész.
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ padding: "10px 12px", borderRadius: 10, background: "#0f172a", border: "1px dashed #475569", color: "#94a3b8" }}>
+                            Nincs fájl kiválasztva.
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                        <input
+                          ref={(element) => { stationPlanFileInputRefs.current[station] = element; }}
+                          type="file"
+                          accept=".xlsx,.xls,.csv"
+                          style={{ display: "none" }}
+                          onChange={(event) => {
+                            const file = event.target.files?.[0];
+                            if (file) void handleStationPlanFileSelection(station, file);
+                            event.currentTarget.value = "";
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => stationPlanFileInputRefs.current[station]?.click()}
+                          disabled={Boolean(loadingStationPlanFile) || uploadingStationPlans}
+                          style={buttonPrimary}
+                        >
+                          {isReading ? "Beolvasás..." : selection ? "Másik fájl tallózása" : "Tallózás"}
+                        </button>
+                        {selection && (
+                          <button
+                            type="button"
+                            onClick={() => setStationPlanFiles((previous) => {
+                              const next = { ...previous };
+                              delete next[station];
+                              return next;
+                            })}
+                            disabled={uploadingStationPlans}
+                            style={buttonSecondary}
+                          >
+                            Törlés
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div style={{ marginTop: 16, display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap", padding: 14, borderRadius: 12, background: "#020617", border: "1px solid #334155" }}>
+              <div>
+                <div style={{ color: "#e2e8f0", fontWeight: 850 }}>Kiválasztott fájlok: {selectedStationPlanCount}/{stationPlanUploadStations.length}</div>
+                <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 12 }}>
+                  Kötelező Excel-oszlopok: sorszam, megnevezes, mennyiseg, elkeszules_datum, tipus.
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>
+                <button type="button" onClick={downloadProductionPlanTemplate} disabled={uploadingStationPlans} style={buttonSecondary}>
+                  Minta Excel letöltése
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void uploadSelectedStationPlans()}
+                  disabled={uploadingStationPlans || selectedStationPlanCount === 0}
+                  style={buttonPrimary}
+                >
+                  {uploadingStationPlans ? "Tervek feltöltése..." : "Összes kiválasztott terv feltöltése"}
+                </button>
+              </div>
+            </div>
+          </section>
+          <section style={sectionCardStyle}>
+            <div style={sectionHeaderStyle}>
+              <div style={sectionNumberStyle}>2</div>
               <div>
                 <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Terv alapadatai</h3>
                 <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13, lineHeight: 1.45 }}>
@@ -1730,13 +1945,17 @@ export default function Page() {
 
           <section style={sectionCardStyle}>
             <div style={sectionHeaderStyle}>
-              <div style={sectionNumberStyle}>2</div>
+              <div style={sectionNumberStyle}>3</div>
               <div>
-                <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Gyártandó termék hozzáadása egyesével</h3>
+                <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Termelési kártya</h3>
                 <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13, lineHeight: 1.45 }}>
-                  A termék a fent kiválasztott dátumhoz kerül. Több tételt egymás után is hozzáadhatsz, majd egyben mentheted a tervet.
+                  Add meg a gyártandó termék adatait, majd pipáld ki a machine_id tábla alapján azokat a munkaállomásokat, amelyeken a terméknek végig kell haladnia.
                 </div>
               </div>
+            </div>
+
+            <div style={{ marginBottom: 12, color: "#e2e8f0", fontSize: 15, fontWeight: 850 }}>
+              Gyártandó termék hozzáadása egyesével
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 1.15fr) minmax(180px, 0.65fr) minmax(300px, 1.5fr)", gap: 14, alignItems: "start" }}>
@@ -1788,6 +2007,87 @@ export default function Page() {
               </div>
             </div>
 
+            <div style={{ marginTop: 18, padding: 16, borderRadius: 14, background: "#020617", border: "1px solid #334155" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+                <div>
+                  <div style={{ color: "#f8fafc", fontWeight: 850 }}>Munkaállomások kiválasztása</div>
+                  <div style={{ marginTop: 3, color: "#94a3b8", fontSize: 12 }}>
+                    A lista közvetlenül a Supabase machine_id tábla name oszlopából töltődik be.
+                  </div>
+                </div>
+                {availableProductionStations.length > 0 && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      onClick={() => setManualProductionStations([...availableProductionStations])}
+                      style={{ ...buttonSecondary, padding: "8px 11px" }}
+                    >
+                      Mind kijelölése
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setManualProductionStations([])}
+                      style={{ ...buttonSecondary, padding: "8px 11px" }}
+                    >
+                      Kijelölés törlése
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {availableProductionStations.length === 0 ? (
+                <div style={{ padding: 14, borderRadius: 10, background: "#111827", border: "1px dashed #475569", color: "#fca5a5" }}>
+                  Nem található választható munkaállomás. Ellenőrizd a Supabase machine_id tábla name oszlopát.
+                </div>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+                  {availableProductionStations.map((station) => {
+                    const checked = manualProductionStations.some(
+                      (selected) => normalizeLooseText(selected) === normalizeLooseText(station)
+                    );
+                    return (
+                      <label
+                        key={station}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                          padding: "12px 13px",
+                          borderRadius: 11,
+                          border: checked ? "1px solid #38bdf8" : "1px solid #334155",
+                          background: checked ? "#0c4a6e" : "#111827",
+                          color: checked ? "#e0f2fe" : "#cbd5e1",
+                          cursor: "pointer",
+                          fontWeight: 750,
+                          userSelect: "none",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) => {
+                            const isChecked = event.target.checked;
+                            setManualProductionStations((previous) => {
+                              const withoutCurrent = previous.filter(
+                                (selected) => normalizeLooseText(selected) !== normalizeLooseText(station)
+                              );
+                              return isChecked ? [...withoutCurrent, station] : withoutCurrent;
+                            });
+                          }}
+                          style={{ width: 18, height: 18, accentColor: "#0ea5e9", cursor: "pointer" }}
+                        />
+                        <span>{station}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div style={{ marginTop: 10, color: manualProductionStations.length > 0 ? "#86efac" : "#fbbf24", fontSize: 12, fontWeight: 750 }}>
+                Kijelölt munkaállomások: {manualProductionStations.length}
+              </div>
+            </div>
+
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
               <button type="button" onClick={addManualProductionPlanRow} style={{ ...buttonPrimary, minHeight: 46, minWidth: 190, whiteSpace: "nowrap" }}>
                 + Termék hozzáadása
@@ -1795,45 +2095,7 @@ export default function Page() {
             </div>
           </section>
 
-          <section style={sectionCardStyle}>
-            <div style={sectionHeaderStyle}>
-              <div style={sectionNumberStyle}>3</div>
-              <div>
-                <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Excel / CSV feltöltés</h3>
-                <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13, lineHeight: 1.45 }}>
-                  Teljes napi tervet is beolvashatsz fájlból. A beolvasott sorok ugyanabba az ellenőrzőlistába kerülnek, mint a kézzel rögzített tételek.
-                </div>
-              </div>
-            </div>
 
-            <input
-              ref={productionPlanFileInputRef}
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              style={{ display: "none" }}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void handleProductionPlanFile(file);
-                event.currentTarget.value = "";
-              }}
-            />
-
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button type="button" onClick={() => productionPlanFileInputRef.current?.click()} disabled={loadingProductionPlan || savingProductionPlan} style={buttonPrimary}>
-                {loadingProductionPlan ? "Fájl beolvasása..." : "Excel / CSV kiválasztása"}
-              </button>
-              <button type="button" onClick={downloadProductionPlanTemplate} style={buttonSecondary}>Minta Excel letöltése</button>
-              {productionPlanPreview.length > 0 && (
-                <button type="button" onClick={() => { setProductionPlanPreview([]); setProductionPlanFileName(""); }} style={buttonSecondary}>Összeállított lista törlése</button>
-              )}
-            </div>
-
-            {productionPlanFileName && (
-              <div style={{ marginTop: 14, padding: 13, borderRadius: 12, background: "#020617", border: "1px solid #334155", color: "#cbd5e1" }}>
-                Forrás: <strong>{productionPlanFileName}</strong> · Az összeállított tervben jelenleg <strong>{productionPlanPreview.length}</strong> rendelés van.
-              </div>
-            )}
-          </section>
 
           <section style={sectionCardStyle}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
@@ -1869,6 +2131,7 @@ export default function Page() {
                       <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }}>Sorszám</th>
                       <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }}>Tervezett db</th>
                       <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }}>Megnevezés</th>
+                      <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }}>Munkaállomások</th>
                       <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }} />
                     </tr>
                   </thead>
@@ -1923,6 +2186,17 @@ export default function Page() {
                             style={{ ...fieldStyle, minWidth: 230, padding: "8px 10px" }}
                           />
                         </td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b", minWidth: 240 }}>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {row.requiredStations.length > 0 ? row.requiredStations.map((station) => (
+                              <span key={`${row.orderNumber}-${station}`} style={{ padding: "5px 8px", borderRadius: 999, background: "#0c4a6e", border: "1px solid #0284c7", color: "#e0f2fe", fontSize: 11, fontWeight: 750 }}>
+                                {station}
+                              </span>
+                            )) : (
+                              <span style={{ color: "#fbbf24", fontSize: 12 }}>Nincs kijelölve</span>
+                            )}
+                          </div>
+                        </td>
                         <td style={{ padding: 8, borderBottom: "1px solid #1e293b", width: 90 }}>
                           <button type="button" onClick={() => setProductionPlanPreview((previous) => previous.filter((_, rowIndex) => rowIndex !== index))} style={{ ...buttonSecondary, padding: "8px 10px" }}>Törlés</button>
                         </td>
@@ -1976,6 +2250,7 @@ export default function Page() {
                       <th style={{ padding: 10, borderBottom: "1px solid #334155" }}>Sorszám</th>
                       <th style={{ padding: 10, borderBottom: "1px solid #334155" }}>Tervezett db</th>
                       <th style={{ padding: 10, borderBottom: "1px solid #334155" }}>Megnevezés</th>
+                      <th style={{ padding: 10, borderBottom: "1px solid #334155" }}>Munkaállomások</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1985,6 +2260,11 @@ export default function Page() {
                         <td style={{ padding: 10, borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{item.order_number}</td>
                         <td style={{ padding: 10, borderBottom: "1px solid #1e293b" }}>{item.planned_quantity ?? "-"}</td>
                         <td style={{ padding: 10, borderBottom: "1px solid #1e293b" }}>{item.product_name || "-"}</td>
+                        <td style={{ padding: 10, borderBottom: "1px solid #1e293b" }}>
+                          {Array.isArray(item.required_stations) && item.required_stations.length > 0
+                            ? item.required_stations.join(", ")
+                            : "Minden munkaállomás"}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -2007,6 +2287,7 @@ export default function Page() {
     const getCellStyle = (status: ProductionMonitorStatus): React.CSSProperties => {
       if (status === "done") return { background: "#00ef2d", color: "#052e16", borderColor: "#22c55e" };
       if (status === "in-progress") return { background: "#fbbf24", color: "#451a03", borderColor: "#f59e0b" };
+      if (status === "not-required") return { background: "#f8fafc", color: "#94a3b8", borderColor: "#e2e8f0" };
       return { background: "#e2e8f0", color: "#475569", borderColor: "#cbd5e1" };
     };
 
@@ -2880,6 +3161,9 @@ export default function Page() {
     const productName = manualProductionProductName.trim();
     const quantityText = manualProductionQuantity.trim();
     const parsedQuantity = quantityText === "" ? null : Number(quantityText);
+    const selectedStations = machineOptions.filter((station) =>
+      manualProductionStations.some((selected) => normalizeLooseText(selected) === normalizeLooseText(station))
+    );
 
     if (!productionPlanDate) {
       setMessage({ type: "error", text: "Válaszd ki a gyártás tervezett dátumát." });
@@ -2901,6 +3185,10 @@ export default function Page() {
       setMessage({ type: "error", text: "A tervezett darabszám csak 0 vagy annál nagyobb egész szám lehet." });
       return;
     }
+    if (selectedStations.length === 0) {
+      setMessage({ type: "error", text: "Pipálj ki legalább egy munkaállomást a termelési kártyán." });
+      return;
+    }
     if (productionPlanPreview.some((row) => row.orderNumber.trim().toLowerCase() === orderNumber.toLowerCase())) {
       setMessage({ type: "error", text: `A(z) ${orderNumber} sorszám már szerepel az összeállított tervben.` });
       return;
@@ -2915,6 +3203,7 @@ export default function Page() {
           sequenceNumber: nextSequenceNumber,
           plannedQuantity: parsedQuantity === null ? null : Math.trunc(parsedQuantity),
           productName,
+          requiredStations: selectedStations,
         },
       ];
     });
@@ -2922,7 +3211,169 @@ export default function Page() {
     setManualProductionOrderNumber("");
     setManualProductionQuantity("");
     setManualProductionProductName("");
-    setMessage({ type: "success", text: `${orderNumber} hozzáadva a ${productionPlanDate} napi termelési tervhez.` });
+    setManualProductionStations([]);
+    setMessage({ type: "success", text: `${orderNumber} hozzáadva a ${productionPlanDate} napi termelési tervhez ${selectedStations.length} kijelölt munkaállomással.` });
+  }
+
+  async function handleStationPlanFileSelection(stationName: string, file: File): Promise<void> {
+    setLoadingStationPlanFile(stationName);
+    try {
+      const XLSX = await waitForXlsx();
+      if (!XLSX.read || !XLSX.utils.sheet_to_json) {
+        throw new Error("Az XLSX könyvtár nem támogatja az Excel beolvasását.");
+      }
+
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const firstSheetName = workbook.SheetNames[0];
+      const firstSheet = firstSheetName ? workbook.Sheets[firstSheetName] : null;
+      if (!firstSheet) throw new Error("A kiválasztott fájl nem tartalmaz olvasható munkalapot.");
+
+      const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(firstSheet, { defval: "", raw: true });
+      if (!rawRows.length) throw new Error("A kiválasztott munkalap üres.");
+
+      const headerSet = new Set(Object.keys(rawRows[0] || {}).map(normalizeSpreadsheetHeader));
+      const requiredHeaders: Array<{ label: string; aliases: string[] }> = [
+        { label: "sorszam", aliases: ["sorszam", "sorszám"] },
+        { label: "megnevezes", aliases: ["megnevezes", "megnevezés"] },
+        { label: "mennyiseg", aliases: ["mennyiseg", "mennyiség"] },
+        { label: "elkeszules_datum", aliases: ["elkeszules_datum", "elkeszules datum", "elkészülés dátum", "elkeszulesdatum"] },
+        { label: "tipus", aliases: ["tipus", "típus"] },
+      ];
+      const missingHeaders = requiredHeaders
+        .filter((header) => !header.aliases.some((alias) => headerSet.has(normalizeSpreadsheetHeader(alias))))
+        .map((header) => header.label);
+      if (missingHeaders.length > 0) {
+        throw new Error(`Hiányzó Excel-oszlopok: ${missingHeaders.join(", ")}.`);
+      }
+
+      const parsedRows: StationPlanUploadRow[] = [];
+      rawRows.forEach((row, index) => {
+        const rowNumber = index + 2;
+        const rawOrderNumber = readSpreadsheetValue(row, ["sorszam", "sorszám"]);
+        const rawProductName = readSpreadsheetValue(row, ["megnevezes", "megnevezés"]);
+        const rawQuantity = readSpreadsheetValue(row, ["mennyiseg", "mennyiség"]);
+        const rawCompletionDate = readSpreadsheetValue(row, ["elkeszules_datum", "elkeszules datum", "elkészülés dátum", "elkeszulesdatum"]);
+        const rawType = readSpreadsheetValue(row, ["tipus", "típus"]);
+
+        const isCompletelyEmpty = [rawOrderNumber, rawProductName, rawQuantity, rawCompletionDate, rawType]
+          .every((value) => value === null || value === undefined || String(value).trim() === "");
+        if (isCompletelyEmpty) return;
+
+        const sorszam = String(rawOrderNumber ?? "").trim();
+        const megnevezes = String(rawProductName ?? "").trim();
+        const tipus = String(rawType ?? "").trim();
+        const mennyiseg = parseSpreadsheetNumber(rawQuantity);
+        const elkeszulesDatum = parseSpreadsheetDate(rawCompletionDate);
+
+        if (!sorszam) throw new Error(`${rowNumber}. sor: a sorszam mező kötelező.`);
+        if (!megnevezes) throw new Error(`${rowNumber}. sor: a megnevezes mező kötelező.`);
+        if (!tipus) throw new Error(`${rowNumber}. sor: a tipus mező kötelező.`);
+        if (sorszam.length > 250 || megnevezes.length > 250 || tipus.length > 250) {
+          throw new Error(`${rowNumber}. sor: a szöveges mezők legfeljebb 250 karakteresek lehetnek.`);
+        }
+        if (mennyiseg === null || !Number.isInteger(mennyiseg) || mennyiseg < 0) {
+          throw new Error(`${rowNumber}. sor: a mennyiseg csak 0 vagy annál nagyobb egész szám lehet.`);
+        }
+        if (!elkeszulesDatum) {
+          throw new Error(`${rowNumber}. sor: az elkeszules_datum nem értelmezhető. Használj például 2026-07-31 formátumot.`);
+        }
+
+        parsedRows.push({
+          sorszam,
+          megnevezes,
+          mennyiseg,
+          elkeszules_datum: elkeszulesDatum,
+          tipus,
+        });
+      });
+
+      if (!parsedRows.length) throw new Error("A kiválasztott fájl nem tartalmaz feltölthető tervsort.");
+
+      setStationPlanFiles((previous) => ({
+        ...previous,
+        [stationName]: {
+          file,
+          fileName: file.name,
+          rows: parsedRows,
+        },
+      }));
+      setMessage({ type: "success", text: `${stationName}: ${parsedRows.length} tervsor beolvasva. A fájl készen áll az együttes feltöltésre.` });
+    } catch (error) {
+      console.error("MUNKAÁLLOMÁS TERV FÁJL HIBA:", error);
+      setMessage({ type: "error", text: `${stationName}: ${normalizeError(error)}` });
+    } finally {
+      setLoadingStationPlanFile("");
+    }
+  }
+
+  async function uploadSelectedStationPlans(): Promise<void> {
+    if (!supabase) {
+      setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
+      return;
+    }
+
+    const uploadableStations = machineOptions.filter((station) =>
+      normalizeLooseText(station) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
+      !normalizeLooseText(station).includes("iroda") &&
+      Boolean(stationPlanFiles[station])
+    );
+
+    if (uploadableStations.length === 0) {
+      setMessage({ type: "error", text: "Először tallózz be legalább egy munkaállomáshoz Excel- vagy CSV-fájlt." });
+      return;
+    }
+
+    setUploadingStationPlans(true);
+    const successfulStations: string[] = [];
+    const failedStations: string[] = [];
+    let uploadedRowCount = 0;
+
+    try {
+      for (const stationName of uploadableStations) {
+        const selection = stationPlanFiles[stationName];
+        if (!selection) continue;
+
+        const { data, error } = await supabase.rpc("replace_machine_plan", {
+          p_station_name: stationName,
+          p_rows: selection.rows,
+        });
+
+        if (error) {
+          console.error(`SUPABASE HIBA ${buildStationPlanTableName(stationName)}:`, error);
+          failedStations.push(`${stationName}: ${normalizeError(error)}`);
+          continue;
+        }
+
+        const insertedCount = typeof data === "number" ? data : Number(data || selection.rows.length);
+        uploadedRowCount += Number.isFinite(insertedCount) ? insertedCount : selection.rows.length;
+        successfulStations.push(stationName);
+      }
+
+      if (successfulStations.length > 0) {
+        setStationPlanFiles((previous) => {
+          const next = { ...previous };
+          successfulStations.forEach((station) => delete next[station]);
+          return next;
+        });
+      }
+
+      if (failedStations.length > 0) {
+        const successPart = successfulStations.length > 0
+          ? ` Sikeresen feltöltve: ${successfulStations.join(", ")}.`
+          : "";
+        setMessage({
+          type: "error",
+          text: `Néhány terv feltöltése sikertelen volt.${successPart} Hibák: ${failedStations.join(" | ")}`,
+        });
+      } else {
+        setMessage({
+          type: "success",
+          text: `${successfulStations.length} munkaállomás terve, összesen ${uploadedRowCount} sor sikeresen feltöltve a megfelelő Supabase-táblákba.`,
+        });
+      }
+    } finally {
+      setUploadingStationPlans(false);
+    }
   }
 
   async function handleProductionPlanFile(file: File): Promise<void> {
@@ -2966,6 +3417,9 @@ export default function Page() {
           sequenceNumber: Math.max(1, Math.trunc(parseSpreadsheetNumber(sequenceValue) || index + 1)),
           plannedQuantity: parseSpreadsheetNumber(quantityValue),
           productName: String(productValue ?? "").trim(),
+          requiredStations: machineOptions.filter(
+            (station) => normalizeLooseText(station) !== normalizeLooseText(DEFAULT_MACHINE_ID)
+          ),
         };
       }).filter((row): row is ProductionPlanUploadRow => Boolean(row));
 
@@ -2989,6 +3443,9 @@ export default function Page() {
           sequenceNumber: Math.min(existing.sequenceNumber, row.sequenceNumber),
           plannedQuantity: mergedQuantity,
           productName: existing.productName || row.productName,
+          requiredStations: Array.from(new Map(
+            [...existing.requiredStations, ...row.requiredStations].map((station) => [normalizeLooseText(station), station])
+          ).values()),
         });
       });
 
@@ -3016,22 +3473,22 @@ export default function Page() {
       return;
     }
     const rows: Array<Array<string | number>> = [
-      ["Sorrend", "Sorszám", "Tervezett darab", "Megnevezés"],
-      [1, "R260722217", 35, "Minta rendelés"],
-      [2, "R260722214", 20, "Minta rendelés 2"],
+      ["sorszam", "megnevezes", "mennyiseg", "elkeszules_datum", "tipus"],
+      ["R260722217", "Minta gyártandó termék", 35, getLocalDateKey(new Date()), "Normál"],
+      ["R260722214", "Második minta termék", 20, getLocalDateKey(new Date()), "Sürgős"],
     ];
     const worksheet = XLSX.utils.aoa_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Termelési terv");
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Munkaállomás terv");
     const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
-    downloadBlob("termelesi_terv_minta.xlsx", new Blob([output]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    downloadBlob("munkaallomas_terv_minta.xlsx", new Blob([output]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   }
 
   async function loadProductionPlanItems(plan: ProductionPlanRow): Promise<void> {
     if (!supabase) return;
     const { data, error } = await supabase
       .from("production_plan_items")
-      .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, created_at")
+      .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, required_stations, created_at")
       .eq("plan_id", plan.id)
       .order("sequence_number", { ascending: true });
     if (error) throw error;
@@ -3040,6 +3497,7 @@ export default function Page() {
       ...item,
       sequence_number: Number(item.sequence_number || 0),
       planned_quantity: item.planned_quantity === null || item.planned_quantity === undefined ? null : Number(item.planned_quantity),
+      required_stations: Array.isArray(item.required_stations) ? item.required_stations.map((station) => String(station).trim()).filter(Boolean) : null,
     })));
   }
 
@@ -3113,6 +3571,7 @@ export default function Page() {
         sequence_number: row.sequenceNumber,
         planned_quantity: row.plannedQuantity,
         product_name: row.productName || null,
+        required_stations: row.requiredStations.length > 0 ? row.requiredStations : null,
       }));
 
       for (let index = 0; index < payload.length; index += 500) {
@@ -3214,7 +3673,7 @@ export default function Page() {
 
     const { data: itemData, error: itemError } = await supabase
       .from("production_plan_items")
-      .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, created_at")
+      .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, required_stations, created_at")
       .eq("plan_id", plan.id)
       .order("sequence_number", { ascending: true });
     if (itemError) throw itemError;
@@ -3252,12 +3711,31 @@ export default function Page() {
     const rows: ProductionMonitorRow[] = items.map((item) => {
       const orderNumber = String(item.order_number).trim();
       const orderLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(orderNumber));
+      const savedRequiredStations = Array.isArray(item.required_stations)
+        ? item.required_stations.map((station) => String(station).trim()).filter(Boolean)
+        : [];
+      const requiredStations = savedRequiredStations.length > 0 ? savedRequiredStations : stations;
       const stationCells: Record<string, ProductionMonitorCell> = {};
       stations.forEach((station) => {
+        const isRequired = requiredStations.some(
+          (requiredStation) => normalizeLooseText(requiredStation) === normalizeLooseText(station)
+        );
+        if (!isRequired) {
+          stationCells[station] = {
+            status: "not-required",
+            label: "–",
+            workerName: "",
+            startedAt: null,
+            endedAt: null,
+          };
+          return;
+        }
         const stationLogs = orderLogs.filter((log) => normalizeLooseText(resolveLogStation(log, workers)) === normalizeLooseText(station));
         stationCells[station] = getMonitorCellFromLogs(stationLogs);
       });
-      const statuses = Object.values(stationCells).map((cell) => cell.status);
+      const statuses = Object.values(stationCells)
+        .map((cell) => cell.status)
+        .filter((status) => status !== "not-required");
       const overallStatus: ProductionMonitorStatus = statuses.length > 0 && statuses.every((status) => status === "done")
         ? "done"
         : statuses.some((status) => status === "done" || status === "in-progress")
@@ -3270,6 +3748,7 @@ export default function Page() {
         sequenceNumber: Number(item.sequence_number || 0),
         plannedQuantity: item.planned_quantity === null || item.planned_quantity === undefined ? null : Number(item.planned_quantity),
         productName: String(item.product_name || "").trim(),
+        requiredStations,
         overallStatus,
         stations: stationCells,
       };
