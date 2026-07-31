@@ -1338,6 +1338,9 @@ export default function Page() {
   const [productionPlanName, setProductionPlanName] = useState("Napi termelési terv");
   const [productionPlanFileName, setProductionPlanFileName] = useState("");
   const [productionPlanPreview, setProductionPlanPreview] = useState<ProductionPlanUploadRow[]>([]);
+  const [manualProductionOrderNumber, setManualProductionOrderNumber] = useState("");
+  const [manualProductionQuantity, setManualProductionQuantity] = useState("");
+  const [manualProductionProductName, setManualProductionProductName] = useState("");
   const [productionPlans, setProductionPlans] = useState<ProductionPlanRow[]>([]);
   const [selectedProductionPlanId, setSelectedProductionPlanId] = useState<string>("");
   const [productionPlanItems, setProductionPlanItems] = useState<ProductionPlanItemRow[]>([]);
@@ -1599,7 +1602,7 @@ export default function Page() {
   function ManagementNavigation(): React.JSX.Element {
     const items: Array<{ id: ManagementSection; label: string }> = [
       { id: "dashboard", label: "Vezetői műszerfal" },
-      { id: "production-plan", label: "Termelési terv" },
+      { id: "production-plan", label: "Termelés tervezése" },
       { id: "production-monitor", label: "Termelési monitor" },
     ];
 
@@ -1645,8 +1648,8 @@ export default function Page() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
           <div>
             <div style={{ fontSize: 13, color: "#38bdf8", fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Irodai modul</div>
-            <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: "#f8fafc" }}>Termelési terv feltöltése</h2>
-            <div style={{ color: "#94a3b8" }}>Excelből vagy CSV-ből töltheted fel a napi sorrendet. Kötelező oszlop: Sorszám vagy Rendelésszám.</div>
+            <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: "#f8fafc" }}>Termelés tervezése</h2>
+            <div style={{ color: "#94a3b8" }}>A gyártandó termékeket egyesével is hozzáadhatod, vagy Excelből / CSV-ből is feltöltheted.</div>
           </div>
           <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
         </div>
@@ -1655,7 +1658,7 @@ export default function Page() {
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 16 }}>
           <div>
-            <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Terv dátuma</label>
+            <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Gyártás tervezett dátuma</label>
             <input
               type="date"
               value={productionPlanDate}
@@ -1672,6 +1675,52 @@ export default function Page() {
             <input value={productionPlanName} onChange={(event) => setProductionPlanName(event.target.value)} style={fieldStyle} />
           </div>
         </div>
+
+        <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 16, padding: 16, marginBottom: 16 }}>
+          <div style={{ marginBottom: 12 }}>
+            <h3 style={{ margin: 0, color: "#f8fafc" }}>Gyártandó termék hozzáadása egyesével</h3>
+            <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13 }}>A termék a fent kiválasztott gyártási dátumhoz kerül. Több terméket egymás után is hozzáadhatsz, majd egyben mentheted és aktiválhatod a tervet.</div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(210px, 1.2fr) minmax(150px, 0.7fr) minmax(240px, 1.4fr) auto", gap: 12, alignItems: "end" }}>
+            <div>
+              <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Sorszám</label>
+              <input
+                value={manualProductionOrderNumber}
+                onChange={(event) => setManualProductionOrderNumber(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") addManualProductionPlanRow(); }}
+                placeholder="Például: R260722217"
+                style={fieldStyle}
+              />
+            </div>
+            <div>
+              <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Tervezett darab</label>
+              <input
+                type="number"
+                min={0}
+                value={manualProductionQuantity}
+                onChange={(event) => setManualProductionQuantity(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") addManualProductionPlanRow(); }}
+                placeholder="Darab"
+                style={fieldStyle}
+              />
+            </div>
+            <div>
+              <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Megnevezés</label>
+              <input
+                value={manualProductionProductName}
+                onChange={(event) => setManualProductionProductName(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") addManualProductionPlanRow(); }}
+                placeholder="Gyártandó termék megnevezése"
+                style={fieldStyle}
+              />
+            </div>
+            <button type="button" onClick={addManualProductionPlanRow} style={{ ...buttonPrimary, minHeight: 44, whiteSpace: "nowrap" }}>
+              + Termék hozzáadása
+            </button>
+          </div>
+        </div>
+
+        <div style={{ color: "#94a3b8", fontSize: 13, fontWeight: 700, margin: "2px 0 10px" }}>Vagy töltsd fel a teljes tervet fájlból:</div>
 
         <input
           ref={productionPlanFileInputRef}
@@ -2676,6 +2725,48 @@ export default function Page() {
 
   function updateProductionPlanPreviewRow(index: number, patch: Partial<ProductionPlanUploadRow>): void {
     setProductionPlanPreview((previous) => previous.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row));
+  }
+
+  function addManualProductionPlanRow(): void {
+    const orderNumber = manualProductionOrderNumber.trim();
+    const productName = manualProductionProductName.trim();
+    const quantityText = manualProductionQuantity.trim();
+    const parsedQuantity = quantityText === "" ? null : Number(quantityText);
+
+    if (!productionPlanDate) {
+      setMessage({ type: "error", text: "Válaszd ki a gyártás tervezett dátumát." });
+      return;
+    }
+    if (!orderNumber) {
+      setMessage({ type: "error", text: "Add meg a gyártandó termék sorszámát." });
+      return;
+    }
+    if (parsedQuantity !== null && (!Number.isFinite(parsedQuantity) || parsedQuantity < 0)) {
+      setMessage({ type: "error", text: "A tervezett darabszám csak 0 vagy annál nagyobb szám lehet." });
+      return;
+    }
+    if (productionPlanPreview.some((row) => row.orderNumber.trim().toLowerCase() === orderNumber.toLowerCase())) {
+      setMessage({ type: "error", text: `A(z) ${orderNumber} sorszám már szerepel az összeállított tervben.` });
+      return;
+    }
+
+    setProductionPlanPreview((previous) => {
+      const nextSequenceNumber = previous.reduce((highest, row) => Math.max(highest, Number(row.sequenceNumber) || 0), 0) + 1;
+      return [
+        ...previous,
+        {
+          orderNumber,
+          sequenceNumber: nextSequenceNumber,
+          plannedQuantity: parsedQuantity === null ? null : Math.trunc(parsedQuantity),
+          productName,
+        },
+      ];
+    });
+    setProductionPlanFileName((previous) => previous || "Kézi rögzítés");
+    setManualProductionOrderNumber("");
+    setManualProductionQuantity("");
+    setManualProductionProductName("");
+    setMessage({ type: "success", text: `${orderNumber} hozzáadva a ${productionPlanDate} napi termelési tervhez.` });
   }
 
   async function handleProductionPlanFile(file: File): Promise<void> {
@@ -6759,7 +6850,7 @@ body {
         justifyContent: "center",
       }}
     >
-      <div style={{ width: "100%", maxWidth: 960 }}>
+      <div style={{ width: "100%", maxWidth: flowStage === "dashboard" ? "none" : 960 }}>
         <h1 style={{ fontSize: 34, marginBottom: 8, color: "#f8fafc", textAlign: "center" }}>Dolgozói beléptető</h1>
         <p style={{ color: "#cbd5e1", marginBottom: 24, textAlign: "center" }}>
           Név azonosítás, jelszó ahol kell, majd egyesével jelentés vagy műhely esetén köteg létrehozás, a meglévő scanneres sebesség megtartásával
