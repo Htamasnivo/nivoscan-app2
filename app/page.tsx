@@ -316,6 +316,78 @@ type ProductionMonitorData = {
   lastUpdatedAt: string;
 };
 
+type ProductionMonitorTextAlign = "left" | "center" | "right";
+type ProductionMonitorTriState = "inherit" | "yes" | "no";
+
+type ProductionMonitorFieldStyle = {
+  widthWeight: number;
+  textAlign: ProductionMonitorTextAlign;
+  headerBackground: string;
+  headerTextColor: string;
+  cellBackground: string;
+  cellTextColor: string;
+  headerBold: ProductionMonitorTriState;
+  headerItalic: ProductionMonitorTriState;
+  cellBold: ProductionMonitorTriState;
+  cellItalic: ProductionMonitorTriState;
+};
+
+type ProductionMonitorTheme = {
+  fontFamily: string;
+  titleFontSize: number;
+  titleBold: boolean;
+  titleItalic: boolean;
+  headerFontSize: number;
+  cellFontSize: number;
+  headerBold: boolean;
+  headerItalic: boolean;
+  cellBold: boolean;
+  cellItalic: boolean;
+  pageBackground: string;
+  headerPanelBackground: string;
+  headerPanelText: string;
+  subtitleText: string;
+  accentColor: string;
+  editorBackground: string;
+  tablePanelBackground: string;
+  tableHeaderBackground: string;
+  tableHeaderText: string;
+  orderCellBackground: string;
+  orderCellText: string;
+  doneBackground: string;
+  doneText: string;
+  inProgressBackground: string;
+  inProgressText: string;
+  waitingBackground: string;
+  waitingText: string;
+  notRequiredBackground: string;
+  notRequiredText: string;
+  borderColor: string;
+  panelRadius: number;
+  contentMaxWidth: number;
+  headerPadding: number;
+  cellPadding: number;
+  showHeader: boolean;
+  showPlanInfo: boolean;
+  showLastUpdated: boolean;
+  showSummaryCards: boolean;
+};
+
+type ProductionMonitorProfile = {
+  id: string;
+  name: string;
+  fieldOrder: string[];
+  hiddenFieldIds: string[];
+  zoomPercent: number;
+  theme: ProductionMonitorTheme;
+  fieldStyles: Record<string, ProductionMonitorFieldStyle>;
+};
+
+type ProductionMonitorProfilesStorage = {
+  activeProfileId: string;
+  profiles: ProductionMonitorProfile[];
+};
+
 type ProductionMonitorLayoutPreferences = {
   fieldOrder: string[];
   hiddenFieldIds: string[];
@@ -369,10 +441,189 @@ const ADMIN_RESET_PIN = "4826";
 const MACHINE_ID_STORAGE_KEY = "nivoscan-machine-id-v1";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const PRODUCTION_MONITOR_LAYOUT_STORAGE_KEY = "nivo-production-monitor-layout-v1";
+const PRODUCTION_MONITOR_PROFILES_STORAGE_KEY = "nivo-production-monitor-profiles-v1";
 const PRODUCTION_MONITOR_ORDER_FIELD_ID = "__order_number__";
 const PRODUCTION_MONITOR_MIN_ZOOM = 60;
 const PRODUCTION_MONITOR_MAX_ZOOM = 150;
 const PRODUCTION_MONITOR_ZOOM_STEP = 10;
+const PRODUCTION_MONITOR_FONT_OPTIONS = [
+  "Arial",
+  "Segoe UI",
+  "Inter",
+  "Roboto",
+  "Verdana",
+  "Tahoma",
+  "Trebuchet MS",
+  "Georgia",
+  "Times New Roman",
+  "Courier New",
+] as const;
+
+const DEFAULT_PRODUCTION_MONITOR_THEME: ProductionMonitorTheme = {
+  fontFamily: "Segoe UI",
+  titleFontSize: 36,
+  titleBold: true,
+  titleItalic: false,
+  headerFontSize: 0,
+  cellFontSize: 0,
+  headerBold: true,
+  headerItalic: false,
+  cellBold: true,
+  cellItalic: false,
+  pageBackground: "#e5e7eb",
+  headerPanelBackground: "#ffffff",
+  headerPanelText: "#1f2937",
+  subtitleText: "#64748b",
+  accentColor: "#f59e0b",
+  editorBackground: "#ffffff",
+  tablePanelBackground: "#ffffff",
+  tableHeaderBackground: "#ffffff",
+  tableHeaderText: "#334155",
+  orderCellBackground: "#ffffff",
+  orderCellText: "#1f2937",
+  doneBackground: "#00ef2d",
+  doneText: "#052e16",
+  inProgressBackground: "#fbbf24",
+  inProgressText: "#451a03",
+  waitingBackground: "#e2e8f0",
+  waitingText: "#475569",
+  notRequiredBackground: "#f8fafc",
+  notRequiredText: "#94a3b8",
+  borderColor: "#cbd5e1",
+  panelRadius: 14,
+  contentMaxWidth: 1600,
+  headerPadding: 9,
+  cellPadding: 8,
+  showHeader: true,
+  showPlanInfo: true,
+  showLastUpdated: true,
+  showSummaryCards: true,
+};
+
+function createDefaultProductionMonitorProfile(
+  name = "Alapértelmezett monitor",
+  id = "default"
+): ProductionMonitorProfile {
+  return {
+    id,
+    name,
+    fieldOrder: [],
+    hiddenFieldIds: [],
+    zoomPercent: 100,
+    theme: { ...DEFAULT_PRODUCTION_MONITOR_THEME },
+    fieldStyles: {},
+  };
+}
+
+function normalizeProductionMonitorFieldStyle(value: unknown): ProductionMonitorFieldStyle {
+  const raw = value && typeof value === "object" ? value as Partial<ProductionMonitorFieldStyle> : {};
+  const widthWeight = Number(raw.widthWeight);
+  const validAlignments: ProductionMonitorTextAlign[] = ["left", "center", "right"];
+  const validTriStates: ProductionMonitorTriState[] = ["inherit", "yes", "no"];
+  return {
+    widthWeight: Number.isFinite(widthWeight) ? Math.min(8, Math.max(0.25, widthWeight)) : 1,
+    textAlign: validAlignments.includes(raw.textAlign as ProductionMonitorTextAlign)
+      ? raw.textAlign as ProductionMonitorTextAlign
+      : "center",
+    headerBackground: typeof raw.headerBackground === "string" ? raw.headerBackground : "",
+    headerTextColor: typeof raw.headerTextColor === "string" ? raw.headerTextColor : "",
+    cellBackground: typeof raw.cellBackground === "string" ? raw.cellBackground : "",
+    cellTextColor: typeof raw.cellTextColor === "string" ? raw.cellTextColor : "",
+    headerBold: validTriStates.includes(raw.headerBold as ProductionMonitorTriState)
+      ? raw.headerBold as ProductionMonitorTriState
+      : "inherit",
+    headerItalic: validTriStates.includes(raw.headerItalic as ProductionMonitorTriState)
+      ? raw.headerItalic as ProductionMonitorTriState
+      : "inherit",
+    cellBold: validTriStates.includes(raw.cellBold as ProductionMonitorTriState)
+      ? raw.cellBold as ProductionMonitorTriState
+      : "inherit",
+    cellItalic: validTriStates.includes(raw.cellItalic as ProductionMonitorTriState)
+      ? raw.cellItalic as ProductionMonitorTriState
+      : "inherit",
+  };
+}
+
+function normalizeProductionMonitorTheme(value: unknown): ProductionMonitorTheme {
+  const raw = value && typeof value === "object" ? value as Partial<ProductionMonitorTheme> : {};
+  const defaults = DEFAULT_PRODUCTION_MONITOR_THEME;
+  const numberValue = (candidate: unknown, fallback: number, minimum: number, maximum: number): number => {
+    const parsed = Number(candidate);
+    return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback;
+  };
+  const booleanValue = (candidate: unknown, fallback: boolean): boolean =>
+    typeof candidate === "boolean" ? candidate : fallback;
+  const stringValue = (candidate: unknown, fallback: string): string =>
+    typeof candidate === "string" && candidate.trim() ? candidate : fallback;
+
+  return {
+    fontFamily: stringValue(raw.fontFamily, defaults.fontFamily),
+    titleFontSize: numberValue(raw.titleFontSize, defaults.titleFontSize, 16, 72),
+    titleBold: booleanValue(raw.titleBold, defaults.titleBold),
+    titleItalic: booleanValue(raw.titleItalic, defaults.titleItalic),
+    headerFontSize: numberValue(raw.headerFontSize, defaults.headerFontSize, 0, 36),
+    cellFontSize: numberValue(raw.cellFontSize, defaults.cellFontSize, 0, 36),
+    headerBold: booleanValue(raw.headerBold, defaults.headerBold),
+    headerItalic: booleanValue(raw.headerItalic, defaults.headerItalic),
+    cellBold: booleanValue(raw.cellBold, defaults.cellBold),
+    cellItalic: booleanValue(raw.cellItalic, defaults.cellItalic),
+    pageBackground: stringValue(raw.pageBackground, defaults.pageBackground),
+    headerPanelBackground: stringValue(raw.headerPanelBackground, defaults.headerPanelBackground),
+    headerPanelText: stringValue(raw.headerPanelText, defaults.headerPanelText),
+    subtitleText: stringValue(raw.subtitleText, defaults.subtitleText),
+    accentColor: stringValue(raw.accentColor, defaults.accentColor),
+    editorBackground: stringValue(raw.editorBackground, defaults.editorBackground),
+    tablePanelBackground: stringValue(raw.tablePanelBackground, defaults.tablePanelBackground),
+    tableHeaderBackground: stringValue(raw.tableHeaderBackground, defaults.tableHeaderBackground),
+    tableHeaderText: stringValue(raw.tableHeaderText, defaults.tableHeaderText),
+    orderCellBackground: stringValue(raw.orderCellBackground, defaults.orderCellBackground),
+    orderCellText: stringValue(raw.orderCellText, defaults.orderCellText),
+    doneBackground: stringValue(raw.doneBackground, defaults.doneBackground),
+    doneText: stringValue(raw.doneText, defaults.doneText),
+    inProgressBackground: stringValue(raw.inProgressBackground, defaults.inProgressBackground),
+    inProgressText: stringValue(raw.inProgressText, defaults.inProgressText),
+    waitingBackground: stringValue(raw.waitingBackground, defaults.waitingBackground),
+    waitingText: stringValue(raw.waitingText, defaults.waitingText),
+    notRequiredBackground: stringValue(raw.notRequiredBackground, defaults.notRequiredBackground),
+    notRequiredText: stringValue(raw.notRequiredText, defaults.notRequiredText),
+    borderColor: stringValue(raw.borderColor, defaults.borderColor),
+    panelRadius: numberValue(raw.panelRadius, defaults.panelRadius, 0, 40),
+    contentMaxWidth: numberValue(raw.contentMaxWidth, defaults.contentMaxWidth, 800, 2600),
+    headerPadding: numberValue(raw.headerPadding, defaults.headerPadding, 2, 28),
+    cellPadding: numberValue(raw.cellPadding, defaults.cellPadding, 2, 28),
+    showHeader: booleanValue(raw.showHeader, defaults.showHeader),
+    showPlanInfo: booleanValue(raw.showPlanInfo, defaults.showPlanInfo),
+    showLastUpdated: booleanValue(raw.showLastUpdated, defaults.showLastUpdated),
+    showSummaryCards: booleanValue(raw.showSummaryCards, defaults.showSummaryCards),
+  };
+}
+
+function normalizeProductionMonitorProfile(value: unknown, index: number): ProductionMonitorProfile {
+  const raw = value && typeof value === "object" ? value as Partial<ProductionMonitorProfile> : {};
+  const fallback = createDefaultProductionMonitorProfile(`Monitor ${index + 1}`, `monitor-${index + 1}`);
+  const rawFieldStyles = raw.fieldStyles && typeof raw.fieldStyles === "object" ? raw.fieldStyles : {};
+  const fieldStyles = Object.fromEntries(
+    Object.entries(rawFieldStyles).map(([fieldId, style]) => [fieldId, normalizeProductionMonitorFieldStyle(style)])
+  );
+  return {
+    id: typeof raw.id === "string" && raw.id.trim() ? raw.id : fallback.id,
+    name: typeof raw.name === "string" && raw.name.trim() ? raw.name.slice(0, 80) : fallback.name,
+    fieldOrder: Array.isArray(raw.fieldOrder) ? raw.fieldOrder.filter((item): item is string => typeof item === "string") : [],
+    hiddenFieldIds: Array.isArray(raw.hiddenFieldIds) ? raw.hiddenFieldIds.filter((item): item is string => typeof item === "string") : [],
+    zoomPercent: typeof raw.zoomPercent === "number" && Number.isFinite(raw.zoomPercent)
+      ? Math.min(PRODUCTION_MONITOR_MAX_ZOOM, Math.max(PRODUCTION_MONITOR_MIN_ZOOM, Math.round(raw.zoomPercent)))
+      : 100,
+    theme: normalizeProductionMonitorTheme(raw.theme),
+    fieldStyles,
+  };
+}
+
+function resolveProductionMonitorTriState(value: ProductionMonitorTriState, fallback: boolean): boolean {
+  if (value === "yes") return true;
+  if (value === "no") return false;
+  return fallback;
+}
+
 type MachineIdOption = string;
 
 function normalizeMachineId(value: string | null | undefined): MachineIdOption {
@@ -1481,12 +1732,27 @@ export default function Page() {
   const [loadingProductionPlan, setLoadingProductionPlan] = useState(false);
   const [savingProductionPlan, setSavingProductionPlan] = useState(false);
   const [loadingProductionMonitor, setLoadingProductionMonitor] = useState(false);
-  const [productionMonitorFieldOrder, setProductionMonitorFieldOrder] = useState<string[]>([]);
-  const [productionMonitorHiddenFieldIds, setProductionMonitorHiddenFieldIds] = useState<string[]>([]);
-  const [productionMonitorZoomPercent, setProductionMonitorZoomPercent] = useState(100);
+  const [productionMonitorProfiles, setProductionMonitorProfiles] = useState<ProductionMonitorProfile[]>([
+    createDefaultProductionMonitorProfile(),
+  ]);
+  const [activeProductionMonitorProfileId, setActiveProductionMonitorProfileId] = useState("default");
   const [productionMonitorEditMode, setProductionMonitorEditMode] = useState(false);
   const [productionMonitorLayoutLoaded, setProductionMonitorLayoutLoaded] = useState(false);
+  const [productionMonitorEditorTab, setProductionMonitorEditorTab] = useState<"layout" | "typography" | "colors" | "field">("layout");
+  const [productionMonitorProfileNameDraft, setProductionMonitorProfileNameDraft] = useState("Alapértelmezett monitor");
+  const [selectedProductionMonitorStyleFieldId, setSelectedProductionMonitorStyleFieldId] = useState(PRODUCTION_MONITOR_ORDER_FIELD_ID);
   const productionMonitorDraggedFieldIdRef = useRef<string | null>(null);
+
+  const activeProductionMonitorProfile = useMemo(
+    () => productionMonitorProfiles.find((profile) => profile.id === activeProductionMonitorProfileId)
+      || productionMonitorProfiles[0]
+      || createDefaultProductionMonitorProfile(),
+    [productionMonitorProfiles, activeProductionMonitorProfileId]
+  );
+  const productionMonitorFieldOrder = activeProductionMonitorProfile.fieldOrder;
+  const productionMonitorHiddenFieldIds = activeProductionMonitorProfile.hiddenFieldIds;
+  const productionMonitorZoomPercent = activeProductionMonitorProfile.zoomPercent;
+  const productionMonitorTheme = activeProductionMonitorProfile.theme;
 
   const [machineId, setMachineId] = useState<MachineIdOption>(DEFAULT_MACHINE_ID);
   const [machineOptions, setMachineOptions] = useState<string[]>([]);
@@ -2331,6 +2597,158 @@ export default function Page() {
     );
   }
 
+  function updateActiveProductionMonitorProfile(
+    updater: (profile: ProductionMonitorProfile) => ProductionMonitorProfile
+  ): void {
+    setProductionMonitorProfiles((currentProfiles) => {
+      const activeId = currentProfiles.some((profile) => profile.id === activeProductionMonitorProfileId)
+        ? activeProductionMonitorProfileId
+        : currentProfiles[0]?.id;
+      if (!activeId) return [updater(createDefaultProductionMonitorProfile())];
+      return currentProfiles.map((profile) => profile.id === activeId ? updater(profile) : profile);
+    });
+  }
+
+  function setProductionMonitorFieldOrder(value: React.SetStateAction<string[]>): void {
+    updateActiveProductionMonitorProfile((profile) => ({
+      ...profile,
+      fieldOrder: typeof value === "function"
+        ? (value as (previous: string[]) => string[])(profile.fieldOrder)
+        : value,
+    }));
+  }
+
+  function setProductionMonitorHiddenFieldIds(value: React.SetStateAction<string[]>): void {
+    updateActiveProductionMonitorProfile((profile) => ({
+      ...profile,
+      hiddenFieldIds: typeof value === "function"
+        ? (value as (previous: string[]) => string[])(profile.hiddenFieldIds)
+        : value,
+    }));
+  }
+
+  function setProductionMonitorZoomPercent(value: React.SetStateAction<number>): void {
+    updateActiveProductionMonitorProfile((profile) => {
+      const nextValue = typeof value === "function"
+        ? (value as (previous: number) => number)(profile.zoomPercent)
+        : value;
+      return {
+        ...profile,
+        zoomPercent: Math.min(
+          PRODUCTION_MONITOR_MAX_ZOOM,
+          Math.max(PRODUCTION_MONITOR_MIN_ZOOM, Math.round(nextValue))
+        ),
+      };
+    });
+  }
+
+  function updateProductionMonitorTheme(patch: Partial<ProductionMonitorTheme>): void {
+    updateActiveProductionMonitorProfile((profile) => ({
+      ...profile,
+      theme: normalizeProductionMonitorTheme({ ...profile.theme, ...patch }),
+    }));
+  }
+
+  function getProductionMonitorFieldStyle(fieldId: string): ProductionMonitorFieldStyle {
+    return activeProductionMonitorProfile.fieldStyles[fieldId]
+      || normalizeProductionMonitorFieldStyle({
+        widthWeight: fieldId === PRODUCTION_MONITOR_ORDER_FIELD_ID ? 1.7 : 1,
+        textAlign: fieldId === PRODUCTION_MONITOR_ORDER_FIELD_ID ? "left" : "center",
+      });
+  }
+
+  function updateProductionMonitorFieldStyle(
+    fieldId: string,
+    patch: Partial<ProductionMonitorFieldStyle>
+  ): void {
+    updateActiveProductionMonitorProfile((profile) => {
+      const currentStyle = profile.fieldStyles[fieldId]
+        || normalizeProductionMonitorFieldStyle({
+          widthWeight: fieldId === PRODUCTION_MONITOR_ORDER_FIELD_ID ? 1.7 : 1,
+          textAlign: fieldId === PRODUCTION_MONITOR_ORDER_FIELD_ID ? "left" : "center",
+        });
+      return {
+        ...profile,
+        fieldStyles: {
+          ...profile.fieldStyles,
+          [fieldId]: normalizeProductionMonitorFieldStyle({ ...currentStyle, ...patch }),
+        },
+      };
+    });
+  }
+
+  function resetProductionMonitorFieldStyle(fieldId: string): void {
+    updateActiveProductionMonitorProfile((profile) => {
+      const nextStyles = { ...profile.fieldStyles };
+      delete nextStyles[fieldId];
+      return { ...profile, fieldStyles: nextStyles };
+    });
+  }
+
+  function createProductionMonitorProfile(): void {
+    const profileId = `monitor-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const profileName = `Monitor ${productionMonitorProfiles.length + 1}`;
+    const fieldOrder = [
+      PRODUCTION_MONITOR_ORDER_FIELD_ID,
+      ...productionMonitorData.stations.map(getProductionMonitorStationFieldId),
+    ];
+    const profile = {
+      ...createDefaultProductionMonitorProfile(profileName, profileId),
+      fieldOrder,
+    };
+    setProductionMonitorProfiles((currentProfiles) => [...currentProfiles, profile]);
+    setActiveProductionMonitorProfileId(profileId);
+    setProductionMonitorProfileNameDraft(profileName);
+    setSelectedProductionMonitorStyleFieldId(PRODUCTION_MONITOR_ORDER_FIELD_ID);
+    setMessage({ type: "success", text: `Az új „${profileName}” termelési monitor létrejött.` });
+  }
+
+  function duplicateProductionMonitorProfile(): void {
+    const profileId = `monitor-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const profileName = `${activeProductionMonitorProfile.name} másolat`;
+    const duplicate: ProductionMonitorProfile = {
+      ...activeProductionMonitorProfile,
+      id: profileId,
+      name: profileName,
+      fieldOrder: [...activeProductionMonitorProfile.fieldOrder],
+      hiddenFieldIds: [...activeProductionMonitorProfile.hiddenFieldIds],
+      theme: { ...activeProductionMonitorProfile.theme },
+      fieldStyles: Object.fromEntries(
+        Object.entries(activeProductionMonitorProfile.fieldStyles).map(([fieldId, style]) => [fieldId, { ...style }])
+      ),
+    };
+    setProductionMonitorProfiles((currentProfiles) => [...currentProfiles, duplicate]);
+    setActiveProductionMonitorProfileId(profileId);
+    setProductionMonitorProfileNameDraft(profileName);
+    setMessage({ type: "success", text: `A „${activeProductionMonitorProfile.name}” monitor másolata létrejött.` });
+  }
+
+  function renameProductionMonitorProfile(): void {
+    const nextName = productionMonitorProfileNameDraft.trim().slice(0, 80);
+    if (!nextName) {
+      setMessage({ type: "error", text: "A monitor neve nem lehet üres." });
+      return;
+    }
+    updateActiveProductionMonitorProfile((profile) => ({ ...profile, name: nextName }));
+    setMessage({ type: "success", text: `A monitor új neve: „${nextName}”.` });
+  }
+
+  function deleteProductionMonitorProfile(): void {
+    if (productionMonitorProfiles.length <= 1) {
+      setMessage({ type: "error", text: "Az utolsó termelési monitor nem törölhető." });
+      return;
+    }
+    if (typeof window !== "undefined" && !window.confirm(`Biztosan törlöd ezt a monitort: ${activeProductionMonitorProfile.name}?`)) {
+      return;
+    }
+    const remainingProfiles = productionMonitorProfiles.filter((profile) => profile.id !== activeProductionMonitorProfile.id);
+    const nextActiveProfile = remainingProfiles[0];
+    setProductionMonitorProfiles(remainingProfiles);
+    setActiveProductionMonitorProfileId(nextActiveProfile.id);
+    setProductionMonitorProfileNameDraft(nextActiveProfile.name);
+    setMessage({ type: "success", text: "A termelési monitor törölve lett." });
+  }
+
   function getProductionMonitorStationFieldId(station: string): string {
     return `station:${station}`;
   }
@@ -2392,13 +2810,16 @@ export default function Page() {
   }
 
   function resetProductionMonitorLayout(): void {
-    setProductionMonitorFieldOrder([
+    const fieldOrder = [
       PRODUCTION_MONITOR_ORDER_FIELD_ID,
       ...productionMonitorData.stations.map(getProductionMonitorStationFieldId),
-    ]);
-    setProductionMonitorHiddenFieldIds([]);
-    setProductionMonitorZoomPercent(100);
-    setMessage({ type: "success", text: "A termelési monitor alapértelmezett elrendezése visszaállt." });
+    ];
+    updateActiveProductionMonitorProfile((profile) => ({
+      ...createDefaultProductionMonitorProfile(profile.name, profile.id),
+      fieldOrder,
+    }));
+    setSelectedProductionMonitorStyleFieldId(PRODUCTION_MONITOR_ORDER_FIELD_ID);
+    setMessage({ type: "success", text: "Az aktív termelési monitor teljes megjelenése visszaállt az alapértelmezettre." });
   }
 
   function changeProductionMonitorZoom(direction: -1 | 1): void {
@@ -2424,32 +2845,52 @@ export default function Page() {
       ...allFieldIds.filter((fieldId) => !productionMonitorFieldOrder.includes(fieldId)),
     ];
     const visibleFieldIds = orderedFieldIds.filter((fieldId) => !productionMonitorHiddenFieldIds.includes(fieldId));
-    const visibleStationCount = visibleFieldIds.filter((fieldId) => fieldId !== PRODUCTION_MONITOR_ORDER_FIELD_ID).length;
-    const orderNumberVisible = visibleFieldIds.includes(PRODUCTION_MONITOR_ORDER_FIELD_ID);
-    const orderNumberColumnPercent = orderNumberVisible
-      ? visibleStationCount === 0
-        ? 100
-        : visibleStationCount >= 9
-          ? 15
-          : visibleStationCount >= 7
-            ? 17
-            : 20
-      : 0;
-    const stationColumnPercent = visibleStationCount > 0 ? (100 - orderNumberColumnPercent) / visibleStationCount : 100;
     const visibleFieldCount = Math.max(visibleFieldIds.length, 1);
     const zoomRatio = productionMonitorZoomPercent / 100;
     const baseHeaderFontSize = visibleFieldCount >= 11 ? 10 : visibleFieldCount >= 9 ? 11 : 13;
     const baseCellFontSize = visibleFieldCount >= 11 ? 10 : visibleFieldCount >= 9 ? 11 : 13;
-    const monitorHeaderFontSize = Math.max(8, Math.round(baseHeaderFontSize * zoomRatio * 10) / 10);
-    const monitorCellFontSize = Math.max(8, Math.round(baseCellFontSize * zoomRatio * 10) / 10);
-    const headerVerticalPadding = Math.max(4, Math.round(9 * zoomRatio));
-    const cellVerticalPadding = Math.max(4, Math.round(8 * zoomRatio));
+    const monitorHeaderFontSize = Math.max(
+      7,
+      Math.round((productionMonitorTheme.headerFontSize || baseHeaderFontSize) * zoomRatio * 10) / 10
+    );
+    const monitorCellFontSize = Math.max(
+      7,
+      Math.round((productionMonitorTheme.cellFontSize || baseCellFontSize) * zoomRatio * 10) / 10
+    );
+    const monitorTitleFontSize = Math.max(16, Math.round(productionMonitorTheme.titleFontSize * zoomRatio));
+    const headerVerticalPadding = Math.max(2, Math.round(productionMonitorTheme.headerPadding * zoomRatio));
+    const cellVerticalPadding = Math.max(2, Math.round(productionMonitorTheme.cellPadding * zoomRatio));
+    const fieldWeights = Object.fromEntries(
+      visibleFieldIds.map((fieldId) => [fieldId, getProductionMonitorFieldStyle(fieldId).widthWeight])
+    ) as Record<string, number>;
+    const totalFieldWeight = Math.max(
+      0.25,
+      visibleFieldIds.reduce((total, fieldId) => total + Math.max(0.25, fieldWeights[fieldId] || 1), 0)
+    );
+    const selectedFieldId = validFieldIdSet.has(selectedProductionMonitorStyleFieldId)
+      ? selectedProductionMonitorStyleFieldId
+      : allFieldIds[0] || PRODUCTION_MONITOR_ORDER_FIELD_ID;
+    const selectedFieldStyle = getProductionMonitorFieldStyle(selectedFieldId);
 
-    const getCellStyle = (status: ProductionMonitorStatus): React.CSSProperties => {
-      if (status === "done") return { background: "#00ef2d", color: "#052e16", borderColor: "#22c55e" };
-      if (status === "in-progress") return { background: "#fbbf24", color: "#451a03", borderColor: "#f59e0b" };
-      if (status === "not-required") return { background: "#f8fafc", color: "#94a3b8", borderColor: "#e2e8f0" };
-      return { background: "#e2e8f0", color: "#475569", borderColor: "#cbd5e1" };
+    const getCellStyle = (status: ProductionMonitorStatus, fieldId: string): React.CSSProperties => {
+      const fieldStyle = getProductionMonitorFieldStyle(fieldId);
+      let background = productionMonitorTheme.waitingBackground;
+      let color = productionMonitorTheme.waitingText;
+      if (status === "done") {
+        background = productionMonitorTheme.doneBackground;
+        color = productionMonitorTheme.doneText;
+      } else if (status === "in-progress") {
+        background = productionMonitorTheme.inProgressBackground;
+        color = productionMonitorTheme.inProgressText;
+      } else if (status === "not-required") {
+        background = productionMonitorTheme.notRequiredBackground;
+        color = productionMonitorTheme.notRequiredText;
+      }
+      return {
+        background: fieldStyle.cellBackground || background,
+        color: fieldStyle.cellTextColor || color,
+        borderColor: productionMonitorTheme.borderColor,
+      };
     };
 
     const handleFieldDragStart = (fieldId: string): void => {
@@ -2462,27 +2903,167 @@ export default function Page() {
       if (draggedFieldId) reorderProductionMonitorField(draggedFieldId, targetFieldId);
     };
 
+    const editorLabelStyle: React.CSSProperties = {
+      display: "grid",
+      gap: 5,
+      fontSize: 12,
+      fontWeight: 800,
+      color: "#334155",
+    };
+    const editorControlStyle: React.CSSProperties = {
+      width: "100%",
+      boxSizing: "border-box",
+      border: "1px solid #cbd5e1",
+      borderRadius: 8,
+      padding: "9px 10px",
+      background: "#ffffff",
+      color: "#0f172a",
+    };
+    const editorSectionStyle: React.CSSProperties = {
+      border: "1px solid #cbd5e1",
+      borderRadius: 12,
+      padding: 14,
+      background: "#f8fafc",
+    };
+    const tabButtonStyle = (tab: typeof productionMonitorEditorTab): React.CSSProperties => ({
+      ...(productionMonitorEditorTab === tab ? buttonPrimary : buttonSecondary),
+      padding: "8px 12px",
+    });
+    const renderColorControl = (
+      label: string,
+      value: string,
+      onChange: (nextValue: string) => void
+    ): React.JSX.Element => (
+      <label style={editorLabelStyle}>
+        <span>{label}</span>
+        <span style={{ display: "grid", gridTemplateColumns: "44px 1fr", gap: 7 }}>
+          <input
+            type="color"
+            value={/^#[0-9a-fA-F]{6}$/.test(value) ? value : "#ffffff"}
+            onChange={(event) => onChange(event.target.value)}
+            style={{ width: 44, height: 38, padding: 2, border: "1px solid #cbd5e1", borderRadius: 8, background: "#ffffff" }}
+          />
+          <input
+            type="text"
+            value={value}
+            maxLength={32}
+            onChange={(event) => onChange(event.target.value)}
+            style={editorControlStyle}
+          />
+        </span>
+      </label>
+    );
+
+    const switchProfile = (profileId: string): void => {
+      const selectedProfile = productionMonitorProfiles.find((profile) => profile.id === profileId);
+      if (!selectedProfile) return;
+      setActiveProductionMonitorProfileId(selectedProfile.id);
+      setProductionMonitorProfileNameDraft(selectedProfile.name);
+      setSelectedProductionMonitorStyleFieldId(PRODUCTION_MONITOR_ORDER_FIELD_ID);
+    };
+
     return (
-      <div style={{ minHeight: standalone ? "100vh" : undefined, background: standalone ? "#e5e7eb" : "#020617", color: standalone ? "#111827" : "#e2e8f0", border: standalone ? "none" : "1px solid #334155", borderRadius: standalone ? 0 : 18, padding: standalone ? 18 : 18, boxShadow: standalone ? "none" : "0 18px 45px rgba(0,0,0,0.28)", marginTop: standalone ? 0 : 18, boxSizing: "border-box" }}>
-        <div style={{ width: "100%", maxWidth: 1600, margin: "0 auto" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 16, background: "#ffffff", padding: 16, borderRadius: 14, boxShadow: "0 8px 22px rgba(15,23,42,0.12)" }}>
-            <div>
-              <div style={{ fontSize: 13, color: "#f59e0b", fontWeight: 900, letterSpacing: 1, textTransform: "uppercase" }}>NÍVÓ termelési monitor</div>
-              <h2 style={{ margin: "6px 0 4px", fontSize: standalone ? 36 : 30, color: "#1f2937" }}>Rendelések nyomonkövetése</h2>
-              <div style={{ color: "#64748b" }}>{productionMonitorData.plan ? `${productionMonitorData.plan.name} · ${productionMonitorData.plan.plan_date}` : `Nincs aktív terv · ${productionMonitorDate}`}</div>
-              <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>Utolsó frissítés: {productionMonitorData.lastUpdatedAt ? formatDateTime(productionMonitorData.lastUpdatedAt) : "-"}</div>
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
-              <input type="date" value={productionMonitorDate} onChange={(event) => { setProductionMonitorDate(event.target.value); void loadProductionMonitor(event.target.value); }} style={{ ...fieldStyle, width: 170, background: "#ffffff", color: "#111827" }} />
-              <button type="button" onClick={() => void loadProductionMonitor(productionMonitorDate)} disabled={loadingProductionMonitor} style={buttonSecondary}>{loadingProductionMonitor ? "Frissítés..." : "Frissítés"}</button>
+      <div
+        style={{
+          minHeight: standalone ? "100vh" : undefined,
+          background: productionMonitorTheme.pageBackground,
+          color: productionMonitorTheme.headerPanelText,
+          border: standalone ? "none" : `1px solid ${productionMonitorTheme.borderColor}`,
+          borderRadius: standalone ? 0 : productionMonitorTheme.panelRadius + 4,
+          padding: 18,
+          boxShadow: standalone ? "none" : "0 18px 45px rgba(0,0,0,0.28)",
+          marginTop: standalone ? 0 : 18,
+          boxSizing: "border-box",
+          fontFamily: productionMonitorTheme.fontFamily,
+        }}
+      >
+        <div style={{ width: "100%", maxWidth: productionMonitorTheme.contentMaxWidth, margin: "0 auto" }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "flex-start",
+              gap: 16,
+              flexWrap: "wrap",
+              marginBottom: 16,
+              background: productionMonitorTheme.headerPanelBackground,
+              color: productionMonitorTheme.headerPanelText,
+              padding: 16,
+              borderRadius: productionMonitorTheme.panelRadius,
+              boxShadow: "0 8px 22px rgba(15,23,42,0.12)",
+            }}
+          >
+            {productionMonitorTheme.showHeader && (
+              <div style={{ minWidth: 260 }}>
+                <div
+                  style={{
+                    fontSize: 13,
+                    color: productionMonitorTheme.accentColor,
+                    fontWeight: 900,
+                    letterSpacing: 1,
+                    textTransform: "uppercase",
+                  }}
+                >
+                  NÍVÓ termelési monitor
+                </div>
+                <h2
+                  style={{
+                    margin: "6px 0 4px",
+                    fontSize: monitorTitleFontSize,
+                    color: productionMonitorTheme.headerPanelText,
+                    fontWeight: productionMonitorTheme.titleBold ? 900 : 400,
+                    fontStyle: productionMonitorTheme.titleItalic ? "italic" : "normal",
+                    lineHeight: 1.08,
+                  }}
+                >
+                  Rendelések nyomonkövetése
+                </h2>
+                {productionMonitorTheme.showPlanInfo && (
+                  <div style={{ color: productionMonitorTheme.subtitleText }}>
+                    {productionMonitorData.plan
+                      ? `${productionMonitorData.plan.name} · ${productionMonitorData.plan.plan_date}`
+                      : `Nincs aktív terv · ${productionMonitorDate}`}
+                  </div>
+                )}
+                {productionMonitorTheme.showLastUpdated && (
+                  <div style={{ color: productionMonitorTheme.subtitleText, opacity: 0.72, fontSize: 12, marginTop: 4 }}>
+                    Utolsó frissítés: {productionMonitorData.lastUpdatedAt ? formatDateTime(productionMonitorData.lastUpdatedAt) : "-"}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", marginLeft: "auto" }}>
+              <select
+                value={activeProductionMonitorProfile.id}
+                onChange={(event) => switchProfile(event.target.value)}
+                title="Aktív monitor kiválasztása"
+                style={{ ...fieldStyle, width: 210, background: "#ffffff", color: "#111827" }}
+              >
+                {productionMonitorProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>{profile.name}</option>
+                ))}
+              </select>
+              <input
+                type="date"
+                value={productionMonitorDate}
+                onChange={(event) => {
+                  setProductionMonitorDate(event.target.value);
+                  void loadProductionMonitor(event.target.value);
+                }}
+                style={{ ...fieldStyle, width: 170, background: "#ffffff", color: "#111827" }}
+              />
+              <button type="button" onClick={() => void loadProductionMonitor(productionMonitorDate)} disabled={loadingProductionMonitor} style={buttonSecondary}>
+                {loadingProductionMonitor ? "Frissítés..." : "Frissítés"}
+              </button>
               {!standalone && <button type="button" onClick={openProductionMonitorWindow} style={buttonPrimary}>Megnyitás külön monitoron</button>}
               <button type="button" onClick={() => setProductionMonitorEditMode((currentValue) => !currentValue)} style={productionMonitorEditMode ? buttonPrimary : buttonSecondary}>
-                {productionMonitorEditMode ? "Szerkesztés bezárása" : "Személyre szabás"}
+                {productionMonitorEditMode ? "Szerkesztés bezárása" : "Profi szerkesztő"}
               </button>
-              <div style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: 3, border: "1px solid #cbd5e1", borderRadius: 10, background: "#f8fafc" }}>
-                <button type="button" title="Kicsinyítés" aria-label="Termelési monitor kicsinyítése" onClick={() => changeProductionMonitorZoom(-1)} disabled={productionMonitorZoomPercent <= PRODUCTION_MONITOR_MIN_ZOOM} style={{ ...buttonSecondary, minWidth: 38, padding: "8px 10px" }}>−</button>
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: 3, border: `1px solid ${productionMonitorTheme.borderColor}`, borderRadius: 10, background: "#f8fafc" }}>
+                <button type="button" title="Kicsinyítés" onClick={() => changeProductionMonitorZoom(-1)} disabled={productionMonitorZoomPercent <= PRODUCTION_MONITOR_MIN_ZOOM} style={{ ...buttonSecondary, minWidth: 38, padding: "8px 10px" }}>−</button>
                 <button type="button" title="100%-os méret visszaállítása" onClick={() => setProductionMonitorZoomPercent(100)} style={{ ...buttonSecondary, minWidth: 68, padding: "8px 10px" }}>{productionMonitorZoomPercent}%</button>
-                <button type="button" title="Nagyítás" aria-label="Termelési monitor nagyítása" onClick={() => changeProductionMonitorZoom(1)} disabled={productionMonitorZoomPercent >= PRODUCTION_MONITOR_MAX_ZOOM} style={{ ...buttonSecondary, minWidth: 38, padding: "8px 10px" }}>+</button>
+                <button type="button" title="Nagyítás" onClick={() => changeProductionMonitorZoom(1)} disabled={productionMonitorZoomPercent >= PRODUCTION_MONITOR_MAX_ZOOM} style={{ ...buttonSecondary, minWidth: 38, padding: "8px 10px" }}>+</button>
               </div>
               <button type="button" onClick={() => void toggleProductionMonitorFullscreen()} style={buttonSecondary}>Teljes képernyő</button>
               {!standalone && <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>}
@@ -2492,113 +3073,377 @@ export default function Page() {
           {!standalone && <ManagementNavigation />}
 
           {productionMonitorEditMode && (
-            <div style={{ marginBottom: 14, background: "#ffffff", color: "#1f2937", borderRadius: 14, padding: 16, boxShadow: "0 8px 22px rgba(15,23,42,0.12)", border: "2px solid #3b82f6" }}>
+            <div
+              style={{
+                marginBottom: 14,
+                background: productionMonitorTheme.editorBackground,
+                color: "#1f2937",
+                borderRadius: productionMonitorTheme.panelRadius,
+                padding: 16,
+                boxShadow: "0 8px 22px rgba(15,23,42,0.12)",
+                border: `2px solid ${productionMonitorTheme.accentColor}`,
+              }}
+            >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
                 <div>
-                  <div style={{ fontSize: 18, fontWeight: 900 }}>Monitor személyre szabása</div>
-                  <div style={{ color: "#64748b", fontSize: 13, marginTop: 3 }}>Húzd a mezőket a kívánt sorrendbe, vagy használd a nyilakat. A pipával megjelenítheted vagy eltávolíthatod őket. A beállítások ezen az eszközön automatikusan megmaradnak.</div>
+                  <div style={{ fontSize: 20, fontWeight: 900 }}>Profi monitorszerkesztő</div>
+                  <div style={{ color: "#64748b", fontSize: 13, marginTop: 3 }}>
+                    Több külön monitor hozható létre. Monitoronként eltérő mezősorrend, láthatóság, betűtípus, formázás, színek és nagyítás menthető el ezen az eszközön.
+                  </div>
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button type="button" onClick={showAllProductionMonitorFields} style={buttonSecondary}>Minden mező megjelenítése</button>
-                  <button type="button" onClick={resetProductionMonitorLayout} style={buttonSecondary}>Alapértelmezett visszaállítása</button>
+                  <button type="button" onClick={createProductionMonitorProfile} style={buttonPrimary}>+ Új monitor</button>
+                  <button type="button" onClick={duplicateProductionMonitorProfile} style={buttonSecondary}>Monitor másolása</button>
+                  <button type="button" onClick={resetProductionMonitorLayout} style={buttonSecondary}>Aktív monitor visszaállítása</button>
                 </div>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 10 }}>
-                {orderedFieldIds.map((fieldId, fieldIndex) => {
-                  const isVisible = !productionMonitorHiddenFieldIds.includes(fieldId);
-                  return (
-                    <div
-                      key={`editor-${fieldId}`}
-                      draggable
-                      onDragStart={() => handleFieldDragStart(fieldId)}
-                      onDragOver={(event) => event.preventDefault()}
-                      onDrop={() => handleFieldDrop(fieldId)}
-                      style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 48, padding: "8px 10px", border: isVisible ? "1px solid #93c5fd" : "1px dashed #94a3b8", borderRadius: 10, background: isVisible ? "#eff6ff" : "#f8fafc", opacity: isVisible ? 1 : 0.68, cursor: "grab" }}
-                    >
-                      <span title="Fogd meg és húzd" style={{ color: "#64748b", fontSize: 20, lineHeight: 1, userSelect: "none" }}>⋮⋮</span>
-                      <label style={{ display: "flex", alignItems: "center", gap: 7, flex: 1, minWidth: 0, cursor: "pointer" }}>
-                        <input type="checkbox" checked={isVisible} onChange={() => toggleProductionMonitorFieldVisibility(fieldId)} />
-                        <span style={{ fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis" }} title={getProductionMonitorFieldLabel(fieldId)}>{getProductionMonitorFieldLabel(fieldId)}</span>
-                      </label>
-                      <button type="button" title="Mozgatás balra" onClick={() => moveProductionMonitorField(fieldId, -1)} disabled={fieldIndex === 0} style={{ ...buttonSecondary, padding: "6px 9px", minWidth: 34 }}>←</button>
-                      <button type="button" title="Mozgatás jobbra" onClick={() => moveProductionMonitorField(fieldId, 1)} disabled={fieldIndex === orderedFieldIds.length - 1} style={{ ...buttonSecondary, padding: "6px 9px", minWidth: 34 }}>→</button>
-                    </div>
-                  );
-                })}
+              <div style={{ ...editorSectionStyle, marginBottom: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 260px) minmax(220px, 1fr) auto auto", gap: 9, alignItems: "end" }}>
+                  <label style={editorLabelStyle}>
+                    <span>Aktív monitor</span>
+                    <select value={activeProductionMonitorProfile.id} onChange={(event) => switchProfile(event.target.value)} style={editorControlStyle}>
+                      {productionMonitorProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                    </select>
+                  </label>
+                  <label style={editorLabelStyle}>
+                    <span>Monitor neve</span>
+                    <input value={productionMonitorProfileNameDraft} maxLength={80} onChange={(event) => setProductionMonitorProfileNameDraft(event.target.value)} style={editorControlStyle} />
+                  </label>
+                  <button type="button" onClick={renameProductionMonitorProfile} style={buttonPrimary}>Név mentése</button>
+                  <button type="button" onClick={deleteProductionMonitorProfile} disabled={productionMonitorProfiles.length <= 1} style={{ ...buttonSecondary, borderColor: "#ef4444", color: "#b91c1c", background: "#fff1f2" }}>Monitor törlése</button>
+                </div>
               </div>
+
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                <button type="button" onClick={() => setProductionMonitorEditorTab("layout")} style={tabButtonStyle("layout")}>Elrendezés és mezők</button>
+                <button type="button" onClick={() => setProductionMonitorEditorTab("typography")} style={tabButtonStyle("typography")}>Betű és méretek</button>
+                <button type="button" onClick={() => setProductionMonitorEditorTab("colors")} style={tabButtonStyle("colors")}>Színek és hátterek</button>
+                <button type="button" onClick={() => setProductionMonitorEditorTab("field")} style={tabButtonStyle("field")}>Kijelölt mező formázása</button>
+              </div>
+
+              {productionMonitorEditorTab === "layout" && (
+                <div style={{ display: "grid", gap: 12 }}>
+                  <div style={{ ...editorSectionStyle, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
+                    {[
+                      ["Fejléc megjelenítése", "showHeader"],
+                      ["Terv adatainak megjelenítése", "showPlanInfo"],
+                      ["Utolsó frissítés megjelenítése", "showLastUpdated"],
+                      ["Összesítő kártyák megjelenítése", "showSummaryCards"],
+                    ].map(([label, key]) => (
+                      <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(productionMonitorTheme[key as keyof ProductionMonitorTheme])}
+                          onChange={(event) => updateProductionMonitorTheme({ [key]: event.target.checked } as Partial<ProductionMonitorTheme>)}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <strong>Mezők sorrendje és láthatósága</strong>
+                    <button type="button" onClick={showAllProductionMonitorFields} style={buttonSecondary}>Minden mező megjelenítése</button>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 10 }}>
+                    {orderedFieldIds.map((fieldId, fieldIndex) => {
+                      const isVisible = !productionMonitorHiddenFieldIds.includes(fieldId);
+                      return (
+                        <div
+                          key={`editor-${fieldId}`}
+                          draggable
+                          onDragStart={() => handleFieldDragStart(fieldId)}
+                          onDragOver={(event) => event.preventDefault()}
+                          onDrop={() => handleFieldDrop(fieldId)}
+                          onClick={() => setSelectedProductionMonitorStyleFieldId(fieldId)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            minHeight: 48,
+                            padding: "8px 10px",
+                            border: selectedFieldId === fieldId ? `2px solid ${productionMonitorTheme.accentColor}` : isVisible ? "1px solid #93c5fd" : "1px dashed #94a3b8",
+                            borderRadius: 10,
+                            background: isVisible ? "#eff6ff" : "#f8fafc",
+                            opacity: isVisible ? 1 : 0.68,
+                            cursor: "grab",
+                          }}
+                        >
+                          <span title="Fogd meg és húzd" style={{ color: "#64748b", fontSize: 20, lineHeight: 1, userSelect: "none" }}>⋮⋮</span>
+                          <label style={{ display: "flex", alignItems: "center", gap: 7, flex: 1, minWidth: 0, cursor: "pointer" }} onClick={(event) => event.stopPropagation()}>
+                            <input type="checkbox" checked={isVisible} onChange={() => toggleProductionMonitorFieldVisibility(fieldId)} />
+                            <span style={{ fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis" }} title={getProductionMonitorFieldLabel(fieldId)}>{getProductionMonitorFieldLabel(fieldId)}</span>
+                          </label>
+                          <button type="button" title="Mező formázása" onClick={(event) => { event.stopPropagation(); setSelectedProductionMonitorStyleFieldId(fieldId); setProductionMonitorEditorTab("field"); }} style={{ ...buttonSecondary, padding: "6px 8px" }}>✎</button>
+                          <button type="button" title="Mozgatás balra" onClick={(event) => { event.stopPropagation(); moveProductionMonitorField(fieldId, -1); }} disabled={fieldIndex === 0} style={{ ...buttonSecondary, padding: "6px 9px", minWidth: 34 }}>←</button>
+                          <button type="button" title="Mozgatás jobbra" onClick={(event) => { event.stopPropagation(); moveProductionMonitorField(fieldId, 1); }} disabled={fieldIndex === orderedFieldIds.length - 1} style={{ ...buttonSecondary, padding: "6px 9px", minWidth: 34 }}>→</button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {productionMonitorEditorTab === "typography" && (
+                <div style={{ display: "grid", gap: 12 }}>
+                  <div style={{ ...editorSectionStyle, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12 }}>
+                    <label style={editorLabelStyle}>
+                      <span>Betűtípus</span>
+                      <select value={productionMonitorTheme.fontFamily} onChange={(event) => updateProductionMonitorTheme({ fontFamily: event.target.value })} style={{ ...editorControlStyle, fontFamily: productionMonitorTheme.fontFamily }}>
+                        {PRODUCTION_MONITOR_FONT_OPTIONS.map((fontName) => <option key={fontName} value={fontName} style={{ fontFamily: fontName }}>{fontName}</option>)}
+                      </select>
+                    </label>
+                    <label style={editorLabelStyle}>
+                      <span>Cím betűmérete</span>
+                      <input type="number" min={16} max={72} value={productionMonitorTheme.titleFontSize} onChange={(event) => updateProductionMonitorTheme({ titleFontSize: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+                    <label style={editorLabelStyle}>
+                      <span>Fejléc betűmérete (0 = automatikus)</span>
+                      <input type="number" min={0} max={36} value={productionMonitorTheme.headerFontSize} onChange={(event) => updateProductionMonitorTheme({ headerFontSize: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+                    <label style={editorLabelStyle}>
+                      <span>Cellák betűmérete (0 = automatikus)</span>
+                      <input type="number" min={0} max={36} value={productionMonitorTheme.cellFontSize} onChange={(event) => updateProductionMonitorTheme({ cellFontSize: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+                    <label style={editorLabelStyle}>
+                      <span>Fejléc belső térköze</span>
+                      <input type="number" min={2} max={28} value={productionMonitorTheme.headerPadding} onChange={(event) => updateProductionMonitorTheme({ headerPadding: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+                    <label style={editorLabelStyle}>
+                      <span>Cellák belső térköze</span>
+                      <input type="number" min={2} max={28} value={productionMonitorTheme.cellPadding} onChange={(event) => updateProductionMonitorTheme({ cellPadding: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+                    <label style={editorLabelStyle}>
+                      <span>Monitor maximális szélessége</span>
+                      <input type="number" min={800} max={2600} step={50} value={productionMonitorTheme.contentMaxWidth} onChange={(event) => updateProductionMonitorTheme({ contentMaxWidth: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+                    <label style={editorLabelStyle}>
+                      <span>Panelek lekerekítése</span>
+                      <input type="number" min={0} max={40} value={productionMonitorTheme.panelRadius} onChange={(event) => updateProductionMonitorTheme({ panelRadius: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+                  </div>
+                  <div style={{ ...editorSectionStyle, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
+                    {[
+                      ["Cím félkövér", "titleBold"],
+                      ["Cím dőlt", "titleItalic"],
+                      ["Táblafejléc félkövér", "headerBold"],
+                      ["Táblafejléc dőlt", "headerItalic"],
+                      ["Cellák félkövérek", "cellBold"],
+                      ["Cellák dőltek", "cellItalic"],
+                    ].map(([label, key]) => (
+                      <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(productionMonitorTheme[key as keyof ProductionMonitorTheme])}
+                          onChange={(event) => updateProductionMonitorTheme({ [key]: event.target.checked } as Partial<ProductionMonitorTheme>)}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {productionMonitorEditorTab === "colors" && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 12 }}>
+                  {renderColorControl("Teljes monitor háttere", productionMonitorTheme.pageBackground, (value) => updateProductionMonitorTheme({ pageBackground: value }))}
+                  {renderColorControl("Felső panel háttere", productionMonitorTheme.headerPanelBackground, (value) => updateProductionMonitorTheme({ headerPanelBackground: value }))}
+                  {renderColorControl("Felső panel szövege", productionMonitorTheme.headerPanelText, (value) => updateProductionMonitorTheme({ headerPanelText: value }))}
+                  {renderColorControl("Másodlagos szöveg", productionMonitorTheme.subtitleText, (value) => updateProductionMonitorTheme({ subtitleText: value }))}
+                  {renderColorControl("Kiemelő szín", productionMonitorTheme.accentColor, (value) => updateProductionMonitorTheme({ accentColor: value }))}
+                  {renderColorControl("Szerkesztő háttere", productionMonitorTheme.editorBackground, (value) => updateProductionMonitorTheme({ editorBackground: value }))}
+                  {renderColorControl("Táblázat panel háttere", productionMonitorTheme.tablePanelBackground, (value) => updateProductionMonitorTheme({ tablePanelBackground: value }))}
+                  {renderColorControl("Táblafejléc háttere", productionMonitorTheme.tableHeaderBackground, (value) => updateProductionMonitorTheme({ tableHeaderBackground: value }))}
+                  {renderColorControl("Táblafejléc szövege", productionMonitorTheme.tableHeaderText, (value) => updateProductionMonitorTheme({ tableHeaderText: value }))}
+                  {renderColorControl("Sorszám cella háttere", productionMonitorTheme.orderCellBackground, (value) => updateProductionMonitorTheme({ orderCellBackground: value }))}
+                  {renderColorControl("Sorszám cella szövege", productionMonitorTheme.orderCellText, (value) => updateProductionMonitorTheme({ orderCellText: value }))}
+                  {renderColorControl("Kész háttér", productionMonitorTheme.doneBackground, (value) => updateProductionMonitorTheme({ doneBackground: value }))}
+                  {renderColorControl("Kész szöveg", productionMonitorTheme.doneText, (value) => updateProductionMonitorTheme({ doneText: value }))}
+                  {renderColorControl("Folyamatban háttér", productionMonitorTheme.inProgressBackground, (value) => updateProductionMonitorTheme({ inProgressBackground: value }))}
+                  {renderColorControl("Folyamatban szöveg", productionMonitorTheme.inProgressText, (value) => updateProductionMonitorTheme({ inProgressText: value }))}
+                  {renderColorControl("Várakozik háttér", productionMonitorTheme.waitingBackground, (value) => updateProductionMonitorTheme({ waitingBackground: value }))}
+                  {renderColorControl("Várakozik szöveg", productionMonitorTheme.waitingText, (value) => updateProductionMonitorTheme({ waitingText: value }))}
+                  {renderColorControl("Nem szükséges háttér", productionMonitorTheme.notRequiredBackground, (value) => updateProductionMonitorTheme({ notRequiredBackground: value }))}
+                  {renderColorControl("Nem szükséges szöveg", productionMonitorTheme.notRequiredText, (value) => updateProductionMonitorTheme({ notRequiredText: value }))}
+                  {renderColorControl("Rácsvonalak színe", productionMonitorTheme.borderColor, (value) => updateProductionMonitorTheme({ borderColor: value }))}
+                </div>
+              )}
+
+              {productionMonitorEditorTab === "field" && (
+                <div style={{ display: "grid", gap: 12 }}>
+                  <div style={{ ...editorSectionStyle, display: "flex", justifyContent: "space-between", alignItems: "end", gap: 12, flexWrap: "wrap" }}>
+                    <label style={{ ...editorLabelStyle, minWidth: 280, flex: 1 }}>
+                      <span>Formázandó mező</span>
+                      <select value={selectedFieldId} onChange={(event) => setSelectedProductionMonitorStyleFieldId(event.target.value)} style={editorControlStyle}>
+                        {orderedFieldIds.map((fieldId) => <option key={fieldId} value={fieldId}>{getProductionMonitorFieldLabel(fieldId)}</option>)}
+                      </select>
+                    </label>
+                    <button type="button" onClick={() => resetProductionMonitorFieldStyle(selectedFieldId)} style={buttonSecondary}>Mezőformázás visszaállítása</button>
+                  </div>
+                  <div style={{ ...editorSectionStyle, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12 }}>
+                    <label style={editorLabelStyle}>
+                      <span>Oszlopszélesség súlya</span>
+                      <input type="number" min={0.25} max={8} step={0.25} value={selectedFieldStyle.widthWeight} onChange={(event) => updateProductionMonitorFieldStyle(selectedFieldId, { widthWeight: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+                    <label style={editorLabelStyle}>
+                      <span>Szöveg igazítása</span>
+                      <select value={selectedFieldStyle.textAlign} onChange={(event) => updateProductionMonitorFieldStyle(selectedFieldId, { textAlign: event.target.value as ProductionMonitorTextAlign })} style={editorControlStyle}>
+                        <option value="left">Balra</option>
+                        <option value="center">Középre</option>
+                        <option value="right">Jobbra</option>
+                      </select>
+                    </label>
+                    {[
+                      ["Fejléc félkövér", "headerBold"],
+                      ["Fejléc dőlt", "headerItalic"],
+                      ["Cella félkövér", "cellBold"],
+                      ["Cella dőlt", "cellItalic"],
+                    ].map(([label, key]) => (
+                      <label key={key} style={editorLabelStyle}>
+                        <span>{label}</span>
+                        <select
+                          value={selectedFieldStyle[key as keyof ProductionMonitorFieldStyle] as string}
+                          onChange={(event) => updateProductionMonitorFieldStyle(selectedFieldId, { [key]: event.target.value as ProductionMonitorTriState } as Partial<ProductionMonitorFieldStyle>)}
+                          style={editorControlStyle}
+                        >
+                          <option value="inherit">Globális beállítás</option>
+                          <option value="yes">Igen</option>
+                          <option value="no">Nem</option>
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                  <div style={{ ...editorSectionStyle, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 12 }}>
+                    <div style={{ display: "grid", gap: 7 }}>
+                      {renderColorControl("Egyedi fejléc háttér", selectedFieldStyle.headerBackground || productionMonitorTheme.tableHeaderBackground, (value) => updateProductionMonitorFieldStyle(selectedFieldId, { headerBackground: value }))}
+                      <button type="button" onClick={() => updateProductionMonitorFieldStyle(selectedFieldId, { headerBackground: "" })} style={buttonSecondary}>Globális fejléc háttér használata</button>
+                    </div>
+                    <div style={{ display: "grid", gap: 7 }}>
+                      {renderColorControl("Egyedi fejléc szöveg", selectedFieldStyle.headerTextColor || productionMonitorTheme.tableHeaderText, (value) => updateProductionMonitorFieldStyle(selectedFieldId, { headerTextColor: value }))}
+                      <button type="button" onClick={() => updateProductionMonitorFieldStyle(selectedFieldId, { headerTextColor: "" })} style={buttonSecondary}>Globális fejléc szöveg használata</button>
+                    </div>
+                    <div style={{ display: "grid", gap: 7 }}>
+                      {renderColorControl("Egyedi cellaháttér", selectedFieldStyle.cellBackground || (selectedFieldId === PRODUCTION_MONITOR_ORDER_FIELD_ID ? productionMonitorTheme.orderCellBackground : productionMonitorTheme.waitingBackground), (value) => updateProductionMonitorFieldStyle(selectedFieldId, { cellBackground: value }))}
+                      <button type="button" onClick={() => updateProductionMonitorFieldStyle(selectedFieldId, { cellBackground: "" })} style={buttonSecondary}>Állapotszín használata</button>
+                    </div>
+                    <div style={{ display: "grid", gap: 7 }}>
+                      {renderColorControl("Egyedi cellaszöveg", selectedFieldStyle.cellTextColor || (selectedFieldId === PRODUCTION_MONITOR_ORDER_FIELD_ID ? productionMonitorTheme.orderCellText : productionMonitorTheme.waitingText), (value) => updateProductionMonitorFieldStyle(selectedFieldId, { cellTextColor: value }))}
+                      <button type="button" onClick={() => updateProductionMonitorFieldStyle(selectedFieldId, { cellTextColor: "" })} style={buttonSecondary}>Állapotszöveg színének használata</button>
+                    </div>
+                  </div>
+                  <div style={{ color: "#64748b", fontSize: 12 }}>
+                    Az egyedi cellaháttér felülírja a Kész, Folyamatban és Várakozik állapotszíneket csak ennél az oszlopnál. Üres egyedi színnél az állapotszínek maradnak érvényben.
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(140px, 1fr))", gap: 10, marginBottom: 14 }}>
-            <div style={{ background: "#ffffff", borderRadius: 12, padding: 14, color: "#1f2937", boxShadow: "0 5px 16px rgba(15,23,42,0.10)" }}><div style={{ color: "#64748b", fontSize: 12 }}>Napi terv</div><div style={{ fontSize: 28, fontWeight: 900 }}>{productionMonitorData.rows.length}</div></div>
-            <div style={{ background: "#dcfce7", borderRadius: 12, padding: 14, color: "#14532d" }}><div style={{ fontSize: 12 }}>Kész</div><div style={{ fontSize: 28, fontWeight: 900 }}>{completed}</div></div>
-            <div style={{ background: "#fef3c7", borderRadius: 12, padding: 14, color: "#78350f" }}><div style={{ fontSize: 12 }}>Folyamatban</div><div style={{ fontSize: 28, fontWeight: 900 }}>{inProgress}</div></div>
-            <div style={{ background: "#e2e8f0", borderRadius: 12, padding: 14, color: "#475569" }}><div style={{ fontSize: 12 }}>Várakozik</div><div style={{ fontSize: 28, fontWeight: 900 }}>{waiting}</div></div>
-          </div>
+          {productionMonitorTheme.showSummaryCards && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(120px, 1fr))", gap: 10, marginBottom: 14 }}>
+              <div style={{ background: productionMonitorTheme.headerPanelBackground, borderRadius: productionMonitorTheme.panelRadius, padding: 14, color: productionMonitorTheme.headerPanelText, boxShadow: "0 5px 16px rgba(15,23,42,0.10)" }}><div style={{ color: productionMonitorTheme.subtitleText, fontSize: 12 }}>Napi terv</div><div style={{ fontSize: 28, fontWeight: 900 }}>{productionMonitorData.rows.length}</div></div>
+              <div style={{ background: productionMonitorTheme.doneBackground, borderRadius: productionMonitorTheme.panelRadius, padding: 14, color: productionMonitorTheme.doneText }}><div style={{ fontSize: 12 }}>Kész</div><div style={{ fontSize: 28, fontWeight: 900 }}>{completed}</div></div>
+              <div style={{ background: productionMonitorTheme.inProgressBackground, borderRadius: productionMonitorTheme.panelRadius, padding: 14, color: productionMonitorTheme.inProgressText }}><div style={{ fontSize: 12 }}>Folyamatban</div><div style={{ fontSize: 28, fontWeight: 900 }}>{inProgress}</div></div>
+              <div style={{ background: productionMonitorTheme.waitingBackground, borderRadius: productionMonitorTheme.panelRadius, padding: 14, color: productionMonitorTheme.waitingText }}><div style={{ fontSize: 12 }}>Várakozik</div><div style={{ fontSize: 28, fontWeight: 900 }}>{waiting}</div></div>
+            </div>
+          )}
 
-          <div style={{ background: "#ffffff", borderRadius: 14, padding: 12, boxShadow: "0 10px 28px rgba(15,23,42,0.14)", overflow: "hidden" }}>
+          <div style={{ background: productionMonitorTheme.tablePanelBackground, borderRadius: productionMonitorTheme.panelRadius, padding: 12, boxShadow: "0 10px 28px rgba(15,23,42,0.14)", overflow: "hidden" }}>
             {!productionMonitorData.plan ? (
-              <div style={{ padding: 36, color: "#64748b", textAlign: "center", fontSize: 18 }}>A kiválasztott naphoz nincs aktív termelési terv.</div>
+              <div style={{ padding: 36, color: productionMonitorTheme.subtitleText, textAlign: "center", fontSize: 18 }}>A kiválasztott naphoz nincs aktív termelési terv.</div>
             ) : productionMonitorData.rows.length === 0 ? (
-              <div style={{ padding: 36, color: "#64748b", textAlign: "center", fontSize: 18 }}>Az aktív termelési terv nem tartalmaz rendeléseket.</div>
+              <div style={{ padding: 36, color: productionMonitorTheme.subtitleText, textAlign: "center", fontSize: 18 }}>Az aktív termelési terv nem tartalmaz rendeléseket.</div>
             ) : visibleFieldIds.length === 0 ? (
-              <div style={{ padding: 36, color: "#64748b", textAlign: "center", fontSize: 18 }}>
-                A monitor minden mezője el van rejtve. Nyisd meg a <strong>Személyre szabás</strong> panelt, és jelölj ki legalább egy mezőt.
+              <div style={{ padding: 36, color: productionMonitorTheme.subtitleText, textAlign: "center", fontSize: 18 }}>
+                A monitor minden mezője el van rejtve. Nyisd meg a <strong>Profi szerkesztőt</strong>, és jelölj ki legalább egy mezőt.
               </div>
             ) : (
-              <div style={{ overflowX: "hidden", overflowY: "auto", maxHeight: standalone ? "calc(100vh - 285px)" : 650 }}>
-                <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "separate", borderSpacing: 0 }}>
+              <div style={{ overflowX: "hidden", overflowY: "auto", maxHeight: standalone ? "calc(100vh - 250px)" : 650 }}>
+                <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "separate", borderSpacing: 0, fontFamily: productionMonitorTheme.fontFamily }}>
                   <colgroup>
                     {visibleFieldIds.map((fieldId) => (
-                      <col
-                        key={`col-${fieldId}`}
-                        style={{
-                          width: fieldId === PRODUCTION_MONITOR_ORDER_FIELD_ID
-                            ? `${orderNumberColumnPercent}%`
-                            : `${stationColumnPercent}%`,
-                        }}
-                      />
+                      <col key={`col-${fieldId}`} style={{ width: `${(Math.max(0.25, fieldWeights[fieldId] || 1) / totalFieldWeight) * 100}%` }} />
                     ))}
                   </colgroup>
                   <thead style={{ position: "sticky", top: 0, zIndex: 5 }}>
                     <tr>
-                      {visibleFieldIds.map((fieldId) => (
-                        <th
-                          key={fieldId}
-                          draggable={productionMonitorEditMode}
-                          onDragStart={() => handleFieldDragStart(fieldId)}
-                          onDragOver={(event) => productionMonitorEditMode && event.preventDefault()}
-                          onDrop={() => productionMonitorEditMode && handleFieldDrop(fieldId)}
-                          style={{ position: "relative", padding: `${headerVerticalPadding}px 5px`, background: productionMonitorEditMode ? "#eff6ff" : "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", borderRight: "1px solid #e2e8f0", textAlign: fieldId === PRODUCTION_MONITOR_ORDER_FIELD_ID ? "left" : "center", fontSize: monitorHeaderFontSize, lineHeight: 1.15, whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "normal", cursor: productionMonitorEditMode ? "grab" : "default" }}
-                          title={productionMonitorEditMode ? "Húzd a fejlécet másik helyre" : getProductionMonitorFieldLabel(fieldId)}
-                        >
-                          <span>{getProductionMonitorFieldLabel(fieldId)}</span>
-                          {productionMonitorEditMode && (
-                            <button
-                              type="button"
-                              title="Mező eltávolítása a monitorról"
-                              aria-label={`${getProductionMonitorFieldLabel(fieldId)} elrejtése`}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                toggleProductionMonitorFieldVisibility(fieldId);
-                              }}
-                              style={{ position: "absolute", top: 2, right: 2, border: "none", background: "#fee2e2", color: "#991b1b", width: 20, height: 20, borderRadius: 6, cursor: "pointer", fontWeight: 900, lineHeight: "20px", padding: 0 }}
-                            >
-                              ×
-                            </button>
-                          )}
-                        </th>
-                      ))}
+                      {visibleFieldIds.map((fieldId) => {
+                        const currentFieldStyle = getProductionMonitorFieldStyle(fieldId);
+                        const headerBold = resolveProductionMonitorTriState(currentFieldStyle.headerBold, productionMonitorTheme.headerBold);
+                        const headerItalic = resolveProductionMonitorTriState(currentFieldStyle.headerItalic, productionMonitorTheme.headerItalic);
+                        return (
+                          <th
+                            key={fieldId}
+                            draggable={productionMonitorEditMode}
+                            onDragStart={() => handleFieldDragStart(fieldId)}
+                            onDragOver={(event) => productionMonitorEditMode && event.preventDefault()}
+                            onDrop={() => productionMonitorEditMode && handleFieldDrop(fieldId)}
+                            onClick={() => productionMonitorEditMode && setSelectedProductionMonitorStyleFieldId(fieldId)}
+                            style={{
+                              position: "relative",
+                              padding: `${headerVerticalPadding}px 5px`,
+                              background: currentFieldStyle.headerBackground || (productionMonitorEditMode ? "#eff6ff" : productionMonitorTheme.tableHeaderBackground),
+                              color: currentFieldStyle.headerTextColor || productionMonitorTheme.tableHeaderText,
+                              borderBottom: `2px solid ${productionMonitorTheme.borderColor}`,
+                              borderRight: `1px solid ${productionMonitorTheme.borderColor}`,
+                              textAlign: currentFieldStyle.textAlign,
+                              fontSize: monitorHeaderFontSize,
+                              fontWeight: headerBold ? 900 : 400,
+                              fontStyle: headerItalic ? "italic" : "normal",
+                              lineHeight: 1.15,
+                              whiteSpace: "normal",
+                              overflowWrap: "anywhere",
+                              wordBreak: "normal",
+                              cursor: productionMonitorEditMode ? "grab" : "default",
+                            }}
+                            title={productionMonitorEditMode ? "Húzd a fejlécet, vagy kattints a formázásához" : getProductionMonitorFieldLabel(fieldId)}
+                          >
+                            <span>{getProductionMonitorFieldLabel(fieldId)}</span>
+                            {productionMonitorEditMode && (
+                              <button
+                                type="button"
+                                title="Mező eltávolítása a monitorról"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  toggleProductionMonitorFieldVisibility(fieldId);
+                                }}
+                                style={{ position: "absolute", top: 2, right: 2, border: "none", background: "#fee2e2", color: "#991b1b", width: 20, height: 20, borderRadius: 6, cursor: "pointer", fontWeight: 900, lineHeight: "20px", padding: 0 }}
+                              >
+                                ×
+                              </button>
+                            )}
+                          </th>
+                        );
+                      })}
                     </tr>
                   </thead>
                   <tbody>
                     {productionMonitorData.rows.map((row) => (
                       <tr key={String(row.itemId || row.orderNumber)}>
                         {visibleFieldIds.map((fieldId) => {
+                          const currentFieldStyle = getProductionMonitorFieldStyle(fieldId);
+                          const cellBold = resolveProductionMonitorTriState(currentFieldStyle.cellBold, productionMonitorTheme.cellBold);
+                          const cellItalic = resolveProductionMonitorTriState(currentFieldStyle.cellItalic, productionMonitorTheme.cellItalic);
                           if (fieldId === PRODUCTION_MONITOR_ORDER_FIELD_ID) {
                             return (
-                              <td key={`${row.orderNumber}-${fieldId}`} style={{ padding: `${cellVerticalPadding}px 8px`, background: "#ffffff", color: "#1f2937", borderBottom: "1px solid #cbd5e1", borderRight: "1px solid #d1d5db", fontWeight: 900, fontSize: monitorCellFontSize, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={row.orderNumber}>
+                              <td
+                                key={`${row.orderNumber}-${fieldId}`}
+                                style={{
+                                  padding: `${cellVerticalPadding}px 8px`,
+                                  background: currentFieldStyle.cellBackground || productionMonitorTheme.orderCellBackground,
+                                  color: currentFieldStyle.cellTextColor || productionMonitorTheme.orderCellText,
+                                  borderBottom: `1px solid ${productionMonitorTheme.borderColor}`,
+                                  borderRight: `1px solid ${productionMonitorTheme.borderColor}`,
+                                  fontWeight: cellBold ? 900 : 400,
+                                  fontStyle: cellItalic ? "italic" : "normal",
+                                  fontSize: monitorCellFontSize,
+                                  textAlign: currentFieldStyle.textAlign,
+                                  whiteSpace: "nowrap",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                }}
+                                title={row.orderNumber}
+                              >
                                 {row.orderNumber}
                               </td>
                             );
@@ -2607,7 +3452,23 @@ export default function Page() {
                           const station = getProductionMonitorFieldLabel(fieldId);
                           const cell = row.stations[station] || getMonitorCellFromLogs([]);
                           return (
-                            <td key={`${row.orderNumber}-${fieldId}`} title={[cell.workerName, cell.startedAt ? `START: ${formatDateTime(cell.startedAt)}` : "", cell.endedAt ? `END: ${formatDateTime(cell.endedAt)}` : ""].filter(Boolean).join(" | ")} style={{ ...getCellStyle(cell.status), padding: `${cellVerticalPadding}px 4px`, borderBottom: "1px solid #cbd5e1", borderRight: "1px solid #d1d5db", textAlign: "center", fontWeight: 900, fontSize: monitorCellFontSize, lineHeight: 1.15, whiteSpace: "normal", overflowWrap: "anywhere" }}>
+                            <td
+                              key={`${row.orderNumber}-${fieldId}`}
+                              title={[cell.workerName, cell.startedAt ? `START: ${formatDateTime(cell.startedAt)}` : "", cell.endedAt ? `END: ${formatDateTime(cell.endedAt)}` : ""].filter(Boolean).join(" | ")}
+                              style={{
+                                ...getCellStyle(cell.status, fieldId),
+                                padding: `${cellVerticalPadding}px 4px`,
+                                borderBottom: `1px solid ${productionMonitorTheme.borderColor}`,
+                                borderRight: `1px solid ${productionMonitorTheme.borderColor}`,
+                                textAlign: currentFieldStyle.textAlign,
+                                fontWeight: cellBold ? 900 : 400,
+                                fontStyle: cellItalic ? "italic" : "normal",
+                                fontSize: monitorCellFontSize,
+                                lineHeight: 1.15,
+                                whiteSpace: "normal",
+                                overflowWrap: "anywhere",
+                              }}
+                            >
                               {cell.label}
                             </td>
                           );
@@ -3260,23 +4121,51 @@ export default function Page() {
     if (typeof window === "undefined") return;
 
     try {
-      const storedValue = window.localStorage.getItem(PRODUCTION_MONITOR_LAYOUT_STORAGE_KEY);
-      if (storedValue) {
-        const parsed = JSON.parse(storedValue) as Partial<ProductionMonitorLayoutPreferences>;
-        if (Array.isArray(parsed.fieldOrder)) {
-          setProductionMonitorFieldOrder(parsed.fieldOrder.filter((item): item is string => typeof item === "string"));
+      const requestedProfileId = new URLSearchParams(window.location.search).get("monitor");
+      const storedProfilesValue = window.localStorage.getItem(PRODUCTION_MONITOR_PROFILES_STORAGE_KEY);
+      if (storedProfilesValue) {
+        const parsed = JSON.parse(storedProfilesValue) as Partial<ProductionMonitorProfilesStorage>;
+        const normalizedProfiles = Array.isArray(parsed.profiles)
+          ? parsed.profiles.map((profile, index) => normalizeProductionMonitorProfile(profile, index))
+          : [];
+        if (normalizedProfiles.length > 0) {
+          const preferredProfileId = requestedProfileId
+            || (typeof parsed.activeProfileId === "string" ? parsed.activeProfileId : "");
+          const nextActiveProfile = normalizedProfiles.find((profile) => profile.id === preferredProfileId)
+            || normalizedProfiles[0];
+          setProductionMonitorProfiles(normalizedProfiles);
+          setActiveProductionMonitorProfileId(nextActiveProfile.id);
+          setProductionMonitorProfileNameDraft(nextActiveProfile.name);
+          return;
         }
-        if (Array.isArray(parsed.hiddenFieldIds)) {
-          setProductionMonitorHiddenFieldIds(parsed.hiddenFieldIds.filter((item): item is string => typeof item === "string"));
-        }
+      }
+
+      const legacyStoredValue = window.localStorage.getItem(PRODUCTION_MONITOR_LAYOUT_STORAGE_KEY);
+      const migratedProfile = createDefaultProductionMonitorProfile();
+      if (legacyStoredValue) {
+        const parsed = JSON.parse(legacyStoredValue) as Partial<ProductionMonitorLayoutPreferences>;
+        migratedProfile.fieldOrder = Array.isArray(parsed.fieldOrder)
+          ? parsed.fieldOrder.filter((item): item is string => typeof item === "string")
+          : [];
+        migratedProfile.hiddenFieldIds = Array.isArray(parsed.hiddenFieldIds)
+          ? parsed.hiddenFieldIds.filter((item): item is string => typeof item === "string")
+          : [];
         if (typeof parsed.zoomPercent === "number" && Number.isFinite(parsed.zoomPercent)) {
-          setProductionMonitorZoomPercent(
-            Math.min(PRODUCTION_MONITOR_MAX_ZOOM, Math.max(PRODUCTION_MONITOR_MIN_ZOOM, Math.round(parsed.zoomPercent)))
+          migratedProfile.zoomPercent = Math.min(
+            PRODUCTION_MONITOR_MAX_ZOOM,
+            Math.max(PRODUCTION_MONITOR_MIN_ZOOM, Math.round(parsed.zoomPercent))
           );
         }
       }
+      setProductionMonitorProfiles([migratedProfile]);
+      setActiveProductionMonitorProfileId(migratedProfile.id);
+      setProductionMonitorProfileNameDraft(migratedProfile.name);
     } catch (error) {
-      console.error("A termelési monitor elrendezésének betöltése sikertelen:", error);
+      console.error("A termelési monitor profiljainak betöltése sikertelen:", error);
+      const fallbackProfile = createDefaultProductionMonitorProfile();
+      setProductionMonitorProfiles([fallbackProfile]);
+      setActiveProductionMonitorProfileId(fallbackProfile.id);
+      setProductionMonitorProfileNameDraft(fallbackProfile.name);
     } finally {
       setProductionMonitorLayoutLoaded(true);
     }
@@ -3285,18 +4174,28 @@ export default function Page() {
   useEffect(() => {
     if (!productionMonitorLayoutLoaded || typeof window === "undefined") return;
 
-    const preferences: ProductionMonitorLayoutPreferences = {
-      fieldOrder: productionMonitorFieldOrder,
-      hiddenFieldIds: productionMonitorHiddenFieldIds,
-      zoomPercent: productionMonitorZoomPercent,
+    const storageValue: ProductionMonitorProfilesStorage = {
+      activeProfileId: activeProductionMonitorProfile.id,
+      profiles: productionMonitorProfiles,
     };
 
     try {
-      window.localStorage.setItem(PRODUCTION_MONITOR_LAYOUT_STORAGE_KEY, JSON.stringify(preferences));
+      window.localStorage.setItem(PRODUCTION_MONITOR_PROFILES_STORAGE_KEY, JSON.stringify(storageValue));
     } catch (error) {
-      console.error("A termelési monitor elrendezésének mentése sikertelen:", error);
+      console.error("A termelési monitor profiljainak mentése sikertelen:", error);
     }
-  }, [productionMonitorLayoutLoaded, productionMonitorFieldOrder, productionMonitorHiddenFieldIds, productionMonitorZoomPercent]);
+  }, [productionMonitorLayoutLoaded, productionMonitorProfiles, activeProductionMonitorProfile.id]);
+
+  useEffect(() => {
+    setProductionMonitorProfileNameDraft(activeProductionMonitorProfile.name);
+  }, [activeProductionMonitorProfile.id, activeProductionMonitorProfile.name]);
+
+  useEffect(() => {
+    if (!standaloneProductionMonitor || typeof window === "undefined" || !productionMonitorLayoutLoaded) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("monitor", activeProductionMonitorProfile.id);
+    window.history.replaceState({}, "", url.toString());
+  }, [standaloneProductionMonitor, productionMonitorLayoutLoaded, activeProductionMonitorProfile.id]);
 
   useEffect(() => {
     if (productionMonitorData.stations.length === 0) return;
@@ -3307,23 +4206,29 @@ export default function Page() {
     ];
     const validFieldIdSet = new Set(validFieldIds);
 
-    setProductionMonitorFieldOrder((currentOrder) => {
+    setProductionMonitorProfiles((currentProfiles) => currentProfiles.map((profile) => {
       const nextOrder = [
-        ...currentOrder.filter((fieldId) => validFieldIdSet.has(fieldId)),
-        ...validFieldIds.filter((fieldId) => !currentOrder.includes(fieldId)),
+        ...profile.fieldOrder.filter((fieldId) => validFieldIdSet.has(fieldId)),
+        ...validFieldIds.filter((fieldId) => !profile.fieldOrder.includes(fieldId)),
       ];
-      return nextOrder.length === currentOrder.length && nextOrder.every((fieldId, index) => fieldId === currentOrder[index])
-        ? currentOrder
-        : nextOrder;
-    });
+      const nextHiddenFields = profile.hiddenFieldIds.filter((fieldId) => validFieldIdSet.has(fieldId));
+      const nextFieldStyles = Object.fromEntries(
+        Object.entries(profile.fieldStyles).filter(([fieldId]) => validFieldIdSet.has(fieldId))
+      );
+      const orderUnchanged = nextOrder.length === profile.fieldOrder.length
+        && nextOrder.every((fieldId, index) => fieldId === profile.fieldOrder[index]);
+      const hiddenUnchanged = nextHiddenFields.length === profile.hiddenFieldIds.length
+        && nextHiddenFields.every((fieldId, index) => fieldId === profile.hiddenFieldIds[index]);
+      const stylesUnchanged = Object.keys(nextFieldStyles).length === Object.keys(profile.fieldStyles).length;
+      return orderUnchanged && hiddenUnchanged && stylesUnchanged
+        ? profile
+        : { ...profile, fieldOrder: nextOrder, hiddenFieldIds: nextHiddenFields, fieldStyles: nextFieldStyles };
+    }));
 
-    setProductionMonitorHiddenFieldIds((currentHiddenFields) => {
-      const nextHiddenFields = currentHiddenFields.filter((fieldId) => validFieldIdSet.has(fieldId));
-      return nextHiddenFields.length === currentHiddenFields.length && nextHiddenFields.every((fieldId, index) => fieldId === currentHiddenFields[index])
-        ? currentHiddenFields
-        : nextHiddenFields;
-    });
-  }, [productionMonitorData.stations]);
+    if (!validFieldIdSet.has(selectedProductionMonitorStyleFieldId)) {
+      setSelectedProductionMonitorStyleFieldId(PRODUCTION_MONITOR_ORDER_FIELD_ID);
+    }
+  }, [productionMonitorData.stations, selectedProductionMonitorStyleFieldId]);
 
   useEffect(() => {
     const monitorVisible = standaloneProductionMonitor || (
@@ -4182,6 +5087,7 @@ export default function Page() {
     const url = new URL(window.location.href);
     url.searchParams.set("view", "termeles-monitor");
     url.searchParams.set("date", productionMonitorDate);
+    url.searchParams.set("monitor", activeProductionMonitorProfile.id);
     window.open(url.toString(), "_blank", "noopener,noreferrer");
   }
 
