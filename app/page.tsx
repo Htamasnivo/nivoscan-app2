@@ -414,7 +414,8 @@ function buildMachineOptions(rows: MachineIdRow[]): string[] {
     if (name) unique.set(name.toLowerCase(), name);
   }
 
-  return Array.from(unique.values()).sort((a, b) => a.localeCompare(b, "hu"));
+  // A machine_id táblából érkező sorrendet változtatás nélkül megtartjuk.
+  return Array.from(unique.values());
 }
 
 async function fetchMachineIdRowsDirectly(): Promise<MachineIdRow[]> {
@@ -711,6 +712,37 @@ function normalizeError(error: unknown): string {
     return JSON.stringify(error);
   }
   return "Ismeretlen hiba történt.";
+}
+
+function isMissingRequiredStationsColumnError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+
+  const supabaseError = error as {
+    code?: string | null;
+    message?: string | null;
+    details?: string | null;
+    hint?: string | null;
+  };
+  const errorText = [
+    supabaseError.code,
+    supabaseError.message,
+    supabaseError.details,
+    supabaseError.hint,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return (
+    errorText.includes("required_stations") &&
+    (
+      errorText.includes("does not exist") ||
+      errorText.includes("schema cache") ||
+      errorText.includes("could not find") ||
+      errorText.includes("42703") ||
+      errorText.includes("pgrst204")
+    )
+  );
 }
 
 async function sha256(text: string): Promise<string> {
@@ -2293,6 +2325,7 @@ export default function Page() {
 
     return (
       <div style={{ minHeight: standalone ? "100vh" : undefined, background: standalone ? "#e5e7eb" : "#020617", color: standalone ? "#111827" : "#e2e8f0", border: standalone ? "none" : "1px solid #334155", borderRadius: standalone ? 0 : 18, padding: standalone ? 18 : 18, boxShadow: standalone ? "none" : "0 18px 45px rgba(0,0,0,0.28)", marginTop: standalone ? 0 : 18, boxSizing: "border-box" }}>
+        <div style={{ width: "100%", maxWidth: 1600, margin: "0 auto" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 16, background: "#ffffff", padding: 16, borderRadius: 14, boxShadow: "0 8px 22px rgba(15,23,42,0.12)" }}>
           <div>
             <div style={{ fontSize: 13, color: "#f59e0b", fontWeight: 900, letterSpacing: 1, textTransform: "uppercase" }}>NÍVÓ termelési monitor</div>
@@ -2325,13 +2358,13 @@ export default function Page() {
             <div style={{ padding: 36, color: "#64748b", textAlign: "center", fontSize: 18 }}>Az aktív termelési terv nem tartalmaz rendeléseket.</div>
           ) : (
             <div style={{ overflow: "auto", maxHeight: standalone ? "calc(100vh - 285px)" : 650 }}>
-              <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: Math.max(760, 260 + productionMonitorData.stations.length * 165) }}>
+              <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: Math.max(700, 235 + productionMonitorData.stations.length * 130) }}>
                 <thead style={{ position: "sticky", top: 0, zIndex: 5 }}>
                   <tr>
-                    <th style={{ position: "sticky", left: 0, zIndex: 7, padding: "12px 10px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "left", minWidth: 150 }}>Sorszám</th>
-                    {showQuantity && <th style={{ padding: "12px 10px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "center", minWidth: 100 }}>Napi terv</th>}
-                    {showProductName && <th style={{ padding: "12px 10px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "left", minWidth: 190 }}>Megnevezés</th>}
-                    {productionMonitorData.stations.map((station) => <th key={station} style={{ padding: "12px 10px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "center", minWidth: 165, whiteSpace: "normal" }}>{station}</th>)}
+                    <th style={{ position: "sticky", left: 0, zIndex: 7, padding: "10px 8px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "left", minWidth: 130 }}>Sorszám</th>
+                    {showQuantity && <th style={{ padding: "10px 8px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "center", minWidth: 85 }}>Napi terv</th>}
+                    {showProductName && <th style={{ padding: "10px 8px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "left", minWidth: 165 }}>Megnevezés</th>}
+                    {productionMonitorData.stations.map((station) => <th key={station} style={{ padding: "10px 8px", background: "#ffffff", color: "#334155", borderBottom: "2px solid #cbd5e1", textAlign: "center", minWidth: 130, whiteSpace: "normal" }}>{station}</th>)}
                   </tr>
                 </thead>
                 <tbody>
@@ -2343,7 +2376,7 @@ export default function Page() {
                       {productionMonitorData.stations.map((station) => {
                         const cell = row.stations[station] || getMonitorCellFromLogs([]);
                         return (
-                          <td key={`${row.orderNumber}-${station}`} title={[cell.workerName, cell.startedAt ? `START: ${formatDateTime(cell.startedAt)}` : "", cell.endedAt ? `END: ${formatDateTime(cell.endedAt)}` : ""].filter(Boolean).join(" | ")} style={{ ...getCellStyle(cell.status), padding: "10px 9px", borderBottom: "1px solid #cbd5e1", borderRight: "1px solid #d1d5db", textAlign: "center", fontWeight: 900, whiteSpace: "nowrap" }}>
+                          <td key={`${row.orderNumber}-${station}`} title={[cell.workerName, cell.startedAt ? `START: ${formatDateTime(cell.startedAt)}` : "", cell.endedAt ? `END: ${formatDateTime(cell.endedAt)}` : ""].filter(Boolean).join(" | ")} style={{ ...getCellStyle(cell.status), padding: "8px 7px", borderBottom: "1px solid #cbd5e1", borderRight: "1px solid #d1d5db", textAlign: "center", fontWeight: 900, whiteSpace: "nowrap" }}>
                             {cell.label}
                           </td>
                         );
@@ -2354,6 +2387,7 @@ export default function Page() {
               </table>
             </div>
           )}
+        </div>
         </div>
       </div>
     );
@@ -3486,14 +3520,24 @@ export default function Page() {
 
   async function loadProductionPlanItems(plan: ProductionPlanRow): Promise<void> {
     if (!supabase) return;
-    const { data, error } = await supabase
+
+    let itemResponse = await supabase
       .from("production_plan_items")
       .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, required_stations, created_at")
       .eq("plan_id", plan.id)
       .order("sequence_number", { ascending: true });
-    if (error) throw error;
+
+    if (itemResponse.error && isMissingRequiredStationsColumnError(itemResponse.error)) {
+      itemResponse = await supabase
+        .from("production_plan_items")
+        .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, created_at")
+        .eq("plan_id", plan.id)
+        .order("sequence_number", { ascending: true });
+    }
+
+    if (itemResponse.error) throw itemResponse.error;
     setSelectedProductionPlanId(String(plan.id));
-    setProductionPlanItems(((data as ProductionPlanItemRow[]) || []).map((item) => ({
+    setProductionPlanItems((((itemResponse.data || []) as ProductionPlanItemRow[])).map((item) => ({
       ...item,
       sequence_number: Number(item.sequence_number || 0),
       planned_quantity: item.planned_quantity === null || item.planned_quantity === undefined ? null : Number(item.planned_quantity),
@@ -3575,8 +3619,21 @@ export default function Page() {
       }));
 
       for (let index = 0; index < payload.length; index += 500) {
-        const { error: itemError } = await supabase.from("production_plan_items").insert(payload.slice(index, index + 500));
-        if (itemError) throw itemError;
+        const payloadChunk = payload.slice(index, index + 500);
+        let insertResponse = await supabase.from("production_plan_items").insert(payloadChunk);
+
+        if (insertResponse.error && isMissingRequiredStationsColumnError(insertResponse.error)) {
+          const compatiblePayloadChunk = payloadChunk.map((item) => ({
+            plan_id: item.plan_id,
+            order_number: item.order_number,
+            sequence_number: item.sequence_number,
+            planned_quantity: item.planned_quantity,
+            product_name: item.product_name,
+          }));
+          insertResponse = await supabase.from("production_plan_items").insert(compatiblePayloadChunk);
+        }
+
+        if (insertResponse.error) throw insertResponse.error;
       }
 
       const { error: deactivateError } = await supabase
@@ -3668,16 +3725,34 @@ export default function Page() {
 
     const plan = (planResponse.data as ProductionPlanRow | null) || null;
     if (!plan) {
-      return { plan: null, stations: machineOptions.filter((item) => normalizeLooseText(item) !== normalizeLooseText(DEFAULT_MACHINE_ID)), rows: [], logs: [], lastUpdatedAt: new Date().toISOString() };
+      return {
+        plan: null,
+        stations: machineOptions.filter((item) =>
+          normalizeLooseText(item) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
+          !normalizeLooseText(item).includes("iroda")
+        ),
+        rows: [],
+        logs: [],
+        lastUpdatedAt: new Date().toISOString(),
+      };
     }
 
-    const { data: itemData, error: itemError } = await supabase
+    let itemResponse = await supabase
       .from("production_plan_items")
       .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, required_stations, created_at")
       .eq("plan_id", plan.id)
       .order("sequence_number", { ascending: true });
-    if (itemError) throw itemError;
-    const items = ((itemData as ProductionPlanItemRow[]) || []).filter((item) => String(item.order_number || "").trim());
+
+    if (itemResponse.error && isMissingRequiredStationsColumnError(itemResponse.error)) {
+      itemResponse = await supabase
+        .from("production_plan_items")
+        .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, created_at")
+        .eq("plan_id", plan.id)
+        .order("sequence_number", { ascending: true });
+    }
+
+    if (itemResponse.error) throw itemResponse.error;
+    const items = (((itemResponse.data || []) as ProductionPlanItemRow[])).filter((item) => String(item.order_number || "").trim());
 
     const orderNumbers = Array.from(new Set(items.map((item) => String(item.order_number).trim())));
     const logs: WorkLogRow[] = [];
@@ -3700,11 +3775,25 @@ export default function Page() {
     const stationMap = new Map<string, string>();
     machineOptions.forEach((station) => {
       const clean = String(station || "").trim();
-      if (clean && normalizeLooseText(clean) !== normalizeLooseText(DEFAULT_MACHINE_ID)) stationMap.set(normalizeLooseText(clean), clean);
+      const normalized = normalizeLooseText(clean);
+      if (
+        clean &&
+        normalized !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
+        !normalized.includes("iroda")
+      ) {
+        stationMap.set(normalized, clean);
+      }
     });
     logs.forEach((log) => {
       const station = resolveLogStation(log, workers);
-      if (station && normalizeLooseText(station) !== normalizeLooseText(DEFAULT_MACHINE_ID)) stationMap.set(normalizeLooseText(station), station);
+      const normalized = normalizeLooseText(station);
+      if (
+        station &&
+        normalized !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
+        !normalized.includes("iroda")
+      ) {
+        stationMap.set(normalized, station);
+      }
     });
     const stations = Array.from(stationMap.values());
 
