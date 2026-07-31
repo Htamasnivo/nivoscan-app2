@@ -1643,207 +1643,355 @@ export default function Page() {
   }
 
   function ProductionPlanAdmin(): React.JSX.Element {
+    const sectionCardStyle: React.CSSProperties = {
+      background: "#0f172a",
+      border: "1px solid #334155",
+      borderRadius: 16,
+      padding: 18,
+      boxShadow: "0 10px 28px rgba(0,0,0,0.16)",
+    };
+
+    const sectionHeaderStyle: React.CSSProperties = {
+      display: "flex",
+      alignItems: "flex-start",
+      gap: 12,
+      marginBottom: 16,
+    };
+
+    const sectionNumberStyle: React.CSSProperties = {
+      width: 32,
+      height: 32,
+      borderRadius: 10,
+      background: "#0c4a6e",
+      border: "1px solid #38bdf8",
+      color: "#e0f2fe",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontWeight: 900,
+      flex: "0 0 auto",
+    };
+
     return (
-      <div style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 18, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 18 }}>
+      <div style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 20, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
           <div>
             <div style={{ fontSize: 13, color: "#38bdf8", fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Irodai modul</div>
             <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: "#f8fafc" }}>Termelés tervezése</h2>
-            <div style={{ color: "#94a3b8" }}>A gyártandó termékeket egyesével is hozzáadhatod, vagy Excelből / CSV-ből is feltöltheted.</div>
+            <div style={{ color: "#94a3b8", maxWidth: 900, lineHeight: 1.5 }}>
+              Állítsd össze a napi gyártási tervet kézi termékfelvitellel vagy Excel / CSV fájlból, majd ellenőrzés után mentsd és aktiváld.
+            </div>
           </div>
           <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
         </div>
 
         <ManagementNavigation />
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 16 }}>
-          <div>
-            <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Gyártás tervezett dátuma</label>
-            <input
-              type="date"
-              value={productionPlanDate}
-              onChange={(event) => {
-                const nextDate = event.target.value;
-                setProductionPlanDate(nextDate);
-                void loadProductionPlans(nextDate);
-              }}
-              style={fieldStyle}
-            />
-          </div>
-          <div>
-            <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Terv neve</label>
-            <input value={productionPlanName} onChange={(event) => setProductionPlanName(event.target.value)} style={fieldStyle} />
-          </div>
-        </div>
-
-        <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 16, padding: 16, marginBottom: 16 }}>
-          <div style={{ marginBottom: 12 }}>
-            <h3 style={{ margin: 0, color: "#f8fafc" }}>Gyártandó termék hozzáadása egyesével</h3>
-            <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13 }}>A termék a fent kiválasztott gyártási dátumhoz kerül. Több terméket egymás után is hozzáadhatsz, majd egyben mentheted és aktiválhatod a tervet.</div>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(210px, 1.2fr) minmax(150px, 0.7fr) minmax(240px, 1.4fr) auto", gap: 12, alignItems: "end" }}>
-            <div>
-              <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Sorszám</label>
-              <input
-                value={manualProductionOrderNumber}
-                onChange={(event) => setManualProductionOrderNumber(event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") addManualProductionPlanRow(); }}
-                placeholder="Például: R260722217"
-                style={fieldStyle}
-              />
+        <div style={{ display: "grid", gap: 18 }}>
+          <section style={sectionCardStyle}>
+            <div style={sectionHeaderStyle}>
+              <div style={sectionNumberStyle}>1</div>
+              <div>
+                <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Terv alapadatai</h3>
+                <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13, lineHeight: 1.45 }}>
+                  Válaszd ki, melyik napra készüljön a terv, majd adj neki könnyen felismerhető nevet.
+                </div>
+              </div>
             </div>
-            <div>
-              <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Tervezett darab</label>
-              <input
-                type="number"
-                min={0}
-                value={manualProductionQuantity}
-                onChange={(event) => setManualProductionQuantity(event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") addManualProductionPlanRow(); }}
-                placeholder="Darab"
-                style={fieldStyle}
-              />
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
+              <div>
+                <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Gyártás tervezett dátuma</label>
+                <input
+                  type="date"
+                  value={productionPlanDate}
+                  onChange={(event) => {
+                    const nextDate = event.target.value;
+                    setProductionPlanDate(nextDate);
+                    void loadProductionPlans(nextDate);
+                  }}
+                  style={fieldStyle}
+                />
+              </div>
+              <div>
+                <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Terv neve</label>
+                <input
+                  type="text"
+                  value={productionPlanName}
+                  onChange={(event) => setProductionPlanName(event.target.value)}
+                  maxLength={250}
+                  autoComplete="off"
+                  style={fieldStyle}
+                />
+                <div style={{ marginTop: 6, color: "#64748b", fontSize: 12, textAlign: "right" }}>{productionPlanName.length}/250 karakter</div>
+              </div>
             </div>
-            <div>
-              <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Megnevezés</label>
-              <input
-                value={manualProductionProductName}
-                onChange={(event) => setManualProductionProductName(event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") addManualProductionPlanRow(); }}
-                placeholder="Gyártandó termék megnevezése"
-                style={fieldStyle}
-              />
+          </section>
+
+          <section style={sectionCardStyle}>
+            <div style={sectionHeaderStyle}>
+              <div style={sectionNumberStyle}>2</div>
+              <div>
+                <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Gyártandó termék hozzáadása egyesével</h3>
+                <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13, lineHeight: 1.45 }}>
+                  A termék a fent kiválasztott dátumhoz kerül. Több tételt egymás után is hozzáadhatsz, majd egyben mentheted a tervet.
+                </div>
+              </div>
             </div>
-            <button type="button" onClick={addManualProductionPlanRow} style={{ ...buttonPrimary, minHeight: 44, whiteSpace: "nowrap" }}>
-              + Termék hozzáadása
-            </button>
-          </div>
-        </div>
 
-        <div style={{ color: "#94a3b8", fontSize: 13, fontWeight: 700, margin: "2px 0 10px" }}>Vagy töltsd fel a teljes tervet fájlból:</div>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 1.15fr) minmax(180px, 0.65fr) minmax(300px, 1.5fr)", gap: 14, alignItems: "start" }}>
+              <div>
+                <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Sorszám</label>
+                <input
+                  type="text"
+                  value={manualProductionOrderNumber}
+                  onChange={(event) => setManualProductionOrderNumber(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter") addManualProductionPlanRow(); }}
+                  maxLength={250}
+                  autoComplete="off"
+                  placeholder="Például: R260722217"
+                  style={fieldStyle}
+                />
+                <div style={{ marginTop: 6, color: "#64748b", fontSize: 12, textAlign: "right" }}>{manualProductionOrderNumber.length}/250 karakter</div>
+              </div>
 
-        <input
-          ref={productionPlanFileInputRef}
-          type="file"
-          accept=".xlsx,.xls,.csv"
-          style={{ display: "none" }}
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) void handleProductionPlanFile(file);
-            event.currentTarget.value = "";
-          }}
-        />
+              <div>
+                <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Tervezett darab</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={manualProductionQuantity}
+                  onChange={(event) => setManualProductionQuantity(event.target.value.replace(/\D/g, "").slice(0, 10))}
+                  onKeyDown={(event) => { if (event.key === "Enter") addManualProductionPlanRow(); }}
+                  maxLength={10}
+                  autoComplete="off"
+                  placeholder="Darab"
+                  style={fieldStyle}
+                />
+                <div style={{ marginTop: 6, color: "#64748b", fontSize: 12 }}>Csak egész szám adható meg.</div>
+              </div>
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
-          <button type="button" onClick={() => productionPlanFileInputRef.current?.click()} disabled={loadingProductionPlan || savingProductionPlan} style={buttonPrimary}>
-            {loadingProductionPlan ? "Fájl beolvasása..." : "Excel / CSV kiválasztása"}
-          </button>
-          <button type="button" onClick={downloadProductionPlanTemplate} style={buttonSecondary}>Minta Excel letöltése</button>
-          {productionPlanPreview.length > 0 && (
-            <button type="button" onClick={() => { setProductionPlanPreview([]); setProductionPlanFileName(""); }} style={buttonSecondary}>Előnézet törlése</button>
-          )}
-        </div>
+              <div>
+                <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Megnevezés</label>
+                <input
+                  type="text"
+                  value={manualProductionProductName}
+                  onChange={(event) => setManualProductionProductName(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter") addManualProductionPlanRow(); }}
+                  maxLength={250}
+                  autoComplete="off"
+                  placeholder="Gyártandó termék megnevezése"
+                  style={fieldStyle}
+                />
+                <div style={{ marginTop: 6, color: "#64748b", fontSize: 12, textAlign: "right" }}>{manualProductionProductName.length}/250 karakter</div>
+              </div>
+            </div>
 
-        {productionPlanFileName && (
-          <div style={{ marginBottom: 14, padding: 12, borderRadius: 12, background: "#0f172a", border: "1px solid #334155", color: "#cbd5e1" }}>
-            Beolvasott fájl: <strong>{productionPlanFileName}</strong> · {productionPlanPreview.length} rendelés
-          </div>
-        )}
-
-        {productionPlanPreview.length > 0 && (
-          <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 16, padding: 16, marginBottom: 18 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
-              <h3 style={{ margin: 0, color: "#f8fafc" }}>Feltöltési előnézet</h3>
-              <button type="button" onClick={() => void saveProductionPlan()} disabled={savingProductionPlan} style={buttonPrimary}>
-                {savingProductionPlan ? "Terv mentése..." : "Terv mentése és aktiválása"}
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
+              <button type="button" onClick={addManualProductionPlanRow} style={{ ...buttonPrimary, minHeight: 46, minWidth: 190, whiteSpace: "nowrap" }}>
+                + Termék hozzáadása
               </button>
             </div>
-            <div style={{ overflowX: "auto", maxHeight: 430, overflowY: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 780 }}>
-                <thead>
-                  <tr style={{ color: "#94a3b8", textAlign: "left" }}>
-                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Sorrend</th>
-                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Sorszám</th>
-                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Tervezett db</th>
-                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }}>Megnevezés</th>
-                    <th style={{ padding: "10px 8px", borderBottom: "1px solid #334155" }} />
-                  </tr>
-                </thead>
-                <tbody>
-                  {productionPlanPreview.map((row, index) => (
-                    <tr key={`${row.orderNumber}-${index}`}>
-                      <td style={{ padding: 8, borderBottom: "1px solid #1e293b", width: 110 }}>
-                        <input
-                          type="number"
-                          min={1}
-                          value={row.sequenceNumber}
-                          onChange={(event) => updateProductionPlanPreviewRow(index, { sequenceNumber: Math.max(1, Number(event.target.value) || index + 1) })}
-                          style={{ ...fieldStyle, minWidth: 80, padding: "8px 10px" }}
-                        />
-                      </td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
-                        <input value={row.orderNumber} onChange={(event) => updateProductionPlanPreviewRow(index, { orderNumber: event.target.value })} style={{ ...fieldStyle, minWidth: 190, padding: "8px 10px" }} />
-                      </td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #1e293b", width: 150 }}>
-                        <input
-                          type="number"
-                          value={row.plannedQuantity ?? ""}
-                          onChange={(event) => updateProductionPlanPreviewRow(index, { plannedQuantity: event.target.value === "" ? null : Number(event.target.value) })}
-                          style={{ ...fieldStyle, minWidth: 110, padding: "8px 10px" }}
-                        />
-                      </td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
-                        <input value={row.productName} onChange={(event) => updateProductionPlanPreviewRow(index, { productName: event.target.value })} style={{ ...fieldStyle, minWidth: 230, padding: "8px 10px" }} />
-                      </td>
-                      <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
-                        <button type="button" onClick={() => setProductionPlanPreview((previous) => previous.filter((_, rowIndex) => rowIndex !== index))} style={{ ...buttonSecondary, padding: "8px 10px" }}>Törlés</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
+          </section>
 
-        <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 16, padding: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
-            <div>
-              <h3 style={{ margin: 0, color: "#f8fafc" }}>Mentett tervek – {productionPlanDate}</h3>
-              <div style={{ marginTop: 4, color: "#64748b", fontSize: 13 }}>Egy dátumhoz egyszerre egy aktív terv tartozik.</div>
+          <section style={sectionCardStyle}>
+            <div style={sectionHeaderStyle}>
+              <div style={sectionNumberStyle}>3</div>
+              <div>
+                <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Excel / CSV feltöltés</h3>
+                <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13, lineHeight: 1.45 }}>
+                  Teljes napi tervet is beolvashatsz fájlból. A beolvasott sorok ugyanabba az ellenőrzőlistába kerülnek, mint a kézzel rögzített tételek.
+                </div>
+              </div>
             </div>
-            <button type="button" onClick={() => void loadProductionPlans(productionPlanDate)} disabled={loadingProductionPlan} style={buttonSecondary}>Frissítés</button>
-          </div>
 
-          {productionPlans.length === 0 ? (
-            <div style={{ color: "#94a3b8", padding: "12px 0" }}>Erre a napra még nincs feltöltött termelési terv.</div>
-          ) : (
-            <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
-              {productionPlans.map((plan) => (
-                <div key={String(plan.id)} style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap", padding: 12, borderRadius: 12, border: plan.is_active ? "1px solid #22c55e" : "1px solid #334155", background: plan.is_active ? "#052e16" : "#020617" }}>
-                  <button type="button" onClick={() => void loadProductionPlanItems(plan)} style={{ border: 0, background: "transparent", color: "#f8fafc", textAlign: "left", cursor: "pointer", padding: 0 }}>
-                    <div style={{ fontWeight: 900 }}>{plan.name}</div>
-                    <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 3 }}>{plan.created_at ? formatDateTime(plan.created_at) : "-"} {plan.is_active ? "· AKTÍV" : ""}</div>
-                  </button>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {!plan.is_active && <button type="button" onClick={() => void activateProductionPlan(plan)} style={buttonPrimary}>Aktiválás</button>}
-                    <button type="button" onClick={() => void deleteProductionPlan(plan)} style={buttonSecondary}>Törlés</button>
+            <input
+              ref={productionPlanFileInputRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              style={{ display: "none" }}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void handleProductionPlanFile(file);
+                event.currentTarget.value = "";
+              }}
+            />
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button type="button" onClick={() => productionPlanFileInputRef.current?.click()} disabled={loadingProductionPlan || savingProductionPlan} style={buttonPrimary}>
+                {loadingProductionPlan ? "Fájl beolvasása..." : "Excel / CSV kiválasztása"}
+              </button>
+              <button type="button" onClick={downloadProductionPlanTemplate} style={buttonSecondary}>Minta Excel letöltése</button>
+              {productionPlanPreview.length > 0 && (
+                <button type="button" onClick={() => { setProductionPlanPreview([]); setProductionPlanFileName(""); }} style={buttonSecondary}>Összeállított lista törlése</button>
+              )}
+            </div>
+
+            {productionPlanFileName && (
+              <div style={{ marginTop: 14, padding: 13, borderRadius: 12, background: "#020617", border: "1px solid #334155", color: "#cbd5e1" }}>
+                Forrás: <strong>{productionPlanFileName}</strong> · Az összeállított tervben jelenleg <strong>{productionPlanPreview.length}</strong> rendelés van.
+              </div>
+            )}
+          </section>
+
+          <section style={sectionCardStyle}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
+              <div style={sectionHeaderStyle}>
+                <div style={sectionNumberStyle}>4</div>
+                <div>
+                  <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Összeállított termelési terv</h3>
+                  <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13, lineHeight: 1.45 }}>
+                    Mentés előtt ellenőrizheted, javíthatod vagy törölheted az egyes sorokat.
                   </div>
                 </div>
-              ))}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ padding: "9px 12px", borderRadius: 10, background: "#020617", border: "1px solid #334155", color: "#cbd5e1", fontWeight: 800 }}>
+                  Tételek: {productionPlanPreview.length}
+                </div>
+                <button type="button" onClick={() => void saveProductionPlan()} disabled={savingProductionPlan || productionPlanPreview.length === 0} style={buttonPrimary}>
+                  {savingProductionPlan ? "Terv mentése..." : "Terv mentése és aktiválása"}
+                </button>
+              </div>
             </div>
-          )}
 
-          {productionPlanItems.length > 0 && (
-            <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 650 }}>
-                <thead><tr style={{ color: "#94a3b8", textAlign: "left" }}><th style={{ padding: 8, borderBottom: "1px solid #334155" }}>Sorrend</th><th style={{ padding: 8, borderBottom: "1px solid #334155" }}>Sorszám</th><th style={{ padding: 8, borderBottom: "1px solid #334155" }}>Tervezett db</th><th style={{ padding: 8, borderBottom: "1px solid #334155" }}>Megnevezés</th></tr></thead>
-                <tbody>
-                  {productionPlanItems.map((item) => <tr key={String(item.id || `${item.plan_id}-${item.order_number}`)}><td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{item.sequence_number}</td><td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{item.order_number}</td><td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{item.planned_quantity ?? "-"}</td><td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{item.product_name || "-"}</td></tr>)}
-                </tbody>
-              </table>
+            {productionPlanPreview.length === 0 ? (
+              <div style={{ padding: "24px 16px", borderRadius: 12, background: "#020617", border: "1px dashed #475569", color: "#94a3b8", textAlign: "center" }}>
+                Még nincs hozzáadott termék. Rögzíts egy tételt kézzel, vagy tölts fel egy Excel / CSV fájlt.
+              </div>
+            ) : (
+              <div style={{ overflowX: "auto", maxHeight: 430, overflowY: "auto", borderRadius: 12, border: "1px solid #334155", background: "#020617" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
+                  <thead style={{ position: "sticky", top: 0, zIndex: 2, background: "#111827" }}>
+                    <tr style={{ color: "#94a3b8", textAlign: "left" }}>
+                      <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }}>Sorrend</th>
+                      <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }}>Sorszám</th>
+                      <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }}>Tervezett db</th>
+                      <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }}>Megnevezés</th>
+                      <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {productionPlanPreview.map((row, index) => (
+                      <tr key={`${row.orderNumber}-${index}`}>
+                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b", width: 110 }}>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            value={row.sequenceNumber}
+                            onChange={(event) => {
+                              const digits = event.target.value.replace(/\D/g, "").slice(0, 9);
+                              updateProductionPlanPreviewRow(index, { sequenceNumber: Math.max(1, Number(digits) || index + 1) });
+                            }}
+                            style={{ ...fieldStyle, minWidth: 80, padding: "8px 10px" }}
+                          />
+                        </td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
+                          <input
+                            type="text"
+                            value={row.orderNumber}
+                            onChange={(event) => updateProductionPlanPreviewRow(index, { orderNumber: event.target.value })}
+                            maxLength={250}
+                            autoComplete="off"
+                            style={{ ...fieldStyle, minWidth: 190, padding: "8px 10px" }}
+                          />
+                        </td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b", width: 150 }}>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            value={row.plannedQuantity ?? ""}
+                            onChange={(event) => {
+                              const digits = event.target.value.replace(/\D/g, "").slice(0, 10);
+                              updateProductionPlanPreviewRow(index, { plannedQuantity: digits === "" ? null : Number(digits) });
+                            }}
+                            maxLength={10}
+                            autoComplete="off"
+                            style={{ ...fieldStyle, minWidth: 110, padding: "8px 10px" }}
+                          />
+                        </td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
+                          <input
+                            type="text"
+                            value={row.productName}
+                            onChange={(event) => updateProductionPlanPreviewRow(index, { productName: event.target.value })}
+                            maxLength={250}
+                            autoComplete="off"
+                            style={{ ...fieldStyle, minWidth: 230, padding: "8px 10px" }}
+                          />
+                        </td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b", width: 90 }}>
+                          <button type="button" onClick={() => setProductionPlanPreview((previous) => previous.filter((_, rowIndex) => rowIndex !== index))} style={{ ...buttonSecondary, padding: "8px 10px" }}>Törlés</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          <section style={sectionCardStyle}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+              <div style={sectionHeaderStyle}>
+                <div style={sectionNumberStyle}>5</div>
+                <div>
+                  <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Mentett tervek – {productionPlanDate}</h3>
+                  <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13 }}>Egy dátumhoz egyszerre egy aktív terv tartozik.</div>
+                </div>
+              </div>
+              <button type="button" onClick={() => void loadProductionPlans(productionPlanDate)} disabled={loadingProductionPlan} style={buttonSecondary}>Frissítés</button>
             </div>
-          )}
+
+            {productionPlans.length === 0 ? (
+              <div style={{ color: "#94a3b8", padding: "18px 14px", borderRadius: 12, background: "#020617", border: "1px dashed #475569" }}>
+                Erre a napra még nincs feltöltött termelési terv.
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
+                {productionPlans.map((plan) => (
+                  <div key={String(plan.id)} style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap", padding: 14, borderRadius: 12, border: plan.is_active ? "1px solid #22c55e" : "1px solid #334155", background: plan.is_active ? "#052e16" : "#020617" }}>
+                    <button type="button" onClick={() => void loadProductionPlanItems(plan)} style={{ border: 0, background: "transparent", color: "#f8fafc", textAlign: "left", cursor: "pointer", padding: 0 }}>
+                      <div style={{ fontWeight: 900 }}>{plan.name}</div>
+                      <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 3 }}>{plan.created_at ? formatDateTime(plan.created_at) : "-"} {plan.is_active ? "· AKTÍV" : ""}</div>
+                    </button>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {!plan.is_active && <button type="button" onClick={() => void activateProductionPlan(plan)} style={buttonPrimary}>Aktiválás</button>}
+                      <button type="button" onClick={() => void deleteProductionPlan(plan)} style={buttonSecondary}>Törlés</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {productionPlanItems.length > 0 && (
+              <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto", borderRadius: 12, border: "1px solid #334155", background: "#020617" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 650 }}>
+                  <thead style={{ position: "sticky", top: 0, zIndex: 1, background: "#111827" }}>
+                    <tr style={{ color: "#94a3b8", textAlign: "left" }}>
+                      <th style={{ padding: 10, borderBottom: "1px solid #334155" }}>Sorrend</th>
+                      <th style={{ padding: 10, borderBottom: "1px solid #334155" }}>Sorszám</th>
+                      <th style={{ padding: 10, borderBottom: "1px solid #334155" }}>Tervezett db</th>
+                      <th style={{ padding: 10, borderBottom: "1px solid #334155" }}>Megnevezés</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {productionPlanItems.map((item) => (
+                      <tr key={String(item.id || `${item.plan_id}-${item.order_number}`)}>
+                        <td style={{ padding: 10, borderBottom: "1px solid #1e293b" }}>{item.sequence_number}</td>
+                        <td style={{ padding: 10, borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{item.order_number}</td>
+                        <td style={{ padding: 10, borderBottom: "1px solid #1e293b" }}>{item.planned_quantity ?? "-"}</td>
+                        <td style={{ padding: 10, borderBottom: "1px solid #1e293b" }}>{item.product_name || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
         </div>
       </div>
     );
@@ -1931,8 +2079,8 @@ export default function Page() {
   }
 
   function ManagementDashboard(): React.JSX.Element {
-    if (managementSection === "production-plan") return <ProductionPlanAdmin />;
-    if (managementSection === "production-monitor") return <ProductionPlanMonitor />;
+    if (managementSection === "production-plan") return ProductionPlanAdmin();
+    if (managementSection === "production-monitor") return ProductionPlanMonitor({});
 
     const completedOrders = dashboardData.orderRows.filter((row) => !row.hasOpenSegments).length;
     const activeProcesses = dashboardData.openRows.length;
@@ -2741,8 +2889,16 @@ export default function Page() {
       setMessage({ type: "error", text: "Add meg a gyártandó termék sorszámát." });
       return;
     }
-    if (parsedQuantity !== null && (!Number.isFinite(parsedQuantity) || parsedQuantity < 0)) {
-      setMessage({ type: "error", text: "A tervezett darabszám csak 0 vagy annál nagyobb szám lehet." });
+    if (orderNumber.length > 250 || productName.length > 250) {
+      setMessage({ type: "error", text: "A sorszám és a megnevezés legfeljebb 250 karakter hosszú lehet." });
+      return;
+    }
+    if (quantityText !== "" && !/^\d+$/.test(quantityText)) {
+      setMessage({ type: "error", text: "A tervezett darabszám csak egész szám lehet." });
+      return;
+    }
+    if (parsedQuantity !== null && (!Number.isFinite(parsedQuantity) || !Number.isInteger(parsedQuantity) || parsedQuantity < 0)) {
+      setMessage({ type: "error", text: "A tervezett darabszám csak 0 vagy annál nagyobb egész szám lehet." });
       return;
     }
     if (productionPlanPreview.some((row) => row.orderNumber.trim().toLowerCase() === orderNumber.toLowerCase())) {
@@ -6834,7 +6990,7 @@ body {
   }
 
   if (standaloneProductionMonitor) {
-    return <ProductionPlanMonitor standalone />;
+    return ProductionPlanMonitor({ standalone: true });
   }
 
   return (
@@ -8387,7 +8543,7 @@ body {
           )}
         </div>
 
-        {flowStage === "dashboard" && <ManagementDashboard />}
+        {flowStage === "dashboard" && ManagementDashboard()}
 
 
         {scanModalOpen && (
