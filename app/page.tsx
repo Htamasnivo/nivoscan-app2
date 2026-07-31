@@ -1119,6 +1119,12 @@ function normalizeLooseText(value: string | null | undefined): string {
     .toLowerCase();
 }
 
+function getNoteBeforeContext(value: string | null | undefined): string {
+  const note = String(value || "");
+  const contextIndex = note.indexOf("__CTX__");
+  return (contextIndex >= 0 ? note.slice(0, contextIndex) : note).trim();
+}
+
 function isWorkshopStation(value: string | null | undefined): boolean {
   const normalized = normalizeLooseText(value);
   return normalized === "muhely" || normalized.includes("muhely");
@@ -1458,36 +1464,54 @@ function resolveLogStation(log: WorkLogRow, workerRows: Worker[]): string {
   return getWorkerStation(worker) || (worker?.Munkakor || "").trim() || "Ismeretlen munkaállomás";
 }
 
-function getMonitorCellFromLogs(logs: WorkLogRow[]): ProductionMonitorCell {
-  if (!logs.length) {
-    return { status: "waiting", label: "Várakozik", workerName: "", startedAt: null, endedAt: null };
-  }
+function getMonitorCellFromLogs(
+  logs: WorkLogRow[],
+  productionBatchStarts: ProductionBatchRow[] = []
+): ProductionMonitorCell {
+  const completedLogs = logs
+    .filter((log) => Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END")
+    .sort((a, b) => {
+      const aTime = new Date(a.end_time || a.end_timestamp || a.created_at).getTime();
+      const bTime = new Date(b.end_time || b.end_timestamp || b.created_at).getTime();
+      return aTime - bTime;
+    });
 
-  const ordered = [...logs].sort((a, b) => {
-    const aTime = new Date(a.end_time || a.end_timestamp || a.created_at).getTime();
-    const bTime = new Date(b.end_time || b.end_timestamp || b.created_at).getTime();
-    return aTime - bTime;
-  });
-  const latest = ordered[ordered.length - 1];
-  const hasExplicitEnd = Boolean(latest.end_time || latest.end_timestamp) || String(latest.action || "").toUpperCase() === "END";
-  const hasStart = Boolean(latest.start_time || latest.start_timestamp) || String(latest.action || "").toUpperCase() === "START";
-
-  if (hasExplicitEnd) {
+  if (completedLogs.length > 0) {
+    const latestEnd = completedLogs[completedLogs.length - 1];
     return {
       status: "done",
       label: "Kész",
-      workerName: latest.worker_name || "",
-      startedAt: latest.start_time || latest.start_timestamp || null,
-      endedAt: latest.end_time || latest.end_timestamp || latest.created_at || null,
+      workerName: latestEnd.worker_name || "",
+      startedAt: latestEnd.start_time || latestEnd.start_timestamp || null,
+      endedAt: latestEnd.end_time || latestEnd.end_timestamp || latestEnd.created_at || null,
     };
   }
 
-  if (hasStart) {
+  const startedLogs = logs
+    .filter((log) => Boolean(log.start_time || log.start_timestamp) || String(log.action || "").toUpperCase() === "START")
+    .map((log) => ({
+      workerName: log.worker_name || "",
+      startedAt: log.start_time || log.start_timestamp || log.created_at || null,
+    }))
+    .filter((item): item is { workerName: string; startedAt: string } => Boolean(item.startedAt));
+
+  const startedBatches = productionBatchStarts
+    .filter((batch) => Boolean(batch.start_time))
+    .map((batch) => ({
+      workerName: batch.worker_name || "",
+      startedAt: String(batch.start_time),
+    }));
+
+  const latestStart = [...startedLogs, ...startedBatches]
+    .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
+    .at(-1);
+
+  if (latestStart) {
     return {
       status: "in-progress",
       label: "Folyamatban",
-      workerName: latest.worker_name || "",
-      startedAt: latest.start_time || latest.start_timestamp || latest.created_at || null,
+      workerName: latestStart.workerName,
+      startedAt: latestStart.startedAt,
       endedAt: null,
     };
   }
@@ -1893,7 +1917,7 @@ function buildDashboardData(
           const relatedLogs = logs
             .filter((log) => (log.order_number || "").trim() === row.orderNumber)
             .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-          const lastNote = relatedLogs.find((log) => (log.note || "").trim())?.note || "";
+          const lastNote = getNoteBeforeContext(relatedLogs.find((log) => (log.note || "").trim())?.note);
           openRows.push({
             orderNumber: row.orderNumber,
             workerName: segment.workerName,
@@ -4663,7 +4687,7 @@ export default function Page() {
                           {isEnd ? "END" : action || "START"}
                         </span>
                       </td>
-                      <td style={{ ...tableCellStyle, color: "#cbd5e1" }}>{log.note || "-"}</td>
+                      <td style={{ ...tableCellStyle, color: "#cbd5e1" }}>{getNoteBeforeContext(log.note) || "-"}</td>
                     </tr>
                   );
                 })}
@@ -5256,6 +5280,9 @@ export default function Page() {
         void loadProductionMonitor(productionMonitorDate);
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, () => {
+        void loadProductionMonitor(productionMonitorDate);
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, () => {
         void loadProductionMonitor(productionMonitorDate);
       })
       .subscribe();
@@ -6006,6 +6033,21 @@ export default function Page() {
       }))));
     }
 
+    const productionBatchStarts: ProductionBatchRow[] = [];
+    if (orderNumbers.length > 0) {
+      const { data: batchData, error: batchError } = await supabase
+        .from("production_batches")
+        .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name")
+        .not("start_time", "is", null)
+        .limit(10000);
+      if (batchError) throw batchError;
+
+      const plannedOrderSet = new Set(orderNumbers.map((orderNumber) => normalizeLooseText(orderNumber)));
+      productionBatchStarts.push(...(((batchData as ProductionBatchRow[]) || []).filter((batch) =>
+        Array.isArray(batch.order_ids) && batch.order_ids.some((orderId) => plannedOrderSet.has(normalizeLooseText(String(orderId))))
+      )));
+    }
+
     const stations = monitorStations;
 
     const rows: ProductionMonitorRow[] = items.map((item) => {
@@ -6031,7 +6073,12 @@ export default function Page() {
           return;
         }
         const stationLogs = orderLogs.filter((log) => normalizeLooseText(resolveLogStation(log, workers)) === normalizeLooseText(station));
-        stationCells[station] = getMonitorCellFromLogs(stationLogs);
+        const stationBatchStarts = productionBatchStarts.filter((batch) =>
+          normalizeLooseText(batch.machine_id) === normalizeLooseText(station) &&
+          Array.isArray(batch.order_ids) &&
+          batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(orderNumber))
+        );
+        stationCells[station] = getMonitorCellFromLogs(stationLogs, stationBatchStarts);
       });
       const statuses = Object.values(stationCells)
         .map((cell) => cell.status)
