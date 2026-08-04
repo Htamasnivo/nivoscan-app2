@@ -184,6 +184,10 @@ type WorkLogRow = {
   gyartas_tipus?: string | null;
   gyartasi_kor?: number | null;
   operation_code?: BatchOperationCode | null;
+  kulso_lap_selejt?: boolean | null;
+  belso_lap_selejt?: boolean | null;
+  selejt_potlas?: boolean | null;
+  selejt_forras_munkaallomas?: string | null;
 };
 
 type GroupedLogs = Record<string, WorkLogRow[]>;
@@ -407,6 +411,27 @@ type ProductionCardPlanSourceRow = {
   tipus?: string | null;
 };
 
+type ScrapReplacementStatus = "VARAKOZIK" | "SZABAS_FOLYAMATBAN" | "MARASRA_VAR" | "MARAS_FOLYAMATBAN" | "KESZ";
+
+type ScrapReplacementRow = {
+  id: number | string;
+  order_number: string;
+  kulso_lap_selejt: boolean;
+  belso_lap_selejt: boolean;
+  source_station: string;
+  source_work_log_id?: string | null;
+  status: ScrapReplacementStatus;
+  reported_by_worker_id?: number | string | null;
+  reported_by_worker_name?: string | null;
+  reported_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  cutting_batch_code?: string | null;
+  milling_batch_code?: string | null;
+  last_worker_name?: string | null;
+  updated_at?: string | null;
+};
+
 type ProductionCardRow = {
   orderNumber: string;
   productName: string;
@@ -428,6 +453,7 @@ type ProductionCardData = {
   dateKey: string;
   tableName: string;
   rows: ProductionCardRow[];
+  scrapReplacementRows?: ScrapReplacementRow[];
   lastUpdatedAt: string;
   errorMessage: string;
 };
@@ -611,6 +637,7 @@ const PRODUCTION_MONITOR_PROFILES_STORAGE_KEY = "nivo-production-monitor-profile
 const PRODUCTION_MONITOR_LEGACY_PROFILES_STORAGE_KEY = "nivo-production-monitor-profiles-v1";
 const PRODUCTION_MONITOR_SETTINGS_TABLE = "production_monitor_user_settings";
 const PRODUCTION_CARD_SETTINGS_TABLE = "production_card_station_settings";
+const CARPENTER_SCRAP_REPLACEMENT_TABLE = "asztalos_selejt_potlas";
 const PRODUCTION_CARD_ORDER_FIELD_ID = "__card_order_number__";
 const PRODUCTION_CARD_PRODUCT_FIELD_ID = "__card_product_name__";
 const PRODUCTION_CARD_QUANTITY_FIELD_ID = "__card_quantity__";
@@ -2904,6 +2931,8 @@ export default function Page() {
   const [endBarcodeConfirmed, setEndBarcodeConfirmed] = useState(false);
   const [endNote, setEndNote] = useState("");
   const [scrapQty, setScrapQty] = useState("");
+  const [outerSheetScrap, setOuterSheetScrap] = useState(false);
+  const [innerSheetScrap, setInnerSheetScrap] = useState(false);
   const [endDarab, setEndDarab] = useState("");
   const [endSzal, setEndSzal] = useState("");
 
@@ -4652,6 +4681,43 @@ export default function Page() {
       }
     }
 
+    const scrapReplacementRows: ScrapReplacementRow[] = [];
+    if (isCarpenterStationName(cleanStationName)) {
+      const { data: replacementData, error: replacementError } = await supabase
+        .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
+        .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
+        .order("reported_at", { ascending: false })
+        .limit(2000);
+      if (replacementError) {
+        sourceErrors.push(`Az asztalos selejtpótlási kártya nem olvasható: ${normalizeError(replacementError)}`);
+      } else {
+        const selectedDateStart = new Date(`${dateKey}T00:00:00`);
+        const selectedDateEnd = new Date(selectedDateStart);
+        selectedDateEnd.setDate(selectedDateEnd.getDate() + 1);
+        const isOnSelectedDate = (value: string | null | undefined): boolean => {
+          if (!value) return false;
+          const time = new Date(value).getTime();
+          return Number.isFinite(time) && time >= selectedDateStart.getTime() && time < selectedDateEnd.getTime();
+        };
+        scrapReplacementRows.push(...((replacementData || []) as ScrapReplacementRow[])
+          .map((rawRow) => ({
+            ...rawRow,
+            order_number: String(rawRow.order_number || "").trim(),
+            kulso_lap_selejt: Boolean(rawRow.kulso_lap_selejt),
+            belso_lap_selejt: Boolean(rawRow.belso_lap_selejt),
+            source_station: String(rawRow.source_station || "").trim(),
+            status: normalizeScrapReplacementStatus(rawRow.status),
+          }))
+          .filter((row) => row.order_number && (row.status !== "KESZ" || isOnSelectedDate(row.reported_at) || isOnSelectedDate(row.completed_at)))
+          .sort((left, right) => {
+            const priority: Record<ScrapReplacementStatus, number> = { VARAKOZIK: 0, SZABAS_FOLYAMATBAN: 1, MARASRA_VAR: 1, MARAS_FOLYAMATBAN: 1, KESZ: 2 };
+            const statusDifference = priority[left.status] - priority[right.status];
+            if (statusDifference !== 0) return statusDifference;
+            return new Date(right.reported_at).getTime() - new Date(left.reported_at).getTime();
+          }));
+      }
+    }
+
     const mergedPlanRows = new Map<string, {
       orderNumber: string;
       productName: string;
@@ -4671,7 +4737,7 @@ export default function Page() {
 
     const orderNumbers = Array.from(new Set(planRows.map((row) => row.orderNumber)));
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, selejt_potlas, selejt_forras_munkaallomas";
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const chunk = orderNumbers.slice(index, index + 100);
       const { data: logData, error: logError } = await supabase
@@ -4718,6 +4784,7 @@ export default function Page() {
       dateKey,
       tableName,
       rows,
+      scrapReplacementRows,
       lastUpdatedAt: new Date().toISOString(),
       errorMessage: rows.length === 0 && sourceErrors.length > 0 ? sourceErrors.join(" | ") : "",
     };
@@ -4956,6 +5023,7 @@ export default function Page() {
     const editable = Boolean(options.editable);
     const zoomRatio = profile.zoomPercent / 100;
     const profileTheme = profile.theme;
+    const urgentScrapRows = data.scrapReplacementRows || [];
 
     const renderTable = (table: ProductionMonitorTableConfig, tableIndex: number): React.JSX.Element => {
       const isActive = table.id === profile.activeTableId;
@@ -5114,6 +5182,48 @@ export default function Page() {
             {profileTheme.showPlanInfo && <div style={{ color: profileTheme.subtitleText, marginTop: 3, fontSize: compact ? 11 : 13 }}>Napi terv · {data.dateKey || productionCardDate}</div>}
             {profileTheme.showLastUpdated && <div style={{ color: profileTheme.subtitleText, opacity: 0.82, marginTop: 3, fontSize: compact ? 10 : 11 }}>Utolsó frissítés: {data.lastUpdatedAt ? formatDateTime(data.lastUpdatedAt) : "–"}</div>}
           </div>
+        )}
+        {urgentScrapRows.length > 0 && (
+          <section style={{ background: "#fff7ed", border: "3px solid #ef4444", borderRadius: profileTheme.panelRadius, padding: compact ? 8 : 12, marginBottom: compact ? 10 : 14, boxShadow: "0 12px 30px rgba(127,29,29,0.25)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ color: "#991b1b", fontWeight: 1000, fontSize: compact ? 13 : 17, letterSpacing: 0.4 }}>SELEJTPÓTLÁS – ELSŐBBSÉGI TERMELÉSI KÁRTYA</div>
+                <div style={{ color: "#7f1d1d", fontSize: compact ? 10 : 12, marginTop: 2 }}>A fóliázó vagy összeszerelő által jelzett külső / belső lap pótlása mindig megelőzi a napi tervet.</div>
+              </div>
+              <div style={{ background: "#7f1d1d", color: "#fff", borderRadius: 999, padding: "5px 10px", fontWeight: 900, fontSize: 12 }}>{urgentScrapRows.filter((row) => row.status !== "KESZ").length} sürgős</div>
+            </div>
+            <div style={{ overflowX: "auto", maxHeight: compact ? 260 : 360, overflowY: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed", fontFamily: profileTheme.fontFamily }}>
+                <thead style={{ position: "sticky", top: 0, zIndex: 5 }}>
+                  <tr>
+                    {["Rendelésszám", "Hiba", "Feladat", "Forrás", "Állapot"].map((label, index) => (
+                      <th key={label} style={{ width: index === 0 ? "18%" : index === 1 ? "23%" : index === 2 ? "25%" : index === 3 ? "16%" : "18%", background: "#7f1d1d", color: "#fff", borderRight: "1px solid #fecaca", borderBottom: "2px solid #450a0a", padding: compact ? "6px 5px" : "8px 6px", fontSize: compact ? 9 : 11, fontWeight: 1000, textAlign: "center", whiteSpace: "normal" }}>{label}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {urgentScrapRows.map((row) => {
+                    const rowBackground = row.status === "KESZ" ? "#86efac" : row.status === "VARAKOZIK" ? "#fca5a5" : "#fde047";
+                    const rowColor = row.status === "KESZ" ? "#052e16" : row.status === "VARAKOZIK" ? "#450a0a" : "#422006";
+                    const cells = [
+                      row.order_number,
+                      getScrapReplacementDefectLabel(row),
+                      "Szabás + marás pótlása",
+                      row.source_station || "–",
+                      getScrapReplacementStatusLabel(row.status),
+                    ];
+                    return (
+                      <tr key={`scrap-replacement-${row.id}`}>
+                        {cells.map((value, index) => (
+                          <td key={`${row.id}-${index}`} title={index === 4 ? [row.started_at ? `Indítás: ${formatDateTime(row.started_at)}` : "", row.completed_at ? `Kész: ${formatDateTime(row.completed_at)}` : "", row.last_worker_name ? `Dolgozó: ${row.last_worker_name}` : ""].filter(Boolean).join(" | ") : String(value)} style={{ background: rowBackground, color: rowColor, borderRight: "1px solid rgba(127,29,29,0.35)", borderBottom: "1px solid rgba(127,29,29,0.35)", padding: compact ? "7px 5px" : "9px 6px", fontSize: compact ? 9 : 11, fontWeight: index === 0 || index === 4 ? 1000 : 800, textAlign: "center", lineHeight: 1.15, overflowWrap: "anywhere" }}>{value}</td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
         )}
         {profileTheme.showSummaryCards && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(80px, 1fr))", gap: 6, marginBottom: 8 }}>
@@ -7296,6 +7406,7 @@ export default function Page() {
       .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, refresh)
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plans" }, refresh)
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: CARPENTER_SCRAP_REPLACEMENT_TABLE }, refresh)
       .on("postgres_changes", { event: "*", schema: "public", table: tableName }, refresh)
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
@@ -7323,6 +7434,7 @@ export default function Page() {
       .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, refreshData)
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plans" }, refreshData)
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, refreshData)
+      .on("postgres_changes", { event: "*", schema: "public", table: CARPENTER_SCRAP_REPLACEMENT_TABLE }, refreshData)
       .on("postgres_changes", { event: "*", schema: "public", table: tableName }, refreshData)
       .on("postgres_changes", { event: "*", schema: "public", table: PRODUCTION_CARD_SETTINGS_TABLE }, refreshData)
       .subscribe();
@@ -8686,7 +8798,7 @@ export default function Page() {
 
     const orderNumbers = Array.from(new Set(items.map((item) => String(item.order_number).trim())));
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, selejt_potlas, selejt_forras_munkaallomas";
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const orderChunk = orderNumbers.slice(index, index + 100);
       const { data: logData, error: logError } = await supabase
@@ -8937,7 +9049,7 @@ export default function Page() {
       Array.from(planOrdersByStation.values()).flatMap((orders) => Array.from(orders))
     ));
     const planLogs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, selejt_potlas, selejt_forras_munkaallomas";
 
     for (let index = 0; index < allPlannedOrders.length; index += 100) {
       const orderChunk = allPlannedOrders.slice(index, index + 100);
@@ -9031,7 +9143,7 @@ export default function Page() {
   async function fetchDashboardData(range: { startIso: string; endIso: string }): Promise<DashboardData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, selejt_potlas, selejt_forras_munkaallomas";
     const bufferedStart = new Date(range.startIso);
     bufferedStart.setDate(bufferedStart.getDate() - 1);
 
@@ -9275,7 +9387,7 @@ export default function Page() {
     try {
       const { data, error } = await supabase
         .from("work_logs")
-        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code")
+        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, selejt_potlas, selejt_forras_munkaallomas")
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) throw error;
@@ -9315,7 +9427,7 @@ export default function Page() {
     try {
       const { data, error } = await supabase
         .from("work_logs")
-        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code")
+        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, selejt_potlas, selejt_forras_munkaallomas")
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) throw error;
@@ -9526,6 +9638,8 @@ START: ${formatDateTime(startAt)}`
     setActionBarcode("");
     setEndBarcodeConfirmed(false);
     setScrapQty("");
+    setOuterSheetScrap(false);
+    setInnerSheetScrap(false);
     setEndNote("");
     setEndDarab("");
     setEndSzal("");
@@ -10679,7 +10793,8 @@ body {
   }
 
   function isWorkerKotegMode(worker: Worker): boolean {
-    return Number(getWorkerEsemenyKotegValue(worker)) !== 1;
+    const mode = Number(getWorkerEsemenyKotegValue(worker));
+    return mode === 2 || mode === 3;
   }
 
   function buildStructuredNote(baseNote: string | null | undefined, metadata: Record<string, unknown>): string | null {
@@ -10727,6 +10842,8 @@ body {
     setEndBarcodeConfirmed(false);
     setEndNote("");
     setScrapQty("");
+    setOuterSheetScrap(false);
+    setInnerSheetScrap(false);
     setEndDarab("");
     setEndSzal("");
     setShowIncompleteBatches(false);
@@ -10743,7 +10860,7 @@ body {
       setOrderTypeInput("TYPE-KOTEG");
       orderTypeLatestValueRef.current = "TYPE-KOTEG";
     }
-    if (koteg === 1) {
+    if (koteg === 1 || koteg === 4) {
       setWorkflowMode("single");
       setOrderTypeInput("TYPE-RENDELES");
       orderTypeLatestValueRef.current = "TYPE-RENDELES";
@@ -10751,7 +10868,9 @@ body {
       setStep(5);
       setMessage({
         type: "success",
-        text: `Sikeres azonosítás: ${worker["Teljes nev"]}. Automatikus mód: Egyedi rendelés. Olvasd be a rendelésszámot; START nélkül azonnal mentésre kerül.`,
+        text: koteg === 4
+          ? `Sikeres azonosítás: ${worker["Teljes nev"]}. Fóliázó / lap-selejt mód aktív. Olvasd be a rendelésszámot; lezáráskor külön jelölheted a külső és belső lap selejtet.`
+          : `Sikeres azonosítás: ${worker["Teljes nev"]}. Automatikus mód: Egyedi rendelés. Olvasd be a rendelésszámot; START nélkül azonnal mentésre kerül.`,
       });
       window.setTimeout(() => {
         focusAndSelectInput(orderInputRef);
@@ -10778,6 +10897,8 @@ body {
     setActionBarcode("");
     setEndNote("");
     setScrapQty("");
+    setOuterSheetScrap(false);
+    setInnerSheetScrap(false);
     setEndDarab("");
     setEndSzal("");
     setWorkflowMode(null);
@@ -10849,6 +10970,8 @@ body {
     setActionBarcode("");
     setEndBarcodeConfirmed(false);
     setScrapQty("");
+    setOuterSheetScrap(false);
+    setInnerSheetScrap(false);
     setEndNote("");
     setEndDarab("");
     setEndSzal("");
@@ -10911,6 +11034,8 @@ body {
     setActionBarcode("");
     setEndBarcodeConfirmed(false);
     setScrapQty("");
+    setOuterSheetScrap(false);
+    setInnerSheetScrap(false);
     setEndNote("");
     setEndDarab("");
     setEndSzal("");
@@ -11196,6 +11321,8 @@ body {
       setActionBarcode("");
       setEndBarcodeConfirmed(false);
       setScrapQty("");
+    setOuterSheetScrap(false);
+    setInnerSheetScrap(false);
       setEndNote("");
       setEndDarab("");
       setEndSzal("");
@@ -11206,14 +11333,14 @@ body {
       setTerminalView("scanner");
 
       if (workerEventKoteg === 4) {
-        setWorkflowMode("batch");
+        setWorkflowMode("single");
         setPendingAction("START");
         setBatchCode("");
         setBatchOrders([]);
         setBatchOrderProductionMeta({});
         setFlowStage("order-scan");
         setStep(5);
-        setMessage({ type: "success", text: `${matchedEvent.label} esemény beolvasva. Most olvasd egymás után a rendelésszámokat. A pontos START kód véglegesíti és menti a köteget.` });
+        setMessage({ type: "success", text: `${matchedEvent.label} esemény beolvasva. Fóliázó / lap-selejt mód aktív; olvasd be a rendelésszámot.` });
         return;
       }
 
@@ -11281,6 +11408,119 @@ body {
       operation_status: normalizeBatchOperationStatus(row?.operation_status),
     };
   }
+  function isFoilSheetScrapWorker(worker: Worker | null = activeWorker): boolean {
+    return !!worker && Number(getWorkerEsemenyKotegValue(worker)) === 4;
+  }
+
+  function isCarpenterStationName(stationName: string | null | undefined): boolean {
+    return normalizeLooseText(String(stationName || "")).includes("asztalos");
+  }
+
+  function normalizeScrapReplacementStatus(value: unknown): ScrapReplacementStatus {
+    const normalized = String(value || "").trim().toUpperCase();
+    return (["VARAKOZIK", "SZABAS_FOLYAMATBAN", "MARASRA_VAR", "MARAS_FOLYAMATBAN", "KESZ"] as const).includes(normalized as ScrapReplacementStatus)
+      ? normalized as ScrapReplacementStatus
+      : "VARAKOZIK";
+  }
+
+  function getScrapReplacementDefectLabel(row: Pick<ScrapReplacementRow, "kulso_lap_selejt" | "belso_lap_selejt">): string {
+    if (row.kulso_lap_selejt && row.belso_lap_selejt) return "Külső és belső lap selejt";
+    if (row.kulso_lap_selejt) return "Külső lap selejt";
+    if (row.belso_lap_selejt) return "Belső lap selejt";
+    return "Lap selejt";
+  }
+
+  function getScrapReplacementStatusLabel(status: ScrapReplacementStatus): string {
+    if (status === "SZABAS_FOLYAMATBAN") return "Szabás folyamatban";
+    if (status === "MARASRA_VAR") return "Marásra vár";
+    if (status === "MARAS_FOLYAMATBAN") return "Marás folyamatban";
+    if (status === "KESZ") return "Pótlás kész";
+    return "Azonnali pótlásra vár";
+  }
+
+  async function fetchOpenScrapReplacementMap(orderNumbers: string[]): Promise<Map<string, ScrapReplacementRow>> {
+    const result = new Map<string, ScrapReplacementRow>();
+    if (!supabase) return result;
+    const cleanOrders = Array.from(new Set(orderNumbers.map((order) => String(order || "").trim()).filter(Boolean)));
+    if (cleanOrders.length === 0) return result;
+
+    for (let index = 0; index < cleanOrders.length; index += 100) {
+      const chunk = cleanOrders.slice(index, index + 100);
+      const { data, error } = await supabase
+        .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
+        .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
+        .in("order_number", chunk)
+        .neq("status", "KESZ")
+        .order("reported_at", { ascending: false })
+        .limit(10000);
+      if (error) throw error;
+      ((data || []) as ScrapReplacementRow[]).forEach((rawRow) => {
+        const row: ScrapReplacementRow = {
+          ...rawRow,
+          order_number: String(rawRow.order_number || "").trim(),
+          kulso_lap_selejt: Boolean(rawRow.kulso_lap_selejt),
+          belso_lap_selejt: Boolean(rawRow.belso_lap_selejt),
+          source_station: String(rawRow.source_station || "").trim(),
+          status: normalizeScrapReplacementStatus(rawRow.status),
+        };
+        const key = normalizeLooseText(row.order_number);
+        if (key && !result.has(key)) result.set(key, row);
+      });
+    }
+    return result;
+  }
+
+  async function updateScrapReplacementOrders(
+    orderNumbers: string[],
+    status: ScrapReplacementStatus,
+    extra: Record<string, unknown> = {}
+  ): Promise<void> {
+    if (!supabase) return;
+    const openMap = await fetchOpenScrapReplacementMap(orderNumbers);
+    const ids = Array.from(openMap.values()).map((row) => row.id);
+    if (ids.length === 0) return;
+    const nowIso = new Date().toISOString();
+    const payload: Record<string, unknown> = {
+      status,
+      updated_at: nowIso,
+      last_worker_name: activeWorker?.["Teljes nev"] || null,
+      ...extra,
+    };
+    if (status === "SZABAS_FOLYAMATBAN" && !Object.prototype.hasOwnProperty.call(payload, "started_at")) payload.started_at = nowIso;
+    if (status === "KESZ" && !Object.prototype.hasOwnProperty.call(payload, "completed_at")) payload.completed_at = nowIso;
+    const { error } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).update(payload).in("id", ids);
+    if (error) throw error;
+  }
+
+  async function createScrapReplacementFromSheetScrap(params: {
+    orderNumber: string;
+    sourceStation: string;
+    workLogId: string | number;
+    reportedAt: string;
+    outerScrap: boolean;
+    innerScrap: boolean;
+  }): Promise<void> {
+    if (!supabase || !activeWorker || (!params.outerScrap && !params.innerScrap)) return;
+    const { error } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).insert([{
+      order_number: params.orderNumber,
+      kulso_lap_selejt: params.outerScrap,
+      belso_lap_selejt: params.innerScrap,
+      source_station: params.sourceStation,
+      source_work_log_id: String(params.workLogId),
+      status: "VARAKOZIK",
+      reported_by_worker_id: activeWorker.id,
+      reported_by_worker_name: activeWorker["Teljes nev"],
+      reported_at: params.reportedAt,
+      started_at: null,
+      completed_at: null,
+      cutting_batch_code: null,
+      milling_batch_code: null,
+      last_worker_name: null,
+      updated_at: params.reportedAt,
+    }]);
+    if (error) throw error;
+  }
+
   function isTwoStageAsztalosWorker(worker: Worker | null = activeWorker): boolean {
     return !!worker && Number(getWorkerEsemenyKotegValue(worker)) === 3;
   }
@@ -11410,6 +11650,10 @@ body {
       const { error } = await query;
       if (error) throw error;
 
+      await updateScrapReplacementOrders(batch.order_ids, "MARAS_FOLYAMATBAN", {
+        milling_batch_code: batch.batch_code,
+      });
+
       await stopScannerAsync();
       setScanModalOpen(false);
       handleReset();
@@ -11536,6 +11780,7 @@ body {
       const readyProductionMeta = Object.fromEntries(
         readyOrders.map((order) => [order, getProductionMetaForOrder(selectedEndBatch.production_meta, order)])
       ) as Record<string, OrderProductionMeta>;
+      const scrapReplacementMap = await fetchOpenScrapReplacementMap(readyOrders);
 
       const cuttingEndLogs = readyOrders.map((order) => {
         const orderNoteClean = (endOrderNotes[order] || "").trim();
@@ -11589,6 +11834,10 @@ body {
           scrap_qty: null,
           darab: finalDarab,
           szal: finalSzal,
+          selejt_potlas: scrapReplacementMap.has(normalizeLooseText(order)),
+          selejt_forras_munkaallomas: scrapReplacementMap.get(normalizeLooseText(order))?.source_station || null,
+          kulso_lap_selejt: false,
+          belso_lap_selejt: false,
         };
       });
 
@@ -11607,6 +11856,11 @@ body {
         operation_status: "MARAS_FOLYAMATBAN",
       }]);
       if (millingInsertError) throw millingInsertError;
+
+      await updateScrapReplacementOrders(readyOrders, "MARAS_FOLYAMATBAN", {
+        cutting_batch_code: selectedEndBatch.batch_code,
+        milling_batch_code: millingBatchCode,
+      });
 
       if (remainingOrders.length > 0) {
         const remainingProductionMeta = Object.fromEntries(
@@ -11698,6 +11952,7 @@ body {
       const currentMachineId = getCurrentMachineIdForInsert();
       const batchStartTime = selectedEndBatch.start_time || selectedEndBatch.created_at || nowIso;
       const operationLabel = operationCode === "SZABAS" ? "Szabás" : operationCode === "MARAS" ? "Marás" : "Köteg";
+      const scrapReplacementMap = await fetchOpenScrapReplacementMap(allOrders);
 
       const logs = readyOrders.map((order) => {
         const orderNoteClean = (endOrderNotes[order] || "").trim();
@@ -11748,6 +12003,10 @@ body {
           scrap_qty: null,
           darab: finalDarab,
           szal: finalSzal,
+          selejt_potlas: scrapReplacementMap.has(normalizeLooseText(order)),
+          selejt_forras_munkaallomas: scrapReplacementMap.get(normalizeLooseText(order))?.source_station || null,
+          kulso_lap_selejt: false,
+          belso_lap_selejt: false,
         };
       });
 
@@ -11794,6 +12053,10 @@ body {
         const { error: transitionError } = await transitionQuery;
         if (transitionError) throw transitionError;
 
+        await updateScrapReplacementOrders(readyOrders, "MARASRA_VAR", {
+          cutting_batch_code: selectedEndBatch.batch_code,
+        });
+
         await stopScannerAsync();
         setScanModalOpen(false);
         handleReset();
@@ -11835,6 +12098,13 @@ body {
         ? await deleteQuery.eq("id", selectedEndBatch.id)
         : await deleteQuery.eq("batch_code", selectedEndBatch.batch_code);
       if (deleteError) throw deleteError;
+
+      if (operationCode === "MARAS") {
+        await updateScrapReplacementOrders(readyOrders, "KESZ", {
+          milling_batch_code: selectedEndBatch.batch_code,
+          completed_at: nowIso,
+        });
+      }
 
       await stopScannerAsync();
       setScanModalOpen(false);
@@ -12325,6 +12595,8 @@ body {
     setEndBarcodeConfirmed(false);
     setEndNote("");
     setScrapQty("");
+    setOuterSheetScrap(false);
+    setInnerSheetScrap(false);
     setEndDarab("");
     setEndSzal("");
     setStep(6);
@@ -12449,6 +12721,10 @@ body {
             gyartas_tipus: orderProductionMeta.gyartas_tipus,
           }),
           scrap_qty: null,
+          kulso_lap_selejt: false,
+          belso_lap_selejt: false,
+          selejt_potlas: false,
+          selejt_forras_munkaallomas: null,
         },
       ]);
 
@@ -12548,6 +12824,13 @@ body {
         .single();
 
       if (error) throw error;
+
+      if (isTwoStageAsztalos) {
+        await updateScrapReplacementOrders(ordersForSave, "SZABAS_FOLYAMATBAN", {
+          started_at: nowIso,
+          cutting_batch_code: generatedBatchCode,
+        });
+      }
 
       const savedBatch: ProductionBatchRow = {
         id: data?.id,
@@ -12884,7 +13167,7 @@ body {
 
   function getMissingRouteParts(finalOrderNumber?: string): string[] {
     const missing: string[] = [];
-    if ((workerEventKoteg === 3 || workerEventKoteg === 4) && !selectedEventCard) missing.push("Esemény");
+    if (workerEventKoteg === 3 && !selectedEventCard) missing.push("Esemény");
     if (!actionBarcode.trim() || !isStartBarcode(actionBarcode)) missing.push("START kód");
     if (!(finalOrderNumber ?? orderNumber).trim()) missing.push("Rendelésszám");
     return missing;
@@ -12914,6 +13197,23 @@ body {
       : null;
     const finalDarab = action === "END" ? parseDarabValue(endDarab) : null;
     const finalSzal = action === "END" ? parseSzalValue(endSzal) : null;
+    const finalOuterSheetScrap = action === "END" && isFoilSheetScrapWorker(activeWorker) ? outerSheetScrap : false;
+    const finalInnerSheetScrap = action === "END" && isFoilSheetScrapWorker(activeWorker) ? innerSheetScrap : false;
+
+    if (action === "END" && (finalOuterSheetScrap || finalInnerSheetScrap)) {
+      const selectedDefects = [
+        finalOuterSheetScrap ? "Külső lap selejt" : "",
+        finalInnerSheetScrap ? "Belső lap selejt" : "",
+      ].filter(Boolean).join(" és ");
+      const confirmed = typeof window === "undefined" || window.confirm(
+        `A következő selejtjelölést rögzíted:\n\n${selectedDefects}\n\nBiztosan helyesek a kijelölések? A mentés után az asztalos elsőbbségi selejtpótlási kártyájára kerül a rendelés.`
+      );
+      if (!confirmed) {
+        setMessage({ type: "info", text: "A selejtes END mentése megszakítva. Ellenőrizd a Külső lap / Belső lap kijelöléseket." });
+        return;
+      }
+    }
+
     let startProductionMeta: OrderProductionMeta = {
       ujragyartas: false,
       ujragyartas_sorszam: null,
@@ -12980,6 +13280,9 @@ body {
         event_code: eventMetadata.event_code,
         darab: finalDarab,
         szal: finalSzal,
+        kulso_lap_selejt: finalOuterSheetScrap,
+        belso_lap_selejt: finalInnerSheetScrap,
+        selejt_forras_munkaallomas: finalOuterSheetScrap || finalInnerSheetScrap ? currentMachineId : null,
         action,
         start_timestamp: action === "START" ? nowForSave : null,
         end_timestamp: action === "END" ? nowForSave : null,
@@ -13012,10 +13315,25 @@ body {
             scrap_qty: finalScrapQty,
             darab: finalDarab,
             szal: finalSzal,
+            kulso_lap_selejt: finalOuterSheetScrap,
+            belso_lap_selejt: finalInnerSheetScrap,
+            selejt_potlas: false,
+            selejt_forras_munkaallomas: finalOuterSheetScrap || finalInnerSheetScrap ? currentMachineId : null,
           })
           .eq("id", openLog.id);
 
         if (updateError) throw updateError;
+
+        if (finalOuterSheetScrap || finalInnerSheetScrap) {
+          await createScrapReplacementFromSheetScrap({
+            orderNumber: finalOrderNumber,
+            sourceStation: currentMachineId,
+            workLogId: openLog.id,
+            reportedAt: nowForSave,
+            outerScrap: finalOuterSheetScrap,
+            innerScrap: finalInnerSheetScrap,
+          });
+        }
       } else {
         const payloadBase = {
           worker_id: activeWorker.id,
@@ -13044,6 +13362,10 @@ body {
             gyartas_tipus: startProductionMeta.gyartas_tipus,
           }),
           scrap_qty: finalScrapQty,
+          kulso_lap_selejt: false,
+          belso_lap_selejt: false,
+          selejt_potlas: false,
+          selejt_forras_munkaallomas: null,
         };
 
         const { error: insertError } = await supabase.from("work_logs").insert([payloadBase]);
@@ -13057,6 +13379,9 @@ body {
       const savedScrapText = action === "END" ? ` | Selejt: ${finalScrapQty ?? 0}` : "";
       const savedDarabText = action === "END" && finalDarab !== null ? ` | Darab: ${finalDarab}` : "";
       const savedSzalText = action === "END" && finalSzal !== null ? ` | Szál: ${finalSzal}` : "";
+      const savedSheetScrapText = action === "END" && (finalOuterSheetScrap || finalInnerSheetScrap)
+        ? ` | Lap selejt: ${[finalOuterSheetScrap ? "külső" : "", finalInnerSheetScrap ? "belső" : ""].filter(Boolean).join(" + ")} | Asztalos pótlási kártyára továbbítva`
+        : "";
       resetAfterSave();
       setEndBarcodeConfirmed(false);
       setMessage({
@@ -13064,7 +13389,7 @@ body {
         text:
           action === "START"
             ? `START automatikusan rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}`
-            : `END sikeresen rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}${savedDarabText}${savedSzalText}${savedScrapText}${savedNoteText}`,
+            : `END sikeresen rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}${savedDarabText}${savedSzalText}${savedScrapText}${savedSheetScrapText}${savedNoteText}`,
       });
     } catch (error) {
       console.error("SUPABASE HIBA saveWorkLog:", error);
@@ -13118,6 +13443,8 @@ body {
     setPendingAction(resolvedAction);
     setEndNote("");
     setScrapQty("");
+    setOuterSheetScrap(false);
+    setInnerSheetScrap(false);
     setEndDarab("");
     setEndSzal("");
     setEndBarcodeConfirmed(true);
@@ -13164,7 +13491,7 @@ body {
 
     if (effectiveAction === "END") {
       setEndBarcodeConfirmed(true);
-      if (_autoAfterScan) {
+      if (_autoAfterScan && !isFoilSheetScrapWorker(activeWorker)) {
         await saveWorkLog("END", { note: null, scrapQty: null });
         return;
       }
@@ -13202,6 +13529,11 @@ body {
 
     setActionBarcode(raw);
     setEndBarcodeConfirmed(true);
+
+    if (isFoilSheetScrapWorker(activeWorker)) {
+      setMessage({ type: "info", text: "Az END kód rendben. Ellenőrizd a Külső lap selejt és Belső lap selejt pipákat, majd kattints az END mentése gombra." });
+      return;
+    }
 
     const finalNote = endNote.trim() || null;
     const finalScrapQty = parseScrapQtyValue(scrapQty);
@@ -14048,7 +14380,7 @@ body {
               ) : (
                 <>
                   <div style={{ marginBottom: 18, color: "#cbd5e1" }}>
-                    A dolgozó azonosítása sikeres. A következő lépés az esemény beolvasása. {workerEventKoteg === 4 ? "Ezután a rendelésszám-lista következik, a kötegkód mentéskor generálódik." : "Az esemény után közvetlenül a rendelésszám megadása következik."}
+                    A dolgozó azonosítása sikeres. A következő lépés az esemény beolvasása. Az esemény után közvetlenül a rendelésszám megadása következik.
                   </div>
 
                   {!authResolved ? (
@@ -14871,7 +15203,9 @@ body {
                       }}
                     />
                     <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 8 }}>
-                      A fizikai szkenner Enterrel zárja a beolvasást; END beolvasásakor a lejelentés azonnal mentésre kerül.
+                      {isFoilSheetScrapWorker(activeWorker)
+                        ? "A fizikai szkenner Enterrel megerősíti az END kódot. Ezután ellenőrizd a lap-selejt pipákat, majd mentsd az END-et."
+                        : "A fizikai szkenner Enterrel zárja a beolvasást; END beolvasásakor a lejelentés azonnal mentésre kerül."}
                     </div>
                   </div>
 
@@ -14929,6 +15263,24 @@ body {
                       style={fieldStyle}
                     />
                   </div>
+
+
+                  {isFoilSheetScrapWorker(activeWorker) && (
+                    <div style={{ marginBottom: 18, padding: 16, borderRadius: 14, border: "2px solid #f59e0b", background: "#422006" }}>
+                      <div style={{ color: "#fef3c7", fontWeight: 1000, fontSize: 16, marginBottom: 6 }}>Lap selejt pontos megjelölése</div>
+                      <div style={{ color: "#fde68a", fontSize: 12, marginBottom: 12 }}>Jelöld be, melyik lap hibás. Mindkettő egyszerre is kiválasztható. Selejtjelölés esetén mentés előtt biztonsági megerősítés jelenik meg.</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 12, padding: 14, borderRadius: 12, cursor: "pointer", background: outerSheetScrap ? "#dc2626" : "#1f2937", color: "#fff", border: outerSheetScrap ? "3px solid #fecaca" : "2px solid #64748b", fontWeight: 900 }}>
+                          <input type="checkbox" checked={outerSheetScrap} onChange={(event) => setOuterSheetScrap(event.target.checked)} style={{ width: 24, height: 24, accentColor: "#dc2626" }} />
+                          Külső lap selejt
+                        </label>
+                        <label style={{ display: "flex", alignItems: "center", gap: 12, padding: 14, borderRadius: 12, cursor: "pointer", background: innerSheetScrap ? "#dc2626" : "#1f2937", color: "#fff", border: innerSheetScrap ? "3px solid #fecaca" : "2px solid #64748b", fontWeight: 900 }}>
+                          <input type="checkbox" checked={innerSheetScrap} onChange={(event) => setInnerSheetScrap(event.target.checked)} style={{ width: 24, height: 24, accentColor: "#dc2626" }} />
+                          Belső lap selejt
+                        </label>
+                      </div>
+                    </div>
+                  )}
 
                   <div style={{ marginBottom: 18 }}>
                     <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>Megjegyzés</label>
