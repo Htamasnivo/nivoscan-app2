@@ -11488,6 +11488,167 @@ body {
     return next;
   }
 
+  async function transferReadyCuttingOrdersToMilling(): Promise<void> {
+    if (batchFinalizeInFlightRef.current) return;
+    if (!supabase || !activeWorker || !selectedEndBatch) {
+      setMessage({ type: "error", text: "Nincs kiválasztott dolgozó vagy köteg." });
+      return;
+    }
+
+    const selectedStatus = normalizeBatchOperationStatus(selectedEndBatch.operation_status);
+    const operationCode = normalizeBatchOperationCode(selectedEndBatch.operation_code);
+    if (!isTwoStageAsztalosWorker(activeWorker) || operationCode !== "SZABAS" || selectedStatus !== "SZABAS_FOLYAMATBAN") {
+      setMessage({ type: "error", text: "Átforgatás marásra csak folyamatban lévő Szabás kötegnél használható." });
+      return;
+    }
+
+    const allOrders = selectedEndBatch.order_ids.map((order) => String(order).trim()).filter(Boolean);
+    const readyOrders = allOrders.filter((order) => !!endReadyMap[order]);
+    const remainingOrders = allOrders.filter((order) => !endReadyMap[order]);
+
+    if (readyOrders.length === 0) {
+      setMessage({ type: "error", text: "Nincs átforgatásra kijelölt tétel. Pipálj be legalább egy rendelést, vagy használd az ALL-READY kódot." });
+      return;
+    }
+
+    const finalDarab = parseDarabValue(endDarab);
+    const finalSzal = parseSzalValue(endSzal);
+
+    if (finalDarab !== null && !Number.isFinite(finalDarab)) {
+      setMessage({ type: "error", text: "A Darab mező 0 vagy nagyobb egész szám legyen." });
+      return;
+    }
+
+    if (finalSzal !== null && !Number.isFinite(finalSzal)) {
+      setMessage({ type: "error", text: "A Szál mező 0 vagy nagyobb szám legyen." });
+      return;
+    }
+
+    batchFinalizeInFlightRef.current = true;
+    setBusy(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const workerNameForSave = activeWorker["Teljes nev"];
+      const currentMachineId = getCurrentMachineIdForInsert();
+      const cuttingStartTime = selectedEndBatch.start_time || selectedEndBatch.created_at || nowIso;
+      const batchNoteClean = endBatchNote.trim();
+      const millingBatchCode = `BATCH-${Date.now()}-MAR`;
+      const readyProductionMeta = Object.fromEntries(
+        readyOrders.map((order) => [order, getProductionMetaForOrder(selectedEndBatch.production_meta, order)])
+      ) as Record<string, OrderProductionMeta>;
+
+      const cuttingEndLogs = readyOrders.map((order) => {
+        const orderNoteClean = (endOrderNotes[order] || "").trim();
+        const orderProductionMeta = getProductionMetaForOrder(selectedEndBatch.production_meta, order);
+        return {
+          worker_id: activeWorker.id,
+          worker_name: workerNameForSave,
+          machine_id: currentMachineId,
+          order_number: order,
+          action: "END" as WorkAction,
+          created_at: nowIso,
+          batch_code: selectedEndBatch.batch_code,
+          event_name: "Szabás köteg átforgatása marásra",
+          event_code: "ATFORGATAS-MARASRA",
+          operation_code: "SZABAS" as BatchOperationCode,
+          start_timestamp: cuttingStartTime,
+          start_time: cuttingStartTime,
+          end_timestamp: nowIso,
+          end_time: nowIso,
+          ujragyartas: orderProductionMeta.ujragyartas,
+          ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
+          gyartas_tipus: orderProductionMeta.gyartas_tipus,
+          gyartasi_kor: orderProductionMeta.gyartasi_kor,
+          order_note: orderNoteClean || null,
+          batch_note: batchNoteClean || null,
+          note: buildStructuredNote([orderNoteClean, batchNoteClean].filter(Boolean).join(" | ") || null, {
+            worker_name: workerNameForSave,
+            worker_id: activeWorker.id,
+            machine_id: currentMachineId,
+            original_batch_code: selectedEndBatch.batch_code,
+            original_batch_start_time: cuttingStartTime,
+            original_batch_machine_id: selectedEndBatch.machine_id || null,
+            start_worker_name: selectedEndBatch.worker_name || null,
+            end_worker_name: workerNameForSave,
+            order_number: order,
+            order_note: orderNoteClean || null,
+            batch_note: batchNoteClean || null,
+            darab: finalDarab,
+            szal: finalSzal,
+            action: "END" as WorkAction,
+            operation_code: "SZABAS",
+            operation_status: "MARAS_FOLYAMATBAN",
+            atforgatas_marasra: true,
+            milling_batch_code: millingBatchCode,
+            milling_start_time: nowIso,
+            split_remainder_count: remainingOrders.length,
+            ujragyartas: orderProductionMeta.ujragyartas,
+            ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
+            gyartas_tipus: orderProductionMeta.gyartas_tipus,
+          }),
+          scrap_qty: null,
+          darab: finalDarab,
+          szal: finalSzal,
+        };
+      });
+
+      const { error: logError } = await supabase.from("work_logs").insert(cuttingEndLogs);
+      if (logError) throw logError;
+
+      const { error: millingInsertError } = await supabase.from("production_batches").insert([{
+        batch_code: millingBatchCode,
+        order_ids: readyOrders,
+        worker_name: workerNameForSave || "Ismeretlen",
+        created_at: nowIso,
+        start_time: nowIso,
+        machine_id: currentMachineId,
+        production_meta: readyProductionMeta,
+        operation_code: "MARAS",
+        operation_status: "MARAS_FOLYAMATBAN",
+      }]);
+      if (millingInsertError) throw millingInsertError;
+
+      if (remainingOrders.length > 0) {
+        const remainingProductionMeta = Object.fromEntries(
+          remainingOrders.map((order) => [order, getProductionMetaForOrder(selectedEndBatch.production_meta, order)])
+        ) as Record<string, OrderProductionMeta>;
+        let remainderQuery = supabase.from("production_batches").update({
+          order_ids: remainingOrders,
+          production_meta: remainingProductionMeta,
+          operation_code: "SZABAS",
+          operation_status: "SZABAS_FOLYAMATBAN",
+        });
+        remainderQuery = selectedEndBatch.id !== undefined && selectedEndBatch.id !== null
+          ? remainderQuery.eq("id", selectedEndBatch.id)
+          : remainderQuery.eq("batch_code", selectedEndBatch.batch_code);
+        const { error: remainderError } = await remainderQuery;
+        if (remainderError) throw remainderError;
+      } else {
+        const deleteQuery = supabase.from("production_batches").delete();
+        const { error: deleteError } = selectedEndBatch.id !== undefined && selectedEndBatch.id !== null
+          ? await deleteQuery.eq("id", selectedEndBatch.id)
+          : await deleteQuery.eq("batch_code", selectedEndBatch.batch_code);
+        if (deleteError) throw deleteError;
+      }
+
+      await stopScannerAsync();
+      setScanModalOpen(false);
+      handleReset();
+      setMessage({
+        type: "success",
+        text: `Átforgatás kész: ${readyOrders.length} szabott tétel lezárva, a marási köteg elindult (${millingBatchCode}).${remainingOrders.length > 0 ? ` A Szabás kötegben ${remainingOrders.length} tétel maradt.` : " A teljes Szabás köteg átforgatásra került."}`,
+      });
+    } catch (error) {
+      console.error("SUPABASE HIBA transferReadyCuttingOrdersToMilling:", error);
+      setMessage({ type: "error", text: normalizeError(error) });
+    } finally {
+      setBusy(false);
+      window.setTimeout(() => {
+        batchFinalizeInFlightRef.current = false;
+      }, 320);
+    }
+  }
+
   async function finalizeEndBatch(): Promise<void> {
     if (batchFinalizeInFlightRef.current) return;
     if (!supabase || !activeWorker || !selectedEndBatch) {
@@ -11698,7 +11859,7 @@ body {
   async function handleEndBatchCommand(scannedValue?: string): Promise<void> {
     const command = (scannedValue ?? endBatchCommandInput).trim();
     if (!command) {
-      setMessage({ type: "error", text: "Olvasd be az ALL-READY vagy END kódot." });
+      setMessage({ type: "error", text: "Olvasd be az ALL-READY, ATFORGATAS-MARASRA vagy END kódot." });
       return;
     }
     if (command.trim().toUpperCase() === "ALL-READY") {
@@ -11707,12 +11868,17 @@ body {
       window.setTimeout(() => focusAndSelectInput(endBatchCommandInputRef), 0);
       return;
     }
+    if (command.trim().toUpperCase() === "ATFORGATAS-MARASRA") {
+      setEndBatchCommandInput("");
+      await transferReadyCuttingOrdersToMilling();
+      return;
+    }
     if (isEndBarcode(command)) {
       setEndBatchCommandInput("");
       await finalizeEndBatch();
       return;
     }
-    setMessage({ type: "error", text: `Ismeretlen lejelentési kód: ${command}. Használható: ALL-READY vagy END.` });
+    setMessage({ type: "error", text: `Ismeretlen lejelentési kód: ${command}. Használható: ALL-READY, ATFORGATAS-MARASRA vagy END.` });
   }
 
   function startBatchWorkflow(): void {
@@ -13205,6 +13371,12 @@ body {
           return;
         }
 
+        if (workflowMode === "end" && flowStage === "end-batch-detail" && scannedNormalized.toUpperCase() === "ATFORGATAS-MARASRA") {
+          closeScanner();
+          await transferReadyCuttingOrdersToMilling();
+          return;
+        }
+
         if (workflowMode === "end" && flowStage === "active-batch-list") {
           const matchedBatch = activeProductionBatches.find((batch) => batch.batch_code.trim().toUpperCase() === scannedNormalized.toUpperCase());
           if (matchedBatch) {
@@ -14443,7 +14615,7 @@ body {
                           ref={endBatchCommandInputRef}
                           value={endBatchCommandInput}
                           onChange={(e) => setEndBatchCommandInput(e.target.value.replace(/[\r\n]+/g, "").trim())}
-                          placeholder="ALL-READY vagy END"
+                          placeholder={normalizeBatchOperationCode(selectedEndBatch.operation_code) === "SZABAS" ? "ALL-READY, ATFORGATAS-MARASRA vagy END" : "ALL-READY vagy END"}
                           style={fieldStyle}
                           autoComplete="off"
                           onKeyDown={(e) => {
@@ -14455,20 +14627,35 @@ body {
                         />
                       </div>
 
-                      <div style={{ marginBottom: 16, background: "#ffffff", borderRadius: 12, padding: 12, maxWidth: 420 }}>
-                        <div style={{ color: "#111827", fontWeight: 900, marginBottom: 8, textAlign: "center" }}>ALL-READY</div>
-                        <Code128Barcode value="ALL-READY" height={54} />
-                        <div style={{ color: "#334155", fontSize: 12, marginTop: 8, textAlign: "center" }}>
-                          {normalizeBatchOperationCode(selectedEndBatch.operation_code) === "SZABAS"
-                            ? "Beolvasáskor minden rendelés Szabás kész lesz; END mentés után Marásra vár állapotba kerül."
-                            : normalizeBatchOperationCode(selectedEndBatch.operation_code) === "MARAS"
-                              ? "Beolvasáskor minden rendelés Marás kész lesz; END mentéssel véglegesíthető."
-                              : "Beolvasáskor minden rendelés Kész státuszba kerül; END mentéssel véglegesíthető."}
+                      <div style={{ display: "grid", gridTemplateColumns: normalizeBatchOperationCode(selectedEndBatch.operation_code) === "SZABAS" ? "repeat(auto-fit, minmax(300px, 1fr))" : "minmax(280px, 420px)", gap: 14, marginBottom: 16 }}>
+                        <div style={{ background: "#ffffff", borderRadius: 12, padding: 12, minWidth: 0 }}>
+                          <div style={{ color: "#111827", fontWeight: 900, marginBottom: 8, textAlign: "center" }}>ALL-READY</div>
+                          <Code128Barcode value="ALL-READY" height={54} />
+                          <div style={{ color: "#334155", fontSize: 12, marginTop: 8, textAlign: "center" }}>
+                            {normalizeBatchOperationCode(selectedEndBatch.operation_code) === "SZABAS"
+                              ? "Beolvasáskor minden rendelés Szabás kész lesz. Ezután END-del Marásra vár állapotba tehető, vagy az Átforgatás marásra kóddal azonnal elindítható a marás."
+                              : normalizeBatchOperationCode(selectedEndBatch.operation_code) === "MARAS"
+                                ? "Beolvasáskor minden rendelés Marás kész lesz; END mentéssel véglegesíthető."
+                                : "Beolvasáskor minden rendelés Kész státuszba kerül; END mentéssel véglegesíthető."}
+                          </div>
                         </div>
+
+                        {normalizeBatchOperationCode(selectedEndBatch.operation_code) === "SZABAS" && (
+                          <div style={{ background: "#ffffff", borderRadius: 12, padding: 12, minWidth: 0 }}>
+                            <div style={{ color: "#111827", fontWeight: 900, marginBottom: 8, textAlign: "center" }}>ÁTFORGATÁS MARÁSRA</div>
+                            <Code128Barcode value="ATFORGATAS-MARASRA" height={54} />
+                            <div style={{ color: "#334155", fontSize: 12, marginTop: 8, textAlign: "center" }}>
+                              A bepipált, szabásban elkészült rendeléseket lezárja, és azonnal létrehozza velük a folyamatban lévő Marás köteget.
+                            </div>
+                          </div>
+                        )}
                       </div>
 
                       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                         <button onClick={() => { markAllEndOrdersReady(); window.setTimeout(() => focusAndSelectInput(endBatchCommandInputRef), 0); }} disabled={busy} style={buttonPrimary}>ALL-READY</button>
+                        {normalizeBatchOperationCode(selectedEndBatch.operation_code) === "SZABAS" && (
+                          <button onClick={() => void transferReadyCuttingOrdersToMilling()} disabled={busy} style={buttonPrimary}>Átforgatás marásra</button>
+                        )}
                         <button onClick={() => void finalizeEndBatch()} disabled={busy} style={buttonPrimary}>END mentés</button>
                         <button onClick={() => { setSelectedEndBatch(null); setFlowStage("active-batch-list"); window.setTimeout(() => focusAndSelectInput(activeBatchInputRef), 0); }} style={buttonSecondary}>Vissza a listához</button>
                         <button onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
