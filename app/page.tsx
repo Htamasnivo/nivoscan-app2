@@ -123,6 +123,13 @@ type LoggedInDolgozoRow = {
   auth_user_id?: string | null;
 };
 
+type OrderProductionMeta = {
+  ujragyartas: boolean;
+  ujragyartas_sorszam: number | null;
+  gyartas_tipus: "egyedi" | "keszlet";
+  gyartasi_kor: number | null;
+};
+
 type ProductionBatchRow = {
   id?: number | string;
   batch_code: string;
@@ -131,6 +138,7 @@ type ProductionBatchRow = {
   machine_id?: string | null;
   order_ids: string[];
   worker_name?: string | null;
+  production_meta?: Record<string, OrderProductionMeta> | null;
 };
 
 type IncompleteBatchRow = {
@@ -164,6 +172,10 @@ type WorkLogRow = {
   start_time?: string | null;
   end_time?: string | null;
   machine_id?: string | null;
+  ujragyartas?: boolean | null;
+  ujragyartas_sorszam?: number | null;
+  gyartas_tipus?: string | null;
+  gyartasi_kor?: number | null;
 };
 
 type GroupedLogs = Record<string, WorkLogRow[]>;
@@ -314,6 +326,8 @@ type ProductionMonitorCell = {
   workerName: string;
   startedAt: string | null;
   endedAt: string | null;
+  isReproduction?: boolean;
+  reproductionNumber?: number | null;
 };
 
 type ProductionMonitorRow = {
@@ -356,6 +370,8 @@ type ProductionCardRow = {
   endWorkerName: string;
   startedAt: string | null;
   endedAt: string | null;
+  isReproduction?: boolean;
+  reproductionNumber?: number | null;
 };
 
 type ProductionCardData = {
@@ -1609,6 +1625,55 @@ function buildStationPlanTableName(stationName: string): string {
   return `${normalized || "munkaallomas"}_terv`;
 }
 
+function isStockProductionType(value: string | null | undefined): boolean {
+  return normalizeLooseText(String(value || "")) === "keszlet";
+}
+
+function buildReproductionStatusLabel(
+  baseLabel: string,
+  isReproduction: boolean,
+  reproductionNumber: number | null | undefined
+): string {
+  if (!isReproduction) return baseLabel;
+  const suffix = Number(reproductionNumber) > 0 ? ` #${Number(reproductionNumber)}` : "";
+  return `${baseLabel} • Újragyártás${suffix}`;
+}
+
+function normalizeOrderProductionMeta(value: unknown): OrderProductionMeta {
+  const candidate = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const reproductionNumber = Number(candidate.ujragyartas_sorszam);
+  const productionType = normalizeLooseText(String(candidate.gyartas_tipus || "")) === "keszlet" ? "keszlet" : "egyedi";
+  return {
+    ujragyartas: candidate.ujragyartas === true,
+    ujragyartas_sorszam: Number.isFinite(reproductionNumber) && reproductionNumber > 0 ? Math.trunc(reproductionNumber) : null,
+    gyartas_tipus: productionType,
+    gyartasi_kor: null,
+  };
+}
+
+function normalizeProductionMetaMap(value: unknown): Record<string, OrderProductionMeta> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: Record<string, OrderProductionMeta> = {};
+  Object.entries(value as Record<string, unknown>).forEach(([orderNumber, meta]) => {
+    const cleanOrderNumber = String(orderNumber || "").trim();
+    if (cleanOrderNumber) result[cleanOrderNumber] = normalizeOrderProductionMeta(meta);
+  });
+  return result;
+}
+
+function getProductionMetaForOrder(
+  productionMeta: Record<string, OrderProductionMeta> | null | undefined,
+  orderNumber: string
+): OrderProductionMeta {
+  const normalizedOrder = normalizeLooseText(orderNumber);
+  const matchingEntry = Object.entries(productionMeta || {}).find(
+    ([savedOrder]) => normalizeLooseText(savedOrder) === normalizedOrder
+  );
+  return matchingEntry
+    ? normalizeOrderProductionMeta(matchingEntry[1])
+    : { ujragyartas: false, ujragyartas_sorszam: null, gyartas_tipus: "egyedi", gyartasi_kor: null };
+}
+
 function resolveLogStation(log: WorkLogRow, workerRows: Worker[]): string {
   const machine = String(log.machine_id || "").trim();
   if (machine && normalizeLooseText(machine) !== normalizeLooseText(DEFAULT_MACHINE_ID)) return machine;
@@ -1618,57 +1683,88 @@ function resolveLogStation(log: WorkLogRow, workerRows: Worker[]): string {
 
 function getMonitorCellFromLogs(
   logs: WorkLogRow[],
-  productionBatchStarts: ProductionBatchRow[] = []
+  productionBatchStarts: ProductionBatchRow[] = [],
+  orderNumber = ""
 ): ProductionMonitorCell {
-  const completedLogs = logs
+  const completedCandidates = logs
     .filter((log) => Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END")
-    .sort((a, b) => {
-      const aTime = new Date(a.end_time || a.end_timestamp || a.created_at).getTime();
-      const bTime = new Date(b.end_time || b.end_timestamp || b.created_at).getTime();
-      return aTime - bTime;
-    });
+    .map((log) => ({
+      workerName: log.worker_name || "",
+      eventAt: log.end_time || log.end_timestamp || log.created_at,
+      startedAt: log.start_time || log.start_timestamp || null,
+      endedAt: log.end_time || log.end_timestamp || log.created_at || null,
+      isReproduction: log.ujragyartas === true,
+      reproductionNumber: Number(log.ujragyartas_sorszam) > 0 ? Number(log.ujragyartas_sorszam) : null,
+    }))
+    .filter((item): item is typeof item & { eventAt: string } => Boolean(item.eventAt));
 
-  if (completedLogs.length > 0) {
-    const latestEnd = completedLogs[completedLogs.length - 1];
-    return {
-      status: "done",
-      label: "Kész",
-      workerName: latestEnd.worker_name || "",
-      startedAt: latestEnd.start_time || latestEnd.start_timestamp || null,
-      endedAt: latestEnd.end_time || latestEnd.end_timestamp || latestEnd.created_at || null,
-    };
-  }
-
-  const startedLogs = logs
+  const startedLogCandidates = logs
     .filter((log) => Boolean(log.start_time || log.start_timestamp) || String(log.action || "").toUpperCase() === "START")
     .map((log) => ({
       workerName: log.worker_name || "",
+      eventAt: log.start_time || log.start_timestamp || log.created_at,
       startedAt: log.start_time || log.start_timestamp || log.created_at || null,
+      isReproduction: log.ujragyartas === true,
+      reproductionNumber: Number(log.ujragyartas_sorszam) > 0 ? Number(log.ujragyartas_sorszam) : null,
     }))
-    .filter((item): item is { workerName: string; startedAt: string } => Boolean(item.startedAt));
+    .filter((item): item is typeof item & { eventAt: string; startedAt: string } => Boolean(item.eventAt) && Boolean(item.startedAt));
 
-  const startedBatches = productionBatchStarts
+  const startedBatchCandidates = productionBatchStarts
     .filter((batch) => Boolean(batch.start_time))
-    .map((batch) => ({
-      workerName: batch.worker_name || "",
-      startedAt: String(batch.start_time),
-    }));
+    .map((batch) => {
+      const meta = getProductionMetaForOrder(batch.production_meta, orderNumber);
+      return {
+        workerName: batch.worker_name || "",
+        eventAt: String(batch.start_time),
+        startedAt: String(batch.start_time),
+        isReproduction: meta.ujragyartas,
+        reproductionNumber: meta.ujragyartas_sorszam,
+      };
+    });
 
-  const latestStart = [...startedLogs, ...startedBatches]
-    .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
+  const latestEnd = completedCandidates
+    .sort((left, right) => new Date(left.eventAt).getTime() - new Date(right.eventAt).getTime())
+    .at(-1);
+  const latestStart = [...startedLogCandidates, ...startedBatchCandidates]
+    .sort((left, right) => new Date(left.eventAt).getTime() - new Date(right.eventAt).getTime())
     .at(-1);
 
-  if (latestStart) {
+  const latestEndTime = latestEnd ? new Date(latestEnd.eventAt).getTime() : Number.NEGATIVE_INFINITY;
+  const latestStartTime = latestStart ? new Date(latestStart.eventAt).getTime() : Number.NEGATIVE_INFINITY;
+
+  if (latestStart && latestStartTime > latestEndTime) {
     return {
       status: "in-progress",
-      label: "Folyamatban",
+      label: buildReproductionStatusLabel("Folyamatban", latestStart.isReproduction, latestStart.reproductionNumber),
       workerName: latestStart.workerName,
       startedAt: latestStart.startedAt,
       endedAt: null,
+      isReproduction: latestStart.isReproduction,
+      reproductionNumber: latestStart.reproductionNumber,
     };
   }
 
-  return { status: "waiting", label: "Várakozik", workerName: "", startedAt: null, endedAt: null };
+  if (latestEnd) {
+    return {
+      status: "done",
+      label: buildReproductionStatusLabel("Kész", latestEnd.isReproduction, latestEnd.reproductionNumber),
+      workerName: latestEnd.workerName,
+      startedAt: latestEnd.startedAt,
+      endedAt: latestEnd.endedAt,
+      isReproduction: latestEnd.isReproduction,
+      reproductionNumber: latestEnd.reproductionNumber,
+    };
+  }
+
+  return {
+    status: "waiting",
+    label: "Várakozik",
+    workerName: "",
+    startedAt: null,
+    endedAt: null,
+    isReproduction: false,
+    reproductionNumber: null,
+  };
 }
 
 function Code128Barcode({ value, height = 42, compact = false }: { value: string; height?: number; compact?: boolean }): React.JSX.Element {
@@ -2331,6 +2427,7 @@ export default function Page() {
   const [entryPermissionDenied, setEntryPermissionDenied] = useState(false);
   const [batchCode, setBatchCode] = useState("");
   const [batchOrders, setBatchOrders] = useState<string[]>([]);
+  const [batchOrderProductionMeta, setBatchOrderProductionMeta] = useState<Record<string, OrderProductionMeta>>({});
   const [createdBatch, setCreatedBatch] = useState<ProductionBatchRow | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<WorkAction | null>(null);
   const [selectedEventCard, setSelectedEventCard] = useState<EventCard | null>(null);
@@ -3892,7 +3989,8 @@ export default function Page() {
 
   function resolveProductionCardWorkers(
     logs: WorkLogRow[],
-    productionBatchStarts: ProductionBatchRow[]
+    productionBatchStarts: ProductionBatchRow[],
+    orderNumber: string
   ): {
     status: ProductionMonitorStatus;
     statusLabel: string;
@@ -3900,61 +3998,83 @@ export default function Page() {
     endWorkerName: string;
     startedAt: string | null;
     endedAt: string | null;
+    isReproduction: boolean;
+    reproductionNumber: number | null;
   } {
-    const completedLogs = logs
+    const completedCandidates = logs
       .filter((log) => Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END")
       .map((log) => ({
         workerName: String(log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || "").trim(),
+        eventAt: String(log.end_time || log.end_timestamp || log.created_at || ""),
+        startedAt: String(log.start_time || log.start_timestamp || "") || null,
         endedAt: String(log.end_time || log.end_timestamp || log.created_at || ""),
+        isReproduction: log.ujragyartas === true,
+        reproductionNumber: Number(log.ujragyartas_sorszam) > 0 ? Number(log.ujragyartas_sorszam) : null,
       }))
-      .filter((item) => Boolean(item.endedAt))
-      .sort((left, right) => new Date(left.endedAt).getTime() - new Date(right.endedAt).getTime());
+      .filter((item) => Boolean(item.eventAt));
 
     const startLogCandidates = logs
-      .filter((log) => {
-        const action = String(log.action || "").toUpperCase();
-        if (action === "START") return true;
-        return Boolean(log.start_time || log.start_timestamp) && !Boolean(log.end_time || log.end_timestamp);
-      })
+      .filter((log) => Boolean(log.start_time || log.start_timestamp) || String(log.action || "").toUpperCase() === "START")
       .map((log) => ({
         workerName: String(log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || "").trim(),
+        eventAt: String(log.start_time || log.start_timestamp || log.created_at || ""),
         startedAt: String(log.start_time || log.start_timestamp || log.created_at || ""),
+        isReproduction: log.ujragyartas === true,
+        reproductionNumber: Number(log.ujragyartas_sorszam) > 0 ? Number(log.ujragyartas_sorszam) : null,
       }))
-      .filter((item) => Boolean(item.startedAt));
+      .filter((item) => Boolean(item.eventAt));
 
     const batchStartCandidates = productionBatchStarts
       .filter((batch) => Boolean(batch.start_time))
-      .map((batch) => ({
-        workerName: String(batch.worker_name || "").trim(),
-        startedAt: String(batch.start_time || batch.created_at || ""),
-      }))
-      .filter((item) => Boolean(item.startedAt));
+      .map((batch) => {
+        const meta = getProductionMetaForOrder(batch.production_meta, orderNumber);
+        return {
+          workerName: String(batch.worker_name || "").trim(),
+          eventAt: String(batch.start_time || batch.created_at || ""),
+          startedAt: String(batch.start_time || batch.created_at || ""),
+          isReproduction: meta.ujragyartas,
+          reproductionNumber: meta.ujragyartas_sorszam,
+        };
+      })
+      .filter((item) => Boolean(item.eventAt));
 
     const latestStart = [...startLogCandidates, ...batchStartCandidates]
-      .sort((left, right) => new Date(left.startedAt).getTime() - new Date(right.startedAt).getTime())
+      .sort((left, right) => new Date(left.eventAt).getTime() - new Date(right.eventAt).getTime())
       .at(-1);
-    const latestEnd = completedLogs.at(-1);
+    const latestEnd = completedCandidates
+      .sort((left, right) => new Date(left.eventAt).getTime() - new Date(right.eventAt).getTime())
+      .at(-1);
 
-    if (latestEnd) {
-      return {
-        status: "done",
-        statusLabel: "Kész",
-        startWorkerName: latestStart?.workerName || "",
-        endWorkerName: latestEnd.workerName,
-        startedAt: latestStart?.startedAt || null,
-        endedAt: latestEnd.endedAt,
-      };
-    }
-    if (latestStart) {
+    const latestStartTime = latestStart ? new Date(latestStart.eventAt).getTime() : Number.NEGATIVE_INFINITY;
+    const latestEndTime = latestEnd ? new Date(latestEnd.eventAt).getTime() : Number.NEGATIVE_INFINITY;
+
+    if (latestStart && latestStartTime > latestEndTime) {
       return {
         status: "in-progress",
-        statusLabel: "Folyamatban",
+        statusLabel: buildReproductionStatusLabel("Folyamatban", latestStart.isReproduction, latestStart.reproductionNumber),
         startWorkerName: latestStart.workerName,
         endWorkerName: "",
         startedAt: latestStart.startedAt,
         endedAt: null,
+        isReproduction: latestStart.isReproduction,
+        reproductionNumber: latestStart.reproductionNumber,
       };
     }
+
+    if (latestEnd) {
+      const startForCompletedCycle = latestStart && latestStartTime <= latestEndTime ? latestStart : null;
+      return {
+        status: "done",
+        statusLabel: buildReproductionStatusLabel("Kész", latestEnd.isReproduction, latestEnd.reproductionNumber),
+        startWorkerName: startForCompletedCycle?.workerName || "",
+        endWorkerName: latestEnd.workerName,
+        startedAt: startForCompletedCycle?.startedAt || latestEnd.startedAt || null,
+        endedAt: latestEnd.endedAt,
+        isReproduction: latestEnd.isReproduction,
+        reproductionNumber: latestEnd.reproductionNumber,
+      };
+    }
+
     return {
       status: "waiting",
       statusLabel: "Várakozik",
@@ -3962,6 +4082,8 @@ export default function Page() {
       endWorkerName: "",
       startedAt: null,
       endedAt: null,
+      isReproduction: false,
+      reproductionNumber: null,
     };
   }
 
@@ -4185,7 +4307,7 @@ export default function Page() {
 
     const orderNumbers = Array.from(new Set(planRows.map((row) => row.orderNumber)));
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor";
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const chunk = orderNumbers.slice(index, index + 100);
       const { data: logData, error: logError } = await supabase
@@ -4206,7 +4328,7 @@ export default function Page() {
     if (orderNumbers.length > 0) {
       const { data: batchData, error: batchError } = await supabase
         .from("production_batches")
-        .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name")
+        .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta")
         .eq("machine_id", cleanStationName)
         .not("start_time", "is", null)
         .limit(10000);
@@ -4223,7 +4345,7 @@ export default function Page() {
         Array.isArray(batch.order_ids) &&
         batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(planRow.orderNumber))
       );
-      const status = resolveProductionCardWorkers(rowLogs, rowBatchStarts);
+      const status = resolveProductionCardWorkers(rowLogs, rowBatchStarts, planRow.orderNumber);
       return { ...planRow, ...status };
     });
 
@@ -6306,6 +6428,7 @@ export default function Page() {
     setPendingAction(null);
     setBatchCode("");
     setBatchOrders([]);
+    setBatchOrderProductionMeta({});
     setCreatedBatch(null);
     setSelectedEvent(null);
     setSelectedEventCard(null);
@@ -7487,7 +7610,7 @@ export default function Page() {
 
     const orderNumbers = Array.from(new Set(items.map((item) => String(item.order_number).trim())));
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor";
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const orderChunk = orderNumbers.slice(index, index + 100);
       const { data: logData, error: logError } = await supabase
@@ -7507,7 +7630,7 @@ export default function Page() {
     if (orderNumbers.length > 0) {
       const { data: batchData, error: batchError } = await supabase
         .from("production_batches")
-        .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name")
+        .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta")
         .not("start_time", "is", null)
         .limit(10000);
       if (batchError) throw batchError;
@@ -7548,7 +7671,7 @@ export default function Page() {
           Array.isArray(batch.order_ids) &&
           batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(orderNumber))
         );
-        stationCells[station] = getMonitorCellFromLogs(stationLogs, stationBatchStarts);
+        stationCells[station] = getMonitorCellFromLogs(stationLogs, stationBatchStarts, orderNumber);
       });
       const statuses = Object.values(stationCells)
         .map((cell) => cell.status)
@@ -7738,7 +7861,7 @@ export default function Page() {
       Array.from(planOrdersByStation.values()).flatMap((orders) => Array.from(orders))
     ));
     const planLogs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor";
 
     for (let index = 0; index < allPlannedOrders.length; index += 100) {
       const orderChunk = allPlannedOrders.slice(index, index + 100);
@@ -7832,7 +7955,7 @@ export default function Page() {
   async function fetchDashboardData(range: { startIso: string; endIso: string }): Promise<DashboardData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor";
     const bufferedStart = new Date(range.startIso);
     bufferedStart.setDate(bufferedStart.getDate() - 1);
 
@@ -8076,7 +8199,7 @@ export default function Page() {
     try {
       const { data, error } = await supabase
         .from("work_logs")
-        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id")
+        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor")
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) throw error;
@@ -8116,7 +8239,7 @@ export default function Page() {
     try {
       const { data, error } = await supabase
         .from("work_logs")
-        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id")
+        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor")
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) throw error;
@@ -8304,6 +8427,7 @@ START: ${formatDateTime(startAt)}`
     setWorkerEventKoteg(1);
     setBatchCode("");
     setBatchOrders([]);
+    setBatchOrderProductionMeta({});
     setCreatedBatch(null);
     setOrderTypeInput("");
     orderTypeLatestValueRef.current = "";
@@ -9490,6 +9614,7 @@ body {
     setWorkerEventKoteg(koteg);
     setBatchCode("");
     setBatchOrders([]);
+    setBatchOrderProductionMeta({});
     setCreatedBatch(null);
     setSelectedEvent(null);
     setSelectedEventCard(null);
@@ -9560,6 +9685,7 @@ body {
     setWorkerEventKoteg(1);
     setBatchCode("");
     setBatchOrders([]);
+    setBatchOrderProductionMeta({});
     setCreatedBatch(null);
     clearWorkerScanTimer();
     clearWorkerSubmitDebounceTimer();
@@ -9601,6 +9727,7 @@ body {
     setWorkerEventKoteg(1);
     setBatchCode("");
     setBatchOrders([]);
+    setBatchOrderProductionMeta({});
     setCreatedBatch(null);
     setSelectedEvent(null);
     setSelectedEventCard(null);
@@ -9664,6 +9791,7 @@ body {
     setActiveWorker(worker);
     setWorkflowMode(null);
     setBatchOrders([]);
+    setBatchOrderProductionMeta({});
     setCreatedBatch(null);
     setOrderNumber("");
     setPendingAction(null);
@@ -9750,6 +9878,7 @@ body {
     if (mode === "single") {
       setBatchCode("");
       setBatchOrders([]);
+      setBatchOrderProductionMeta({});
       setPendingAction("START");
       setActionBarcode("");
       setEndBarcodeConfirmed(false);
@@ -9763,6 +9892,7 @@ body {
 
     setBatchCode("");
     setBatchOrders([]);
+    setBatchOrderProductionMeta({});
     setPendingAction("START");
     setFlowStage("order-scan");
     setStep(5);
@@ -9916,6 +10046,7 @@ body {
         setPendingAction("START");
         setBatchCode("");
         setBatchOrders([]);
+        setBatchOrderProductionMeta({});
         setFlowStage("order-scan");
         setStep(5);
         setMessage({ type: "success", text: `${matchedEvent.label} esemény beolvasva. Most olvasd egymás után a rendelésszámokat. A pontos START kód véglegesíti és menti a köteget.` });
@@ -9925,6 +10056,7 @@ body {
       setWorkflowMode("single");
       setPendingAction("START");
       setBatchOrders([]);
+      setBatchOrderProductionMeta({});
       setFlowStage("order-scan");
       setStep(5);
       setMessage({ type: "success", text: `${matchedEvent.label} esemény beolvasva. Olvasd be a rendelésszámot; START nélkül azonnal mentésre kerül.` });
@@ -9980,6 +10112,7 @@ body {
       machine_id: row?.machine_id ? String(row.machine_id) : null,
       order_ids: normalizeProductionBatchOrders(row?.order_ids),
       worker_name: row?.worker_name ? String(row.worker_name) : null,
+      production_meta: normalizeProductionMetaMap(row?.production_meta),
     };
   }
   async function loadActiveProductionBatches(): Promise<void> {
@@ -9992,7 +10125,7 @@ body {
       const currentMachineId = getCurrentMachineIdForInsert();
       const { data, error } = await supabase
         .from("production_batches")
-        .select("id,batch_code,worker_name,order_ids,created_at,start_time,machine_id")
+        .select("id,batch_code,worker_name,order_ids,created_at,start_time,machine_id,production_meta")
         .order("created_at", { ascending: false });
       if (error) throw error;
       const batches = (Array.isArray(data) ? data : [])
@@ -10021,6 +10154,7 @@ body {
     setEndBarcodeConfirmed(false);
     setBatchCode("");
     setBatchOrders([]);
+    setBatchOrderProductionMeta({});
     setSelectedEndBatch(null);
     setActiveBatchInput("");
     setEndBatchCommandInput("");
@@ -10126,6 +10260,7 @@ body {
 
       const logs = readyOrders.map((order) => {
         const orderNoteClean = (endOrderNotes[order] || "").trim();
+        const orderProductionMeta = getProductionMetaForOrder(selectedEndBatch.production_meta, order);
         return {
           worker_id: activeWorker.id,
           worker_name: workerNameForSave,
@@ -10140,6 +10275,10 @@ body {
           start_time: batchStartTime,
           end_timestamp: nowIso,
           end_time: nowIso,
+          ujragyartas: orderProductionMeta.ujragyartas,
+          ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
+          gyartas_tipus: orderProductionMeta.gyartas_tipus,
+          gyartasi_kor: orderProductionMeta.gyartasi_kor,
           order_note: orderNoteClean || null,
           batch_note: batchNoteClean || null,
           note: buildStructuredNote([orderNoteClean, batchNoteClean].filter(Boolean).join(" | ") || null, {
@@ -10156,6 +10295,9 @@ body {
             szal: finalSzal,
             action: "END" as WorkAction,
             split_remainder_count: remainingOrders.length,
+            ujragyartas: orderProductionMeta.ujragyartas,
+            ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
+            gyartas_tipus: orderProductionMeta.gyartas_tipus,
           }),
           scrap_qty: null,
           darab: finalDarab,
@@ -10170,6 +10312,9 @@ body {
       if (remainingOrders.length > 0) {
         newBatchCode = `BATCH-${Date.now()}-REM`;
         const remainderMachineId = selectedEndBatch.machine_id || currentMachineId;
+        const remainderProductionMeta = Object.fromEntries(
+          remainingOrders.map((order) => [order, getProductionMetaForOrder(selectedEndBatch.production_meta, order)])
+        ) as Record<string, OrderProductionMeta>;
         const { data: remainderData, error: insertRemainderError } = await supabase.from("production_batches").insert([{
           batch_code: newBatchCode,
           order_ids: remainingOrders,
@@ -10177,7 +10322,8 @@ body {
           created_at: nowIso,
           start_time: batchStartTime,
           machine_id: remainderMachineId,
-        }]).select("id,batch_code,start_time,machine_id").single();
+          production_meta: remainderProductionMeta,
+        }]).select("id,batch_code,start_time,machine_id,production_meta").single();
         if (insertRemainderError) throw insertRemainderError;
         await ensureProductionBatchStartMachineSaved(supabase, {
           id: remainderData?.id,
@@ -10333,6 +10479,13 @@ body {
       return;
     }
 
+    if (batchOrders.some((order) => normalizeLooseText(order) === normalizeLooseText(candidate))) {
+      setOrderNumber("");
+      setMessage({ type: "info", text: `A rendelés már benne van a kötegben: ${candidate}` });
+      focusAndSelectInput(orderInputRef);
+      return;
+    }
+
     if (orderDuplicateCheckInFlightRef.current) return;
     orderDuplicateCheckInFlightRef.current = true;
 
@@ -10349,17 +10502,28 @@ body {
         return;
       }
 
-      setBatchOrders((prev) => {
-        if (prev.includes(candidate)) {
-          setMessage({ type: "info", text: `A rendelés már benne van a kötegben: ${candidate}` });
-          return prev;
-        }
-        setMessage({ type: "success", text: `Rendelés hozzáadva a köteghez: ${candidate}` });
-        return [...prev, candidate];
+      const productionDecision = await prepareOrderProductionMeta(candidate, true);
+      if (!productionDecision.proceed) {
+        setOrderNumber("");
+        setMessage({ type: "info", text: `Az ${candidate} rendelés újragyártása megszakítva, nem került a kötegbe.` });
+        focusAndSelectInput(orderInputRef);
+        return;
+      }
+
+      setBatchOrderProductionMeta((previous) => ({
+        ...previous,
+        [candidate]: productionDecision.meta,
+      }));
+      setBatchOrders((previous) => [...previous, candidate]);
+      setMessage({
+        type: "success",
+        text: productionDecision.meta.ujragyartas
+          ? `Rendelés hozzáadva a köteghez újragyártásként: ${candidate} (#${productionDecision.meta.ujragyartas_sorszam})`
+          : `Rendelés hozzáadva a köteghez: ${candidate}`,
       });
       setOrderNumber("");
     } catch (error) {
-      console.error("SUPABASE HIBA addOrderToBatch duplicate check:", error);
+      console.error("SUPABASE HIBA addOrderToBatch duplicate/reproduction check:", error);
       playSharpErrorBeep();
       setMessage({ type: "error", text: normalizeError(error) });
       focusAndSelectInput(orderInputRef);
@@ -10384,6 +10548,13 @@ body {
       const { error } = await supabase.from("incomplete_batches").insert([payload]);
       if (error) throw error;
       setBatchOrders((prev) => prev.filter((value) => value !== orderId));
+      setBatchOrderProductionMeta((previous) => {
+        const next = { ...previous };
+        Object.keys(next).forEach((key) => {
+          if (normalizeLooseText(key) === normalizeLooseText(orderId)) delete next[key];
+        });
+        return next;
+      });
       setMessage({ type: "success", text: `A rendelés félbemaradtként elmentve: ${orderId}` });
     } catch (error) {
       console.error("SUPABASE HIBA markOrderAsIncomplete:", error);
@@ -10458,6 +10629,97 @@ body {
     }
 
     return { exists: false, batchCode: null };
+  }
+
+  async function readOrderProductionTypeAtCurrentStation(orderId: string): Promise<string> {
+    if (!supabase) return "";
+    const cleanOrderId = orderId.trim();
+    const currentMachineId = getCurrentMachineIdForInsert();
+    if (!cleanOrderId || !currentMachineId) return "";
+
+    const tableName = buildStationPlanTableName(currentMachineId);
+    const exactResponse = await supabase
+      .from(tableName)
+      .select("sorszam, tipus, elkeszules_datum")
+      .eq("sorszam", cleanOrderId)
+      .order("elkeszules_datum", { ascending: false })
+      .limit(1);
+
+    if (!exactResponse.error && Array.isArray(exactResponse.data) && exactResponse.data.length > 0) {
+      return String(exactResponse.data[0]?.tipus || "").trim();
+    }
+
+    if (exactResponse.error) {
+      const errorText = normalizeError(exactResponse.error).toLowerCase();
+      const missingTable = errorText.includes("does not exist") || (errorText.includes("relation") && errorText.includes("not exist"));
+      if (!missingTable) throw exactResponse.error;
+      return "";
+    }
+
+    return "";
+  }
+
+  async function prepareOrderProductionMeta(
+    orderId: string,
+    askForConfirmation: boolean
+  ): Promise<{ proceed: boolean; meta: OrderProductionMeta }> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const cleanOrderId = orderId.trim();
+    const currentMachineId = getCurrentMachineIdForInsert();
+    const productType = await readOrderProductionTypeAtCurrentStation(cleanOrderId);
+    const isStock = isStockProductionType(productType);
+
+    const { data, error } = await supabase
+      .from("work_logs")
+      .select("id, action, created_at, end_time, end_timestamp, ujragyartas, ujragyartas_sorszam")
+      .eq("order_number", cleanOrderId)
+      .eq("machine_id", currentMachineId)
+      .order("created_at", { ascending: false })
+      .limit(1000);
+    if (error) throw error;
+
+    const completedRows = ((data || []) as Array<{
+      action?: string | null;
+      created_at?: string | null;
+      end_time?: string | null;
+      end_timestamp?: string | null;
+      ujragyartas?: boolean | null;
+      ujragyartas_sorszam?: number | null;
+    }>).filter((row) => Boolean(row.end_time || row.end_timestamp) || String(row.action || "").toUpperCase() === "END");
+
+    if (isStock || completedRows.length === 0) {
+      return {
+        proceed: true,
+        meta: {
+          ujragyartas: false,
+          ujragyartas_sorszam: null,
+          gyartas_tipus: isStock ? "keszlet" : "egyedi",
+          gyartasi_kor: null,
+        },
+      };
+    }
+
+    const currentMaximum = completedRows.reduce((maximum, row) => {
+      const value = Number(row.ujragyartas_sorszam);
+      return Number.isFinite(value) && value > maximum ? Math.trunc(value) : maximum;
+    }, 0);
+    const nextReproductionNumber = currentMaximum + 1;
+
+    const confirmed = !askForConfirmation || typeof window === "undefined" || window.confirm(
+      `A(z) ${cleanOrderId} rendelés ezen a munkaállomáson már elkészült.\n\n` +
+      `Biztosan újra akarod gyártani ezt a terméket?\n\n` +
+      `Munkaállomás: ${currentMachineId}\nÚjragyártás sorszáma: ${nextReproductionNumber}`
+    );
+
+    return {
+      proceed: confirmed,
+      meta: {
+        ujragyartas: confirmed,
+        ujragyartas_sorszam: confirmed ? nextReproductionNumber : null,
+        gyartas_tipus: "egyedi",
+        gyartasi_kor: null,
+      },
+    };
   }
 
   async function insertExistingOrderCompletionLog(orderId: string, existingBatchCode?: string | null, timestampIso?: string): Promise<void> {
@@ -10588,6 +10850,13 @@ body {
       return;
     }
 
+    let orderProductionMeta: OrderProductionMeta = {
+      ujragyartas: false,
+      ujragyartas_sorszam: null,
+      gyartas_tipus: "egyedi",
+      gyartasi_kor: null,
+    };
+
     setBusy(true);
     try {
       const hasOpenStartOnSameStation = await hasOpenStartForOrderAtActiveStation(finalOrder);
@@ -10608,6 +10877,15 @@ body {
         focusAndSelectInput(orderInputRef);
         return;
       }
+
+      const productionDecision = await prepareOrderProductionMeta(finalOrder, true);
+      if (!productionDecision.proceed) {
+        setOrderNumber("");
+        setMessage({ type: "info", text: `A(z) ${finalOrder} rendelés újragyártása megszakítva, nem történt mentés.` });
+        focusAndSelectInput(orderInputRef);
+        return;
+      }
+      orderProductionMeta = productionDecision.meta;
     } catch (error) {
       console.error("SUPABASE HIBA finalizeSingleOrderCreation duplicate/start-state check:", error);
       playSharpErrorBeep();
@@ -10640,6 +10918,10 @@ body {
           start_time: nowIso,
           end_timestamp: null,
           end_time: null,
+          ujragyartas: orderProductionMeta.ujragyartas,
+          ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
+          gyartas_tipus: orderProductionMeta.gyartas_tipus,
+          gyartasi_kor: orderProductionMeta.gyartasi_kor,
           note: buildStructuredNote("Egyedi rendelés azonnali rögzítése", {
             worker_name: workerNameForSave,
             worker_id: activeWorker.id,
@@ -10654,6 +10936,9 @@ body {
             start_timestamp: nowIso,
             start_time: nowIso,
             single_order_saved_at: nowIso,
+            ujragyartas: orderProductionMeta.ujragyartas,
+            ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
+            gyartas_tipus: orderProductionMeta.gyartas_tipus,
           }),
           scrap_qty: null,
         },
@@ -10662,7 +10947,14 @@ body {
       if (error) throw error;
 
       handleReset();
-      setMessage({ type: "success", text: "Egyedi rendelés sikeresen rögzítve!" });
+      setMessage({
+        type: "success",
+        text: orderProductionMeta.ujragyartas
+          ? `Egyedi rendelés újragyártásként sikeresen rögzítve! Újragyártás #${orderProductionMeta.ujragyartas_sorszam}`
+          : orderProductionMeta.gyartas_tipus === "keszlet"
+            ? "Készletre gyártott termék új gyártásként sikeresen rögzítve!"
+            : "Egyedi rendelés sikeresen rögzítve!",
+      });
     } catch (error) {
       console.error("SUPABASE HIBA finalizeSingleOrderCreation:", error);
       setMessage({ type: "error", text: normalizeError(error) });
@@ -10686,6 +10978,12 @@ body {
     const workerNameForSave = workerForSave["Teljes nev"];
     const nowIso = new Date().toISOString();
     const currentMachineId = getCurrentMachineIdForInsert();
+    const productionMetaForSave = Object.fromEntries(
+      ordersForSave.map((order) => [
+        order,
+        getProductionMetaForOrder(batchOrderProductionMeta, order),
+      ])
+    ) as Record<string, OrderProductionMeta>;
 
     if (ordersForSave.length === 0) {
       setMessage({ type: "error", text: "Nincs beolvasott rendelés!" });
@@ -10729,8 +11027,9 @@ body {
           created_at: nowIso,
           start_time: nowIso,
           machine_id: currentMachineId,
+          production_meta: productionMetaForSave,
         }])
-        .select("id, batch_code, created_at, start_time, machine_id, order_ids")
+        .select("id, batch_code, created_at, start_time, machine_id, order_ids, production_meta")
         .single();
 
       if (error) throw error;
@@ -10743,6 +11042,7 @@ body {
         machine_id: data?.machine_id ?? currentMachineId,
         order_ids: ordersForSave,
         worker_name: workerNameForSave || "Ismeretlen",
+        production_meta: productionMetaForSave,
       };
 
       setCreatedBatch(savedBatch);
@@ -10753,6 +11053,7 @@ body {
         text: "Sikeresen mentve a rendelés!",
       });
       setBatchOrders([]);
+      setBatchOrderProductionMeta({});
       setBatchCode("");
       setActiveWorker(null);
       setSelectedWorkerId("");
@@ -11094,6 +11395,26 @@ body {
       : null;
     const finalDarab = action === "END" ? parseDarabValue(endDarab) : null;
     const finalSzal = action === "END" ? parseSzalValue(endSzal) : null;
+    let startProductionMeta: OrderProductionMeta = {
+      ujragyartas: false,
+      ujragyartas_sorszam: null,
+      gyartas_tipus: "egyedi",
+      gyartasi_kor: null,
+    };
+
+    if (action === "START") {
+      try {
+        const productionDecision = await prepareOrderProductionMeta(finalOrderNumber, true);
+        if (!productionDecision.proceed) {
+          setMessage({ type: "info", text: `A(z) ${finalOrderNumber} rendelés újragyártása megszakítva, nem történt mentés.` });
+          return;
+        }
+        startProductionMeta = productionDecision.meta;
+      } catch (error) {
+        setMessage({ type: "error", text: normalizeError(error) });
+        return;
+      }
+    }
 
     if (action === "END" && finalScrapQty !== null && (!Number.isFinite(finalScrapQty) || finalScrapQty < 0)) {
       setMessage({ type: "error", text: "A selejt darabszám 0 vagy nagyobb egész szám legyen." });
@@ -11191,10 +11512,17 @@ body {
           end_time: null,
           start_timestamp: nowForSave,
           end_timestamp: null,
+          ujragyartas: startProductionMeta.ujragyartas,
+          ujragyartas_sorszam: startProductionMeta.ujragyartas_sorszam,
+          gyartas_tipus: startProductionMeta.gyartas_tipus,
+          gyartasi_kor: startProductionMeta.gyartasi_kor,
           note: buildStructuredNote(finalNote, {
             ...auditMetadata,
             start_timestamp: nowForSave,
             start_time: nowForSave,
+            ujragyartas: startProductionMeta.ujragyartas,
+            ujragyartas_sorszam: startProductionMeta.ujragyartas_sorszam,
+            gyartas_tipus: startProductionMeta.gyartas_tipus,
           }),
           scrap_qty: finalScrapQty,
         };
@@ -12692,7 +13020,16 @@ body {
                             <span style={{ fontWeight: 700 }}>{item}</span>
                             <button
                               type="button"
-                              onClick={() => setBatchOrders((prev) => prev.filter((value) => value !== item))}
+                              onClick={() => {
+                                setBatchOrders((prev) => prev.filter((value) => value !== item));
+                                setBatchOrderProductionMeta((previous) => {
+                                  const next = { ...previous };
+                                  Object.keys(next).forEach((key) => {
+                                    if (normalizeLooseText(key) === normalizeLooseText(item)) delete next[key];
+                                  });
+                                  return next;
+                                });
+                              }}
                               style={{ ...buttonSecondary, height: 28, padding: "4px 8px", marginLeft: 10 }}
                             >
                               törlés
