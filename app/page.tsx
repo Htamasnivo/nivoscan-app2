@@ -291,6 +291,7 @@ type ProductionPlanUploadRow = {
   plannedQuantity: number | null;
   productName: string;
   requiredStations: string[];
+  source?: "manual" | "file";
 };
 
 type StationPlanUploadRow = {
@@ -4052,33 +4053,135 @@ export default function Page() {
       return { stationName: cleanStationName, dateKey, tableName, rows: [], lastUpdatedAt: new Date().toISOString(), errorMessage: "" };
     }
 
-    const { data: planData, error: planError } = await supabase
+    const sourceErrors: string[] = [];
+    const stationPlanRows: Array<{
+      orderNumber: string;
+      productName: string;
+      quantity: number | null;
+      completionDate: string;
+      productType: string;
+    }> = [];
+
+    const stationPlanResponse = await supabase
       .from(tableName)
       .select("sorszam, megnevezes, mennyiseg, elkeszules_datum, tipus")
       .eq("elkeszules_datum", dateKey)
       .order("sorszam", { ascending: true })
       .limit(10000);
 
-    if (planError) {
-      return {
-        stationName: cleanStationName,
-        dateKey,
-        tableName,
-        rows: [],
-        lastUpdatedAt: new Date().toISOString(),
-        errorMessage: `A(z) ${tableName} tábla nem olvasható: ${normalizeError(planError)}`,
-      };
+    if (stationPlanResponse.error) {
+      sourceErrors.push(`A(z) ${tableName} tábla nem olvasható: ${normalizeError(stationPlanResponse.error)}`);
+    } else {
+      stationPlanRows.push(...(((stationPlanResponse.data || []) as ProductionCardPlanSourceRow[])
+        .map((row) => ({
+          orderNumber: String(row.sorszam ?? "").trim(),
+          productName: String(row.megnevezes ?? "").trim(),
+          quantity: parseSpreadsheetNumber(row.mennyiseg),
+          completionDate: String(row.elkeszules_datum ?? dateKey).slice(0, 10),
+          productType: String(row.tipus ?? "").trim(),
+        }))
+        .filter((row) => Boolean(row.orderNumber))));
     }
 
-    const planRows = ((planData || []) as ProductionCardPlanSourceRow[])
-      .map((row) => ({
-        orderNumber: String(row.sorszam ?? "").trim(),
-        productName: String(row.megnevezes ?? "").trim(),
-        quantity: parseSpreadsheetNumber(row.mennyiseg),
-        completionDate: String(row.elkeszules_datum ?? dateKey).slice(0, 10),
-        productType: String(row.tipus ?? "").trim(),
-      }))
-      .filter((row) => Boolean(row.orderNumber));
+    let commonPlan: ProductionPlanRow | null = null;
+    let commonPlanResponse = await supabase
+      .from("production_plans")
+      .select("id, plan_date, name, is_active, uploaded_by, created_at")
+      .eq("plan_date", dateKey)
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (commonPlanResponse.error) {
+      sourceErrors.push(`A közös aktív termelési terv nem olvasható: ${normalizeError(commonPlanResponse.error)}`);
+    } else {
+      commonPlan = (commonPlanResponse.data as ProductionPlanRow | null) || null;
+    }
+
+    if (!commonPlan) {
+      commonPlanResponse = await supabase
+        .from("production_plans")
+        .select("id, plan_date, name, is_active, uploaded_by, created_at")
+        .eq("plan_date", dateKey)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (commonPlanResponse.error) {
+        sourceErrors.push(`A közös termelési terv nem olvasható: ${normalizeError(commonPlanResponse.error)}`);
+      } else {
+        commonPlan = (commonPlanResponse.data as ProductionPlanRow | null) || null;
+      }
+    }
+
+    const commonPlanRows: Array<{
+      orderNumber: string;
+      productName: string;
+      quantity: number | null;
+      completionDate: string;
+      productType: string;
+    }> = [];
+
+    if (commonPlan) {
+      let itemResponse = await supabase
+        .from("production_plan_items")
+        .select("plan_id, order_number, sequence_number, planned_quantity, product_name, required_stations")
+        .eq("plan_id", commonPlan.id)
+        .order("sequence_number", { ascending: true })
+        .limit(10000);
+
+      if (itemResponse.error && isMissingRequiredStationsColumnError(itemResponse.error)) {
+        itemResponse = await supabase
+          .from("production_plan_items")
+          .select("plan_id, order_number, sequence_number, planned_quantity, product_name")
+          .eq("plan_id", commonPlan.id)
+          .order("sequence_number", { ascending: true })
+          .limit(10000);
+      }
+
+      if (itemResponse.error) {
+        sourceErrors.push(`A közös termelési terv tételei nem olvashatók: ${normalizeError(itemResponse.error)}`);
+      } else {
+        ((itemResponse.data || []) as ProductionPlanItemRow[]).forEach((item) => {
+          const orderNumber = String(item.order_number || "").trim();
+          if (!orderNumber) return;
+          const requiredStations = Array.isArray(item.required_stations)
+            ? item.required_stations.map((station) => String(station || "").trim()).filter(Boolean)
+            : [];
+          const belongsToStation = requiredStations.length === 0 || requiredStations.some(
+            (requiredStation) => normalizeLooseText(requiredStation) === normalizeLooseText(cleanStationName)
+          );
+          if (!belongsToStation) return;
+
+          commonPlanRows.push({
+            orderNumber,
+            productName: String(item.product_name || "").trim(),
+            quantity: item.planned_quantity === null || item.planned_quantity === undefined
+              ? null
+              : Number(item.planned_quantity),
+            completionDate: dateKey,
+            productType: String(commonPlan?.name || "Közös termelési terv").trim(),
+          });
+        });
+      }
+    }
+
+    const mergedPlanRows = new Map<string, {
+      orderNumber: string;
+      productName: string;
+      quantity: number | null;
+      completionDate: string;
+      productType: string;
+    }>();
+
+    stationPlanRows.forEach((row) => mergedPlanRows.set(normalizeLooseText(row.orderNumber), row));
+    commonPlanRows.forEach((row) => {
+      const key = normalizeLooseText(row.orderNumber);
+      if (!mergedPlanRows.has(key)) mergedPlanRows.set(key, row);
+    });
+
+    const planRows = Array.from(mergedPlanRows.values())
+      .sort((left, right) => left.orderNumber.localeCompare(right.orderNumber, "hu", { numeric: true }));
 
     const orderNumbers = Array.from(new Set(planRows.map((row) => row.orderNumber)));
     const logs: WorkLogRow[] = [];
@@ -4130,7 +4233,7 @@ export default function Page() {
       tableName,
       rows,
       lastUpdatedAt: new Date().toISOString(),
-      errorMessage: "",
+      errorMessage: rows.length === 0 && sourceErrors.length > 0 ? sourceErrors.join(" | ") : "",
     };
   }
 
@@ -6520,6 +6623,8 @@ export default function Page() {
       .channel(`production-card-admin-${normalizeLooseText(productionCardAdminStation)}-${productionCardDate}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refresh)
       .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "production_plans" }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, refresh)
       .on("postgres_changes", { event: "*", schema: "public", table: tableName }, refresh)
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
@@ -6545,6 +6650,8 @@ export default function Page() {
       .channel(`production-card-terminal-${normalizeLooseText(machineId)}-${today}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refreshData)
       .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, refreshData)
+      .on("postgres_changes", { event: "*", schema: "public", table: "production_plans" }, refreshData)
+      .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, refreshData)
       .on("postgres_changes", { event: "*", schema: "public", table: tableName }, refreshData)
       .on("postgres_changes", { event: "*", schema: "public", table: PRODUCTION_CARD_SETTINGS_TABLE }, refreshData)
       .subscribe();
@@ -6722,6 +6829,7 @@ export default function Page() {
           plannedQuantity: parsedQuantity === null ? null : Math.trunc(parsedQuantity),
           productName,
           requiredStations: selectedStations,
+          source: "manual",
         },
       ];
     });
@@ -6938,6 +7046,7 @@ export default function Page() {
           requiredStations: machineOptions.filter(
             (station) => normalizeLooseText(station) !== normalizeLooseText(DEFAULT_MACHINE_ID)
           ),
+          source: "file",
         };
       }).filter((row): row is ProductionPlanUploadRow => Boolean(row));
 
@@ -7059,6 +7168,91 @@ export default function Page() {
     }
   }
 
+  async function syncManualProductionPlanRowsToStationTables(
+    rows: ProductionPlanUploadRow[],
+    dateKey: string
+  ): Promise<{ syncedStations: string[]; failedStations: string[] }> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    const manualRows = rows.filter((row) => row.source === "manual");
+    if (manualRows.length === 0) return { syncedStations: [], failedStations: [] };
+
+    const stationNameMap = new Map<string, string>();
+    manualRows.forEach((row) => {
+      row.requiredStations.forEach((station) => {
+        const cleanStation = String(station || "").trim();
+        const normalizedStation = normalizeLooseText(cleanStation);
+        if (cleanStation && normalizedStation && !normalizedStation.includes("iroda")) {
+          stationNameMap.set(normalizedStation, cleanStation);
+        }
+      });
+    });
+    const stationNames = Array.from(stationNameMap.values());
+
+    const syncedStations: string[] = [];
+    const failedStations: string[] = [];
+
+    for (const stationName of stationNames) {
+      try {
+        const tableName = buildStationPlanTableName(stationName);
+        const existingResponse = await supabase
+          .from(tableName)
+          .select("sorszam, megnevezes, mennyiseg, elkeszules_datum, tipus")
+          .eq("elkeszules_datum", dateKey)
+          .limit(10000);
+
+        let existingRows: StationPlanUploadRow[] = [];
+        if (existingResponse.error) {
+          const errorText = normalizeError(existingResponse.error).toLowerCase();
+          const tableDoesNotExist = errorText.includes("does not exist") || errorText.includes("relation") && errorText.includes("not exist");
+          if (!tableDoesNotExist) throw existingResponse.error;
+        } else {
+          existingRows = ((existingResponse.data || []) as ProductionCardPlanSourceRow[])
+            .map((row) => ({
+              sorszam: String(row.sorszam ?? "").trim(),
+              megnevezes: String(row.megnevezes ?? "").trim(),
+              mennyiseg: Math.max(0, Math.trunc(parseSpreadsheetNumber(row.mennyiseg) || 0)),
+              elkeszules_datum: String(row.elkeszules_datum ?? dateKey).slice(0, 10),
+              tipus: String(row.tipus ?? "").trim() || "Kézi rögzítés",
+            }))
+            .filter((row) => Boolean(row.sorszam));
+        }
+
+        const mergedRows = new Map<string, StationPlanUploadRow>();
+        existingRows.forEach((row) => mergedRows.set(normalizeLooseText(row.sorszam), row));
+
+        manualRows
+          .filter((row) => row.requiredStations.some(
+            (requiredStation) => normalizeLooseText(requiredStation) === normalizeLooseText(stationName)
+          ))
+          .forEach((row) => {
+            mergedRows.set(normalizeLooseText(row.orderNumber), {
+              sorszam: row.orderNumber.trim(),
+              megnevezes: row.productName.trim() || row.orderNumber.trim(),
+              mennyiseg: Math.max(0, Math.trunc(row.plannedQuantity || 0)),
+              elkeszules_datum: dateKey,
+              tipus: "Kézi rögzítés",
+            });
+          });
+
+        const payloadRows = Array.from(mergedRows.values());
+        if (payloadRows.length === 0) continue;
+
+        const { error: replaceError } = await supabase.rpc("replace_machine_plan", {
+          p_station_name: stationName,
+          p_rows: payloadRows,
+        });
+        if (replaceError) throw replaceError;
+        syncedStations.push(stationName);
+      } catch (error) {
+        console.error(`A(z) ${stationName} munkaállomás kézi tervének szinkronizálása sikertelen:`, error);
+        failedStations.push(`${stationName}: ${normalizeError(error)}`);
+      }
+    }
+
+    return { syncedStations, failedStations };
+  }
+
   async function saveProductionPlan(): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
@@ -7133,12 +7327,29 @@ export default function Page() {
         .eq("id", plan.id);
       if (activateError) throw activateError;
 
+      const stationSyncResult = await syncManualProductionPlanRowsToStationTables(cleanRows, productionPlanDate);
+
       setProductionPlanPreview([]);
       setProductionPlanFileName("");
       setProductionMonitorDate(productionPlanDate);
       await loadProductionPlans(productionPlanDate);
       await loadProductionMonitor(productionPlanDate);
-      setMessage({ type: "success", text: `A ${productionPlanDate} napi termelési terv ${cleanRows.length} rendelésével elmentve és aktiválva lett.` });
+      if (productionCardAdminStation && productionCardDate === productionPlanDate) {
+        await loadProductionCardData(productionCardAdminStation, productionCardDate);
+      }
+      if (isUsableProductionCardStation(machineId) && productionPlanDate === getLocalDateKey(new Date())) {
+        await loadTerminalProductionCard(machineId);
+      }
+
+      const syncWarning = stationSyncResult.failedStations.length > 0
+        ? ` A közös terv mentése sikerült, de néhány munkaállomási másolat sikertelen: ${stationSyncResult.failedStations.join(" | ")}`
+        : stationSyncResult.syncedStations.length > 0
+          ? ` A kézzel rögzített tételek bemásolva ide: ${stationSyncResult.syncedStations.join(", ")}.`
+          : "";
+      setMessage({
+        type: stationSyncResult.failedStations.length > 0 ? "error" : "success",
+        text: `A ${productionPlanDate} napi termelési terv ${cleanRows.length} rendelésével elmentve és aktiválva lett.${syncWarning}`,
+      });
     } catch (error) {
       console.error("SUPABASE HIBA saveProductionPlan:", error);
       setMessage({ type: "error", text: `A termelési terv mentése sikertelen: ${normalizeError(error)}` });
