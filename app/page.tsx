@@ -1627,25 +1627,40 @@ function isAdmin(worker: Worker | null): boolean {
 
 function isManagementDashboardWorker(worker: Worker | null): boolean {
   if (!worker) return false;
+
+  const eventKoteg = Number(worker.Esemeny_Koteg ?? worker.esemeny_koteg ?? -1);
+
+  // A 0-s esemény_köteg az irodai / tervezői műszerfal fenntartott módja.
+  // Más esemény_köteg értékkel – különösen a fóliázó 4-es módjával –
+  // akkor sem nyílhat meg a műszerfal, ha a dolgozó egyéb jogosultsága magasabb.
+  if (eventKoteg !== 0) return false;
+
   const role = normalizeLooseText(worker.Munkakor || "");
   const station = normalizeLooseText(worker["Munkakor allomas"] || "");
+  const permission = normalizeLooseText(worker.Jogosultsagok || "");
   const numbering = getWorkerNumbering(worker);
-  const eventKoteg = Number(worker.Esemeny_Koteg ?? worker.esemeny_koteg ?? 0);
-  const hasOfficeRole = [role, station].some((value) =>
-    value.includes("iroda") ||
-    value.includes("irodai") ||
-    value.includes("vezetoi") ||
-    value.includes("vezeto") ||
-    value.includes("statisztika") ||
-    value.includes("admin")
+
+  const officeMarkers = [
+    "iroda",
+    "irodai",
+    "vezetoi",
+    "vezeto",
+    "statisztika",
+    "management",
+    "admin",
+    "tervezo",
+    "tervezoi",
+  ];
+
+  const hasOfficeRoleOrPermission = [role, station, permission].some((value) =>
+    officeMarkers.some((marker) => value.includes(marker))
   );
 
-  // Kritikus routing-szabály: az irodai / vezetői dolgozókat kizárólag
-  // a Management Dashboardra engedjük. Itt szándékosan NEM vizsgáljuk a
-  // Jelszo mezőt, mert a jelszóellenőrzés a beléptetési folyamat része;
-  // a jogosultsági besorolást a munkakör és az esemeny_koteg határozza meg.
-  const hasOfficeIdentifier = eventKoteg === 4 || numbering === "4" || numbering === "5";
-  return hasOfficeRole || hasOfficeIdentifier;
+  // A korábbi 4-es és 5-ös Számozás továbbra is jogosultsági jelzésként
+  // elfogadott, de kizárólag akkor, ha az esemény_köteg értéke 0.
+  const hasOfficeNumbering = numbering === "4" || numbering === "5";
+
+  return hasOfficeRoleOrPermission || hasOfficeNumbering;
 }
 
 function normalizeBatchOperationCode(value: unknown): BatchOperationCode | null {
@@ -2766,7 +2781,7 @@ export default function Page() {
   const [activeWorker, setActiveWorker] = useState<Worker | null>(null);
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode | null>(null);
   const [flowStage, setFlowStage] = useState<FlowStage>("idle");
-  const [workerEventKoteg, setWorkerEventKoteg] = useState<1 | 2 | 3 | 4>(1);
+  const [workerEventKoteg, setWorkerEventKoteg] = useState<0 | 1 | 2 | 3 | 4>(1);
   const [selectedBatchOperation, setSelectedBatchOperation] = useState<BatchOperationCode | null>(null);
   const [batchOperationInput, setBatchOperationInput] = useState("");
   const [batchOperationError, setBatchOperationError] = useState("");
@@ -10767,9 +10782,9 @@ body {
     }
   }
 
-  function normalizeEsemenyKotegValue(value: unknown): 1 | 2 | 3 | 4 {
+  function normalizeEsemenyKotegValue(value: unknown): 0 | 1 | 2 | 3 | 4 {
     const numeric = Number(value);
-    if (numeric === 2 || numeric === 3 || numeric === 4) return numeric;
+    if (numeric === 0 || numeric === 1 || numeric === 2 || numeric === 3 || numeric === 4) return numeric;
     return 1;
   }
 
@@ -10819,6 +10834,24 @@ body {
     }
     const rawKotegValue = getWorkerEsemenyKotegValue(worker);
     const koteg = normalizeEsemenyKotegValue(rawKotegValue);
+
+    // A 0-s mód kizárólag megfelelő irodai / vezetői jogosultsággal használható.
+    // Ha a munkakör vagy a Jogosultsagok mező ezt nem igazolja, nem irányítjuk
+    // át tévesen egyik dolgozói lejelentő folyamatba sem.
+    if (koteg === 0) {
+      setEntryPermissionDenied(true);
+      setTerminalView("scanner");
+      setWorkflowMode(null);
+      setPendingAction(null);
+      setFlowStage("idle");
+      setStep(1);
+      setMessage({
+        type: "error",
+        text: "Az esemény_köteg 0 az irodai / tervezői műszerfalhoz tartozik, de ennél a dolgozónál nincs megfelelő irodai munkakör vagy jogosultság beállítva.",
+      });
+      return;
+    }
+
     const useBatchMode = isWorkerKotegMode(worker);
     const selectedCode = useBatchMode ? "TYPE-KOTEG" : "TYPE-RENDELES";
 
