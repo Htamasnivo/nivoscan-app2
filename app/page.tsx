@@ -76,6 +76,8 @@ type Worker = {
   jelszo_hash?: string | null;
   Esemeny_Koteg?: number | string | null;
   esemeny_koteg?: number | string | null;
+  munka_kezdete?: string | null;
+  munka_vege?: string | null;
 };
 
 type MachineIdRow = {
@@ -94,7 +96,10 @@ type MachineIdRow = {
 
 type WorkAction = "START" | "END";
 type WorkflowMode = "single" | "batch" | "end";
-type FlowStage = "idle" | "dashboard" | "batch-selection" | "event-scan" | "batch-scan" | "start-scan" | "order-scan" | "active-batch-list" | "end-batch-detail";
+type BatchOperationCode = "SZABAS" | "MARAS";
+type BatchOperationStatus = "SZABAS_FOLYAMATBAN" | "MARASRA_VAR" | "MARAS_FOLYAMATBAN" | "KESZ";
+type BatchListMode = "end" | "start-milling";
+type FlowStage = "idle" | "dashboard" | "batch-selection" | "batch-operation-selection" | "event-scan" | "batch-scan" | "start-scan" | "order-scan" | "active-batch-list" | "end-batch-detail";
 
 type EventCard = {
   id: string;
@@ -139,6 +144,8 @@ type ProductionBatchRow = {
   order_ids: string[];
   worker_name?: string | null;
   production_meta?: Record<string, OrderProductionMeta> | null;
+  operation_code?: BatchOperationCode | null;
+  operation_status?: BatchOperationStatus | null;
 };
 
 type IncompleteBatchRow = {
@@ -176,6 +183,7 @@ type WorkLogRow = {
   ujragyartas_sorszam?: number | null;
   gyartas_tipus?: string | null;
   gyartasi_kor?: number | null;
+  operation_code?: BatchOperationCode | null;
 };
 
 type GroupedLogs = Record<string, WorkLogRow[]>;
@@ -576,6 +584,21 @@ const ORDER_TYPE_CARDS: Array<{ id: WorkflowMode; code: string; title: string; d
     code: "TYPE-LIST",
     title: "Folyamatban lévő kötegek",
     description: "Aktív kötegek visszakeresése és lejelentése END kóddal.",
+  },
+];
+
+const BATCH_OPERATION_CARDS: Array<{ code: string; operation: BatchOperationCode; title: string; description: string }> = [
+  {
+    code: "MUVELET-SZABAS",
+    operation: "SZABAS",
+    title: "Szabás",
+    description: "Új Szabás köteg létrehozása és a rendelések méretre vágásának indítása.",
+  },
+  {
+    code: "MUVELET-MARAS",
+    operation: "MARAS",
+    title: "Marás",
+    description: "A szabás után Marásra váró köteg kiválasztása és a marási művelet indítása.",
   },
 ];
 const SUPABASE_URL = "https://hghvhsrjfwvaafkfhiyj.supabase.co";
@@ -1598,6 +1621,27 @@ function isManagementDashboardWorker(worker: Worker | null): boolean {
   return hasOfficeRole || hasOfficeIdentifier;
 }
 
+function normalizeBatchOperationCode(value: unknown): BatchOperationCode | null {
+  const normalized = String(value || "").trim().toUpperCase();
+  return normalized === "SZABAS" || normalized === "MARAS" ? normalized : null;
+}
+
+function normalizeBatchOperationStatus(value: unknown): BatchOperationStatus | null {
+  const normalized = String(value || "").trim().toUpperCase();
+  return ["SZABAS_FOLYAMATBAN", "MARASRA_VAR", "MARAS_FOLYAMATBAN", "KESZ"].includes(normalized)
+    ? normalized as BatchOperationStatus
+    : null;
+}
+
+function getBatchOperationStatusLabel(batch: ProductionBatchRow): string {
+  const status = normalizeBatchOperationStatus(batch.operation_status);
+  if (status === "SZABAS_FOLYAMATBAN") return "Szabás folyamatban";
+  if (status === "MARASRA_VAR") return "Marásra vár";
+  if (status === "MARAS_FOLYAMATBAN") return "Marás folyamatban";
+  if (status === "KESZ") return "Kész";
+  return "Folyamatban";
+}
+
 function isStartBarcode(value: string): boolean {
   const v = value.trim().toLowerCase();
   return ["start", "indítás", "inditas", "kezdés", "kezdes", "open"].some((item) => v.includes(item));
@@ -1764,19 +1808,33 @@ function getMonitorCellFromLogs(
       startedAt: log.start_time || log.start_timestamp || log.created_at || null,
       isReproduction: log.ujragyartas === true,
       reproductionNumber: Number(log.ujragyartas_sorszam) > 0 ? Number(log.ujragyartas_sorszam) : null,
+      statusLabel: "Folyamatban",
+      isBatchState: false,
     }))
     .filter((item): item is typeof item & { eventAt: string; startedAt: string } => Boolean(item.eventAt) && Boolean(item.startedAt));
 
   const startedBatchCandidates = productionBatchStarts
-    .filter((batch) => Boolean(batch.start_time))
+    .filter((batch) => Boolean(batch.start_time || batch.operation_status))
     .map((batch) => {
       const meta = getProductionMetaForOrder(batch.production_meta, orderNumber);
+      const operationStatus = normalizeBatchOperationStatus(batch.operation_status);
+      const statusLabel = operationStatus === "SZABAS_FOLYAMATBAN"
+        ? "Szabás folyamatban"
+        : operationStatus === "MARASRA_VAR"
+          ? "Marásra vár"
+          : operationStatus === "MARAS_FOLYAMATBAN"
+            ? "Marás folyamatban"
+            : operationStatus === "KESZ"
+              ? "Kész"
+              : "Folyamatban";
       return {
         workerName: batch.worker_name || "",
-        eventAt: String(batch.start_time),
-        startedAt: String(batch.start_time),
+        eventAt: String(batch.start_time || batch.created_at),
+        startedAt: String(batch.start_time || batch.created_at),
         isReproduction: meta.ujragyartas,
         reproductionNumber: meta.ujragyartas_sorszam,
+        statusLabel,
+        isBatchState: Boolean(operationStatus),
       };
     });
 
@@ -1790,10 +1848,10 @@ function getMonitorCellFromLogs(
   const latestEndTime = latestEnd ? new Date(latestEnd.eventAt).getTime() : Number.NEGATIVE_INFINITY;
   const latestStartTime = latestStart ? new Date(latestStart.eventAt).getTime() : Number.NEGATIVE_INFINITY;
 
-  if (latestStart && latestStartTime > latestEndTime) {
+  if (latestStart && (latestStartTime > latestEndTime || (latestStart.isBatchState && latestStartTime >= latestEndTime))) {
     return {
       status: "in-progress",
-      label: buildReproductionStatusLabel("Folyamatban", latestStart.isReproduction, latestStart.reproductionNumber),
+      label: buildReproductionStatusLabel(latestStart.statusLabel || "Folyamatban", latestStart.isReproduction, latestStart.reproductionNumber),
       workerName: latestStart.workerName,
       startedAt: latestStart.startedAt,
       endedAt: null,
@@ -2232,6 +2290,227 @@ function mergeDashboardIntervals(intervals: DashboardTimeInterval[]): number {
   return Math.round(totalMs / 60000);
 }
 
+
+type DashboardWorkerIntervalCandidate = {
+  workerId: number;
+  workerName: string;
+  station: string;
+  orderNumber: string;
+  batchCode: string;
+  operationCode: string;
+  startMs: number;
+  endMs: number;
+};
+
+type DashboardWorkerAggregation = {
+  workerIntervalsByDay: Map<string, Map<string, DashboardTimeInterval[]>>;
+  workerClosedRows: Map<string, number>;
+};
+
+function parseDashboardClockMinutes(value: string | null | undefined): number | null {
+  const normalized = String(value || "").trim();
+  const match = normalized.match(/^(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+  return (hours * 60) + minutes;
+}
+
+function splitDashboardIntervalByWorkerSchedule(
+  startMs: number,
+  endMs: number,
+  worker: Worker | undefined
+): Array<{ dayKey: string; interval: DashboardTimeInterval }> {
+  const shiftStartMinutes = parseDashboardClockMinutes(worker?.munka_kezdete);
+  const shiftEndMinutes = parseDashboardClockMinutes(worker?.munka_vege);
+
+  if (shiftStartMinutes === null || shiftEndMinutes === null || shiftStartMinutes === shiftEndMinutes) {
+    return splitDashboardIntervalByLocalDay(startMs, endMs);
+  }
+
+  const result: Array<{ dayKey: string; interval: DashboardTimeInterval }> = [];
+  const firstDate = new Date(startMs);
+  firstDate.setHours(0, 0, 0, 0);
+  firstDate.setDate(firstDate.getDate() - 1);
+  const lastDate = new Date(endMs);
+  lastDate.setHours(0, 0, 0, 0);
+  lastDate.setDate(lastDate.getDate() + 1);
+
+  for (let shiftDay = new Date(firstDate); shiftDay.getTime() <= lastDate.getTime(); shiftDay.setDate(shiftDay.getDate() + 1)) {
+    const shiftStart = new Date(
+      shiftDay.getFullYear(),
+      shiftDay.getMonth(),
+      shiftDay.getDate(),
+      Math.floor(shiftStartMinutes / 60),
+      shiftStartMinutes % 60,
+      0,
+      0
+    ).getTime();
+    const shiftEndDayOffset = shiftEndMinutes <= shiftStartMinutes ? 1 : 0;
+    const shiftEndDay = new Date(
+      shiftDay.getFullYear(),
+      shiftDay.getMonth(),
+      shiftDay.getDate() + shiftEndDayOffset,
+      Math.floor(shiftEndMinutes / 60),
+      shiftEndMinutes % 60,
+      0,
+      0
+    ).getTime();
+
+    const intersectionStart = Math.max(startMs, shiftStart);
+    const intersectionEnd = Math.min(endMs, shiftEndDay);
+    if (intersectionEnd <= intersectionStart) continue;
+
+    splitDashboardIntervalByLocalDay(intersectionStart, intersectionEnd).forEach((part) => result.push(part));
+  }
+
+  return result;
+}
+
+function buildDashboardWorkerAggregation(
+  logs: WorkLogRow[],
+  workers: Worker[],
+  range: { startIso: string; endIso: string }
+): DashboardWorkerAggregation {
+  const workerMap = new Map<number, Worker>();
+  workers.forEach((worker) => workerMap.set(Number(worker.id), worker));
+
+  const rangeStartMs = new Date(range.startIso).getTime();
+  const rangeEndMs = new Date(range.endIso).getTime();
+  const workerIntervalsByDay = new Map<string, Map<string, DashboardTimeInterval[]>>();
+  const workerClosedRows = new Map<string, number>();
+  const directIntervalKeys = new Set<string>();
+  const intervalCandidates: DashboardWorkerIntervalCandidate[] = [];
+
+  for (const log of logs) {
+    const worker = workerMap.get(Number(log.worker_id));
+    const workerName = String(log.worker_name || worker?.["Teljes nev"] || `Dolgozó #${log.worker_id}`).trim();
+    const station = resolveLogStation(log, workers);
+    const explicitStart = log.start_time || log.start_timestamp || null;
+    const explicitEnd = log.end_time || log.end_timestamp || (String(log.action || "").toUpperCase() === "END" ? log.created_at : null);
+
+    if (explicitEnd) {
+      const endMs = new Date(explicitEnd).getTime();
+      if (Number.isFinite(endMs) && endMs >= rangeStartMs && endMs < rangeEndMs) {
+        workerClosedRows.set(workerName, (workerClosedRows.get(workerName) || 0) + 1);
+      }
+    }
+
+    if (!explicitStart || !explicitEnd) continue;
+    const startMs = new Date(explicitStart).getTime();
+    const endMs = new Date(explicitEnd).getTime();
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) continue;
+
+    const orderNumber = String(log.order_number || "").trim();
+    const directKey = [
+      normalizeLooseText(orderNumber),
+      normalizeLooseText(workerName),
+      normalizeLooseText(station),
+      startMs,
+      endMs,
+    ].join("|");
+    directIntervalKeys.add(directKey);
+    intervalCandidates.push({
+      workerId: Number(log.worker_id),
+      workerName,
+      station,
+      orderNumber,
+      batchCode: String(log.batch_code || "").trim(),
+      operationCode: String(log.operation_code || "").trim(),
+      startMs,
+      endMs,
+    });
+  }
+
+  // Régi adatoknál a START és END külön sor lehet. Ezekből a már meglévő
+  // rendelés-statisztikai logika épít teljes időszakot. Csak akkor vesszük fel,
+  // ha ugyanaz az intervallum közvetlenül még nem volt jelen a work_logs sorban.
+  const orderRows = buildOrderStatistics(logs, workers);
+  for (const row of orderRows) {
+    for (const segment of row.segments) {
+      if (segment.status !== "lezárt" || !segment.endAt) continue;
+      const startMs = new Date(segment.startAt).getTime();
+      const endMs = new Date(segment.endAt).getTime();
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) continue;
+
+      const directKey = [
+        normalizeLooseText(row.orderNumber),
+        normalizeLooseText(segment.workerName),
+        normalizeLooseText(segment.station),
+        startMs,
+        endMs,
+      ].join("|");
+      if (directIntervalKeys.has(directKey)) continue;
+
+      const relatedLogs = logs.filter(
+        (log) => normalizeLooseText(String(log.order_number || "")) === normalizeLooseText(row.orderNumber)
+      );
+      const relatedWorker = workers.find(
+        (worker) => normalizeLooseText(worker["Teljes nev"]) === normalizeLooseText(segment.workerName)
+      );
+      const relatedBatchCode = relatedLogs.find((log) => String(log.batch_code || "").trim())?.batch_code || "";
+      const relatedOperationCode = relatedLogs.find((log) => String(log.operation_code || "").trim())?.operation_code || null;
+
+      intervalCandidates.push({
+        workerId: Number(relatedWorker?.id || relatedLogs[0]?.worker_id || 0),
+        workerName: segment.workerName || "Ismeretlen dolgozó",
+        station: segment.station,
+        orderNumber: row.orderNumber,
+        batchCode: String(relatedBatchCode || "").trim(),
+        operationCode: String(relatedOperationCode || "").trim(),
+        startMs,
+        endMs,
+      });
+    }
+  }
+
+  // Kötegnél ugyanaz a teljes idő minden rendelési soron szerepelhet.
+  // batch_code esetén a köteget dolgozó + munkaállomás szerint egyszer számoljuk.
+  // Régi, batch_code nélküli kötegeknél az azonos dolgozó + állomás + START + END
+  // kombináció számít egyetlen kötegnek. Egyedi rendelésnél a saját teljes idő marad.
+  const groupedIntervals = new Map<string, DashboardWorkerIntervalCandidate>();
+  for (const candidate of intervalCandidates) {
+    const normalizedWorker = normalizeLooseText(candidate.workerName);
+    const normalizedStation = normalizeLooseText(candidate.station);
+    const normalizedBatch = normalizeLooseText(candidate.batchCode);
+    const normalizedOperation = normalizeLooseText(candidate.operationCode);
+    const groupKey = normalizedBatch
+      ? `batch|${normalizedBatch}|${normalizedOperation || "legacy"}`
+      : `fallback|${normalizedWorker}|${normalizedStation}|${candidate.startMs}|${candidate.endMs}`;
+
+    const existing = groupedIntervals.get(groupKey);
+    if (!existing) {
+      groupedIntervals.set(groupKey, { ...candidate });
+    } else {
+      existing.startMs = Math.min(existing.startMs, candidate.startMs);
+      existing.endMs = Math.max(existing.endMs, candidate.endMs);
+    }
+  }
+
+  for (const candidate of groupedIntervals.values()) {
+    const clippedStartMs = Math.max(candidate.startMs, rangeStartMs);
+    const clippedEndMs = Math.min(candidate.endMs, rangeEndMs);
+    if (clippedEndMs <= clippedStartMs) continue;
+
+    const worker = workerMap.get(Number(candidate.workerId)) || workers.find(
+      (item) => normalizeLooseText(item["Teljes nev"]) === normalizeLooseText(candidate.workerName)
+    );
+    if (!workerIntervalsByDay.has(candidate.workerName)) {
+      workerIntervalsByDay.set(candidate.workerName, new Map<string, DashboardTimeInterval[]>());
+    }
+    const dayMap = workerIntervalsByDay.get(candidate.workerName)!;
+    splitDashboardIntervalByWorkerSchedule(clippedStartMs, clippedEndMs, worker).forEach(({ dayKey, interval }) => {
+      if (!dayMap.has(dayKey)) dayMap.set(dayKey, []);
+      dayMap.get(dayKey)!.push(interval);
+    });
+  }
+
+  return { workerIntervalsByDay, workerClosedRows };
+}
+
 function inferDashboardProductType(orderNumber: string, logs: WorkLogRow[]): string {
   const related = logs.filter((log) => (log.order_number || "").trim() === orderNumber);
   const direct = related.find((log) => (log.event_name || "").trim())?.event_name?.trim();
@@ -2255,65 +2534,7 @@ function buildDashboardWorkerPerformanceForStation(
   const stationLogs = logs.filter(
     (log) => normalizeLooseText(String(log.machine_id || "").trim()) === normalizedStation
   );
-  const stationOrderRows = buildOrderStatistics(stationLogs, workers);
-  const workerMap = new Map<number, Worker>();
-  workers.forEach((worker) => workerMap.set(worker.id, worker));
-
-  const rangeStartMs = new Date(range.startIso).getTime();
-  const rangeEndMs = new Date(range.endIso).getTime();
-  const workerIntervalsByDay = new Map<string, Map<string, DashboardTimeInterval[]>>();
-  const workerClosedRows = new Map<string, number>();
-
-  for (const log of stationLogs) {
-    const explicitStart = log.start_time || log.start_timestamp || null;
-    const explicitEnd = log.end_time || log.end_timestamp || (String(log.action || "").toUpperCase() === "END" ? log.created_at : null);
-    const worker = workerMap.get(Number(log.worker_id));
-    const workerName = String(log.worker_name || worker?.["Teljes nev"] || `Dolgozó #${log.worker_id}`).trim();
-
-    if (explicitEnd) {
-      const endMs = new Date(explicitEnd).getTime();
-      if (Number.isFinite(endMs) && endMs >= rangeStartMs && endMs < rangeEndMs) {
-        workerClosedRows.set(workerName, (workerClosedRows.get(workerName) || 0) + 1);
-      }
-    }
-
-    if (explicitStart && explicitEnd) {
-      const rawStartMs = new Date(explicitStart).getTime();
-      const rawEndMs = new Date(explicitEnd).getTime();
-      const clippedStartMs = Math.max(rawStartMs, rangeStartMs);
-      const clippedEndMs = Math.min(rawEndMs, rangeEndMs);
-      if (Number.isFinite(clippedStartMs) && Number.isFinite(clippedEndMs) && clippedEndMs > clippedStartMs) {
-        if (!workerIntervalsByDay.has(workerName)) workerIntervalsByDay.set(workerName, new Map());
-        const dayMap = workerIntervalsByDay.get(workerName)!;
-        splitDashboardIntervalByLocalDay(clippedStartMs, clippedEndMs).forEach(({ dayKey, interval }) => {
-          if (!dayMap.has(dayKey)) dayMap.set(dayKey, []);
-          dayMap.get(dayKey)!.push(interval);
-        });
-      }
-    }
-  }
-
-  for (const row of stationOrderRows) {
-    for (const segment of row.segments) {
-      if (normalizeLooseText(segment.station) !== normalizedStation) continue;
-      if (segment.status !== "lezárt" || !segment.endAt) continue;
-
-      const rawStartMs = new Date(segment.startAt).getTime();
-      const rawEndMs = new Date(segment.endAt).getTime();
-      if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs)) continue;
-      const clippedStartMs = Math.max(rawStartMs, rangeStartMs);
-      const clippedEndMs = Math.min(rawEndMs, rangeEndMs);
-      if (clippedEndMs <= clippedStartMs) continue;
-
-      const workerName = segment.workerName || "Ismeretlen dolgozó";
-      if (!workerIntervalsByDay.has(workerName)) workerIntervalsByDay.set(workerName, new Map());
-      const dayMap = workerIntervalsByDay.get(workerName)!;
-      splitDashboardIntervalByLocalDay(clippedStartMs, clippedEndMs).forEach(({ dayKey, interval }) => {
-        if (!dayMap.has(dayKey)) dayMap.set(dayKey, []);
-        dayMap.get(dayKey)!.push(interval);
-      });
-    }
-  }
+  const { workerIntervalsByDay, workerClosedRows } = buildDashboardWorkerAggregation(stationLogs, workers, range);
 
   const workerNames = new Set<string>([
     ...Array.from(workerIntervalsByDay.keys()),
@@ -2357,14 +2578,9 @@ function buildDashboardData(
   range: { startIso: string; endIso: string }
 ): DashboardData {
   const orderRows = buildOrderStatistics(logs, workers);
-  const workerMap = new Map<number, Worker>();
-  workers.forEach((worker) => workerMap.set(worker.id, worker));
-
-  const rangeStartMs = new Date(range.startIso).getTime();
   const rangeEndMs = new Date(range.endIso).getTime();
   const openRows: DashboardOpenWorkRow[] = [];
-  const workerIntervalsByDay = new Map<string, Map<string, DashboardTimeInterval[]>>();
-  const workerClosedRows = new Map<string, number>();
+  const { workerIntervalsByDay, workerClosedRows } = buildDashboardWorkerAggregation(logs, workers, range);
   const scrapTotals = new Map<string, number>();
   const productTypeTotals = new Map<string, { totalMinutes: number; closedOrders: number }>();
 
@@ -2376,30 +2592,6 @@ function buildDashboardData(
       scrapTotals.set(orderNumber, (scrapTotals.get(orderNumber) || 0) + scrap);
     }
 
-    const explicitStart = log.start_time || log.start_timestamp || null;
-    const explicitEnd = log.end_time || log.end_timestamp || (String(log.action || "").toUpperCase() === "END" ? log.created_at : null);
-    const worker = workerMap.get(Number(log.worker_id));
-    const workerName = String(log.worker_name || worker?.["Teljes nev"] || `Dolgozó #${log.worker_id}`).trim();
-    if (explicitEnd) {
-      const endMs = new Date(explicitEnd).getTime();
-      if (Number.isFinite(endMs) && endMs >= rangeStartMs && endMs < rangeEndMs) {
-        workerClosedRows.set(workerName, (workerClosedRows.get(workerName) || 0) + 1);
-      }
-    }
-    if (explicitStart && explicitEnd) {
-      const rawStartMs = new Date(explicitStart).getTime();
-      const rawEndMs = new Date(explicitEnd).getTime();
-      const clippedStartMs = Math.max(rawStartMs, rangeStartMs);
-      const clippedEndMs = Math.min(rawEndMs, rangeEndMs);
-      if (Number.isFinite(clippedStartMs) && Number.isFinite(clippedEndMs) && clippedEndMs > clippedStartMs) {
-        if (!workerIntervalsByDay.has(workerName)) workerIntervalsByDay.set(workerName, new Map());
-        const dayMap = workerIntervalsByDay.get(workerName)!;
-        splitDashboardIntervalByLocalDay(clippedStartMs, clippedEndMs).forEach(({ dayKey, interval }) => {
-          if (!dayMap.has(dayKey)) dayMap.set(dayKey, []);
-          dayMap.get(dayKey)!.push(interval);
-        });
-      }
-    }
   }
 
   for (const row of orderRows) {
@@ -2422,21 +2614,6 @@ function buildDashboardData(
         }
       }
 
-      if (segment.status !== "lezárt" || !segment.endAt) continue;
-      const rawStartMs = new Date(segment.startAt).getTime();
-      const rawEndMs = new Date(segment.endAt).getTime();
-      if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs)) continue;
-      const clippedStartMs = Math.max(rawStartMs, rangeStartMs);
-      const clippedEndMs = Math.min(rawEndMs, rangeEndMs);
-      if (clippedEndMs <= clippedStartMs) continue;
-
-      const workerName = segment.workerName || "Ismeretlen dolgozó";
-      if (!workerIntervalsByDay.has(workerName)) workerIntervalsByDay.set(workerName, new Map());
-      const dayMap = workerIntervalsByDay.get(workerName)!;
-      splitDashboardIntervalByLocalDay(clippedStartMs, clippedEndMs).forEach(({ dayKey, interval }) => {
-        if (!dayMap.has(dayKey)) dayMap.set(dayKey, []);
-        dayMap.get(dayKey)!.push(interval);
-      });
     }
   }
 
@@ -2563,6 +2740,10 @@ export default function Page() {
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode | null>(null);
   const [flowStage, setFlowStage] = useState<FlowStage>("idle");
   const [workerEventKoteg, setWorkerEventKoteg] = useState<1 | 2 | 3 | 4>(1);
+  const [selectedBatchOperation, setSelectedBatchOperation] = useState<BatchOperationCode | null>(null);
+  const [batchOperationInput, setBatchOperationInput] = useState("");
+  const [batchOperationError, setBatchOperationError] = useState("");
+  const [batchListMode, setBatchListMode] = useState<BatchListMode>("end");
   const [entryPermissionDenied, setEntryPermissionDenied] = useState(false);
   const [batchCode, setBatchCode] = useState("");
   const [batchOrders, setBatchOrders] = useState<string[]>([]);
@@ -2789,6 +2970,7 @@ export default function Page() {
   const actionBarcodeInputRef = useRef<HTMLInputElement | null>(null);
   const eventBarcodeInputRef = useRef<HTMLInputElement | null>(null);
   const orderTypeInputRef = useRef<HTMLInputElement | null>(null);
+  const batchOperationInputRef = useRef<HTMLInputElement | null>(null);
   const activeBatchInputRef = useRef<HTMLInputElement | null>(null);
   const endBatchCommandInputRef = useRef<HTMLInputElement | null>(null);
   const productionPlanFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -4167,14 +4349,18 @@ export default function Page() {
   } {
     const completedCandidates = logs
       .filter((log) => Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END")
-      .map((log) => ({
-        workerName: String(log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || "").trim(),
-        eventAt: String(log.end_time || log.end_timestamp || log.created_at || ""),
-        startedAt: String(log.start_time || log.start_timestamp || "") || null,
-        endedAt: String(log.end_time || log.end_timestamp || log.created_at || ""),
-        isReproduction: log.ujragyartas === true,
-        reproductionNumber: Number(log.ujragyartas_sorszam) > 0 ? Number(log.ujragyartas_sorszam) : null,
-      }))
+      .map((log) => {
+        const metadata = getStructuredNoteMetadata(log.note);
+        return {
+          workerName: String(log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || "").trim(),
+          startWorkerName: String(metadata.start_worker_name || "").trim(),
+          eventAt: String(log.end_time || log.end_timestamp || log.created_at || ""),
+          startedAt: String(log.start_time || log.start_timestamp || "") || null,
+          endedAt: String(log.end_time || log.end_timestamp || log.created_at || ""),
+          isReproduction: log.ujragyartas === true,
+          reproductionNumber: Number(log.ujragyartas_sorszam) > 0 ? Number(log.ujragyartas_sorszam) : null,
+        };
+      })
       .filter((item) => Boolean(item.eventAt));
 
     const startLogCandidates = logs
@@ -4185,19 +4371,33 @@ export default function Page() {
         startedAt: String(log.start_time || log.start_timestamp || log.created_at || ""),
         isReproduction: log.ujragyartas === true,
         reproductionNumber: Number(log.ujragyartas_sorszam) > 0 ? Number(log.ujragyartas_sorszam) : null,
+        statusLabel: "Folyamatban",
+        isBatchState: false,
       }))
       .filter((item) => Boolean(item.eventAt));
 
     const batchStartCandidates = productionBatchStarts
-      .filter((batch) => Boolean(batch.start_time))
+      .filter((batch) => Boolean(batch.start_time || batch.operation_status))
       .map((batch) => {
         const meta = getProductionMetaForOrder(batch.production_meta, orderNumber);
+        const operationStatus = normalizeBatchOperationStatus(batch.operation_status);
+        const statusLabel = operationStatus === "SZABAS_FOLYAMATBAN"
+          ? "Szabás folyamatban"
+          : operationStatus === "MARASRA_VAR"
+            ? "Marásra vár"
+            : operationStatus === "MARAS_FOLYAMATBAN"
+              ? "Marás folyamatban"
+              : operationStatus === "KESZ"
+                ? "Kész"
+                : "Folyamatban";
         return {
           workerName: String(batch.worker_name || "").trim(),
           eventAt: String(batch.start_time || batch.created_at || ""),
           startedAt: String(batch.start_time || batch.created_at || ""),
           isReproduction: meta.ujragyartas,
           reproductionNumber: meta.ujragyartas_sorszam,
+          statusLabel,
+          isBatchState: Boolean(operationStatus),
         };
       })
       .filter((item) => Boolean(item.eventAt));
@@ -4212,10 +4412,10 @@ export default function Page() {
     const latestStartTime = latestStart ? new Date(latestStart.eventAt).getTime() : Number.NEGATIVE_INFINITY;
     const latestEndTime = latestEnd ? new Date(latestEnd.eventAt).getTime() : Number.NEGATIVE_INFINITY;
 
-    if (latestStart && latestStartTime > latestEndTime) {
+    if (latestStart && (latestStartTime > latestEndTime || (latestStart.isBatchState && latestStartTime >= latestEndTime))) {
       return {
         status: "in-progress",
-        statusLabel: buildReproductionStatusLabel("Folyamatban", latestStart.isReproduction, latestStart.reproductionNumber),
+        statusLabel: buildReproductionStatusLabel(latestStart.statusLabel || "Folyamatban", latestStart.isReproduction, latestStart.reproductionNumber),
         startWorkerName: latestStart.workerName,
         endWorkerName: "",
         startedAt: latestStart.startedAt,
@@ -4230,7 +4430,7 @@ export default function Page() {
       return {
         status: "done",
         statusLabel: buildReproductionStatusLabel("Kész", latestEnd.isReproduction, latestEnd.reproductionNumber),
-        startWorkerName: startForCompletedCycle?.workerName || "",
+        startWorkerName: startForCompletedCycle?.workerName || latestEnd.startWorkerName || "",
         endWorkerName: latestEnd.workerName,
         startedAt: startForCompletedCycle?.startedAt || latestEnd.startedAt || null,
         endedAt: latestEnd.endedAt,
@@ -4471,7 +4671,7 @@ export default function Page() {
 
     const orderNumbers = Array.from(new Set(planRows.map((row) => row.orderNumber)));
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code";
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const chunk = orderNumbers.slice(index, index + 100);
       const { data: logData, error: logError } = await supabase
@@ -4492,7 +4692,7 @@ export default function Page() {
     if (orderNumbers.length > 0) {
       const { data: batchData, error: batchError } = await supabase
         .from("production_batches")
-        .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta")
+        .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta, operation_code, operation_status")
         .eq("machine_id", cleanStationName)
         .not("start_time", "is", null)
         .limit(10000);
@@ -6650,6 +6850,8 @@ export default function Page() {
     if (step === 4) {
       if (flowStage === "batch-selection") {
         focusAndSelectInput(orderTypeInputRef, { force: true });
+      } else if (flowStage === "batch-operation-selection") {
+        focusAndSelectInput(batchOperationInputRef, { force: true });
       } else if (flowStage === "batch-scan") {
         focusAndSelectInput(batchInputRef, { force: true });
       }
@@ -6679,17 +6881,19 @@ export default function Page() {
     const shouldKeepWorkerFocus = step === 1;
     const shouldKeepEventFocus = step === 3 && terminalView === "scanner" && authResolved && !authError;
     const shouldKeepTypeFocus = step === 4 && flowStage === "batch-selection";
+    const shouldKeepOperationFocus = step === 4 && flowStage === "batch-operation-selection";
     const shouldKeepBatchFocus = step === 4 && flowStage === "batch-scan";
     const shouldKeepOrderFocus = step === 5 && workflowMode === "batch" && flowStage === "order-scan";
     const shouldKeepActiveBatchFocus = step === 5 && workflowMode === "end" && flowStage === "active-batch-list";
     const shouldKeepEndCommandFocus = step === 5 && workflowMode === "end" && flowStage === "end-batch-detail";
     const shouldKeepActionFocus = step === 6 && (flowStage === "start-scan" || pendingAction === "END");
 
-    if (!shouldKeepWorkerFocus && !shouldKeepEventFocus && !shouldKeepTypeFocus && !shouldKeepBatchFocus && !shouldKeepOrderFocus && !shouldKeepActiveBatchFocus && !shouldKeepEndCommandFocus && !shouldKeepActionFocus) return;
+    if (!shouldKeepWorkerFocus && !shouldKeepEventFocus && !shouldKeepTypeFocus && !shouldKeepOperationFocus && !shouldKeepBatchFocus && !shouldKeepOrderFocus && !shouldKeepActiveBatchFocus && !shouldKeepEndCommandFocus && !shouldKeepActionFocus) return;
 
     const getTargetInput = () => {
       if (shouldKeepWorkerFocus) return workerNameInputRef;
       if (shouldKeepTypeFocus) return orderTypeInputRef;
+      if (shouldKeepOperationFocus) return batchOperationInputRef;
       if (shouldKeepBatchFocus) return batchInputRef;
       if (shouldKeepOrderFocus) return orderInputRef;
       if (shouldKeepActiveBatchFocus) return activeBatchInputRef;
@@ -6802,6 +7006,11 @@ export default function Page() {
   }, [step, flowStage, orderTypeScanError]);
 
   useEffect(() => {
+    if (step !== 4 || flowStage !== "batch-operation-selection") return;
+    focusAndSelectInput(batchOperationInputRef);
+  }, [step, flowStage, batchOperationError]);
+
+  useEffect(() => {
     if (step !== 4 || flowStage !== "batch-scan") return;
     focusAndSelectInput(batchInputRef);
   }, [step, flowStage]);
@@ -6821,7 +7030,7 @@ export default function Page() {
         Boolean(target?.isContentEditable);
 
       if (isEditable) return;
-      if (!(flowStage === "batch-selection" || flowStage === "order-scan" || flowStage === "batch-scan")) return;
+      if (!(flowStage === "batch-selection" || flowStage === "batch-operation-selection" || flowStage === "order-scan" || flowStage === "batch-scan")) return;
       if (!(step === 4 || step === 5)) return;
 
       event.preventDefault();
@@ -7235,7 +7444,7 @@ export default function Page() {
       const range = getReproductionReportDateRange(filterMode, dateKey, dateToKey);
       const { data, error } = await supabase
         .from("work_logs")
-        .select("worker_id, worker_name, order_number, action, created_at, note, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor")
+        .select("worker_id, worker_name, order_number, action, created_at, note, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code")
         .eq("ujragyartas", true)
         .or(`start_time.gte.${range.previousStartIso},start_timestamp.gte.${range.previousStartIso},created_at.gte.${range.previousStartIso}`)
         .order("created_at", { ascending: true })
@@ -7459,7 +7668,7 @@ export default function Page() {
     setLoadingWorkers(true);
     try {
       await testConnection();
-      const { data, error } = await supabase
+      let workerResponse = await supabase
         .from("workers")
         .select(`
           id,
@@ -7470,10 +7679,29 @@ export default function Page() {
           Jogosultsagok,
           Jelszo,
           jelszo_hash,
-          Esemeny_Koteg
+          Esemeny_Koteg,
+          munka_kezdete,
+          munka_vege
         `);
-      if (error) throw error;
-      const rows = ((data as Worker[]) || []);
+
+      if (workerResponse.error && /munka_kezdete|munka_vege/i.test(normalizeError(workerResponse.error))) {
+        workerResponse = await supabase
+          .from("workers")
+          .select(`
+            id,
+            "Teljes nev",
+            Munkakor,
+            "Munkakor allomas",
+            Szamozas,
+            Jogosultsagok,
+            Jelszo,
+            jelszo_hash,
+            Esemeny_Koteg
+          `);
+      }
+
+      if (workerResponse.error) throw workerResponse.error;
+      const rows = ((workerResponse.data as Worker[]) || []);
       rows.sort((a, b) => (a["Teljes nev"] || "").localeCompare(b["Teljes nev"] || "", "hu"));
       setWorkers(rows);
       if (!message || message.type === "error") {
@@ -8458,7 +8686,7 @@ export default function Page() {
 
     const orderNumbers = Array.from(new Set(items.map((item) => String(item.order_number).trim())));
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code";
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const orderChunk = orderNumbers.slice(index, index + 100);
       const { data: logData, error: logError } = await supabase
@@ -8478,7 +8706,7 @@ export default function Page() {
     if (orderNumbers.length > 0) {
       const { data: batchData, error: batchError } = await supabase
         .from("production_batches")
-        .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta")
+        .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta, operation_code, operation_status")
         .not("start_time", "is", null)
         .limit(10000);
       if (batchError) throw batchError;
@@ -8709,7 +8937,7 @@ export default function Page() {
       Array.from(planOrdersByStation.values()).flatMap((orders) => Array.from(orders))
     ));
     const planLogs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code";
 
     for (let index = 0; index < allPlannedOrders.length; index += 100) {
       const orderChunk = allPlannedOrders.slice(index, index + 100);
@@ -8803,7 +9031,7 @@ export default function Page() {
   async function fetchDashboardData(range: { startIso: string; endIso: string }): Promise<DashboardData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code";
     const bufferedStart = new Date(range.startIso);
     bufferedStart.setDate(bufferedStart.getDate() - 1);
 
@@ -9047,7 +9275,7 @@ export default function Page() {
     try {
       const { data, error } = await supabase
         .from("work_logs")
-        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor")
+        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code")
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) throw error;
@@ -9087,7 +9315,7 @@ export default function Page() {
     try {
       const { data, error } = await supabase
         .from("work_logs")
-        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor")
+        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code")
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) throw error;
@@ -9273,6 +9501,10 @@ START: ${formatDateTime(startAt)}`
     setWorkflowMode(null);
     setFlowStage("idle");
     setWorkerEventKoteg(1);
+    setSelectedBatchOperation(null);
+    setBatchOperationInput("");
+    setBatchOperationError("");
+    setBatchListMode("end");
     setBatchCode("");
     setBatchOrders([]);
     setBatchOrderProductionMeta({});
@@ -9360,6 +9592,19 @@ START: ${formatDateTime(startAt)}`
   function handleStep2Back(): void {
     clearPartialBackInputs();
 
+    if (flowStage === "batch-operation-selection") {
+      setSelectedBatchOperation(null);
+      setBatchOperationInput("");
+      setBatchOperationError("");
+      setWorkflowMode(null);
+      setFlowStage("batch-selection");
+      setStepHistory([]);
+      setStepFromHistory(4);
+      setMessage({ type: "info", text: "Visszaléptél a rendelési mód kiválasztásához." });
+      window.setTimeout(() => focusAndSelectInput(orderTypeInputRef), 0);
+      return;
+    }
+
     if (flowStage === "batch-scan") {
       setWorkflowMode("batch");
       setFlowStage("batch-selection");
@@ -9402,6 +9647,9 @@ START: ${formatDateTime(startAt)}`
       return;
     }
 
+    setSelectedBatchOperation(null);
+    setBatchOperationInput("");
+    setBatchOperationError("");
     setWorkflowMode(null);
     setFlowStage("batch-selection");
     setOrderTypeInput("");
@@ -10460,6 +10708,10 @@ body {
     const selectedCode = useBatchMode ? "TYPE-KOTEG" : "TYPE-RENDELES";
 
     setWorkerEventKoteg(koteg);
+    setSelectedBatchOperation(null);
+    setBatchOperationInput("");
+    setBatchOperationError("");
+    setBatchListMode("end");
     setBatchCode("");
     setBatchOrders([]);
     setBatchOrderProductionMeta({});
@@ -10531,6 +10783,10 @@ body {
     setWorkflowMode(null);
     setFlowStage("idle");
     setWorkerEventKoteg(1);
+    setSelectedBatchOperation(null);
+    setBatchOperationInput("");
+    setBatchOperationError("");
+    setBatchListMode("end");
     setBatchCode("");
     setBatchOrders([]);
     setBatchOrderProductionMeta({});
@@ -10573,6 +10829,10 @@ body {
     setWorkflowMode(null);
     setFlowStage("idle");
     setWorkerEventKoteg(1);
+    setSelectedBatchOperation(null);
+    setBatchOperationInput("");
+    setBatchOperationError("");
+    setBatchListMode("end");
     setBatchCode("");
     setBatchOrders([]);
     setBatchOrderProductionMeta({});
@@ -10724,6 +10984,9 @@ body {
     }
 
     if (mode === "single") {
+      setSelectedBatchOperation(null);
+      setBatchOperationInput("");
+      setBatchOperationError("");
       setBatchCode("");
       setBatchOrders([]);
       setBatchOrderProductionMeta({});
@@ -10742,9 +11005,62 @@ body {
     setBatchOrders([]);
     setBatchOrderProductionMeta({});
     setPendingAction("START");
+
+    if (workerEventKoteg === 3) {
+      setSelectedBatchOperation(null);
+      setBatchOperationInput("");
+      setBatchOperationError("");
+      setFlowStage("batch-operation-selection");
+      setStep(4);
+      setMessage({ type: "info", text: "Asztalos kötegmód aktív. Válaszd ki vagy csippantsd le, hogy Szabás vagy Marás művelet következik." });
+      window.setTimeout(() => focusAndSelectInput(batchOperationInputRef), 0);
+      return;
+    }
+
+    setSelectedBatchOperation(null);
     setFlowStage("order-scan");
     setStep(5);
     setMessage({ type: "info", text: "Köteg rendelés mód aktív. Olvasd egymás után a rendelésszámokat. A pontos START kód véglegesíti és menti a köteget." });
+  }
+
+  async function handleBatchOperationSelection(operation: BatchOperationCode): Promise<void> {
+    setBatchOperationError("");
+    setBatchOperationInput("");
+    setSelectedBatchOperation(operation);
+
+    if (operation === "SZABAS") {
+      setWorkflowMode("batch");
+      setPendingAction("START");
+      setBatchCode("");
+      setBatchOrders([]);
+      setBatchOrderProductionMeta({});
+      setFlowStage("order-scan");
+      setStep(5);
+      setMessage({ type: "success", text: "Szabás köteg kiválasztva. Olvasd egymás után a rendelésszámokat; a pontos START kód létrehozza és elindítja a Szabás köteget." });
+      window.setTimeout(() => focusAndSelectInput(orderInputRef), 0);
+      return;
+    }
+
+    await handleMillingModuleSelection();
+  }
+
+  async function handleBatchOperationBarcodeSubmit(scannedValue?: string): Promise<void> {
+    const candidate = String((scannedValue ?? batchOperationInput) || "").replace(/[\r\n]+/g, "").trim().toUpperCase();
+    if (!candidate) {
+      setBatchOperationError("Csippantsd le a MUVELET-SZABAS vagy MUVELET-MARAS vonalkódot.");
+      setMessage({ type: "error", text: "Válaszd ki a Szabás vagy Marás műveletet." });
+      window.setTimeout(() => focusAndSelectInput(batchOperationInputRef), 0);
+      return;
+    }
+    const matched = BATCH_OPERATION_CARDS.find((card) => card.code === candidate);
+    if (!matched) {
+      setBatchOperationInput("");
+      setBatchOperationError(`Ismeretlen műveleti vonalkód: ${candidate}`);
+      setMessage({ type: "error", text: `Ismeretlen műveleti vonalkód: ${candidate}` });
+      window.setTimeout(() => focusAndSelectInput(batchOperationInputRef), 0);
+      return;
+    }
+    await handleBatchOperationSelection(matched.operation);
   }
 
   function handleOrderTypeBarcodeSubmit(scannedValue?: string): void {
@@ -10961,9 +11277,19 @@ body {
       order_ids: normalizeProductionBatchOrders(row?.order_ids),
       worker_name: row?.worker_name ? String(row.worker_name) : null,
       production_meta: normalizeProductionMetaMap(row?.production_meta),
+      operation_code: normalizeBatchOperationCode(row?.operation_code),
+      operation_status: normalizeBatchOperationStatus(row?.operation_status),
     };
   }
-  async function loadActiveProductionBatches(): Promise<void> {
+  function isTwoStageAsztalosWorker(worker: Worker | null = activeWorker): boolean {
+    return !!worker && Number(getWorkerEsemenyKotegValue(worker)) === 3;
+  }
+
+  function resolveTwoStageBatchStatus(batch: ProductionBatchRow): BatchOperationStatus {
+    return normalizeBatchOperationStatus(batch.operation_status) || "SZABAS_FOLYAMATBAN";
+  }
+
+  async function loadActiveProductionBatches(mode: BatchListMode = batchListMode): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
       return;
@@ -10973,19 +11299,34 @@ body {
       const currentMachineId = getCurrentMachineIdForInsert();
       const { data, error } = await supabase
         .from("production_batches")
-        .select("id,batch_code,worker_name,order_ids,created_at,start_time,machine_id,production_meta")
+        .select("id,batch_code,worker_name,order_ids,created_at,start_time,machine_id,production_meta,operation_code,operation_status")
         .order("created_at", { ascending: false });
       if (error) throw error;
-      const batches = (Array.isArray(data) ? data : [])
+      const isTwoStage = isTwoStageAsztalosWorker();
+      let batches = (Array.isArray(data) ? data : [])
         .map(hydrateProductionBatch)
         .filter((batch) => batch.batch_code && batch.order_ids.length > 0)
         .filter((batch) => !batch.machine_id || batch.machine_id.toLowerCase() === currentMachineId.toLowerCase());
+
+      if (isTwoStage) {
+        batches = batches.filter((batch) => {
+          const status = resolveTwoStageBatchStatus(batch);
+          return mode === "start-milling"
+            ? status === "MARASRA_VAR"
+            : status === "SZABAS_FOLYAMATBAN" || status === "MARASRA_VAR" || status === "MARAS_FOLYAMATBAN";
+        });
+      }
+
       setActiveProductionBatches(batches);
       setMessage({
         type: "info",
         text: batches.length > 0
-          ? `${batches.length} folyamatban lévő köteg betöltve ezen a munkaállomáson: ${currentMachineId}.`
-          : `Nincs folyamatban lévő köteg ezen a munkaállomáson: ${currentMachineId}.`,
+          ? mode === "start-milling"
+            ? `${batches.length} Marásra váró köteg betöltve ezen a munkaállomáson: ${currentMachineId}.`
+            : `${batches.length} folyamatban lévő köteg betöltve ezen a munkaállomáson: ${currentMachineId}.`
+          : mode === "start-milling"
+            ? `Nincs Marásra váró köteg ezen a munkaállomáson: ${currentMachineId}.`
+            : `Nincs folyamatban lévő köteg ezen a munkaállomáson: ${currentMachineId}.`,
       });
     } catch (error) {
       console.error("SUPABASE HIBA loadActiveProductionBatches:", error);
@@ -10995,6 +11336,8 @@ body {
     }
   }
   async function handleEndModuleSelection(): Promise<void> {
+    setBatchListMode("end");
+    setSelectedBatchOperation(null);
     setWorkflowMode("end");
     setFlowStage("active-batch-list");
     setPendingAction("END");
@@ -11012,11 +11355,78 @@ body {
     setEndDarab("");
     setEndSzal("");
     setStep(5);
-    await loadActiveProductionBatches();
+    await loadActiveProductionBatches("end");
     window.setTimeout(() => focusAndSelectInput(activeBatchInputRef), 0);
   }
 
+  async function handleMillingModuleSelection(): Promise<void> {
+    setBatchListMode("start-milling");
+    setSelectedBatchOperation("MARAS");
+    setWorkflowMode("end");
+    setFlowStage("active-batch-list");
+    setPendingAction("START");
+    setActionBarcode("");
+    setEndBarcodeConfirmed(false);
+    setBatchCode("");
+    setBatchOrders([]);
+    setBatchOrderProductionMeta({});
+    setSelectedEndBatch(null);
+    setActiveBatchInput("");
+    setEndBatchCommandInput("");
+    setEndReadyMap({});
+    setEndOrderNotes({});
+    setEndBatchNote("");
+    setEndDarab("");
+    setEndSzal("");
+    setStep(5);
+    await loadActiveProductionBatches("start-milling");
+    window.setTimeout(() => focusAndSelectInput(activeBatchInputRef), 0);
+  }
+
+  async function startMillingForBatch(batch: ProductionBatchRow): Promise<void> {
+    if (!supabase || !activeWorker) {
+      setMessage({ type: "error", text: "Nincs Supabase kapcsolat vagy kiválasztott dolgozó." });
+      return;
+    }
+    if (resolveTwoStageBatchStatus(batch) !== "MARASRA_VAR") {
+      setMessage({ type: "error", text: "Csak Marásra váró köteg indítható el marásként." });
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const currentMachineId = getCurrentMachineIdForInsert();
+      let query = supabase.from("production_batches").update({
+        operation_code: "MARAS",
+        operation_status: "MARAS_FOLYAMATBAN",
+        start_time: nowIso,
+        worker_name: activeWorker["Teljes nev"] || "Ismeretlen",
+        machine_id: currentMachineId,
+      });
+      query = batch.id !== undefined && batch.id !== null
+        ? query.eq("id", batch.id)
+        : query.eq("batch_code", batch.batch_code);
+      const { error } = await query;
+      if (error) throw error;
+
+      await stopScannerAsync();
+      setScanModalOpen(false);
+      handleReset();
+      setMessage({ type: "success", text: `Marás elindítva: ${batch.batch_code}. A köteg most Marás folyamatban állapotú.` });
+    } catch (error) {
+      console.error("SUPABASE HIBA startMillingForBatch:", error);
+      setMessage({ type: "error", text: normalizeError(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function openEndBatchDetail(batch: ProductionBatchRow): void {
+    if (isTwoStageAsztalosWorker() && resolveTwoStageBatchStatus(batch) === "MARASRA_VAR") {
+      void startMillingForBatch(batch);
+      return;
+    }
     const orders = normalizeProductionBatchOrders(batch.order_ids);
     const readyMap: Record<string, boolean> = {};
     const notes: Record<string, string> = {};
@@ -11032,11 +11442,11 @@ body {
     setEndSzal("");
     setEndBatchCommandInput("");
     setFlowStage("end-batch-detail");
-    setMessage({ type: "info", text: `Köteg kiválasztva: . Jelöld készre a tételeket, majd olvasd be az END kódot.` });
+    setMessage({ type: "info", text: `Köteg kiválasztva: ${batch.batch_code} (${getBatchOperationStatusLabel(batch)}). Jelöld készre a tételeket, majd olvasd be az END kódot.` });
     window.setTimeout(() => focusAndSelectInput(endBatchCommandInputRef), 0);
   }
 
-  function handleActiveBatchLookup(scannedValue?: string): void {
+  async function handleActiveBatchLookup(scannedValue?: string): Promise<void> {
     const code = (scannedValue ?? activeBatchInput).trim();
     if (!code) {
       setMessage({ type: "error", text: "Add meg vagy olvasd be a kötegkódot." });
@@ -11048,6 +11458,10 @@ body {
       return;
     }
     setActiveBatchInput("");
+    if (isTwoStageAsztalosWorker() && resolveTwoStageBatchStatus(found) === "MARASRA_VAR") {
+      await startMillingForBatch(found);
+      return;
+    }
     openEndBatchDetail(found);
   }
 
@@ -11064,7 +11478,13 @@ body {
     setSelectedEndBatch((prev) => (prev ? { ...prev, order_ids: [...prev.order_ids] } : prev));
     setEndBatchCommandInput("");
     window.setTimeout(() => focusAndSelectInput(endBatchCommandInputRef), 0);
-    setMessage({ type: "success", text: "ALL-READY rögzítve: a köteg minden rendelése Kész státuszba került. Az END mentés gombbal vagy END vonalkóddal véglegesíthető." });
+    const operationCode = normalizeBatchOperationCode(selectedEndBatch.operation_code);
+    const readyText = operationCode === "SZABAS"
+      ? "Szabás kész státuszba került; END mentés után Marásra vár állapot következik"
+      : operationCode === "MARAS"
+        ? "Marás kész státuszba került"
+        : "Kész státuszba került";
+    setMessage({ type: "success", text: `ALL-READY rögzítve: a köteg minden rendelése ${readyText}. Az END mentés gombbal vagy END vonalkóddal véglegesíthető.` });
     return next;
   }
 
@@ -11097,6 +11517,17 @@ body {
       return;
     }
 
+    const isTwoStageAsztalos = isTwoStageAsztalosWorker(activeWorker) || Boolean(selectedEndBatch.operation_code || selectedEndBatch.operation_status);
+    const selectedStatus = normalizeBatchOperationStatus(selectedEndBatch.operation_status);
+    const operationCode: BatchOperationCode | null = isTwoStageAsztalos
+      ? normalizeBatchOperationCode(selectedEndBatch.operation_code) || (selectedStatus === "MARASRA_VAR" || selectedStatus === "MARAS_FOLYAMATBAN" ? "MARAS" : "SZABAS")
+      : null;
+
+    if (isTwoStageAsztalos && selectedStatus === "MARASRA_VAR") {
+      setMessage({ type: "error", text: "A Marásra váró köteget előbb el kell indítani marásként, csak utána jelenthető le END-del." });
+      return;
+    }
+
     batchFinalizeInFlightRef.current = true;
     setBusy(true);
     try {
@@ -11105,6 +11536,7 @@ body {
       const batchNoteClean = endBatchNote.trim();
       const currentMachineId = getCurrentMachineIdForInsert();
       const batchStartTime = selectedEndBatch.start_time || selectedEndBatch.created_at || nowIso;
+      const operationLabel = operationCode === "SZABAS" ? "Szabás" : operationCode === "MARAS" ? "Marás" : "Köteg";
 
       const logs = readyOrders.map((order) => {
         const orderNoteClean = (endOrderNotes[order] || "").trim();
@@ -11117,8 +11549,9 @@ body {
           action: "END" as WorkAction,
           created_at: nowIso,
           batch_code: selectedEndBatch.batch_code,
-          event_name: "Köteg lejelentés",
+          event_name: operationCode ? `${operationLabel} köteg lejelentés` : "Köteg lejelentés",
           event_code: "END",
+          operation_code: operationCode,
           start_timestamp: batchStartTime,
           start_time: batchStartTime,
           end_timestamp: nowIso,
@@ -11144,6 +11577,8 @@ body {
             darab: finalDarab,
             szal: finalSzal,
             action: "END" as WorkAction,
+            operation_code: operationCode,
+            operation_status: operationCode === "SZABAS" ? "MARASRA_VAR" : operationCode === "MARAS" ? "KESZ" : null,
             split_remainder_count: remainingOrders.length,
             ujragyartas: orderProductionMeta.ujragyartas,
             ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
@@ -11159,6 +11594,55 @@ body {
       if (logError) throw logError;
 
       let newBatchCode: string | null = null;
+
+      if (isTwoStageAsztalos && operationCode === "SZABAS") {
+        if (remainingOrders.length > 0) {
+          newBatchCode = `BATCH-${Date.now()}-REM`;
+          const remainderMachineId = selectedEndBatch.machine_id || currentMachineId;
+          const remainderProductionMeta = Object.fromEntries(
+            remainingOrders.map((order) => [order, getProductionMetaForOrder(selectedEndBatch.production_meta, order)])
+          ) as Record<string, OrderProductionMeta>;
+          const { error: insertRemainderError } = await supabase.from("production_batches").insert([{
+            batch_code: newBatchCode,
+            order_ids: remainingOrders,
+            worker_name: selectedEndBatch.worker_name || workerNameForSave || "Ismeretlen",
+            created_at: nowIso,
+            start_time: batchStartTime,
+            machine_id: remainderMachineId,
+            production_meta: remainderProductionMeta,
+            operation_code: "SZABAS",
+            operation_status: "SZABAS_FOLYAMATBAN",
+          }]);
+          if (insertRemainderError) throw insertRemainderError;
+        }
+
+        const readyProductionMeta = Object.fromEntries(
+          readyOrders.map((order) => [order, getProductionMetaForOrder(selectedEndBatch.production_meta, order)])
+        ) as Record<string, OrderProductionMeta>;
+        let transitionQuery = supabase.from("production_batches").update({
+          order_ids: readyOrders,
+          production_meta: readyProductionMeta,
+          operation_code: "MARAS",
+          operation_status: "MARASRA_VAR",
+          start_time: nowIso,
+          machine_id: selectedEndBatch.machine_id || currentMachineId,
+        });
+        transitionQuery = selectedEndBatch.id !== undefined && selectedEndBatch.id !== null
+          ? transitionQuery.eq("id", selectedEndBatch.id)
+          : transitionQuery.eq("batch_code", selectedEndBatch.batch_code);
+        const { error: transitionError } = await transitionQuery;
+        if (transitionError) throw transitionError;
+
+        await stopScannerAsync();
+        setScanModalOpen(false);
+        handleReset();
+        setMessage({
+          type: "success",
+          text: `Szabás lejelentve: ${readyOrders.length} tétel Marásra vár állapotba került.${remainingOrders.length > 0 ? ` ${remainingOrders.length} tétel új Szabás kötegben maradt: ${newBatchCode}.` : ""}`,
+        });
+        return;
+      }
+
       if (remainingOrders.length > 0) {
         newBatchCode = `BATCH-${Date.now()}-REM`;
         const remainderMachineId = selectedEndBatch.machine_id || currentMachineId;
@@ -11173,7 +11657,9 @@ body {
           start_time: batchStartTime,
           machine_id: remainderMachineId,
           production_meta: remainderProductionMeta,
-        }]).select("id,batch_code,start_time,machine_id,production_meta").single();
+          operation_code: operationCode,
+          operation_status: operationCode === "MARAS" ? "MARAS_FOLYAMATBAN" : null,
+        }]).select("id,batch_code,start_time,machine_id,production_meta,operation_code,operation_status").single();
         if (insertRemainderError) throw insertRemainderError;
         await ensureProductionBatchStartMachineSaved(supabase, {
           id: remainderData?.id,
@@ -11192,7 +11678,12 @@ body {
       await stopScannerAsync();
       setScanModalOpen(false);
       handleReset();
-      setMessage({ type: "success", text: `Köteg lejelentve, ${readyOrders.length} tétel kész, ${remainingOrders.length} tétel újrakötegelve.${newBatchCode ? ` Új köteg: ${newBatchCode}` : ""}` });
+      setMessage({
+        type: "success",
+        text: operationCode === "MARAS"
+          ? `Marás lejelentve, ${readyOrders.length} tétel teljesen kész, ${remainingOrders.length} tétel új Marás kötegbe került.${newBatchCode ? ` Új köteg: ${newBatchCode}` : ""}`
+          : `Köteg lejelentve, ${readyOrders.length} tétel kész, ${remainingOrders.length} tétel újrakötegelve.${newBatchCode ? ` Új köteg: ${newBatchCode}` : ""}`,
+      });
     } catch (error) {
       console.error("SUPABASE HIBA finalizeEndBatch:", error);
       setMessage({ type: "error", text: normalizeError(error) });
@@ -11203,6 +11694,7 @@ body {
       }, 320);
     }
   }
+
   async function handleEndBatchCommand(scannedValue?: string): Promise<void> {
     const command = (scannedValue ?? endBatchCommandInput).trim();
     if (!command) {
@@ -11824,6 +12316,11 @@ body {
     }
 
     const ordersForSave = [...batchOrders].map((order) => String(order).trim()).filter(Boolean);
+    const isTwoStageAsztalos = isTwoStageAsztalosWorker(activeWorker);
+    if (isTwoStageAsztalos && selectedBatchOperation !== "SZABAS") {
+      setMessage({ type: "error", text: "Asztalos köteg létrehozásakor először a Szabás műveletet kell kiválasztani." });
+      return;
+    }
     const workerForSave = activeWorker;
     const workerNameForSave = workerForSave["Teljes nev"];
     const nowIso = new Date().toISOString();
@@ -11878,8 +12375,10 @@ body {
           start_time: nowIso,
           machine_id: currentMachineId,
           production_meta: productionMetaForSave,
+          operation_code: isTwoStageAsztalos ? "SZABAS" : null,
+          operation_status: isTwoStageAsztalos ? "SZABAS_FOLYAMATBAN" : null,
         }])
-        .select("id, batch_code, created_at, start_time, machine_id, order_ids, production_meta")
+        .select("id, batch_code, created_at, start_time, machine_id, order_ids, production_meta, operation_code, operation_status")
         .single();
 
       if (error) throw error;
@@ -11893,6 +12392,8 @@ body {
         order_ids: ordersForSave,
         worker_name: workerNameForSave || "Ismeretlen",
         production_meta: productionMetaForSave,
+        operation_code: normalizeBatchOperationCode(data?.operation_code) || (isTwoStageAsztalos ? "SZABAS" : null),
+        operation_status: normalizeBatchOperationStatus(data?.operation_status) || (isTwoStageAsztalos ? "SZABAS_FOLYAMATBAN" : null),
       };
 
       setCreatedBatch(savedBatch);
@@ -11900,7 +12401,9 @@ body {
       setScanModalOpen(false);
       setMessage({
         type: "success",
-        text: "Sikeresen mentve a rendelés!",
+        text: isTwoStageAsztalos
+          ? "A Szabás köteg sikeresen létrejött és Szabás folyamatban állapotba került."
+          : "Sikeresen mentve a rendelés!",
       });
       setBatchOrders([]);
       setBatchOrderProductionMeta({});
@@ -12805,6 +13308,93 @@ body {
     }
   }
 
+  function renderActiveProductionBatchCard(batch: ProductionBatchRow): React.JSX.Element {
+    const twoStage = isTwoStageAsztalosWorker();
+    const status = twoStage ? resolveTwoStageBatchStatus(batch) : null;
+    const waitingForMilling = twoStage && status === "MARASRA_VAR";
+    const statusLabel = twoStage ? getBatchOperationStatusLabel(batch) : "Folyamatban";
+    const accentColor = status === "SZABAS_FOLYAMATBAN"
+      ? "#38bdf8"
+      : status === "MARASRA_VAR"
+        ? "#facc15"
+        : status === "MARAS_FOLYAMATBAN"
+          ? "#fb923c"
+          : "#93c5fd";
+
+    return (
+      <button
+        key={`${batch.id ?? batch.batch_code}`}
+        type="button"
+        onClick={() => {
+          if (waitingForMilling) {
+            void startMillingForBatch(batch);
+          } else {
+            openEndBatchDetail(batch);
+          }
+        }}
+        style={{
+          width: "100%",
+          borderRadius: 12,
+          border: `1px solid ${waitingForMilling ? "#a16207" : "#334155"}`,
+          background: waitingForMilling ? "rgba(133,77,14,0.18)" : "#0f172a",
+          color: "#f8fafc",
+          padding: 12,
+          textAlign: "left",
+          cursor: "pointer",
+          boxShadow: "0 8px 18px rgba(0,0,0,0.18)",
+          minHeight: 132,
+          display: "flex",
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 24,
+        }}
+      >
+        <div style={{ minWidth: 0, flex: "1 1 auto", paddingRight: 12 }}>
+          <div style={{ fontSize: 15, fontWeight: 900, marginBottom: 8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{batch.batch_code}</div>
+          <div style={{ color: "#cbd5e1", marginTop: 4, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Indította: {batch.worker_name || "Ismeretlen"}</div>
+          <div style={{ color: "#94a3b8", marginTop: 4, fontSize: 12 }}>Indítás dátuma: {formatDateTime(batch.start_time || batch.created_at)}</div>
+          <div style={{ color: accentColor, marginTop: 4, fontSize: 12, fontWeight: 900 }}>Státusz: {statusLabel}</div>
+          <div style={{ color: "#94a3b8", marginTop: 4, fontSize: 12 }}>Rendelések száma: {batch.order_ids.length} tétel</div>
+          <div style={{ color: "#93c5fd", marginTop: 8, fontSize: 11 }}>{waitingForMilling ? "Kattintás / scanner: Marás indítása" : "Kattintás / scanner: Lejelentés megnyitása"}</div>
+        </div>
+        <div
+          style={{
+            flex: "0 0 300px",
+            width: 300,
+            marginLeft: "auto",
+            background: "#ffffff",
+            borderRadius: 10,
+            padding: "10px 12px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Code128Barcode value={batch.batch_code} height={96} />
+        </div>
+      </button>
+    );
+  }
+
+  function renderActiveProductionBatchSection(title: string, batches: ProductionBatchRow[], emptyText: string): React.JSX.Element {
+    return (
+      <div style={{ marginBottom: 16, background: "#020617", border: "1px solid #334155", borderRadius: 12, padding: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 10 }}>
+          <strong>{title}</strong>
+          <span style={{ color: "#94a3b8", fontSize: 13 }}>{batches.length} db</span>
+        </div>
+        {batches.length === 0 ? (
+          <div style={{ color: "#94a3b8", fontSize: 13 }}>{emptyText}</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {batches.map((batch) => renderActiveProductionBatchCard(batch))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (standaloneProductionMonitor) {
     return ProductionPlanMonitor({ standalone: true });
   }
@@ -13467,7 +14057,11 @@ body {
               {flowStage === "batch-selection" ? (
                 <>
                   <div style={{ marginBottom: 18, color: "#cbd5e1" }}>
-                    A dolgozóhoz tartozó folyamat szerint most el kell dönteni, hogy <strong>köteg rendelést</strong> vagy <strong>egyedi rendelést</strong> szeretnél rögzíteni.
+                    {workerEventKoteg === 3 ? (
+                      <>Az asztalos folyamatban választhatsz <strong>Szabás köteget</strong>, egyedi rendelést vagy a folyamatban lévő Szabás/Marás kötegek kezelését.</>
+                    ) : (
+                      <>A dolgozóhoz tartozó folyamat szerint most el kell dönteni, hogy <strong>köteg rendelést</strong> vagy <strong>egyedi rendelést</strong> szeretnél rögzíteni.</>
+                    )}
                   </div>
 
                   <div style={{ marginBottom: 18, background: "#0f172a", border: "1px solid #334155", borderRadius: 14, padding: 16 }}>
@@ -13522,8 +14116,12 @@ body {
                       marginBottom: 18,
                     }}
                   >
-                    {orderTypeCards.filter((card) => card.id !== "batch" || Number(getWorkerEsemenyKotegValue(activeWorker)) === 2).map((card) => {
+                    {orderTypeCards.filter((card) => card.id !== "batch" || [2, 3].includes(Number(getWorkerEsemenyKotegValue(activeWorker)))).map((card) => {
                       const isSelected = workflowMode === card.id;
+                      const displayedTitle = workerEventKoteg === 3 && card.id === "batch" ? "Szabás köteg" : card.title;
+                      const displayedDescription = workerEventKoteg === 3 && card.id === "batch"
+                        ? "Szabás vagy Marás művelet kiválasztása vonalkóddal."
+                        : card.description;
                       return (
                         <button
                           key={card.id}
@@ -13543,10 +14141,10 @@ body {
                             {renderPseudoBarcode(card.code)}
                           </div>
                           <div style={{ fontSize: 18, fontWeight: 900, color: "#f8fafc", lineHeight: 1.1 }}>
-                            {card.title}
+                            {displayedTitle}
                           </div>
                           <div style={{ fontSize: 12, color: "#cbd5e1", fontWeight: 700, lineHeight: 1.2, marginTop: 6 }}>
-                            {card.description}
+                            {displayedDescription}
                           </div>
                         </button>
                       );
@@ -13554,6 +14152,72 @@ body {
                   </div>
 
                   <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+                    <button onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
+                  </div>
+                </>
+              ) : flowStage === "batch-operation-selection" ? (
+                <>
+                  <div style={{ marginBottom: 18, color: "#cbd5e1" }}>
+                    Válaszd ki, hogy a köteg a <strong>Szabás</strong> műveletet kezdi, vagy egy már elkészült szabási köteget indítasz el <strong>Marás</strong> műveletre.
+                  </div>
+
+                  <div style={{ marginBottom: 18, background: "#0f172a", border: "1px solid #334155", borderRadius: 14, padding: 16 }}>
+                    <div style={{ fontSize: 14, color: "#cbd5e1", marginBottom: 12 }}>Műveletválasztó vonalkód beolvasása</div>
+                    <div style={{ display: "flex", gap: 10, alignItems: "stretch", flexWrap: "wrap" }}>
+                      <input
+                        ref={batchOperationInputRef}
+                        value={batchOperationInput}
+                        onChange={(event) => {
+                          setBatchOperationInput(event.target.value.replace(/[\r\n]+/g, "").trim());
+                          setBatchOperationError("");
+                        }}
+                        placeholder="MUVELET-SZABAS vagy MUVELET-MARAS"
+                        style={{ ...fieldStyle, flex: "1 1 320px", minWidth: 260, background: "#020617", color: "#f8fafc", border: "1px solid #334155" }}
+                        autoComplete="off"
+                        onBlur={() => {
+                          if (step === 4 && flowStage === "batch-operation-selection") focusAndSelectInput(batchOperationInputRef);
+                        }}
+                        onKeyDown={(event) => {
+                          if (isScannerSubmitKey(event)) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            void handleBatchOperationBarcodeSubmit(event.currentTarget.value);
+                          }
+                        }}
+                      />
+                      <button type="button" onClick={() => void handleBatchOperationBarcodeSubmit()} style={buttonPrimary}>Tovább</button>
+                    </div>
+                    {!!batchOperationError && <div style={{ marginTop: 10, color: "#fca5a5", fontSize: 13 }}>{batchOperationError}</div>}
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14, marginBottom: 18 }}>
+                    {BATCH_OPERATION_CARDS.map((card) => (
+                      <button
+                        key={card.operation}
+                        type="button"
+                        onClick={() => void handleBatchOperationSelection(card.operation)}
+                        style={{
+                          borderRadius: 16,
+                          border: selectedBatchOperation === card.operation ? "2px solid #2563eb" : "1px solid #334155",
+                          background: "#0f172a",
+                          color: "#f8fafc",
+                          padding: 18,
+                          textAlign: "center",
+                          boxShadow: selectedBatchOperation === card.operation ? "0 10px 24px rgba(37,99,235,0.18)" : "0 8px 20px rgba(15,23,42,0.10)",
+                        }}
+                      >
+                        <div style={{ width: "100%", marginBottom: 12, background: "#ffffff", borderRadius: 10, padding: "10px 12px" }}>
+                          <Code128Barcode value={card.code} height={68} />
+                          <div style={{ color: "#111827", fontSize: 11, fontWeight: 900, marginTop: 6 }}>{card.code}</div>
+                        </div>
+                        <div style={{ fontSize: 20, fontWeight: 900 }}>{card.title}</div>
+                        <div style={{ fontSize: 12, color: "#cbd5e1", fontWeight: 700, lineHeight: 1.3, marginTop: 7 }}>{card.description}</div>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <button onClick={handleStep2Back} style={buttonSecondary}>Vissza</button>
                     <button onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
                   </div>
                 </>
@@ -13608,7 +14272,11 @@ body {
                         <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 8 }}>Lejelentési modul</div>
                         <div style={{ color: "#cbd5e1" }}><strong>Dolgozó:</strong> {activeWorker["Teljes nev"]}</div>
                         <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 8 }}>
-                          Válaszd ki vagy olvasd be a folyamatban lévő köteg batch_code értékét.
+                          {isTwoStageAsztalosWorker()
+                            ? batchListMode === "start-milling"
+                              ? "Válaszd ki vagy olvasd be a Marásra váró köteg batch_code értékét. A kiválasztás elindítja a marást."
+                              : "A Szabás folyamatban, Marásra váró és Marás folyamatban kötegek külön listában jelennek meg."
+                            : "Válaszd ki vagy olvasd be a folyamatban lévő köteg batch_code értékét."}
                         </div>
                       </div>
 
@@ -13624,7 +14292,7 @@ body {
                           onKeyDown={(e) => {
                             if (isScannerSubmitKey(e)) {
                               e.preventDefault();
-                              handleActiveBatchLookup(e.currentTarget.value);
+                              void handleActiveBatchLookup(e.currentTarget.value);
                               window.setTimeout(() => focusAndSelectInput(activeBatchInputRef), 0);
                             }
                           }}
@@ -13632,79 +14300,49 @@ body {
                       </div>
 
                       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
-                        <button onClick={() => handleActiveBatchLookup()} disabled={busy} style={buttonPrimary}>Köteg megnyitása</button>
+                        <button onClick={() => void handleActiveBatchLookup()} disabled={busy} style={buttonPrimary}>{batchListMode === "start-milling" ? "Marás indítása" : "Köteg megnyitása"}</button>
                         <button onClick={() => void startScanner("activeBatch")} disabled={busy} style={buttonPrimary}>Köteg beolvasása kamerával</button>
-                        <button onClick={() => void loadActiveProductionBatches()} disabled={busy} style={buttonSecondary}>Lista frissítése</button>
+                        <button onClick={() => void loadActiveProductionBatches(batchListMode)} disabled={busy} style={buttonSecondary}>Lista frissítése</button>
                         <button onClick={handleBackFromBatch} style={buttonSecondary}>Vissza</button>
                         <button onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
                       </div>
 
-                      <div style={{ marginBottom: 16, background: "#020617", border: "1px solid #334155", borderRadius: 12, padding: 14 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 10 }}>
-                          <strong>Folyamatban lévő kötegek</strong>
-                          <span style={{ color: "#94a3b8", fontSize: 13 }}>{activeProductionBatches.length} db</span>
-                        </div>
-                        {activeProductionBatches.length === 0 ? (
-                          <div style={{ color: "#94a3b8", fontSize: 13 }}>Nincs aktív köteg.</div>
+                      {isTwoStageAsztalosWorker() ? (
+                        batchListMode === "start-milling" ? (
+                          renderActiveProductionBatchSection(
+                            "Marásra váró kötegek",
+                            activeProductionBatches.filter((batch) => resolveTwoStageBatchStatus(batch) === "MARASRA_VAR"),
+                            "Nincs Marásra váró köteg."
+                          )
                         ) : (
-                          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                            {activeProductionBatches.map((batch) => (
-                              <button
-                                key={`${batch.id ?? batch.batch_code}`}
-                                type="button"
-                                onClick={() => openEndBatchDetail(batch)}
-                                style={{
-                                  width: "100%",
-                                  borderRadius: 12,
-                                  border: "1px solid #334155",
-                                  background: "#0f172a",
-                                  color: "#f8fafc",
-                                  padding: 12,
-                                  textAlign: "left",
-                                  cursor: "pointer",
-                                  boxShadow: "0 8px 18px rgba(0,0,0,0.18)",
-                                  minHeight: 132,
-                                  display: "flex",
-                                  flexDirection: "row",
-                                  alignItems: "center",
-                                  justifyContent: "space-between",
-                                  gap: 24,
-                                }}
-                              >
-                                <div style={{ minWidth: 0, flex: "1 1 auto", paddingRight: 12 }}>
-                                  <div style={{ fontSize: 15, fontWeight: 900, marginBottom: 8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{batch.batch_code}</div>
-                                  <div style={{ color: "#cbd5e1", marginTop: 4, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Indította: {batch.worker_name || "Ismeretlen"}</div>
-                                  <div style={{ color: "#94a3b8", marginTop: 4, fontSize: 12 }}>Indítás dátuma: {formatDateTime(batch.created_at)}</div>
-                                  <div style={{ color: "#94a3b8", marginTop: 4, fontSize: 12 }}>Státusz: folyamatban</div>
-                                  <div style={{ color: "#94a3b8", marginTop: 4, fontSize: 12 }}>Rendelések száma: {batch.order_ids.length} tétel</div>
-                                  <div style={{ color: "#93c5fd", marginTop: 8, fontSize: 11 }}>Kattintás / scanner</div>
-                                </div>
-                                <div
-                                  style={{
-                                    flex: "0 0 300px",
-                                    width: 300,
-                                    marginLeft: "auto",
-                                    background: "#ffffff",
-                                    borderRadius: 10,
-                                    padding: "10px 12px",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                  }}
-                                >
-                                  <Code128Barcode value={batch.batch_code} height={96} />
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                          <>
+                            {renderActiveProductionBatchSection(
+                              "Folyamatban lévő szabások",
+                              activeProductionBatches.filter((batch) => resolveTwoStageBatchStatus(batch) === "SZABAS_FOLYAMATBAN"),
+                              "Nincs folyamatban lévő Szabás köteg."
+                            )}
+                            {renderActiveProductionBatchSection(
+                              "Marásra váró kötegek",
+                              activeProductionBatches.filter((batch) => resolveTwoStageBatchStatus(batch) === "MARASRA_VAR"),
+                              "Nincs Marásra váró köteg."
+                            )}
+                            {renderActiveProductionBatchSection(
+                              "Folyamatban lévő marások",
+                              activeProductionBatches.filter((batch) => resolveTwoStageBatchStatus(batch) === "MARAS_FOLYAMATBAN"),
+                              "Nincs folyamatban lévő Marás köteg."
+                            )}
+                          </>
+                        )
+                      ) : (
+                        renderActiveProductionBatchSection("Folyamatban lévő kötegek", activeProductionBatches, "Nincs aktív köteg.")
+                      )}
                     </>
                   ) : selectedEndBatch ? (
                     <>
                       <div style={{ marginBottom: 16, background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: 14 }}>
-                        <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 8 }}>Köteg lejelentése</div>
+                        <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 8 }}>{isTwoStageAsztalosWorker() ? `${getBatchOperationStatusLabel(selectedEndBatch)} lejelentése` : "Köteg lejelentése"}</div>
                         <div style={{ color: "#cbd5e1" }}><strong>Köteg:</strong> {selectedEndBatch.batch_code}</div>
+                        {isTwoStageAsztalosWorker() && <div style={{ color: "#cbd5e1", marginTop: 6 }}><strong>Művelet:</strong> {normalizeBatchOperationCode(selectedEndBatch.operation_code) === "MARAS" ? "Marás" : "Szabás"}</div>}
                         <div style={{ color: "#cbd5e1", marginTop: 6 }}><strong>Indította:</strong> {selectedEndBatch.worker_name || "Ismeretlen"}</div>
                         <div style={{ color: "#94a3b8", fontSize: 13, marginTop: 8 }}>
                           Pipáld be a kész tételeket. Az üresen maradó tételek automatikusan új kötegbe kerülnek.
@@ -13726,7 +14364,15 @@ body {
                                 <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
                                   <div>
                                     <div style={{ fontSize: 18, fontWeight: 900 }}>{order}</div>
-                                    <div style={{ color: ready ? "#86efac" : "#fbbf24", fontSize: 13, marginTop: 4 }}>{ready ? "Kész" : "Folyamatban"}</div>
+                                    <div style={{ color: ready ? "#86efac" : "#fbbf24", fontSize: 13, marginTop: 4 }}>
+                                      {ready
+                                        ? normalizeBatchOperationCode(selectedEndBatch.operation_code) === "SZABAS"
+                                          ? "Szabás kész"
+                                          : normalizeBatchOperationCode(selectedEndBatch.operation_code) === "MARAS"
+                                            ? "Marás kész"
+                                            : "Kész"
+                                        : getBatchOperationStatusLabel(selectedEndBatch)}
+                                    </div>
                                   </div>
                                   <button
                                     type="button"
@@ -13812,7 +14458,13 @@ body {
                       <div style={{ marginBottom: 16, background: "#ffffff", borderRadius: 12, padding: 12, maxWidth: 420 }}>
                         <div style={{ color: "#111827", fontWeight: 900, marginBottom: 8, textAlign: "center" }}>ALL-READY</div>
                         <Code128Barcode value="ALL-READY" height={54} />
-                        <div style={{ color: "#334155", fontSize: 12, marginTop: 8, textAlign: "center" }}>Beolvasáskor minden rendelés Kész státuszba kerül; END mentéssel véglegesíthető.</div>
+                        <div style={{ color: "#334155", fontSize: 12, marginTop: 8, textAlign: "center" }}>
+                          {normalizeBatchOperationCode(selectedEndBatch.operation_code) === "SZABAS"
+                            ? "Beolvasáskor minden rendelés Szabás kész lesz; END mentés után Marásra vár állapotba kerül."
+                            : normalizeBatchOperationCode(selectedEndBatch.operation_code) === "MARAS"
+                              ? "Beolvasáskor minden rendelés Marás kész lesz; END mentéssel véglegesíthető."
+                              : "Beolvasáskor minden rendelés Kész státuszba kerül; END mentéssel véglegesíthető."}
+                        </div>
                       </div>
 
                       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -13829,7 +14481,7 @@ body {
               ) : workflowMode === "batch" ? (
                 <>
                   <div style={{ marginBottom: 16, background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: 14 }}>
-                    <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 8 }}>Köteg rendeléslista</div>
+                    <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 8 }}>{workerEventKoteg === 3 && selectedBatchOperation === "SZABAS" ? "Szabás köteg rendeléslista" : "Köteg rendeléslista"}</div>
                     <div style={{ color: "#cbd5e1" }}><strong>Dolgozó:</strong> {activeWorker["Teljes nev"]}</div>
                     {selectedEventCard && <div style={{ color: "#cbd5e1", marginTop: 6 }}><strong>Esemény:</strong> {selectedEventCard.label}</div>}
                     {batchCode && <div style={{ color: "#cbd5e1", marginTop: 6 }}><strong>Külső/előzetes kötegkód:</strong> {batchCode}</div>}
