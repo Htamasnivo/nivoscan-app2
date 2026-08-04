@@ -533,6 +533,8 @@ type ProductionMonitorTheme = {
   showSummaryCards: boolean;
 };
 
+type ProductionCardTableDataSource = "production-plan" | "scrap-replacement";
+
 type ProductionMonitorTableConfig = {
   id: string;
   name: string;
@@ -541,6 +543,7 @@ type ProductionMonitorTableConfig = {
   hiddenFieldIds: string[];
   theme: ProductionMonitorTheme;
   fieldStyles: Record<string, ProductionMonitorFieldStyle>;
+  dataSource?: ProductionCardTableDataSource;
 };
 
 type ProductionMonitorProfile = {
@@ -655,6 +658,29 @@ const PRODUCTION_CARD_FIELD_IDS = [
   PRODUCTION_CARD_STATUS_FIELD_ID,
   PRODUCTION_CARD_START_WORKER_FIELD_ID,
   PRODUCTION_CARD_END_WORKER_FIELD_ID,
+] as const;
+
+const PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID = "__scrap_order_number__";
+const PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID = "__scrap_defect__";
+const PRODUCTION_CARD_SCRAP_TASK_FIELD_ID = "__scrap_task__";
+const PRODUCTION_CARD_SCRAP_SOURCE_FIELD_ID = "__scrap_source__";
+const PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID = "__scrap_status__";
+const PRODUCTION_CARD_SCRAP_REPORTED_BY_FIELD_ID = "__scrap_reported_by__";
+const PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID = "__scrap_last_worker__";
+const PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID = "__scrap_reported_at__";
+const PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID = "__scrap_started_at__";
+const PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID = "__scrap_completed_at__";
+const PRODUCTION_CARD_SCRAP_FIELD_IDS = [
+  PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_TASK_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_SOURCE_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_REPORTED_BY_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID,
 ] as const;
 const PRODUCTION_MONITOR_ORDER_FIELD_ID = "__order_number__";
 const PRODUCTION_MONITOR_MIN_ZOOM = 60;
@@ -857,6 +883,7 @@ function createDefaultProductionMonitorTable(
     hiddenFieldIds: [],
     theme: cloneProductionMonitorTheme(theme),
     fieldStyles: {},
+    dataSource: "production-plan",
   };
 }
 
@@ -878,6 +905,16 @@ function createDefaultProductionMonitorProfile(
 }
 
 
+function isCarpenterProductionCardStation(stationName: string | null | undefined): boolean {
+  return normalizeLooseText(String(stationName || "")).includes("asztalos");
+}
+
+function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig): readonly string[] {
+  return table.dataSource === "scrap-replacement"
+    ? PRODUCTION_CARD_SCRAP_FIELD_IDS
+    : PRODUCTION_CARD_FIELD_IDS;
+}
+
 function getProductionCardFieldLabel(fieldId: string): string {
   if (fieldId === PRODUCTION_CARD_ORDER_FIELD_ID) return "Sorszám";
   if (fieldId === PRODUCTION_CARD_PRODUCT_FIELD_ID) return "Megnevezés";
@@ -887,13 +924,82 @@ function getProductionCardFieldLabel(fieldId: string): string {
   if (fieldId === PRODUCTION_CARD_STATUS_FIELD_ID) return "Állapot";
   if (fieldId === PRODUCTION_CARD_START_WORKER_FIELD_ID) return "Indító dolgozó";
   if (fieldId === PRODUCTION_CARD_END_WORKER_FIELD_ID) return "Befejező dolgozó";
+  if (fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID) return "Rendelésszám";
+  if (fieldId === PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID) return "Hiba";
+  if (fieldId === PRODUCTION_CARD_SCRAP_TASK_FIELD_ID) return "Feladat";
+  if (fieldId === PRODUCTION_CARD_SCRAP_SOURCE_FIELD_ID) return "Forrás";
+  if (fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID) return "Állapot";
+  if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_BY_FIELD_ID) return "Jelentette";
+  if (fieldId === PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID) return "Utolsó dolgozó";
+  if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID) return "Jelentés ideje";
+  if (fieldId === PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID) return "Pótlás kezdete";
+  if (fieldId === PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID) return "Pótlás vége";
   return fieldId;
+}
+
+function createDefaultScrapReplacementCardTable(theme: ProductionMonitorTheme): ProductionMonitorTableConfig {
+  const scrapTheme = normalizeProductionMonitorTheme({
+    ...theme,
+    tablePanelBackground: "#fff7ed",
+    tableTitleText: "#991b1b",
+    tableHeaderBackground: "#7f1d1d",
+    tableHeaderText: "#ffffff",
+    orderCellBackground: "#fca5a5",
+    orderCellText: "#450a0a",
+    doneBackground: "#86efac",
+    doneText: "#052e16",
+    inProgressBackground: "#fde047",
+    inProgressText: "#422006",
+    waitingBackground: "#fca5a5",
+    waitingText: "#450a0a",
+    borderColor: "#ef4444",
+    panelRadius: 14,
+  });
+  const table = createDefaultProductionMonitorTable(
+    "Selejtpótlás – elsőbbségi termelési kártya",
+    "card-table-scrap-replacement",
+    scrapTheme
+  );
+  table.dataSource = "scrap-replacement";
+  table.fieldOrder = [...PRODUCTION_CARD_SCRAP_FIELD_IDS];
+  table.hiddenFieldIds = [
+    PRODUCTION_CARD_SCRAP_REPORTED_BY_FIELD_ID,
+    PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID,
+    PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID,
+    PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID,
+    PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID,
+  ];
+  table.fieldStyles = {
+    [PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 1.15,
+      textAlign: "left",
+    },
+    [PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 1.45,
+    },
+    [PRODUCTION_CARD_SCRAP_TASK_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 1.55,
+    },
+    [PRODUCTION_CARD_SCRAP_SOURCE_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 1.0,
+    },
+    [PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 1.2,
+    },
+  };
+  return table;
 }
 
 function createDefaultProductionCardProfile(stationName = "Munkaállomás"): ProductionMonitorProfile {
   const cleanStationName = String(stationName || "Munkaállomás").trim() || "Munkaállomás";
   const theme = cloneProductionMonitorTheme(PRODUCTION_MONITOR_THEME_PRESETS["industrial-night"].theme);
   const table = createDefaultProductionMonitorTable(`${cleanStationName} termelési kártya`, "card-table-default", theme);
+  table.dataSource = "production-plan";
   table.fieldOrder = [...PRODUCTION_CARD_FIELD_IDS];
   table.hiddenFieldIds = [PRODUCTION_CARD_DATE_FIELD_ID];
   table.fieldStyles = {
@@ -922,13 +1028,16 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
       textAlign: "left",
     },
   };
+  const tables = isCarpenterProductionCardStation(cleanStationName)
+    ? [createDefaultScrapReplacementCardTable(theme), table]
+    : [table];
   return {
     id: `production-card-${cleanStationName}`,
     name: `${cleanStationName} termelési kártya`,
     themePresetId: "industrial-night",
     zoomPercent: 90,
     theme,
-    tables: [table],
+    tables,
     activeTableId: table.id,
   };
 }
@@ -936,21 +1045,42 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
 function normalizeProductionCardProfile(value: unknown, stationName: string): ProductionMonitorProfile {
   if (!value || typeof value !== "object") return createDefaultProductionCardProfile(stationName);
   const normalized = normalizeProductionMonitorProfile(value, 0);
-  const tables = normalized.tables.length > 0
-    ? normalized.tables.map((table, index) => ({
-        ...table,
-        name: table.name || `Táblázat ${index + 1}`,
-        title: table.title || table.name || `Táblázat ${index + 1}`,
-        fieldOrder: [
-          ...table.fieldOrder.filter((fieldId) => (PRODUCTION_CARD_FIELD_IDS as readonly string[]).includes(fieldId)),
-          ...PRODUCTION_CARD_FIELD_IDS.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
-        ],
-        hiddenFieldIds: table.hiddenFieldIds.filter((fieldId) => (PRODUCTION_CARD_FIELD_IDS as readonly string[]).includes(fieldId)),
-        fieldStyles: Object.fromEntries(
-          Object.entries(table.fieldStyles || {}).filter(([fieldId]) => (PRODUCTION_CARD_FIELD_IDS as readonly string[]).includes(fieldId))
-        ),
-      }))
+  const carpenterStation = isCarpenterProductionCardStation(stationName);
+  let tables = normalized.tables.length > 0
+    ? normalized.tables.map((table, index) => {
+        const dataSource: ProductionCardTableDataSource = table.dataSource === "scrap-replacement"
+          ? "scrap-replacement"
+          : "production-plan";
+        const validFields = dataSource === "scrap-replacement"
+          ? PRODUCTION_CARD_SCRAP_FIELD_IDS
+          : PRODUCTION_CARD_FIELD_IDS;
+        return {
+          ...table,
+          dataSource,
+          name: table.name || `Táblázat ${index + 1}`,
+          title: table.title || table.name || `Táblázat ${index + 1}`,
+          fieldOrder: [
+            ...table.fieldOrder.filter((fieldId) => (validFields as readonly string[]).includes(fieldId)),
+            ...validFields.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
+          ],
+          hiddenFieldIds: table.hiddenFieldIds.filter((fieldId) => (validFields as readonly string[]).includes(fieldId)),
+          fieldStyles: Object.fromEntries(
+            Object.entries(table.fieldStyles || {}).filter(([fieldId]) => (validFields as readonly string[]).includes(fieldId))
+          ),
+        };
+      })
     : createDefaultProductionCardProfile(stationName).tables;
+
+  if (carpenterStation) {
+    const existingScrapTable = tables.find((table) => table.dataSource === "scrap-replacement");
+    const productionTables = tables.filter((table) => table.dataSource !== "scrap-replacement");
+    tables = [existingScrapTable || createDefaultScrapReplacementCardTable(normalized.theme), ...productionTables];
+  } else {
+    tables = tables.filter((table) => table.dataSource !== "scrap-replacement");
+  }
+
+  if (tables.length === 0) tables = createDefaultProductionCardProfile(stationName).tables;
+
   return {
     ...normalized,
     id: normalized.id || `production-card-${stationName}`,
@@ -958,7 +1088,7 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
     tables,
     activeTableId: tables.some((table) => table.id === normalized.activeTableId)
       ? normalized.activeTableId
-      : tables[0].id,
+      : tables.find((table) => table.dataSource === "production-plan")?.id || tables[0].id,
   };
 }
 
@@ -1063,6 +1193,7 @@ function normalizeProductionMonitorTable(value: unknown, index: number, fallback
     fieldStyles: Object.fromEntries(
       Object.entries(rawFieldStyles).map(([fieldId, style]) => [fieldId, normalizeProductionMonitorFieldStyle(style)])
     ),
+    dataSource: raw.dataSource === "scrap-replacement" ? "scrap-replacement" : "production-plan",
   };
 }
 
@@ -4377,6 +4508,26 @@ export default function Page() {
     return "";
   }
 
+  function getScrapReplacementCardFieldValue(row: ScrapReplacementRow, fieldId: string): string | number {
+    if (fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID) return row.order_number;
+    if (fieldId === PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID) return getScrapReplacementDefectLabel(row);
+    if (fieldId === PRODUCTION_CARD_SCRAP_TASK_FIELD_ID) return "Szabás + marás pótlása";
+    if (fieldId === PRODUCTION_CARD_SCRAP_SOURCE_FIELD_ID) return row.source_station || "";
+    if (fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID) return getScrapReplacementStatusLabel(row.status);
+    if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_BY_FIELD_ID) return row.reported_by_worker_name || "";
+    if (fieldId === PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID) return row.last_worker_name || "";
+    if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID) return row.reported_at ? formatDateTime(row.reported_at) : "";
+    if (fieldId === PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID) return row.started_at ? formatDateTime(row.started_at) : "";
+    if (fieldId === PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID) return row.completed_at ? formatDateTime(row.completed_at) : "";
+    return "";
+  }
+
+  function getScrapReplacementCardStatus(row: ScrapReplacementRow): ProductionMonitorStatus {
+    if (row.status === "KESZ") return "done";
+    if (row.status === "VARAKOZIK") return "waiting";
+    return "in-progress";
+  }
+
   function resolveProductionCardWorkers(
     logs: WorkLogRow[],
     productionBatchStarts: ProductionBatchRow[],
@@ -4524,7 +4675,7 @@ export default function Page() {
       setProductionCardProfile(result.profile);
       const activeTable = result.profile.tables.find((table) => table.id === result.profile.activeTableId) || result.profile.tables[0];
       setProductionCardTableNameDraft(activeTable?.name || "Termelési kártya");
-      setSelectedProductionCardStyleFieldId(PRODUCTION_CARD_ORDER_FIELD_ID);
+      setSelectedProductionCardStyleFieldId(activeTable ? (getProductionCardFieldIdsForTable(activeTable)[0] || PRODUCTION_CARD_ORDER_FIELD_ID) : PRODUCTION_CARD_ORDER_FIELD_ID);
       setProductionCardLastSavedAt(result.updatedAt);
       productionCardLastSavedPayloadRef.current = JSON.stringify(result.profile);
     } catch (error) {
@@ -4864,7 +5015,10 @@ export default function Page() {
         ? profile.activeTableId
         : profile.tables[0]?.id;
       if (!activeTableId) {
-        const table = updater(createDefaultProductionMonitorTable("Termelési kártya", "card-table-default", profile.theme));
+        const fallbackTable = createDefaultProductionMonitorTable("Termelési kártya", "card-table-default", profile.theme);
+        fallbackTable.dataSource = "production-plan";
+        fallbackTable.fieldOrder = [...PRODUCTION_CARD_FIELD_IDS];
+        const table = updater(fallbackTable);
         return { ...profile, tables: [table], activeTableId: table.id, themePresetId: "custom" };
       }
       return {
@@ -4920,12 +5074,13 @@ export default function Page() {
     if (!table) return;
     updateProductionCardProfile((profile) => ({ ...profile, activeTableId: table.id }));
     setProductionCardTableNameDraft(table.name);
-    setSelectedProductionCardStyleFieldId(PRODUCTION_CARD_ORDER_FIELD_ID);
+    setSelectedProductionCardStyleFieldId(getProductionCardFieldIdsForTable(table)[0] || PRODUCTION_CARD_ORDER_FIELD_ID);
   }
 
   function createProductionCardTable(): void {
     const tableName = `Táblázat ${productionCardProfile.tables.length + 1}`;
     const table = createDefaultProductionMonitorTable(tableName, `card-table-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, productionCardProfile.theme);
+    table.dataSource = "production-plan";
     table.fieldOrder = [...PRODUCTION_CARD_FIELD_IDS];
     table.hiddenFieldIds = [PRODUCTION_CARD_DATE_FIELD_ID];
     updateProductionCardProfile((profile) => ({
@@ -4940,6 +5095,10 @@ export default function Page() {
   }
 
   function duplicateProductionCardTable(): void {
+    if (activeProductionCardTable.dataSource === "scrap-replacement") {
+      setMessage({ type: "info", text: "A selejtpótlási kártya egyedi rendszerkártya, ezért nem másolható. A megjelenése teljesen szerkeszthető." });
+      return;
+    }
     const tableName = `${activeProductionCardTable.name} másolat`;
     const duplicate: ProductionMonitorTableConfig = {
       ...activeProductionCardTable,
@@ -4949,7 +5108,7 @@ export default function Page() {
       fieldOrder: [...activeProductionCardTable.fieldOrder],
       hiddenFieldIds: [...activeProductionCardTable.hiddenFieldIds],
       theme: { ...activeProductionCardTable.theme },
-      fieldStyles: Object.fromEntries(Object.entries(activeProductionCardTable.fieldStyles).map(([fieldId, style]) => [fieldId, { ...style }])),
+      fieldStyles: Object.fromEntries(Object.entries(activeProductionCardTable.fieldStyles).map(([fieldId, style]) => [fieldId, { ...(style as ProductionMonitorFieldStyle) }])),
     };
     updateProductionCardProfile((profile) => ({
       ...profile,
@@ -4971,6 +5130,10 @@ export default function Page() {
   }
 
   function deleteProductionCardTable(): void {
+    if (activeProductionCardTable.dataSource === "scrap-replacement") {
+      setMessage({ type: "info", text: "A selejtpótlási kártya nem törölhető, de minden mezője és színe személyre szabható." });
+      return;
+    }
     if (productionCardProfile.tables.length <= 1) {
       setMessage({ type: "error", text: "Az utolsó táblázat nem törölhető." });
       return;
@@ -4984,7 +5147,7 @@ export default function Page() {
   function reorderProductionCardField(draggedFieldId: string, targetFieldId: string): void {
     if (!draggedFieldId || !targetFieldId || draggedFieldId === targetFieldId) return;
     updateActiveProductionCardTable((table) => {
-      const validFields = PRODUCTION_CARD_FIELD_IDS as readonly string[];
+      const validFields = getProductionCardFieldIdsForTable(table);
       const currentOrder = [
         ...table.fieldOrder.filter((fieldId) => validFields.includes(fieldId)),
         ...validFields.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
@@ -4998,7 +5161,7 @@ export default function Page() {
 
   function moveProductionCardField(fieldId: string, direction: -1 | 1): void {
     updateActiveProductionCardTable((table) => {
-      const validFields = PRODUCTION_CARD_FIELD_IDS as readonly string[];
+      const validFields = getProductionCardFieldIdsForTable(table);
       const order = [
         ...table.fieldOrder.filter((candidate) => validFields.includes(candidate)),
         ...validFields.filter((candidate) => !table.fieldOrder.includes(candidate)),
@@ -5025,7 +5188,7 @@ export default function Page() {
     const reset = createDefaultProductionCardProfile(productionCardAdminStation || "Munkaállomás");
     setProductionCardProfile(reset);
     setProductionCardTableNameDraft(reset.tables[0].name);
-    setSelectedProductionCardStyleFieldId(PRODUCTION_CARD_ORDER_FIELD_ID);
+    setSelectedProductionCardStyleFieldId(getProductionCardFieldIdsForTable(reset.tables[0])[0] || PRODUCTION_CARD_ORDER_FIELD_ID);
     setMessage({ type: "success", text: "A termelési kártya megjelenése visszaállt az alapértelmezettre." });
   }
 
@@ -5042,10 +5205,12 @@ export default function Page() {
 
     const renderTable = (table: ProductionMonitorTableConfig, tableIndex: number): React.JSX.Element => {
       const isActive = table.id === profile.activeTableId;
+      const isScrapTable = table.dataSource === "scrap-replacement";
       const theme = table.theme;
+      const validFieldIds = getProductionCardFieldIdsForTable(table);
       const orderedFieldIds = [
-        ...table.fieldOrder.filter((fieldId) => (PRODUCTION_CARD_FIELD_IDS as readonly string[]).includes(fieldId)),
-        ...PRODUCTION_CARD_FIELD_IDS.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
+        ...table.fieldOrder.filter((fieldId) => (validFieldIds as readonly string[]).includes(fieldId)),
+        ...validFieldIds.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
       ];
       const visibleFieldIds = orderedFieldIds.filter((fieldId) => !table.hiddenFieldIds.includes(fieldId));
       const visibleCount = Math.max(visibleFieldIds.length, 1);
@@ -5054,6 +5219,9 @@ export default function Page() {
       const cellFontSize = Math.max(7, Math.round((theme.cellFontSize || baseFont) * zoomRatio * 10) / 10);
       const fieldWeights = Object.fromEntries(visibleFieldIds.map((fieldId) => [fieldId, getProductionCardFieldStyle(fieldId, table).widthWeight])) as Record<string, number>;
       const totalWeight = Math.max(0.25, visibleFieldIds.reduce((sum, fieldId) => sum + Math.max(0.25, fieldWeights[fieldId] || 1), 0));
+      const sourceRows = isScrapTable ? urgentScrapRows : data.rows;
+
+      if (isScrapTable && sourceRows.length === 0 && !editable) return <React.Fragment key={table.id} />;
 
       return (
         <section
@@ -5061,26 +5229,40 @@ export default function Page() {
           onClick={() => editable && switchProductionCardTable(table.id)}
           style={{
             background: theme.tablePanelBackground,
-            border: editable && isActive ? `3px solid ${theme.accentColor}` : `1px solid ${theme.borderColor}`,
+            border: editable && isActive ? `3px solid ${theme.accentColor}` : `${isScrapTable ? 3 : 1}px solid ${theme.borderColor}`,
             borderRadius: theme.panelRadius,
             padding: compact ? 8 : 12,
             marginBottom: compact ? 8 : 14,
             overflow: "hidden",
-            boxShadow: compact ? "none" : "0 10px 28px rgba(0,0,0,0.22)",
+            boxShadow: compact ? "none" : isScrapTable ? "0 12px 30px rgba(127,29,29,0.25)" : "0 10px 28px rgba(0,0,0,0.22)",
             cursor: editable ? "pointer" : "default",
           }}
         >
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 8 }}>
-            <div style={{ color: theme.tableTitleText, fontFamily: theme.fontFamily, fontSize: Math.max(11, Math.round(theme.tableTitleFontSize * zoomRatio)), fontWeight: theme.tableTitleBold ? 900 : 400, fontStyle: theme.tableTitleItalic ? "italic" : "normal" }}>
-              {table.title || table.name || `Táblázat ${tableIndex + 1}`}
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ color: theme.tableTitleText, fontFamily: theme.fontFamily, fontSize: Math.max(11, Math.round(theme.tableTitleFontSize * zoomRatio)), fontWeight: theme.tableTitleBold ? 900 : 400, fontStyle: theme.tableTitleItalic ? "italic" : "normal" }}>
+                {table.title || table.name || `Táblázat ${tableIndex + 1}`}
+              </div>
+              {isScrapTable && (
+                <div style={{ color: theme.tableTitleText, opacity: 0.82, fontSize: compact ? 9 : 11, marginTop: 2 }}>A fóliázó vagy összeszerelő által jelzett pótlás mindig megelőzi a napi tervet.</div>
+              )}
             </div>
-            {editable && <span style={{ color: theme.subtitleText, fontSize: 11, fontWeight: 800 }}>{isActive ? "Aktív" : "Kattints a szerkesztéshez"}</span>}
+            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              {isScrapTable && sourceRows.length > 0 && (
+                <span style={{ background: theme.tableHeaderBackground, color: theme.tableHeaderText, borderRadius: 999, padding: "5px 10px", fontWeight: 900, fontSize: 12 }}>
+                  {urgentScrapRows.filter((row) => row.status !== "KESZ").length} sürgős
+                </span>
+              )}
+              {editable && <span style={{ color: theme.subtitleText, fontSize: 11, fontWeight: 800 }}>{isActive ? "Aktív" : "Kattints a szerkesztéshez"}</span>}
+            </div>
           </div>
 
-          {data.errorMessage ? (
+          {data.errorMessage && !isScrapTable ? (
             <div style={{ color: "#fecaca", background: "#450a0a", border: "1px solid #ef4444", borderRadius: 10, padding: 12 }}>{data.errorMessage}</div>
-          ) : data.rows.length === 0 ? (
-            <div style={{ color: theme.subtitleText, padding: compact ? 14 : 26, textAlign: "center" }}>A kiválasztott naphoz nincs feltöltött termelési terv ezen a munkaállomáson.</div>
+          ) : sourceRows.length === 0 ? (
+            <div style={{ color: theme.subtitleText, padding: compact ? 14 : 26, textAlign: "center" }}>
+              {isScrapTable ? "Jelenleg nincs selejtpótlásra váró rendelés." : "A kiválasztott naphoz nincs feltöltött termelési terv ezen a munkaállomáson."}
+            </div>
           ) : visibleFieldIds.length === 0 ? (
             <div style={{ color: theme.subtitleText, padding: 20, textAlign: "center" }}>Minden mező el van rejtve.</div>
           ) : (
@@ -5137,47 +5319,60 @@ export default function Page() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.rows.map((row, rowIndex) => (
-                    <tr key={`${table.id}-${row.orderNumber}-${rowIndex}`}>
-                      {visibleFieldIds.map((fieldId) => {
-                        const style = getProductionCardFieldStyle(fieldId, table);
-                        const cellBold = resolveProductionMonitorTriState(style.cellBold, theme.cellBold);
-                        const cellItalic = resolveProductionMonitorTriState(style.cellItalic, theme.cellItalic);
-                        const isStatus = fieldId === PRODUCTION_CARD_STATUS_FIELD_ID;
-                        const isOrder = fieldId === PRODUCTION_CARD_ORDER_FIELD_ID;
-                        let background = isOrder ? theme.orderCellBackground : theme.waitingBackground;
-                        let color = isOrder ? theme.orderCellText : theme.waitingText;
-                        if (isStatus && row.status === "done") { background = theme.doneBackground; color = theme.doneText; }
-                        if (isStatus && row.status === "in-progress") { background = theme.inProgressBackground; color = theme.inProgressText; }
-                        if (isStatus && row.status === "waiting") { background = theme.waitingBackground; color = theme.waitingText; }
-                        const value = getProductionCardFieldValue(row, fieldId);
-                        return (
-                          <td
-                            key={`${table.id}-${row.orderNumber}-${rowIndex}-${fieldId}`}
-                            title={fieldId === PRODUCTION_CARD_STATUS_FIELD_ID
-                              ? [row.startWorkerName ? `Indító: ${row.startWorkerName}` : "", row.endWorkerName ? `Befejező: ${row.endWorkerName}` : "", row.startedAt ? `START: ${formatDateTime(row.startedAt)}` : "", row.endedAt ? `END: ${formatDateTime(row.endedAt)}` : ""].filter(Boolean).join(" | ")
-                              : String(value ?? "")}
-                            style={{
-                              padding: `${Math.max(2, Math.round(theme.cellPadding * zoomRatio))}px 5px`,
-                              background: style.cellBackground || background,
-                              color: style.cellTextColor || color,
-                              borderBottom: `1px solid ${theme.borderColor}`,
-                              borderRight: `1px solid ${theme.borderColor}`,
-                              textAlign: style.textAlign,
-                              fontWeight: cellBold ? 900 : 400,
-                              fontStyle: cellItalic ? "italic" : "normal",
-                              fontSize: cellFontSize,
-                              lineHeight: 1.15,
-                              whiteSpace: "normal",
-                              overflowWrap: "anywhere",
-                            }}
-                          >
-                            {value === "" ? "–" : value}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
+                  {sourceRows.map((rawRow, rowIndex) => {
+                    const productionRow = !isScrapTable ? rawRow as ProductionCardRow : null;
+                    const scrapRow = isScrapTable ? rawRow as ScrapReplacementRow : null;
+                    const status = scrapRow ? getScrapReplacementCardStatus(scrapRow) : productionRow!.status;
+                    const rowKey = scrapRow ? String(scrapRow.id) : `${productionRow!.orderNumber}-${rowIndex}`;
+                    return (
+                      <tr key={`${table.id}-${rowKey}`}>
+                        {visibleFieldIds.map((fieldId) => {
+                          const style = getProductionCardFieldStyle(fieldId, table);
+                          const cellBold = resolveProductionMonitorTriState(style.cellBold, theme.cellBold);
+                          const cellItalic = resolveProductionMonitorTriState(style.cellItalic, theme.cellItalic);
+                          const isStatus = fieldId === PRODUCTION_CARD_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID;
+                          const isOrder = fieldId === PRODUCTION_CARD_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID;
+                          let background = isOrder ? theme.orderCellBackground : theme.waitingBackground;
+                          let color = isOrder ? theme.orderCellText : theme.waitingText;
+                          if (isScrapTable || isStatus) {
+                            if (status === "done") { background = theme.doneBackground; color = theme.doneText; }
+                            if (status === "in-progress") { background = theme.inProgressBackground; color = theme.inProgressText; }
+                            if (status === "waiting") { background = theme.waitingBackground; color = theme.waitingText; }
+                          }
+                          const value = scrapRow
+                            ? getScrapReplacementCardFieldValue(scrapRow, fieldId)
+                            : getProductionCardFieldValue(productionRow!, fieldId);
+                          const title = scrapRow
+                            ? [scrapRow.started_at ? `Indítás: ${formatDateTime(scrapRow.started_at)}` : "", scrapRow.completed_at ? `Kész: ${formatDateTime(scrapRow.completed_at)}` : "", scrapRow.last_worker_name ? `Dolgozó: ${scrapRow.last_worker_name}` : ""].filter(Boolean).join(" | ")
+                            : fieldId === PRODUCTION_CARD_STATUS_FIELD_ID
+                              ? [productionRow!.startWorkerName ? `Indító: ${productionRow!.startWorkerName}` : "", productionRow!.endWorkerName ? `Befejező: ${productionRow!.endWorkerName}` : "", productionRow!.startedAt ? `START: ${formatDateTime(productionRow!.startedAt)}` : "", productionRow!.endedAt ? `END: ${formatDateTime(productionRow!.endedAt)}` : ""].filter(Boolean).join(" | ")
+                              : String(value ?? "");
+                          return (
+                            <td
+                              key={`${table.id}-${rowKey}-${fieldId}`}
+                              title={title}
+                              style={{
+                                padding: `${Math.max(2, Math.round(theme.cellPadding * zoomRatio))}px 5px`,
+                                background: style.cellBackground || background,
+                                color: style.cellTextColor || color,
+                                borderBottom: `1px solid ${theme.borderColor}`,
+                                borderRight: `1px solid ${theme.borderColor}`,
+                                textAlign: style.textAlign,
+                                fontWeight: cellBold ? 900 : 400,
+                                fontStyle: cellItalic ? "italic" : "normal",
+                                fontSize: cellFontSize,
+                                lineHeight: 1.15,
+                                whiteSpace: "normal",
+                                overflowWrap: "anywhere",
+                              }}
+                            >
+                              {value === "" ? "–" : value}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -5198,48 +5393,7 @@ export default function Page() {
             {profileTheme.showLastUpdated && <div style={{ color: profileTheme.subtitleText, opacity: 0.82, marginTop: 3, fontSize: compact ? 10 : 11 }}>Utolsó frissítés: {data.lastUpdatedAt ? formatDateTime(data.lastUpdatedAt) : "–"}</div>}
           </div>
         )}
-        {urgentScrapRows.length > 0 && (
-          <section style={{ background: "#fff7ed", border: "3px solid #ef4444", borderRadius: profileTheme.panelRadius, padding: compact ? 8 : 12, marginBottom: compact ? 10 : 14, boxShadow: "0 12px 30px rgba(127,29,29,0.25)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
-              <div>
-                <div style={{ color: "#991b1b", fontWeight: 1000, fontSize: compact ? 13 : 17, letterSpacing: 0.4 }}>SELEJTPÓTLÁS – ELSŐBBSÉGI TERMELÉSI KÁRTYA</div>
-                <div style={{ color: "#7f1d1d", fontSize: compact ? 10 : 12, marginTop: 2 }}>A fóliázó vagy összeszerelő által jelzett külső / belső lap pótlása mindig megelőzi a napi tervet.</div>
-              </div>
-              <div style={{ background: "#7f1d1d", color: "#fff", borderRadius: 999, padding: "5px 10px", fontWeight: 900, fontSize: 12 }}>{urgentScrapRows.filter((row) => row.status !== "KESZ").length} sürgős</div>
-            </div>
-            <div style={{ overflowX: "auto", maxHeight: compact ? 260 : 360, overflowY: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed", fontFamily: profileTheme.fontFamily }}>
-                <thead style={{ position: "sticky", top: 0, zIndex: 5 }}>
-                  <tr>
-                    {["Rendelésszám", "Hiba", "Feladat", "Forrás", "Állapot"].map((label, index) => (
-                      <th key={label} style={{ width: index === 0 ? "18%" : index === 1 ? "23%" : index === 2 ? "25%" : index === 3 ? "16%" : "18%", background: "#7f1d1d", color: "#fff", borderRight: "1px solid #fecaca", borderBottom: "2px solid #450a0a", padding: compact ? "6px 5px" : "8px 6px", fontSize: compact ? 9 : 11, fontWeight: 1000, textAlign: "center", whiteSpace: "normal" }}>{label}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {urgentScrapRows.map((row) => {
-                    const rowBackground = row.status === "KESZ" ? "#86efac" : row.status === "VARAKOZIK" ? "#fca5a5" : "#fde047";
-                    const rowColor = row.status === "KESZ" ? "#052e16" : row.status === "VARAKOZIK" ? "#450a0a" : "#422006";
-                    const cells = [
-                      row.order_number,
-                      getScrapReplacementDefectLabel(row),
-                      "Szabás + marás pótlása",
-                      row.source_station || "–",
-                      getScrapReplacementStatusLabel(row.status),
-                    ];
-                    return (
-                      <tr key={`scrap-replacement-${row.id}`}>
-                        {cells.map((value, index) => (
-                          <td key={`${row.id}-${index}`} title={index === 4 ? [row.started_at ? `Indítás: ${formatDateTime(row.started_at)}` : "", row.completed_at ? `Kész: ${formatDateTime(row.completed_at)}` : "", row.last_worker_name ? `Dolgozó: ${row.last_worker_name}` : ""].filter(Boolean).join(" | ") : String(value)} style={{ background: rowBackground, color: rowColor, borderRight: "1px solid rgba(127,29,29,0.35)", borderBottom: "1px solid rgba(127,29,29,0.35)", padding: compact ? "7px 5px" : "9px 6px", fontSize: compact ? 9 : 11, fontWeight: index === 0 || index === 4 ? 1000 : 800, textAlign: "center", lineHeight: 1.15, overflowWrap: "anywhere" }}>{value}</td>
-                        ))}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
+        {profile.tables.filter((table) => table.dataSource === "scrap-replacement").map(renderTable)}
         {profileTheme.showSummaryCards && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(80px, 1fr))", gap: 6, marginBottom: 8 }}>
             <div style={{ background: profileTheme.doneBackground, color: profileTheme.doneText, borderRadius: profileTheme.panelRadius, padding: compact ? 8 : 10 }}><div style={{ fontSize: 10 }}>Kész</div><strong>{data.rows.filter((row) => row.status === "done").length}</strong></div>
@@ -5247,17 +5401,17 @@ export default function Page() {
             <div style={{ background: profileTheme.waitingBackground, color: profileTheme.waitingText, borderRadius: profileTheme.panelRadius, padding: compact ? 8 : 10 }}><div style={{ fontSize: 10 }}>Várakozik</div><strong>{data.rows.filter((row) => row.status === "waiting").length}</strong></div>
           </div>
         )}
-        {profile.tables.map(renderTable)}
+        {profile.tables.filter((table) => table.dataSource !== "scrap-replacement").map(renderTable)}
       </div>
     );
   }
 
   function ProductionCardAdmin(): React.JSX.Element {
     const stations = getOrderedDashboardStations();
-    const allFieldIds = [...PRODUCTION_CARD_FIELD_IDS];
-    const selectedFieldId = (PRODUCTION_CARD_FIELD_IDS as readonly string[]).includes(selectedProductionCardStyleFieldId)
+    const allFieldIds = [...getProductionCardFieldIdsForTable(activeProductionCardTable)];
+    const selectedFieldId = (allFieldIds as readonly string[]).includes(selectedProductionCardStyleFieldId)
       ? selectedProductionCardStyleFieldId
-      : PRODUCTION_CARD_ORDER_FIELD_ID;
+      : allFieldIds[0] || PRODUCTION_CARD_ORDER_FIELD_ID;
     const selectedFieldStyle = getProductionCardFieldStyle(selectedFieldId);
     const profileTheme = productionCardProfile.theme;
     const tableTheme = activeProductionCardTable.theme;
@@ -5316,10 +5470,16 @@ export default function Page() {
                   <label style={editorLabelStyle}><span>Aktív táblázat</span><select value={activeProductionCardTable.id} onChange={(event) => switchProductionCardTable(event.target.value)} style={editorControlStyle}>{productionCardProfile.tables.map((table) => <option key={table.id} value={table.id}>{table.name}</option>)}</select></label>
                   <label style={editorLabelStyle}><span>Táblázat neve</span><input value={productionCardTableNameDraft} onChange={(event) => setProductionCardTableNameDraft(event.target.value)} maxLength={80} style={editorControlStyle} /></label>
                   <button type="button" onClick={renameProductionCardTable} style={buttonPrimary}>Név mentése</button>
-                  <button type="button" onClick={duplicateProductionCardTable} style={buttonSecondary}>Táblázat másolása</button>
-                  <button type="button" onClick={deleteProductionCardTable} disabled={productionCardProfile.tables.length <= 1} style={{ ...buttonSecondary, color: "#b91c1c", background: "#fff1f2" }}>Táblázat törlése</button>
+                  <button type="button" onClick={duplicateProductionCardTable} disabled={activeProductionCardTable.dataSource === "scrap-replacement"} style={buttonSecondary}>Táblázat másolása</button>
+                  <button type="button" onClick={deleteProductionCardTable} disabled={productionCardProfile.tables.length <= 1 || activeProductionCardTable.dataSource === "scrap-replacement"} style={{ ...buttonSecondary, color: "#b91c1c", background: "#fff1f2" }}>Táblázat törlése</button>
                 </div>
               </div>
+
+              {activeProductionCardTable.dataSource === "scrap-replacement" && (
+                <div style={{ marginBottom: 12, padding: 12, borderRadius: 10, background: "#fff7ed", border: "1px solid #ef4444", color: "#991b1b", fontWeight: 800 }}>
+                  A Selejtpótlás kártyát szerkeszted. A mezők sorrendje, láthatósága, szélessége, betűi és színei ugyanúgy állíthatók, mint a napi termelési kártyánál. Ez a kártya mindig a napi terv előtt jelenik meg.
+                </div>
+              )}
 
               <div style={{ ...editorSectionStyle, marginBottom: 12 }}>
                 <div style={{ fontWeight: 900, marginBottom: 9 }}>Professzionális stílusok</div>
