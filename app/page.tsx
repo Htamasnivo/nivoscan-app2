@@ -274,7 +274,7 @@ type DashboardData = {
 };
 
 type DashboardFilterMode = "daily" | "weekly" | "monthly" | "custom";
-type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card";
+type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "reproduction-report";
 type ProductionMonitorStatus = "waiting" | "in-progress" | "done" | "not-required";
 
 type ProductionPlanRow = {
@@ -318,6 +318,47 @@ type StationPlanFileSelection = {
   file: File;
   fileName: string;
   rows: StationPlanUploadRow[];
+};
+
+
+type ReproductionReportFilterMode = "daily" | "weekly" | "monthly" | "yearly" | "custom";
+
+type ReproductionReportDetailRow = {
+  key: string;
+  orderNumber: string;
+  stationName: string;
+  reproductionNumber: number;
+  startWorkerName: string;
+  endWorkerName: string;
+  startAt: string;
+  endAt: string | null;
+  durationMinutes: number;
+  note: string;
+  status: "folyamatban" | "lezárt";
+};
+
+type ReproductionReportStationRow = {
+  stationName: string;
+  currentCount: number;
+  previousCount: number;
+  comparisonRatioPct: number | null;
+  changePct: number | null;
+  sharePct: number;
+  completedCount: number;
+  openCount: number;
+  averageDurationMinutes: number;
+};
+
+type ReproductionReportData = {
+  currentRows: ReproductionReportDetailRow[];
+  previousRows: ReproductionReportDetailRow[];
+  stationRows: ReproductionReportStationRow[];
+  currentTotal: number;
+  previousTotal: number;
+  completedTotal: number;
+  openTotal: number;
+  averageDurationMinutes: number;
+  lastUpdatedAt: string;
 };
 
 type ProductionMonitorCell = {
@@ -1293,6 +1334,23 @@ function getNoteBeforeContext(value: string | null | undefined): string {
   return (contextIndex >= 0 ? note.slice(0, contextIndex) : note).trim();
 }
 
+
+function getStructuredNoteMetadata(value: string | null | undefined): Record<string, unknown> {
+  const note = String(value || "");
+  const contextIndex = note.indexOf("__CTX__");
+  if (contextIndex < 0) return {};
+  const jsonText = note.slice(contextIndex + "__CTX__".length).trim();
+  if (!jsonText) return {};
+  try {
+    const parsed = JSON.parse(jsonText);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 function isWorkshopStation(value: string | null | undefined): boolean {
   const normalized = normalizeLooseText(value);
   return normalized === "muhely" || normalized.includes("muhely");
@@ -2051,6 +2109,87 @@ function getDashboardDateRange(filterMode: DashboardFilterMode, dateKey: string,
   return { startIso: start.toISOString(), endIso: end.toISOString(), label };
 }
 
+
+type ReproductionReportDateRange = {
+  currentStartIso: string;
+  currentEndIso: string;
+  previousStartIso: string;
+  previousEndIso: string;
+  currentLabel: string;
+  previousLabel: string;
+};
+
+function getReproductionReportDateRange(
+  filterMode: ReproductionReportFilterMode,
+  dateKey: string,
+  dateToKey?: string
+): ReproductionReportDateRange {
+  const baseDate = dateKey ? new Date(`${dateKey}T00:00:00`) : new Date();
+  let currentStart = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
+  let currentEnd = new Date(currentStart);
+  let previousStart = new Date(currentStart);
+  let previousEnd = new Date(currentStart);
+
+  if (filterMode === "weekly") {
+    currentStart = getStartOfWeek(baseDate);
+    currentEnd = new Date(currentStart);
+    currentEnd.setDate(currentEnd.getDate() + 7);
+    previousStart = new Date(currentStart);
+    previousStart.setDate(previousStart.getDate() - 7);
+    previousEnd = new Date(currentStart);
+  } else if (filterMode === "monthly") {
+    currentStart = new Date(baseDate.getFullYear(), baseDate.getMonth(), 1);
+    currentEnd = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 1);
+    previousStart = new Date(baseDate.getFullYear(), baseDate.getMonth() - 1, 1);
+    previousEnd = new Date(currentStart);
+  } else if (filterMode === "yearly") {
+    currentStart = new Date(baseDate.getFullYear(), 0, 1);
+    currentEnd = new Date(baseDate.getFullYear() + 1, 0, 1);
+    previousStart = new Date(baseDate.getFullYear() - 1, 0, 1);
+    previousEnd = new Date(currentStart);
+  } else if (filterMode === "custom") {
+    currentStart = new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate());
+    const requestedEnd = dateToKey ? new Date(`${dateToKey}T00:00:00`) : new Date(currentStart);
+    const normalizedEnd = requestedEnd.getTime() >= currentStart.getTime() ? requestedEnd : new Date(currentStart);
+    currentEnd = new Date(normalizedEnd.getFullYear(), normalizedEnd.getMonth(), normalizedEnd.getDate() + 1);
+    const durationMs = Math.max(24 * 60 * 60 * 1000, currentEnd.getTime() - currentStart.getTime());
+    previousEnd = new Date(currentStart);
+    previousStart = new Date(currentStart.getTime() - durationMs);
+  } else {
+    currentEnd = new Date(currentStart);
+    currentEnd.setDate(currentEnd.getDate() + 1);
+    previousStart = new Date(currentStart);
+    previousStart.setDate(previousStart.getDate() - 1);
+    previousEnd = new Date(currentStart);
+  }
+
+  const currentLastDay = new Date(currentEnd.getTime() - 1);
+  const previousLastDay = new Date(previousEnd.getTime() - 1);
+  const currentLabel = filterMode === "daily"
+    ? formatDateOnly(currentStart)
+    : filterMode === "monthly"
+      ? `${currentStart.getFullYear()}. ${String(currentStart.getMonth() + 1).padStart(2, "0")} hónap`
+      : filterMode === "yearly"
+        ? `${currentStart.getFullYear()}. év`
+        : `${formatDateOnly(currentStart)} – ${formatDateOnly(currentLastDay)}`;
+  const previousLabel = filterMode === "daily"
+    ? formatDateOnly(previousStart)
+    : filterMode === "monthly"
+      ? `${previousStart.getFullYear()}. ${String(previousStart.getMonth() + 1).padStart(2, "0")} hónap`
+      : filterMode === "yearly"
+        ? `${previousStart.getFullYear()}. év`
+        : `${formatDateOnly(previousStart)} – ${formatDateOnly(previousLastDay)}`;
+
+  return {
+    currentStartIso: currentStart.toISOString(),
+    currentEndIso: currentEnd.toISOString(),
+    previousStartIso: previousStart.toISOString(),
+    previousEndIso: previousEnd.toISOString(),
+    currentLabel,
+    previousLabel,
+  };
+}
+
 type DashboardTimeInterval = { startMs: number; endMs: number };
 
 function splitDashboardIntervalByLocalDay(startMs: number, endMs: number): Array<{ dayKey: string; interval: DashboardTimeInterval }> {
@@ -2613,6 +2752,23 @@ export default function Page() {
     dailyEfficiencyPct: 0,
     lastUpdatedAt: "",
   });
+
+  const [reproductionReportFilterMode, setReproductionReportFilterMode] = useState<ReproductionReportFilterMode>("monthly");
+  const [reproductionReportDate, setReproductionReportDate] = useState(getLocalDateKey(new Date()));
+  const [reproductionReportDateTo, setReproductionReportDateTo] = useState(getLocalDateKey(new Date()));
+  const [reproductionReportSelectedStation, setReproductionReportSelectedStation] = useState("all");
+  const [loadingReproductionReport, setLoadingReproductionReport] = useState(false);
+  const [reproductionReportData, setReproductionReportData] = useState<ReproductionReportData>({
+    currentRows: [],
+    previousRows: [],
+    stationRows: [],
+    currentTotal: 0,
+    previousTotal: 0,
+    completedTotal: 0,
+    openTotal: 0,
+    averageDurationMinutes: 0,
+    lastUpdatedAt: "",
+  });
   const [loadingDashboard, setLoadingDashboard] = useState(false);
   const [reportSettings, setReportSettings] = useState<ReportSettings>(DEFAULT_REPORT_SETTINGS);
   const [reportSettingsLoaded, setReportSettingsLoaded] = useState(false);
@@ -2816,6 +2972,7 @@ export default function Page() {
       { id: "production-plan", label: "Termelés tervezése" },
       { id: "production-monitor", label: "Termelési monitor" },
       { id: "production-card", label: "Termelési kártya" },
+      { id: "reproduction-report", label: "Újragyártási sorok" },
     ];
 
     return (
@@ -2834,7 +2991,7 @@ export default function Page() {
                   void loadProductionPlans(productionPlanDate);
                 } else if (item.id === "production-monitor") {
                   void loadProductionMonitor(productionMonitorDate);
-                } else {
+                } else if (item.id === "production-card") {
                   const stations = getOrderedDashboardStations();
                   const nextStation = productionCardAdminStation || stations[0] || "";
                   if (nextStation && nextStation !== productionCardAdminStation) setProductionCardAdminStation(nextStation);
@@ -2842,6 +2999,13 @@ export default function Page() {
                     void loadProductionCardSettingsForStation(nextStation);
                     void loadProductionCardData(nextStation, productionCardDate);
                   }
+                } else {
+                  void loadReproductionReport(
+                    reproductionReportFilterMode,
+                    reproductionReportDate,
+                    reproductionReportDateTo,
+                    reproductionReportSelectedStation
+                  );
                 }
               }}
               style={{
@@ -3353,8 +3517,8 @@ export default function Page() {
               <div style={sectionHeaderStyle}>
                 <div style={sectionNumberStyle}>5</div>
                 <div>
-                  <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Mentett tervek – {productionPlanDate}</h3>
-                  <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13 }}>Egy dátumhoz egyszerre egy aktív terv tartozik.</div>
+                  <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Napi termelési terv – {productionPlanDate}</h3>
+                  <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13 }}>Dátumonként pontosan egy termelési terv van; az új mentések ehhez adódnak hozzá.</div>
                 </div>
               </div>
               <button type="button" onClick={() => void loadProductionPlans(productionPlanDate)} disabled={loadingProductionPlan} style={buttonSecondary}>Frissítés</button>
@@ -5743,10 +5907,185 @@ export default function Page() {
     );
   }
 
+
+  function ReproductionReportAdmin(): React.JSX.Element {
+    const range = getReproductionReportDateRange(
+      reproductionReportFilterMode,
+      reproductionReportDate,
+      reproductionReportDateTo
+    );
+    const currentTotal = reproductionReportData.currentTotal;
+    const previousTotal = reproductionReportData.previousTotal;
+    const overallRatioPct = previousTotal > 0 ? Math.round((currentTotal / previousTotal) * 100) : null;
+    const overallChangePct = previousTotal > 0 ? Math.round(((currentTotal - previousTotal) / previousTotal) * 100) : null;
+    const maxStationCount = Math.max(1, ...reproductionReportData.stationRows.map((row) => row.currentCount));
+    const stationOptions = getOrderedDashboardStations();
+    const ratioColor = overallRatioPct === null ? "#cbd5e1" : overallRatioPct <= 100 ? "#4ade80" : "#f87171";
+    const cardStyle: React.CSSProperties = {
+      border: "1px solid #334155",
+      borderRadius: 16,
+      background: "linear-gradient(145deg, #0f172a 0%, #111c31 100%)",
+      padding: 16,
+      boxShadow: "0 14px 34px rgba(0,0,0,0.18)",
+    };
+    const tableCellStyle: React.CSSProperties = {
+      padding: "11px 10px",
+      borderBottom: "1px solid #23324a",
+      verticalAlign: "top",
+      color: "#e2e8f0",
+    };
+
+    return (
+      <div style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 18, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 18 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
+          <div>
+            <div style={{ color: "#38bdf8", fontWeight: 900, letterSpacing: 1.2, fontSize: 13 }}>ÚJRAGYÁRTÁSI MINŐSÉGJELENTÉS</div>
+            <h2 style={{ margin: "6px 0 4px", color: "#f8fafc", fontSize: 30 }}>Újragyártási sorok</h2>
+            <div style={{ color: "#94a3b8", lineHeight: 1.5 }}>
+              Munkaállomásonkénti újragyártási gyakoriság, időráfordítás és előző időszakhoz viszonyított változás.
+            </div>
+            <div style={{ color: "#64748b", fontSize: 12, marginTop: 6 }}>
+              Aktuális: {range.currentLabel} · Összehasonlítás: {range.previousLabel} · Utolsó frissítés: {reproductionReportData.lastUpdatedAt ? formatDateTime(reproductionReportData.lastUpdatedAt) : "–"}
+            </div>
+          </div>
+          <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
+        </div>
+
+        <ManagementNavigation />
+
+        <div style={{ ...cardStyle, display: "grid", gap: 12, marginBottom: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, alignItems: "end" }}>
+            <label style={{ display: "grid", gap: 6, color: "#cbd5e1", fontWeight: 800 }}>
+              Időszak
+              <select
+                value={reproductionReportFilterMode}
+                onChange={(event) => setReproductionReportFilterMode(event.target.value as ReproductionReportFilterMode)}
+                style={fieldStyle}
+              >
+                <option value="daily">Napi</option>
+                <option value="weekly">Heti</option>
+                <option value="monthly">Havi</option>
+                <option value="yearly">Éves</option>
+                <option value="custom">Egyedi időszak</option>
+              </select>
+            </label>
+            <label style={{ display: "grid", gap: 6, color: "#cbd5e1", fontWeight: 800 }}>
+              Dátum
+              <input type="date" value={reproductionReportDate} onChange={(event) => setReproductionReportDate(event.target.value)} style={fieldStyle} />
+            </label>
+            {reproductionReportFilterMode === "custom" && (
+              <label style={{ display: "grid", gap: 6, color: "#cbd5e1", fontWeight: 800 }}>
+                Dátumig
+                <input type="date" value={reproductionReportDateTo} onChange={(event) => setReproductionReportDateTo(event.target.value)} style={fieldStyle} />
+              </label>
+            )}
+            <label style={{ display: "grid", gap: 6, color: "#cbd5e1", fontWeight: 800 }}>
+              Munkaállomás
+              <select value={reproductionReportSelectedStation} onChange={(event) => setReproductionReportSelectedStation(event.target.value)} style={fieldStyle}>
+                <option value="all">Összes munkaállomás</option>
+                {stationOptions.map((station) => <option key={station} value={station}>{station}</option>)}
+              </select>
+            </label>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button type="button" onClick={() => shiftReproductionReportPeriod(-1)} style={buttonSecondary}>← Előző időszak</button>
+            <button type="button" onClick={() => shiftReproductionReportPeriod(1)} style={buttonSecondary}>Következő időszak →</button>
+            <button type="button" onClick={() => { const today = getLocalDateKey(new Date()); setReproductionReportDate(today); setReproductionReportDateTo(today); }} style={buttonSecondary}>Mai nap</button>
+            <button
+              type="button"
+              onClick={() => void loadReproductionReport(reproductionReportFilterMode, reproductionReportDate, reproductionReportDateTo, reproductionReportSelectedStation)}
+              disabled={loadingReproductionReport}
+              style={buttonPrimary}
+            >
+              {loadingReproductionReport ? "Frissítés..." : "Frissítés"}
+            </button>
+            <button type="button" onClick={() => void exportReproductionReportExcel()} disabled={reproductionReportData.currentRows.length === 0} style={buttonPrimary}>Excel export</button>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(150px, 1fr))", gap: 10, marginBottom: 14 }}>
+          <div style={cardStyle}><div style={{ color: "#94a3b8", fontSize: 12 }}>Aktuális újragyártások</div><div style={{ color: "#f8fafc", fontSize: 30, fontWeight: 900 }}>{currentTotal}</div><div style={{ color: "#64748b", fontSize: 12 }}>{range.currentLabel}</div></div>
+          <div style={cardStyle}><div style={{ color: "#94a3b8", fontSize: 12 }}>Előző időszak</div><div style={{ color: "#f8fafc", fontSize: 30, fontWeight: 900 }}>{previousTotal}</div><div style={{ color: "#64748b", fontSize: 12 }}>{range.previousLabel}</div></div>
+          <div style={cardStyle}><div style={{ color: "#94a3b8", fontSize: 12 }}>Előzőhöz viszonyítva</div><div style={{ color: ratioColor, fontSize: 30, fontWeight: 900 }}>{overallRatioPct === null ? (currentTotal > 0 ? "Új" : "–") : `${overallRatioPct}%`}</div><div style={{ color: overallChangePct !== null && overallChangePct <= 0 ? "#4ade80" : "#f87171", fontSize: 12 }}>{overallChangePct === null ? "Nincs összehasonlítható előzmény" : `${overallChangePct > 0 ? "+" : ""}${overallChangePct}% változás`}</div></div>
+          <div style={cardStyle}><div style={{ color: "#94a3b8", fontSize: 12 }}>Átlagos újragyártási idő</div><div style={{ color: "#f8fafc", fontSize: 25, fontWeight: 900 }}>{formatDuration(reproductionReportData.averageDurationMinutes)}</div><div style={{ color: "#64748b", fontSize: 12 }}>Csak lezárt újragyártásokból</div></div>
+          <div style={cardStyle}><div style={{ color: "#94a3b8", fontSize: 12 }}>Állapot</div><div style={{ color: "#4ade80", fontSize: 21, fontWeight: 900 }}>{reproductionReportData.completedTotal} lezárt</div><div style={{ color: reproductionReportData.openTotal > 0 ? "#fbbf24" : "#64748b", fontSize: 13 }}>{reproductionReportData.openTotal} folyamatban</div></div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(340px, 0.9fr) minmax(600px, 1.6fr)", gap: 14, alignItems: "start" }}>
+          <section style={cardStyle}>
+            <h3 style={{ margin: "0 0 4px", color: "#f8fafc", fontSize: 20 }}>Munkaállomási rangsor</h3>
+            <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 14 }}>Minél alacsonyabb az előző időszakhoz viszonyított százalék, annál kedvezőbb a változás. Példa: 5 az előző 10-hez képest 50%.</div>
+            <div style={{ display: "grid", gap: 12 }}>
+              {reproductionReportData.stationRows.length === 0 ? (
+                <div style={{ color: "#94a3b8", padding: 18, textAlign: "center" }}>A kiválasztott időszakban nincs újragyártási adat.</div>
+              ) : reproductionReportData.stationRows.map((row, index) => {
+                const ratioGood = row.comparisonRatioPct !== null && row.comparisonRatioPct <= 100;
+                return (
+                  <div key={row.stationName} style={{ border: "1px solid #334155", borderRadius: 12, padding: 12, background: "#071022" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+                      <strong style={{ color: "#f8fafc" }}>{index + 1}. {row.stationName}</strong>
+                      <span style={{ color: "#f8fafc", fontSize: 20, fontWeight: 900 }}>{row.currentCount}</span>
+                    </div>
+                    <div style={{ height: 9, borderRadius: 999, background: "#1e293b", overflow: "hidden", margin: "9px 0" }}>
+                      <div style={{ width: `${Math.max(2, Math.round((row.currentCount / maxStationCount) * 100))}%`, height: "100%", background: "linear-gradient(90deg, #0ea5e9, #38bdf8)", borderRadius: 999 }} />
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, fontSize: 12 }}>
+                      <div><span style={{ color: "#64748b" }}>Előző:</span> <strong style={{ color: "#e2e8f0" }}>{row.previousCount}</strong></div>
+                      <div><span style={{ color: "#64748b" }}>Arány:</span> <strong style={{ color: row.comparisonRatioPct === null ? "#cbd5e1" : ratioGood ? "#4ade80" : "#f87171" }}>{row.comparisonRatioPct === null ? (row.currentCount > 0 ? "Új" : "–") : `${row.comparisonRatioPct}%`}</strong></div>
+                      <div><span style={{ color: "#64748b" }}>Részesedés:</span> <strong style={{ color: "#e2e8f0" }}>{row.sharePct}%</strong></div>
+                      <div><span style={{ color: "#64748b" }}>Változás:</span> <strong style={{ color: row.changePct !== null && row.changePct <= 0 ? "#4ade80" : "#f87171" }}>{row.changePct === null ? "–" : `${row.changePct > 0 ? "+" : ""}${row.changePct}%`}</strong></div>
+                      <div><span style={{ color: "#64748b" }}>Lezárt:</span> <strong style={{ color: "#e2e8f0" }}>{row.completedCount}</strong></div>
+                      <div><span style={{ color: "#64748b" }}>Átlagidő:</span> <strong style={{ color: "#e2e8f0" }}>{formatDuration(row.averageDurationMinutes)}</strong></div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          <section style={{ ...cardStyle, minWidth: 0 }}>
+            <h3 style={{ margin: "0 0 4px", color: "#f8fafc", fontSize: 20 }}>Részletes újragyártási napló</h3>
+            <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 12 }}>Egy sor = azonos sorszám + azonos munkaállomás + azonos újragyártási sorszám.</div>
+            <div style={{ overflow: "auto", maxHeight: 620, border: "1px solid #334155", borderRadius: 12 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1180 }}>
+                <thead style={{ position: "sticky", top: 0, background: "#111c31", zIndex: 1 }}>
+                  <tr>
+                    {["START", "END", "Időtartam", "Sorszám", "Munkaállomás", "Újragyártás", "Indító dolgozó", "Befejező dolgozó", "Állapot", "Megjegyzés"].map((label) => (
+                      <th key={label} style={{ ...tableCellStyle, color: "#94a3b8", textAlign: "left", fontSize: 12, whiteSpace: "nowrap" }}>{label}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {reproductionReportData.currentRows.length === 0 ? (
+                    <tr><td colSpan={10} style={{ ...tableCellStyle, color: "#94a3b8", textAlign: "center", padding: 24 }}>Nincs megjeleníthető újragyártási sor.</td></tr>
+                  ) : reproductionReportData.currentRows.map((row) => (
+                    <tr key={row.key}>
+                      <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{formatDateTime(row.startAt)}</td>
+                      <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{row.endAt ? formatDateTime(row.endAt) : "–"}</td>
+                      <td style={{ ...tableCellStyle, whiteSpace: "nowrap", fontWeight: 800 }}>{formatDuration(row.durationMinutes)}</td>
+                      <td style={{ ...tableCellStyle, fontWeight: 900 }}>{row.orderNumber}</td>
+                      <td style={tableCellStyle}>{row.stationName}</td>
+                      <td style={{ ...tableCellStyle, textAlign: "center", fontWeight: 900 }}>#{row.reproductionNumber}</td>
+                      <td style={tableCellStyle}>{row.startWorkerName || "–"}</td>
+                      <td style={tableCellStyle}>{row.endWorkerName || "–"}</td>
+                      <td style={tableCellStyle}><span style={{ display: "inline-flex", padding: "5px 9px", borderRadius: 999, fontWeight: 900, background: row.status === "lezárt" ? "#064e3b" : "#78350f", color: row.status === "lezárt" ? "#a7f3d0" : "#fde68a" }}>{row.status === "lezárt" ? "Lezárt" : "Folyamatban"}</span></td>
+                      <td style={{ ...tableCellStyle, minWidth: 210 }}>{row.note || "–"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
   function ManagementDashboard(): React.JSX.Element {
     if (managementSection === "production-plan") return ProductionPlanAdmin();
     if (managementSection === "production-monitor") return ProductionPlanMonitor({});
     if (managementSection === "production-card") return ProductionCardAdmin();
+    if (managementSection === "reproduction-report") return ReproductionReportAdmin();
 
     const dashboardRange = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
     const availableStationRows = dashboardData.stationEfficiencyRows;
@@ -6781,6 +7120,323 @@ export default function Page() {
     return () => { void supabase.removeChannel(channel); };
   }, [supabase, machineId, activeWorker?.id]);
 
+
+  function getWorkLogWorkerName(log: WorkLogRow): string {
+    return String(
+      log.worker_name ||
+      workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] ||
+      ""
+    ).trim();
+  }
+
+  function buildReproductionReportRows(logs: WorkLogRow[]): ReproductionReportDetailRow[] {
+    type MutableReproductionRow = {
+      key: string;
+      orderNumber: string;
+      stationName: string;
+      reproductionNumber: number;
+      startWorkerName: string;
+      endWorkerName: string;
+      startAt: string;
+      endAt: string | null;
+      note: string;
+    };
+    const grouped = new Map<string, MutableReproductionRow>();
+
+    logs.forEach((log) => {
+      if (log.ujragyartas !== true) return;
+      const orderNumber = String(log.order_number || "").trim();
+      const stationName = String(log.machine_id || "Ismeretlen munkaállomás").trim() || "Ismeretlen munkaállomás";
+      const reproductionNumber = Math.max(1, Math.trunc(Number(log.ujragyartas_sorszam) || 1));
+      if (!orderNumber) return;
+      const key = `${normalizeLooseText(orderNumber)}|${normalizeLooseText(stationName)}|${reproductionNumber}`;
+      const metadata = getStructuredNoteMetadata(log.note);
+      const action = String(log.action || "").toUpperCase();
+      const explicitStart = String(log.start_time || log.start_timestamp || "").trim();
+      const explicitEnd = String(log.end_time || log.end_timestamp || "").trim();
+      const startAt = explicitStart || (action === "START" ? String(log.created_at || "") : "");
+      const endAt = explicitEnd || (action === "END" ? String(log.created_at || "") : "");
+      const rowWorkerName = getWorkLogWorkerName(log);
+      const metadataStartWorker = String(
+        metadata.start_worker_name ||
+        metadata.original_batch_worker_name ||
+        ""
+      ).trim();
+      const metadataEndWorker = String(
+        metadata.closed_by_worker_name ||
+        metadata.end_worker_name ||
+        ""
+      ).trim();
+      const existing = grouped.get(key) || {
+        key,
+        orderNumber,
+        stationName,
+        reproductionNumber,
+        startWorkerName: "",
+        endWorkerName: "",
+        startAt: "",
+        endAt: null,
+        note: "",
+      };
+
+      if (startAt) {
+        const existingStartMs = existing.startAt ? new Date(existing.startAt).getTime() : Number.POSITIVE_INFINITY;
+        const candidateStartMs = new Date(startAt).getTime();
+        if (!existing.startAt || (Number.isFinite(candidateStartMs) && candidateStartMs < existingStartMs)) {
+          existing.startAt = startAt;
+          existing.startWorkerName = metadataStartWorker || (action === "START" || !endAt ? rowWorkerName : existing.startWorkerName || rowWorkerName);
+        } else if (!existing.startWorkerName) {
+          existing.startWorkerName = metadataStartWorker || rowWorkerName;
+        }
+      }
+
+      if (endAt) {
+        const existingEndMs = existing.endAt ? new Date(existing.endAt).getTime() : Number.NEGATIVE_INFINITY;
+        const candidateEndMs = new Date(endAt).getTime();
+        if (!existing.endAt || (Number.isFinite(candidateEndMs) && candidateEndMs > existingEndMs)) {
+          existing.endAt = endAt;
+          existing.endWorkerName = metadataEndWorker || rowWorkerName;
+        } else if (!existing.endWorkerName) {
+          existing.endWorkerName = metadataEndWorker || rowWorkerName;
+        }
+      }
+
+      const cleanNote = getNoteBeforeContext(log.note);
+      if (cleanNote) existing.note = cleanNote;
+      grouped.set(key, existing);
+    });
+
+    return Array.from(grouped.values())
+      .filter((row) => Boolean(row.startAt))
+      .map((row) => {
+        const startMs = new Date(row.startAt).getTime();
+        const endMs = row.endAt ? new Date(row.endAt).getTime() : Date.now();
+        const durationMinutes = Number.isFinite(startMs) && Number.isFinite(endMs)
+          ? Math.max(0, Math.round((endMs - startMs) / 60000))
+          : 0;
+        return {
+          ...row,
+          durationMinutes,
+          status: row.endAt ? "lezárt" as const : "folyamatban" as const,
+        };
+      })
+      .sort((left, right) => new Date(right.startAt).getTime() - new Date(left.startAt).getTime());
+  }
+
+  async function loadReproductionReport(
+    filterMode = reproductionReportFilterMode,
+    dateKey = reproductionReportDate,
+    dateToKey = reproductionReportDateTo,
+    selectedStation = reproductionReportSelectedStation
+  ): Promise<void> {
+    if (!supabase) return;
+    setLoadingReproductionReport(true);
+    try {
+      const range = getReproductionReportDateRange(filterMode, dateKey, dateToKey);
+      const { data, error } = await supabase
+        .from("work_logs")
+        .select("worker_id, worker_name, order_number, action, created_at, note, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor")
+        .eq("ujragyartas", true)
+        .or(`start_time.gte.${range.previousStartIso},start_timestamp.gte.${range.previousStartIso},created_at.gte.${range.previousStartIso}`)
+        .order("created_at", { ascending: true })
+        .limit(20000);
+      if (error) throw error;
+
+      const allRows = buildReproductionReportRows((data || []) as WorkLogRow[]);
+      const stationMatches = (row: ReproductionReportDetailRow): boolean =>
+        selectedStation === "all" || normalizeLooseText(row.stationName) === normalizeLooseText(selectedStation);
+      const currentStartMs = new Date(range.currentStartIso).getTime();
+      const currentEndMs = new Date(range.currentEndIso).getTime();
+      const previousStartMs = new Date(range.previousStartIso).getTime();
+      const previousEndMs = new Date(range.previousEndIso).getTime();
+      const currentRows = allRows.filter((row) => {
+        const time = new Date(row.startAt).getTime();
+        return stationMatches(row) && time >= currentStartMs && time < currentEndMs;
+      });
+      const previousRows = allRows.filter((row) => {
+        const time = new Date(row.startAt).getTime();
+        return stationMatches(row) && time >= previousStartMs && time < previousEndMs;
+      });
+
+      const stationNames = Array.from(new Set([
+        ...currentRows.map((row) => row.stationName),
+        ...previousRows.map((row) => row.stationName),
+      ]));
+      const orderedStations = getOrderedDashboardStations();
+      const stationOrder = new Map(orderedStations.map((station, index) => [normalizeLooseText(station), index]));
+      stationNames.sort((left, right) => {
+        const leftOrder = stationOrder.get(normalizeLooseText(left)) ?? Number.MAX_SAFE_INTEGER;
+        const rightOrder = stationOrder.get(normalizeLooseText(right)) ?? Number.MAX_SAFE_INTEGER;
+        return leftOrder - rightOrder || left.localeCompare(right, "hu");
+      });
+
+      const currentTotal = currentRows.length;
+      const previousTotal = previousRows.length;
+      const stationRows: ReproductionReportStationRow[] = stationNames.map((stationName) => {
+        const stationCurrentRows = currentRows.filter(
+          (row) => normalizeLooseText(row.stationName) === normalizeLooseText(stationName)
+        );
+        const stationPreviousRows = previousRows.filter(
+          (row) => normalizeLooseText(row.stationName) === normalizeLooseText(stationName)
+        );
+        const completedRows = stationCurrentRows.filter((row) => row.status === "lezárt");
+        const averageDurationMinutes = completedRows.length > 0
+          ? Math.round(completedRows.reduce((sum, row) => sum + row.durationMinutes, 0) / completedRows.length)
+          : 0;
+        const comparisonRatioPct = stationPreviousRows.length > 0
+          ? Math.round((stationCurrentRows.length / stationPreviousRows.length) * 100)
+          : null;
+        const changePct = stationPreviousRows.length > 0
+          ? Math.round(((stationCurrentRows.length - stationPreviousRows.length) / stationPreviousRows.length) * 100)
+          : null;
+        return {
+          stationName,
+          currentCount: stationCurrentRows.length,
+          previousCount: stationPreviousRows.length,
+          comparisonRatioPct,
+          changePct,
+          sharePct: currentTotal > 0 ? Math.round((stationCurrentRows.length / currentTotal) * 100) : 0,
+          completedCount: completedRows.length,
+          openCount: stationCurrentRows.length - completedRows.length,
+          averageDurationMinutes,
+        };
+      }).sort((left, right) => right.currentCount - left.currentCount || left.stationName.localeCompare(right.stationName, "hu"));
+
+      const completedRows = currentRows.filter((row) => row.status === "lezárt");
+      setReproductionReportData({
+        currentRows,
+        previousRows,
+        stationRows,
+        currentTotal,
+        previousTotal,
+        completedTotal: completedRows.length,
+        openTotal: currentRows.length - completedRows.length,
+        averageDurationMinutes: completedRows.length > 0
+          ? Math.round(completedRows.reduce((sum, row) => sum + row.durationMinutes, 0) / completedRows.length)
+          : 0,
+        lastUpdatedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("SUPABASE HIBA loadReproductionReport:", error);
+      setMessage({
+        type: "error",
+        text: `Az újragyártási riport betöltése sikertelen. Futtasd le a mellékelt SQL-frissítést. Részletek: ${normalizeError(error)}`,
+      });
+    } finally {
+      setLoadingReproductionReport(false);
+    }
+  }
+
+  function shiftReproductionReportPeriod(direction: -1 | 1): void {
+    const base = new Date(`${reproductionReportDate}T00:00:00`);
+    if (reproductionReportFilterMode === "weekly") {
+      base.setDate(base.getDate() + direction * 7);
+    } else if (reproductionReportFilterMode === "monthly") {
+      base.setMonth(base.getMonth() + direction);
+    } else if (reproductionReportFilterMode === "yearly") {
+      base.setFullYear(base.getFullYear() + direction);
+    } else if (reproductionReportFilterMode === "custom") {
+      const end = new Date(`${reproductionReportDateTo || reproductionReportDate}T00:00:00`);
+      const spanDays = Math.max(1, Math.round((end.getTime() - base.getTime()) / 86400000) + 1);
+      base.setDate(base.getDate() + direction * spanDays);
+      end.setDate(end.getDate() + direction * spanDays);
+      setReproductionReportDateTo(getLocalDateKey(end));
+    } else {
+      base.setDate(base.getDate() + direction);
+    }
+    setReproductionReportDate(getLocalDateKey(base));
+  }
+
+  async function exportReproductionReportExcel(): Promise<void> {
+    const XLSX = await waitForXlsx();
+    const range = getReproductionReportDateRange(
+      reproductionReportFilterMode,
+      reproductionReportDate,
+      reproductionReportDateTo
+    );
+    const workbook = XLSX.utils.book_new();
+    const summaryRows: Array<Array<string | number>> = [
+      ["Újragyártási riport", range.currentLabel],
+      ["Összehasonlítási időszak", range.previousLabel],
+      ["Munkaállomás-szűrő", reproductionReportSelectedStation === "all" ? "Összes munkaállomás" : reproductionReportSelectedStation],
+      [],
+      ["Munkaállomás", "Aktuális újragyártás", "Előző időszak", "Előzőhöz viszonyítva %", "Változás %", "Részesedés %", "Átlagos idő"],
+      ...reproductionReportData.stationRows.map((row) => [
+        row.stationName,
+        row.currentCount,
+        row.previousCount,
+        row.comparisonRatioPct ?? "Új / nincs előzmény",
+        row.changePct ?? "–",
+        row.sharePct,
+        formatDuration(row.averageDurationMinutes),
+      ]),
+    ];
+    const detailRows: Array<Array<string | number>> = [
+      ["START", "END", "Időtartam", "Sorszám", "Munkaállomás", "Újragyártás #", "Indító dolgozó", "Befejező dolgozó", "Állapot", "Megjegyzés"],
+      ...reproductionReportData.currentRows.map((row) => [
+        formatDateTime(row.startAt),
+        row.endAt ? formatDateTime(row.endAt) : "Folyamatban",
+        formatDuration(row.durationMinutes),
+        row.orderNumber,
+        row.stationName,
+        row.reproductionNumber,
+        row.startWorkerName || "–",
+        row.endWorkerName || "–",
+        row.status,
+        row.note || "",
+      ]),
+    ];
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(summaryRows), "Összesítés");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(detailRows), "Részletes sorok");
+    const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    downloadBlob(
+      `ujragyartasi_riport_${reproductionReportDate}.xlsx`,
+      new Blob([output]),
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+  }
+
+
+  useEffect(() => {
+    if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
+    if (terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "reproduction-report") return;
+    void loadReproductionReport(
+      reproductionReportFilterMode,
+      reproductionReportDate,
+      reproductionReportDateTo,
+      reproductionReportSelectedStation
+    );
+  }, [activeWorker?.id, terminalView, flowStage, managementSection, reproductionReportFilterMode, reproductionReportDate, reproductionReportDateTo, reproductionReportSelectedStation, workers.length, machineIdRows.length]);
+
+  useEffect(() => {
+    if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
+    if (terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "reproduction-report") return;
+    const intervalId = window.setInterval(() => {
+      void loadReproductionReport(
+        reproductionReportFilterMode,
+        reproductionReportDate,
+        reproductionReportDateTo,
+        reproductionReportSelectedStation
+      );
+    }, 30 * 1000);
+    return () => window.clearInterval(intervalId);
+  }, [activeWorker?.id, terminalView, flowStage, managementSection, reproductionReportFilterMode, reproductionReportDate, reproductionReportDateTo, reproductionReportSelectedStation]);
+
+  useEffect(() => {
+    if (!supabase || managementSection !== "reproduction-report") return;
+    const refresh = () => void loadReproductionReport(
+      reproductionReportFilterMode,
+      reproductionReportDate,
+      reproductionReportDateTo,
+      reproductionReportSelectedStation
+    );
+    const channel = supabase
+      .channel(`reproduction-report-${reproductionReportFilterMode}-${reproductionReportDate}-${reproductionReportDateTo}-${normalizeLooseText(reproductionReportSelectedStation)}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refresh)
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [supabase, managementSection, reproductionReportFilterMode, reproductionReportDate, reproductionReportDateTo, reproductionReportSelectedStation]);
+
   async function testConnection(): Promise<void> {
     if (!supabase) {
       setConnectionOk(false);
@@ -7291,26 +7947,44 @@ export default function Page() {
     }
   }
 
-  async function syncManualProductionPlanRowsToStationTables(
-    rows: ProductionPlanUploadRow[],
-    dateKey: string
+  async function syncDailyProductionPlanToStationTables(
+    planId: string | number,
+    dateKey: string,
+    touchedStations: string[]
   ): Promise<{ syncedStations: string[]; failedStations: string[] }> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
-    const manualRows = rows.filter((row) => row.source === "manual");
-    if (manualRows.length === 0) return { syncedStations: [], failedStations: [] };
-
-    const stationNameMap = new Map<string, string>();
-    manualRows.forEach((row) => {
-      row.requiredStations.forEach((station) => {
-        const cleanStation = String(station || "").trim();
-        const normalizedStation = normalizeLooseText(cleanStation);
-        if (cleanStation && normalizedStation && !normalizedStation.includes("iroda")) {
-          stationNameMap.set(normalizedStation, cleanStation);
-        }
-      });
+    const normalizedStationMap = new Map<string, string>();
+    touchedStations.forEach((station) => {
+      const cleanStation = String(station || "").trim();
+      const normalizedStation = normalizeLooseText(cleanStation);
+      if (cleanStation && normalizedStation && !normalizedStation.includes("iroda")) {
+        normalizedStationMap.set(normalizedStation, cleanStation);
+      }
     });
-    const stationNames = Array.from(stationNameMap.values());
+    const stationNames = Array.from(normalizedStationMap.values());
+    if (stationNames.length === 0) return { syncedStations: [], failedStations: [] };
+
+    let itemResponse = await supabase
+      .from("production_plan_items")
+      .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, required_stations, created_at")
+      .eq("plan_id", planId)
+      .order("sequence_number", { ascending: true });
+    if (itemResponse.error && isMissingRequiredStationsColumnError(itemResponse.error)) {
+      itemResponse = await supabase
+        .from("production_plan_items")
+        .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, created_at")
+        .eq("plan_id", planId)
+        .order("sequence_number", { ascending: true });
+    }
+    if (itemResponse.error) throw itemResponse.error;
+
+    const planItems = ((itemResponse.data || []) as ProductionPlanItemRow[]).map((item) => ({
+      ...item,
+      required_stations: Array.isArray(item.required_stations)
+        ? item.required_stations.map((station) => String(station || "").trim()).filter(Boolean)
+        : [],
+    }));
 
     const syncedStations: string[] = [];
     const failedStations: string[] = [];
@@ -7327,7 +8001,7 @@ export default function Page() {
         let existingRows: StationPlanUploadRow[] = [];
         if (existingResponse.error) {
           const errorText = normalizeError(existingResponse.error).toLowerCase();
-          const tableDoesNotExist = errorText.includes("does not exist") || errorText.includes("relation") && errorText.includes("not exist");
+          const tableDoesNotExist = errorText.includes("does not exist") || (errorText.includes("relation") && errorText.includes("not exist"));
           if (!tableDoesNotExist) throw existingResponse.error;
         } else {
           existingRows = ((existingResponse.data || []) as ProductionCardPlanSourceRow[])
@@ -7341,24 +8015,24 @@ export default function Page() {
             .filter((row) => Boolean(row.sorszam));
         }
 
-        const mergedRows = new Map<string, StationPlanUploadRow>();
-        existingRows.forEach((row) => mergedRows.set(normalizeLooseText(row.sorszam), row));
-
-        manualRows
-          .filter((row) => row.requiredStations.some(
+        const stationPlanItems = planItems.filter((item) => {
+          const requiredStations = Array.isArray(item.required_stations) ? item.required_stations : [];
+          return requiredStations.some(
             (requiredStation) => normalizeLooseText(requiredStation) === normalizeLooseText(stationName)
-          ))
-          .forEach((row) => {
-            mergedRows.set(normalizeLooseText(row.orderNumber), {
-              sorszam: row.orderNumber.trim(),
-              megnevezes: row.productName.trim() || row.orderNumber.trim(),
-              mennyiseg: Math.max(0, Math.trunc(row.plannedQuantity || 0)),
-              elkeszules_datum: dateKey,
-              tipus: "Kézi rögzítés",
-            });
-          });
-
-        const payloadRows = Array.from(mergedRows.values());
+          );
+        });
+        const commonPlanOrderKeys = new Set(stationPlanItems.map((item) => normalizeLooseText(item.order_number)));
+        const preservedExternalRows = existingRows.filter(
+          (row) => !commonPlanOrderKeys.has(normalizeLooseText(row.sorszam))
+        );
+        const commonPlanRows: StationPlanUploadRow[] = stationPlanItems.map((item) => ({
+          sorszam: String(item.order_number || "").trim(),
+          megnevezes: String(item.product_name || item.order_number || "").trim(),
+          mennyiseg: Math.max(0, Math.trunc(Number(item.planned_quantity) || 0)),
+          elkeszules_datum: dateKey,
+          tipus: "Kézi rögzítés",
+        }));
+        const payloadRows = [...preservedExternalRows, ...commonPlanRows].filter((row) => Boolean(row.sorszam));
         if (payloadRows.length === 0) continue;
 
         const { error: replaceError } = await supabase.rpc("replace_machine_plan", {
@@ -7368,7 +8042,7 @@ export default function Page() {
         if (replaceError) throw replaceError;
         syncedStations.push(stationName);
       } catch (error) {
-        console.error(`A(z) ${stationName} munkaállomás kézi tervének szinkronizálása sikertelen:`, error);
+        console.error(`A(z) ${stationName} munkaállomás napi tervének szinkronizálása sikertelen:`, error);
         failedStations.push(`${stationName}: ${normalizeError(error)}`);
       }
     }
@@ -7384,8 +8058,7 @@ export default function Page() {
     const cleanRows = productionPlanPreview
       .map((row) => ({ ...row, orderNumber: row.orderNumber.trim(), productName: row.productName.trim() }))
       .filter((row) => row.orderNumber)
-      .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
-      .map((row, index) => ({ ...row, sequenceNumber: index + 1 }));
+      .sort((a, b) => a.sequenceNumber - b.sequenceNumber);
     if (!productionPlanDate) {
       setMessage({ type: "error", text: "Válaszd ki a termelési terv dátumát." });
       return;
@@ -7397,60 +8070,235 @@ export default function Page() {
 
     setSavingProductionPlan(true);
     try {
-      const { data: insertedPlan, error: planError } = await supabase
+      const { data: existingPlans, error: existingPlanError } = await supabase
         .from("production_plans")
-        .insert([{
-          plan_date: productionPlanDate,
-          name: productionPlanName.trim() || `Termelési terv ${productionPlanDate}`,
-          is_active: false,
-          uploaded_by: activeWorker?.id ?? null,
-        }])
         .select("id, plan_date, name, is_active, uploaded_by, created_at")
-        .single();
-      if (planError) throw planError;
-      const plan = insertedPlan as ProductionPlanRow;
+        .eq("plan_date", productionPlanDate)
+        .order("is_active", { ascending: false })
+        .order("created_at", { ascending: true })
+        .limit(1);
+      if (existingPlanError) throw existingPlanError;
 
-      const payload = cleanRows.map((row) => ({
-        plan_id: plan.id,
-        order_number: row.orderNumber,
-        sequence_number: row.sequenceNumber,
-        planned_quantity: row.plannedQuantity,
-        product_name: row.productName || null,
-        required_stations: row.requiredStations.length > 0 ? row.requiredStations : null,
+      let plan = ((existingPlans || [])[0] || null) as ProductionPlanRow | null;
+      if (!plan) {
+        const { data: insertedPlan, error: planError } = await supabase
+          .from("production_plans")
+          .insert([{
+            plan_date: productionPlanDate,
+            name: productionPlanName.trim() || `Termelési terv ${productionPlanDate}`,
+            is_active: true,
+            uploaded_by: activeWorker?.id ?? null,
+          }])
+          .select("id, plan_date, name, is_active, uploaded_by, created_at")
+          .single();
+        if (planError) throw planError;
+        plan = insertedPlan as ProductionPlanRow;
+      } else {
+        const { error: updatePlanError } = await supabase
+          .from("production_plans")
+          .update({
+            name: productionPlanName.trim() || plan.name || `Termelési terv ${productionPlanDate}`,
+            is_active: true,
+            uploaded_by: activeWorker?.id ?? plan.uploaded_by ?? null,
+          })
+          .eq("id", plan.id);
+        if (updatePlanError) throw updatePlanError;
+      }
+
+      let existingItemResponse = await supabase
+        .from("production_plan_items")
+        .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, required_stations, created_at")
+        .eq("plan_id", plan.id)
+        .order("sequence_number", { ascending: true });
+      if (existingItemResponse.error && isMissingRequiredStationsColumnError(existingItemResponse.error)) {
+        existingItemResponse = await supabase
+          .from("production_plan_items")
+          .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, created_at")
+          .eq("plan_id", plan.id)
+          .order("sequence_number", { ascending: true });
+      }
+      if (existingItemResponse.error) throw existingItemResponse.error;
+
+      const existingItems = ((existingItemResponse.data || []) as ProductionPlanItemRow[]).map((item) => ({
+        ...item,
+        sequence_number: Number(item.sequence_number || 0),
+        planned_quantity: item.planned_quantity === null || item.planned_quantity === undefined ? null : Number(item.planned_quantity),
+        required_stations: Array.isArray(item.required_stations)
+          ? item.required_stations.map((station) => String(station || "").trim()).filter(Boolean)
+          : [],
       }));
+      let nextSequenceNumber = existingItems.reduce(
+        (highest, item) => Math.max(highest, Number(item.sequence_number) || 0),
+        0
+      ) + 1;
 
-      for (let index = 0; index < payload.length; index += 500) {
-        const payloadChunk = payload.slice(index, index + 500);
-        let insertResponse = await supabase.from("production_plan_items").insert(payloadChunk);
+      const rowsToInsert: Array<{
+        plan_id: string | number;
+        order_number: string;
+        sequence_number: number;
+        planned_quantity: number | null;
+        product_name: string | null;
+        required_stations: string[] | null;
+      }> = [];
+      const rowsToUpdate: Array<{
+        id: string | number;
+        planned_quantity: number | null;
+        product_name: string | null;
+        required_stations: string[] | null;
+      }> = [];
+      const touchedStations = new Set<string>();
+      let skippedCount = 0;
+      let addedQuantityCount = 0;
+      let newRowCount = 0;
 
-        if (insertResponse.error && isMissingRequiredStationsColumnError(insertResponse.error)) {
-          const compatiblePayloadChunk = payloadChunk.map((item) => ({
-            plan_id: item.plan_id,
-            order_number: item.order_number,
-            sequence_number: item.sequence_number,
-            planned_quantity: item.planned_quantity,
-            product_name: item.product_name,
-          }));
-          insertResponse = await supabase.from("production_plan_items").insert(compatiblePayloadChunk);
+      for (const row of cleanRows) {
+        row.requiredStations.forEach((station) => touchedStations.add(station));
+        const incomingStationKeys = new Set(row.requiredStations.map(normalizeLooseText));
+        const sameOrderItems = existingItems.filter(
+          (item) => normalizeLooseText(item.order_number) === normalizeLooseText(row.orderNumber)
+        );
+        const matchingItems = sameOrderItems.filter((item) => {
+          const existingStations = Array.isArray(item.required_stations) ? item.required_stations : [];
+          if (existingStations.length === 0) return true;
+          return existingStations.some((station) => incomingStationKeys.has(normalizeLooseText(station)));
+        });
+
+        let decision: "new-row" | "add-quantity" | "skip" = "new-row";
+        if (matchingItems.length > 0 && typeof window !== "undefined") {
+          const matchingStationNames = Array.from(new Set(
+            matchingItems.flatMap((item) => Array.isArray(item.required_stations) ? item.required_stations : [])
+          )).filter(Boolean);
+          const stationLabel = matchingStationNames.length > 0
+            ? matchingStationNames.join(", ")
+            : row.requiredStations.join(", ");
+          let resolved = false;
+          while (!resolved) {
+            const answer = window.prompt(
+              `A(z) ${row.orderNumber} sorszám már szerepel a ${productionPlanDate} napi tervben${stationLabel ? ` ezen a munkaállomáson: ${stationLabel}` : ""}.
+
+Írd be a választott művelet számát:
+1 = Új sorba felveszem
+2 = A meglévő mennyiséghez hozzáadom
+0 = Ezt a tételt most nem mentem`
+            );
+            if (answer === null || answer.trim() === "0") {
+              decision = "skip";
+              resolved = true;
+            } else if (answer.trim() === "1") {
+              decision = "new-row";
+              resolved = true;
+            } else if (answer.trim() === "2") {
+              decision = "add-quantity";
+              resolved = true;
+            } else {
+              window.alert("Érvénytelen választás. Írj be 1, 2 vagy 0 értéket.");
+            }
+          }
         }
 
+        if (decision === "skip") {
+          skippedCount += 1;
+          continue;
+        }
+
+        if (decision === "add-quantity" && matchingItems.length > 0) {
+          const target = matchingItems[0];
+          const currentQuantity = target.planned_quantity === null || target.planned_quantity === undefined
+            ? 0
+            : Number(target.planned_quantity) || 0;
+          const incomingQuantity = row.plannedQuantity === null || row.plannedQuantity === undefined
+            ? 0
+            : Number(row.plannedQuantity) || 0;
+          const combinedStations = Array.from(new Map(
+            [...(Array.isArray(target.required_stations) ? target.required_stations : []), ...row.requiredStations]
+              .filter(Boolean)
+              .map((station) => [normalizeLooseText(station), station])
+          ).values());
+          const updatedQuantity = currentQuantity + incomingQuantity;
+
+          if (target.id === undefined || target.id === null) {
+            const stagedInsert = rowsToInsert.find(
+              (item) => item.sequence_number === target.sequence_number && normalizeLooseText(item.order_number) === normalizeLooseText(target.order_number)
+            );
+            if (!stagedInsert) throw new Error("A még nem mentett tervsor nem található az összeállított tételek között.");
+            stagedInsert.planned_quantity = updatedQuantity;
+            stagedInsert.product_name = row.productName || stagedInsert.product_name || null;
+            stagedInsert.required_stations = combinedStations.length > 0 ? combinedStations : null;
+          } else {
+            rowsToUpdate.push({
+              id: target.id,
+              planned_quantity: updatedQuantity,
+              product_name: row.productName || target.product_name || null,
+              required_stations: combinedStations.length > 0 ? combinedStations : null,
+            });
+          }
+          target.planned_quantity = updatedQuantity;
+          target.product_name = row.productName || target.product_name || null;
+          target.required_stations = combinedStations;
+          addedQuantityCount += 1;
+          continue;
+        }
+
+        const insertRow = {
+          plan_id: plan.id,
+          order_number: row.orderNumber,
+          sequence_number: nextSequenceNumber,
+          planned_quantity: row.plannedQuantity,
+          product_name: row.productName || null,
+          required_stations: row.requiredStations.length > 0 ? row.requiredStations : null,
+        };
+        rowsToInsert.push(insertRow);
+        existingItems.push({
+          ...insertRow,
+          required_stations: row.requiredStations,
+        });
+        nextSequenceNumber += 1;
+        newRowCount += 1;
+      }
+
+      for (const updateRow of rowsToUpdate) {
+        let updateResponse = await supabase
+          .from("production_plan_items")
+          .update({
+            planned_quantity: updateRow.planned_quantity,
+            product_name: updateRow.product_name,
+            required_stations: updateRow.required_stations,
+          })
+          .eq("id", updateRow.id);
+        if (updateResponse.error && isMissingRequiredStationsColumnError(updateResponse.error)) {
+          updateResponse = await supabase
+            .from("production_plan_items")
+            .update({
+              planned_quantity: updateRow.planned_quantity,
+              product_name: updateRow.product_name,
+            })
+            .eq("id", updateRow.id);
+        }
+        if (updateResponse.error) throw updateResponse.error;
+      }
+
+      for (let index = 0; index < rowsToInsert.length; index += 500) {
+        const payloadChunk = rowsToInsert.slice(index, index + 500);
+        let insertResponse = await supabase.from("production_plan_items").insert(payloadChunk);
+        if (insertResponse.error && isMissingRequiredStationsColumnError(insertResponse.error)) {
+          insertResponse = await supabase.from("production_plan_items").insert(
+            payloadChunk.map((item) => ({
+              plan_id: item.plan_id,
+              order_number: item.order_number,
+              sequence_number: item.sequence_number,
+              planned_quantity: item.planned_quantity,
+              product_name: item.product_name,
+            }))
+          );
+        }
         if (insertResponse.error) throw insertResponse.error;
       }
 
-      const { error: deactivateError } = await supabase
-        .from("production_plans")
-        .update({ is_active: false })
-        .eq("plan_date", productionPlanDate)
-        .neq("id", plan.id);
-      if (deactivateError) throw deactivateError;
-
-      const { error: activateError } = await supabase
-        .from("production_plans")
-        .update({ is_active: true })
-        .eq("id", plan.id);
-      if (activateError) throw activateError;
-
-      const stationSyncResult = await syncManualProductionPlanRowsToStationTables(cleanRows, productionPlanDate);
+      const stationSyncResult = await syncDailyProductionPlanToStationTables(
+        plan.id,
+        productionPlanDate,
+        Array.from(touchedStations)
+      );
 
       setProductionPlanPreview([]);
       setProductionPlanFileName("");
@@ -7465,13 +8313,13 @@ export default function Page() {
       }
 
       const syncWarning = stationSyncResult.failedStations.length > 0
-        ? ` A közös terv mentése sikerült, de néhány munkaállomási másolat sikertelen: ${stationSyncResult.failedStations.join(" | ")}`
+        ? ` A napi terv mentése sikerült, de néhány munkaállomási másolat sikertelen: ${stationSyncResult.failedStations.join(" | ")}`
         : stationSyncResult.syncedStations.length > 0
-          ? ` A kézzel rögzített tételek bemásolva ide: ${stationSyncResult.syncedStations.join(", ")}.`
+          ? ` Frissített munkaállomási tervek: ${stationSyncResult.syncedStations.join(", ")}.`
           : "";
       setMessage({
         type: stationSyncResult.failedStations.length > 0 ? "error" : "success",
-        text: `A ${productionPlanDate} napi termelési terv ${cleanRows.length} rendelésével elmentve és aktiválva lett.${syncWarning}`,
+        text: `A ${productionPlanDate} napi egyetlen termelési terv frissült. Új sor: ${newRowCount}, mennyiséghez hozzáadva: ${addedQuantityCount}, kihagyva: ${skippedCount}.${syncWarning}`,
       });
     } catch (error) {
       console.error("SUPABASE HIBA saveProductionPlan:", error);
@@ -10288,6 +11136,8 @@ body {
             original_batch_code: selectedEndBatch.batch_code,
             original_batch_start_time: batchStartTime,
             original_batch_machine_id: selectedEndBatch.machine_id || null,
+            start_worker_name: selectedEndBatch.worker_name || null,
+            end_worker_name: workerNameForSave,
             order_number: order,
             order_note: orderNoteClean || null,
             batch_note: batchNoteClean || null,
