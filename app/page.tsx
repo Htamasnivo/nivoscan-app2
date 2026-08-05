@@ -186,6 +186,8 @@ type WorkLogRow = {
   operation_code?: BatchOperationCode | null;
   kulso_lap_selejt?: boolean | null;
   belso_lap_selejt?: boolean | null;
+  toklec_selejt?: boolean | null;
+  selejt_megjegyzes?: string | null;
   selejt_potlas?: boolean | null;
   selejt_forras_munkaallomas?: string | null;
 };
@@ -442,6 +444,8 @@ type ScrapReplacementRow = {
   order_number: string;
   kulso_lap_selejt: boolean;
   belso_lap_selejt: boolean;
+  toklec_selejt: boolean;
+  megjegyzes?: string | null;
   source_station: string;
   source_work_log_id?: string | null;
   status: ScrapReplacementStatus;
@@ -704,6 +708,7 @@ const PRODUCTION_CARD_FIELD_IDS = [
 
 const PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID = "__scrap_order_number__";
 const PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID = "__scrap_defect__";
+const PRODUCTION_CARD_SCRAP_NOTE_FIELD_ID = "__scrap_note__";
 const PRODUCTION_CARD_SCRAP_TASK_FIELD_ID = "__scrap_task__";
 const PRODUCTION_CARD_SCRAP_SOURCE_FIELD_ID = "__scrap_source__";
 const PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID = "__scrap_status__";
@@ -715,6 +720,7 @@ const PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID = "__scrap_completed_at__";
 const PRODUCTION_CARD_SCRAP_FIELD_IDS = [
   PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID,
   PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_NOTE_FIELD_ID,
   PRODUCTION_CARD_SCRAP_TASK_FIELD_ID,
   PRODUCTION_CARD_SCRAP_SOURCE_FIELD_ID,
   PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID,
@@ -996,6 +1002,7 @@ function getProductionCardFieldLabel(fieldId: string): string {
   if (fieldId === PRODUCTION_CARD_END_WORKER_FIELD_ID) return "Befejező dolgozó";
   if (fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID) return "Rendelésszám";
   if (fieldId === PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID) return "Hiba";
+  if (fieldId === PRODUCTION_CARD_SCRAP_NOTE_FIELD_ID) return "Megjegyzés";
   if (fieldId === PRODUCTION_CARD_SCRAP_TASK_FIELD_ID) return "Feladat";
   if (fieldId === PRODUCTION_CARD_SCRAP_SOURCE_FIELD_ID) return "Forrás";
   if (fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID) return "Állapot";
@@ -1058,6 +1065,11 @@ function createDefaultScrapReplacementCardTable(theme: ProductionMonitorTheme): 
     [PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID]: {
       ...normalizeProductionMonitorFieldStyle(null),
       widthWeight: 1.45,
+    },
+    [PRODUCTION_CARD_SCRAP_NOTE_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 1.75,
+      textAlign: "left",
     },
     [PRODUCTION_CARD_SCRAP_TASK_FIELD_ID]: {
       ...normalizeProductionMonitorFieldStyle(null),
@@ -3232,6 +3244,7 @@ export default function Page() {
   const [scrapQty, setScrapQty] = useState("");
   const [outerSheetScrap, setOuterSheetScrap] = useState(false);
   const [innerSheetScrap, setInnerSheetScrap] = useState(false);
+  const [toklecScrap, setToklecScrap] = useState(false);
   const [endDarab, setEndDarab] = useState("");
   const [endSzal, setEndSzal] = useState("");
 
@@ -4605,9 +4618,10 @@ export default function Page() {
   function getScrapReplacementCardFieldValue(row: ScrapReplacementRow, fieldId: string): string | number {
     if (fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID) return row.order_number;
     if (fieldId === PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID) return getScrapReplacementDefectLabel(row);
-    if (fieldId === PRODUCTION_CARD_SCRAP_TASK_FIELD_ID) return "Szabás + marás pótlása";
+    if (fieldId === PRODUCTION_CARD_SCRAP_NOTE_FIELD_ID) return row.megjegyzes || "";
+    if (fieldId === PRODUCTION_CARD_SCRAP_TASK_FIELD_ID) return row.toklec_selejt ? "Tokléc pótlása – egyedi rendelés" : "Szabás + marás pótlása";
     if (fieldId === PRODUCTION_CARD_SCRAP_SOURCE_FIELD_ID) return row.source_station || "";
-    if (fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID) return getScrapReplacementStatusLabel(row.status);
+    if (fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID) return getScrapReplacementStatusLabel(row);
     if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_BY_FIELD_ID) return row.reported_by_worker_name || "";
     if (fieldId === PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID) return row.last_worker_name || "";
     if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID) return row.reported_at ? formatDateTime(row.reported_at) : "";
@@ -4995,7 +5009,7 @@ export default function Page() {
     if (isCarpenterStationName(cleanStationName)) {
       const { data: replacementData, error: replacementError } = await supabase
         .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
-        .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
+        .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, megjegyzes, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
         .order("reported_at", { ascending: false })
         .limit(2000);
       if (replacementError) {
@@ -5015,6 +5029,8 @@ export default function Page() {
             order_number: String(rawRow.order_number || "").trim(),
             kulso_lap_selejt: Boolean(rawRow.kulso_lap_selejt),
             belso_lap_selejt: Boolean(rawRow.belso_lap_selejt),
+            toklec_selejt: Boolean(rawRow.toklec_selejt),
+            megjegyzes: rawRow.megjegyzes ? String(rawRow.megjegyzes) : null,
             source_station: String(rawRow.source_station || "").trim(),
             status: normalizeScrapReplacementStatus(rawRow.status),
           }))
@@ -5047,7 +5063,7 @@ export default function Page() {
 
     const orderNumbers = Array.from(new Set(planRows.map((row) => row.orderNumber)));
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const chunk = orderNumbers.slice(index, index + 100);
       const { data: logData, error: logError } = await supabase
@@ -5645,6 +5661,10 @@ export default function Page() {
                             if (status === "done") { background = theme.doneBackground; color = theme.doneText; }
                             if (status === "in-progress") { background = theme.inProgressBackground; color = theme.inProgressText; }
                             if (status === "waiting") { background = theme.waitingBackground; color = theme.waitingText; }
+                          }
+                          if (scrapRow?.toklec_selejt && status === "waiting") {
+                            background = "#d1d5db";
+                            color = "#111827";
                           }
                           const value = scrapRow
                             ? getScrapReplacementCardFieldValue(scrapRow, fieldId)
@@ -9650,7 +9670,7 @@ export default function Page() {
 
     const orderNumbers = Array.from(new Set(items.map((item) => String(item.order_number).trim())));
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const orderChunk = orderNumbers.slice(index, index + 100);
       const { data: logData, error: logError } = await supabase
@@ -9901,7 +9921,7 @@ export default function Page() {
       Array.from(planOrdersByStation.values()).flatMap((orders) => Array.from(orders))
     ));
     const planLogs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
 
     for (let index = 0; index < allPlannedOrders.length; index += 100) {
       const orderChunk = allPlannedOrders.slice(index, index + 100);
@@ -9995,7 +10015,7 @@ export default function Page() {
   async function fetchDashboardData(range: { startIso: string; endIso: string }): Promise<DashboardData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
     const bufferedStart = new Date(range.startIso);
     bufferedStart.setDate(bufferedStart.getDate() - 1);
 
@@ -10239,7 +10259,7 @@ export default function Page() {
     try {
       const { data, error } = await supabase
         .from("work_logs")
-        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, selejt_potlas, selejt_forras_munkaallomas")
+        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas")
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) throw error;
@@ -10279,7 +10299,7 @@ export default function Page() {
     try {
       const { data, error } = await supabase
         .from("work_logs")
-        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, selejt_potlas, selejt_forras_munkaallomas")
+        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas")
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) throw error;
@@ -10492,6 +10512,7 @@ START: ${formatDateTime(startAt)}`
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
+    setToklecScrap(false);
     setEndNote("");
     setEndDarab("");
     setEndSzal("");
@@ -11714,6 +11735,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
+    setToklecScrap(false);
     setEndDarab("");
     setEndSzal("");
     setShowIncompleteBatches(false);
@@ -11739,7 +11761,7 @@ body {
       setMessage({
         type: "success",
         text: koteg === 4
-          ? `Sikeres azonosítás: ${worker["Teljes nev"]}. Fóliázó / lap-selejt mód aktív. Olvasd be a rendelésszámot; lezáráskor külön jelölheted a külső és belső lap selejtet.`
+          ? `Sikeres azonosítás: ${worker["Teljes nev"]}. Fóliázó / lap-selejt mód aktív. Olvasd be a rendelésszámot; lezáráskor külön jelölheted a külső lap, belső lap vagy tokléc selejtet.`
           : `Sikeres azonosítás: ${worker["Teljes nev"]}. Automatikus mód: Egyedi rendelés. Olvasd be a rendelésszámot; START nélkül azonnal mentésre kerül.`,
       });
       window.setTimeout(() => {
@@ -11769,6 +11791,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
+    setToklecScrap(false);
     setEndDarab("");
     setEndSzal("");
     setWorkflowMode(null);
@@ -11842,6 +11865,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
+    setToklecScrap(false);
     setEndNote("");
     setEndDarab("");
     setEndSzal("");
@@ -11906,6 +11930,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
+    setToklecScrap(false);
     setEndNote("");
     setEndDarab("");
     setEndSzal("");
@@ -12193,6 +12218,7 @@ body {
       setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
+    setToklecScrap(false);
       setEndNote("");
       setEndDarab("");
       setEndSzal("");
@@ -12293,14 +12319,22 @@ body {
       : "VARAKOZIK";
   }
 
-  function getScrapReplacementDefectLabel(row: Pick<ScrapReplacementRow, "kulso_lap_selejt" | "belso_lap_selejt">): string {
-    if (row.kulso_lap_selejt && row.belso_lap_selejt) return "Külső és belső lap selejt";
-    if (row.kulso_lap_selejt) return "Külső lap selejt";
-    if (row.belso_lap_selejt) return "Belső lap selejt";
-    return "Lap selejt";
+  function getScrapReplacementDefectLabel(row: Pick<ScrapReplacementRow, "kulso_lap_selejt" | "belso_lap_selejt" | "toklec_selejt">): string {
+    const defects = [
+      row.kulso_lap_selejt ? "Külső lap" : "",
+      row.belso_lap_selejt ? "Belső lap" : "",
+      row.toklec_selejt ? "Tokléc" : "",
+    ].filter(Boolean);
+    return defects.length > 0 ? `${defects.join(" + ")} selejt` : "Selejt";
   }
 
-  function getScrapReplacementStatusLabel(status: ScrapReplacementStatus): string {
+  function getScrapReplacementStatusLabel(row: ScrapReplacementRow): string {
+    const status = row.status;
+    if (row.toklec_selejt) {
+      if (status === "KESZ") return "Tokléc pótlás kész";
+      if (status === "SZABAS_FOLYAMATBAN" || status === "MARAS_FOLYAMATBAN") return "Egyedi pótlás folyamatban";
+      return "Tokléc pótlásra vár";
+    }
     if (status === "SZABAS_FOLYAMATBAN") return "Szabás folyamatban";
     if (status === "MARASRA_VAR") return "Marásra vár";
     if (status === "MARAS_FOLYAMATBAN") return "Marás folyamatban";
@@ -12318,7 +12352,7 @@ body {
       const chunk = cleanOrders.slice(index, index + 100);
       const { data, error } = await supabase
         .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
-        .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
+        .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, megjegyzes, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
         .in("order_number", chunk)
         .neq("status", "KESZ")
         .order("reported_at", { ascending: false })
@@ -12330,14 +12364,64 @@ body {
           order_number: String(rawRow.order_number || "").trim(),
           kulso_lap_selejt: Boolean(rawRow.kulso_lap_selejt),
           belso_lap_selejt: Boolean(rawRow.belso_lap_selejt),
+          toklec_selejt: Boolean(rawRow.toklec_selejt),
+          megjegyzes: rawRow.megjegyzes ? String(rawRow.megjegyzes) : null,
           source_station: String(rawRow.source_station || "").trim(),
           status: normalizeScrapReplacementStatus(rawRow.status),
         };
+        if (!row.kulso_lap_selejt && !row.belso_lap_selejt) return;
         const key = normalizeLooseText(row.order_number);
         if (key && !result.has(key)) result.set(key, row);
       });
     }
     return result;
+  }
+
+  async function fetchOpenToklecScrapReplacement(orderNumber: string): Promise<ScrapReplacementRow | null> {
+    if (!supabase) return null;
+    const cleanOrderNumber = String(orderNumber || "").trim();
+    if (!cleanOrderNumber) return null;
+    const { data, error } = await supabase
+      .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
+      .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, megjegyzes, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
+      .eq("order_number", cleanOrderNumber)
+      .eq("toklec_selejt", true)
+      .neq("status", "KESZ")
+      .order("reported_at", { ascending: false })
+      .limit(1);
+    if (error) throw error;
+    const rawRow = Array.isArray(data) && data.length > 0 ? data[0] as ScrapReplacementRow : null;
+    if (!rawRow) return null;
+    return {
+      ...rawRow,
+      order_number: String(rawRow.order_number || "").trim(),
+      kulso_lap_selejt: Boolean(rawRow.kulso_lap_selejt),
+      belso_lap_selejt: Boolean(rawRow.belso_lap_selejt),
+      toklec_selejt: Boolean(rawRow.toklec_selejt),
+      megjegyzes: rawRow.megjegyzes ? String(rawRow.megjegyzes) : null,
+      source_station: String(rawRow.source_station || "").trim(),
+      status: normalizeScrapReplacementStatus(rawRow.status),
+    };
+  }
+
+  async function updateSingleToklecReplacement(
+    row: ScrapReplacementRow | null,
+    status: "SZABAS_FOLYAMATBAN" | "KESZ",
+    timestamp: string
+  ): Promise<void> {
+    if (!supabase || !row) return;
+    const payload: Record<string, unknown> = {
+      status,
+      last_worker_name: activeWorker?.["Teljes nev"] || null,
+      updated_at: timestamp,
+    };
+    if (status === "SZABAS_FOLYAMATBAN") payload.started_at = row.started_at || timestamp;
+    if (status === "KESZ") payload.completed_at = timestamp;
+    const { error } = await supabase
+      .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
+      .update(payload)
+      .eq("id", row.id);
+    if (error) throw error;
   }
 
   async function updateScrapReplacementOrders(
@@ -12369,12 +12453,13 @@ body {
     reportedAt: string;
     outerScrap: boolean;
     innerScrap: boolean;
+    toklecScrap: boolean;
+    note: string | null;
   }): Promise<void> {
-    if (!supabase || !activeWorker || (!params.outerScrap && !params.innerScrap)) return;
-    const { error } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).insert([{
+    if (!supabase || !activeWorker || (!params.outerScrap && !params.innerScrap && !params.toklecScrap)) return;
+
+    const basePayload = {
       order_number: params.orderNumber,
-      kulso_lap_selejt: params.outerScrap,
-      belso_lap_selejt: params.innerScrap,
       source_station: params.sourceStation,
       source_work_log_id: String(params.workLogId),
       status: "VARAKOZIK",
@@ -12386,8 +12471,29 @@ body {
       cutting_batch_code: null,
       milling_batch_code: null,
       last_worker_name: null,
+      megjegyzes: params.note,
       updated_at: params.reportedAt,
-    }]);
+    };
+
+    const rows: Array<Record<string, unknown>> = [];
+    if (params.outerScrap || params.innerScrap) {
+      rows.push({
+        ...basePayload,
+        kulso_lap_selejt: params.outerScrap,
+        belso_lap_selejt: params.innerScrap,
+        toklec_selejt: false,
+      });
+    }
+    if (params.toklecScrap) {
+      rows.push({
+        ...basePayload,
+        kulso_lap_selejt: false,
+        belso_lap_selejt: false,
+        toklec_selejt: true,
+      });
+    }
+
+    const { error } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).insert(rows);
     if (error) throw error;
   }
 
@@ -13467,6 +13573,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
+    setToklecScrap(false);
     setEndDarab("");
     setEndSzal("");
     setStep(6);
@@ -13552,6 +13659,9 @@ body {
       const nowIso = new Date().toISOString();
       const workerNameForSave = activeWorker["Teljes nev"];
       const currentMachineId = getCurrentMachineIdForInsert();
+      const activeToklecReplacement = isCarpenterStationName(currentMachineId)
+        ? await fetchOpenToklecScrapReplacement(finalOrder)
+        : null;
 
       const { error } = await supabase.from("work_logs").insert([
         {
@@ -13593,17 +13703,24 @@ body {
           scrap_qty: null,
           kulso_lap_selejt: false,
           belso_lap_selejt: false,
-          selejt_potlas: false,
-          selejt_forras_munkaallomas: null,
+          toklec_selejt: false,
+          selejt_megjegyzes: null,
+          selejt_potlas: Boolean(activeToklecReplacement),
+          selejt_forras_munkaallomas: activeToklecReplacement?.source_station || null,
         },
       ]);
 
       if (error) throw error;
+      if (activeToklecReplacement) {
+        await updateSingleToklecReplacement(activeToklecReplacement, "SZABAS_FOLYAMATBAN", nowIso);
+      }
 
       handleReset();
       setMessage({
         type: "success",
-        text: orderProductionMeta.ujragyartas
+        text: activeToklecReplacement
+          ? "Tokléc selejtpótlás egyedi rendelésként sikeresen elindítva."
+          : orderProductionMeta.ujragyartas
           ? `Egyedi rendelés újragyártásként sikeresen rögzítve! Újragyártás #${orderProductionMeta.ujragyartas_sorszam}`
           : orderProductionMeta.gyartas_tipus === "keszlet"
             ? "Készletre gyártott termék új gyártásként sikeresen rögzítve!"
@@ -14069,17 +14186,24 @@ body {
     const finalSzal = action === "END" ? parseSzalValue(endSzal) : null;
     const finalOuterSheetScrap = action === "END" && isFoilSheetScrapWorker(activeWorker) ? outerSheetScrap : false;
     const finalInnerSheetScrap = action === "END" && isFoilSheetScrapWorker(activeWorker) ? innerSheetScrap : false;
+    const finalToklecScrap = action === "END" && isFoilSheetScrapWorker(activeWorker) ? toklecScrap : false;
 
-    if (action === "END" && (finalOuterSheetScrap || finalInnerSheetScrap)) {
+    if (action === "END" && finalToklecScrap && !finalNote) {
+      setMessage({ type: "error", text: "Tokléc selejt kijelölésekor a Megjegyzés kitöltése kötelező. Írd le röviden, pontosan mit kell pótolni." });
+      return;
+    }
+
+    if (action === "END" && (finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap)) {
       const selectedDefects = [
         finalOuterSheetScrap ? "Külső lap selejt" : "",
         finalInnerSheetScrap ? "Belső lap selejt" : "",
+        finalToklecScrap ? "Tokléc selejt" : "",
       ].filter(Boolean).join(" és ");
       const confirmed = typeof window === "undefined" || window.confirm(
         `A következő selejtjelölést rögzíted:\n\n${selectedDefects}\n\nBiztosan helyesek a kijelölések? A mentés után az asztalos elsőbbségi selejtpótlási kártyájára kerül a rendelés.`
       );
       if (!confirmed) {
-        setMessage({ type: "info", text: "A selejtes END mentése megszakítva. Ellenőrizd a Külső lap / Belső lap kijelöléseket." });
+        setMessage({ type: "info", text: "A selejtes END mentése megszakítva. Ellenőrizd a Külső lap / Belső lap / Tokléc kijelöléseket és a megjegyzést." });
         return;
       }
     }
@@ -14136,6 +14260,9 @@ body {
 
       const currentMachineId = getCurrentMachineIdForInsert();
       const nowForSave = getLocalTimestampWithOffset();
+      const activeToklecReplacement = isCarpenterStationName(currentMachineId)
+        ? await fetchOpenToklecScrapReplacement(finalOrderNumber)
+        : null;
       let linkedStartTime: string | null = null;
 
       const auditMetadata = {
@@ -14152,7 +14279,9 @@ body {
         szal: finalSzal,
         kulso_lap_selejt: finalOuterSheetScrap,
         belso_lap_selejt: finalInnerSheetScrap,
-        selejt_forras_munkaallomas: finalOuterSheetScrap || finalInnerSheetScrap ? currentMachineId : null,
+        toklec_selejt: finalToklecScrap,
+        selejt_megjegyzes: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap ? finalNote : null,
+        selejt_forras_munkaallomas: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap ? currentMachineId : activeToklecReplacement?.source_station || null,
         action,
         start_timestamp: action === "START" ? nowForSave : null,
         end_timestamp: action === "END" ? nowForSave : null,
@@ -14187,14 +14316,18 @@ body {
             szal: finalSzal,
             kulso_lap_selejt: finalOuterSheetScrap,
             belso_lap_selejt: finalInnerSheetScrap,
-            selejt_potlas: false,
-            selejt_forras_munkaallomas: finalOuterSheetScrap || finalInnerSheetScrap ? currentMachineId : null,
+            toklec_selejt: finalToklecScrap,
+            selejt_megjegyzes: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap ? finalNote : null,
+            selejt_potlas: Boolean(activeToklecReplacement),
+            selejt_forras_munkaallomas: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap
+              ? currentMachineId
+              : activeToklecReplacement?.source_station || null,
           })
           .eq("id", openLog.id);
 
         if (updateError) throw updateError;
 
-        if (finalOuterSheetScrap || finalInnerSheetScrap) {
+        if (finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap) {
           await createScrapReplacementFromSheetScrap({
             orderNumber: finalOrderNumber,
             sourceStation: currentMachineId,
@@ -14202,7 +14335,13 @@ body {
             reportedAt: nowForSave,
             outerScrap: finalOuterSheetScrap,
             innerScrap: finalInnerSheetScrap,
+            toklecScrap: finalToklecScrap,
+            note: finalNote,
           });
+        }
+
+        if (activeToklecReplacement) {
+          await updateSingleToklecReplacement(activeToklecReplacement, "KESZ", nowForSave);
         }
       } else {
         const payloadBase = {
@@ -14234,12 +14373,17 @@ body {
           scrap_qty: finalScrapQty,
           kulso_lap_selejt: false,
           belso_lap_selejt: false,
-          selejt_potlas: false,
-          selejt_forras_munkaallomas: null,
+          toklec_selejt: false,
+          selejt_megjegyzes: null,
+          selejt_potlas: Boolean(activeToklecReplacement),
+          selejt_forras_munkaallomas: activeToklecReplacement?.source_station || null,
         };
 
         const { error: insertError } = await supabase.from("work_logs").insert([payloadBase]);
         if (insertError) throw insertError;
+        if (activeToklecReplacement) {
+          await updateSingleToklecReplacement(activeToklecReplacement, "SZABAS_FOLYAMATBAN", nowForSave);
+        }
       }
 
       const savedTime = new Date().toLocaleString("hu-HU");
@@ -14249,9 +14393,11 @@ body {
       const savedScrapText = action === "END" ? ` | Selejt: ${finalScrapQty ?? 0}` : "";
       const savedDarabText = action === "END" && finalDarab !== null ? ` | Darab: ${finalDarab}` : "";
       const savedSzalText = action === "END" && finalSzal !== null ? ` | Szál: ${finalSzal}` : "";
-      const savedSheetScrapText = action === "END" && (finalOuterSheetScrap || finalInnerSheetScrap)
-        ? ` | Lap selejt: ${[finalOuterSheetScrap ? "külső" : "", finalInnerSheetScrap ? "belső" : ""].filter(Boolean).join(" + ")} | Asztalos pótlási kártyára továbbítva`
-        : "";
+      const savedSheetScrapText = action === "END" && (finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap)
+        ? ` | Selejt: ${[finalOuterSheetScrap ? "külső lap" : "", finalInnerSheetScrap ? "belső lap" : "", finalToklecScrap ? "tokléc" : ""].filter(Boolean).join(" + ")} | Asztalos pótlási kártyára továbbítva`
+        : activeToklecReplacement && action === "END"
+          ? " | Tokléc pótlás készre jelentve"
+          : "";
       resetAfterSave();
       setEndBarcodeConfirmed(false);
       setMessage({
@@ -14315,6 +14461,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
+    setToklecScrap(false);
     setEndDarab("");
     setEndSzal("");
     setEndBarcodeConfirmed(true);
@@ -16148,21 +16295,32 @@ body {
                           <input type="checkbox" checked={innerSheetScrap} onChange={(event) => setInnerSheetScrap(event.target.checked)} style={{ width: 24, height: 24, accentColor: "#dc2626" }} />
                           Belső lap selejt
                         </label>
+                        <label style={{ display: "flex", alignItems: "center", gap: 12, padding: 14, borderRadius: 12, cursor: "pointer", background: toklecScrap ? "#6b7280" : "#1f2937", color: "#fff", border: toklecScrap ? "3px solid #e5e7eb" : "2px solid #64748b", fontWeight: 900 }}>
+                          <input type="checkbox" checked={toklecScrap} onChange={(event) => setToklecScrap(event.target.checked)} style={{ width: 24, height: 24, accentColor: "#6b7280" }} />
+                          Tokléc selejt
+                        </label>
                       </div>
                     </div>
                   )}
 
                   <div style={{ marginBottom: 18 }}>
-                    <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>Megjegyzés</label>
+                    <label style={{ display: "block", marginBottom: 8, color: toklecScrap ? "#fecaca" : "#cbd5e1", fontWeight: toklecScrap ? 900 : 400 }}>
+                      Megjegyzés{toklecScrap ? " – kötelező Tokléc selejtnél" : ""}
+                    </label>
                     <textarea
                       value={endNote}
-                      onChange={(e) => setEndNote(e.target.value)}
+                      maxLength={250}
+                      required={toklecScrap}
+                      onChange={(e) => setEndNote(e.target.value.slice(0, 250))}
                       onBlur={() => {
                         if (step === 6 && pendingAction === "END") focusScannerInputAfterEditableBlur(actionBarcodeInputRef);
                       }}
-                      placeholder="Írj megjegyzést a lezáráshoz vagy a selejthez"
-                      style={textareaStyle}
+                      placeholder={toklecScrap ? "Kötelező: írd le, milyen toklécet kell pótolni" : "Írj megjegyzést a lezáráshoz vagy a selejthez"}
+                      style={{ ...textareaStyle, border: toklecScrap && !endNote.trim() ? "2px solid #ef4444" : textareaStyle.border }}
                     />
+                    <div style={{ marginTop: 5, textAlign: "right", color: toklecScrap && !endNote.trim() ? "#fecaca" : "#94a3b8", fontSize: 11 }}>
+                      {endNote.length}/250 karakter{toklecScrap ? " • kötelező" : ""}
+                    </div>
                   </div>
 
                   <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
