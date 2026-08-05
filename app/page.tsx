@@ -3599,7 +3599,7 @@ export default function Page() {
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) auto auto", gap: 12, alignItems: "end", padding: 16, borderRadius: 13, background: "#020617", border: "1px solid #334155" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) auto auto auto", gap: 12, alignItems: "end", padding: 16, borderRadius: 13, background: "#020617", border: "1px solid #334155" }}>
               <div>
                 <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 800 }}>Szerveren tárolt XLSX elérési útja</label>
                 <input
@@ -3612,6 +3612,14 @@ export default function Page() {
                   Alapértelmezett: <code style={{ color: "#7dd3fc" }}>{DEFAULT_PRODUCTION_PLAN_SERVER_PATH}</code>. A Next.js szervert futtató Windows-felhasználónak hozzá kell férnie ehhez a meghajtóhoz.
                 </div>
               </div>
+              <button
+                type="button"
+                onClick={downloadProductionPlanTemplate}
+                disabled={availableProductionStations.length === 0}
+                style={buttonSecondary}
+              >
+                Minta Excel letöltése
+              </button>
               <button
                 type="button"
                 onClick={() => void saveProductionPlanImportSettings(true).catch((error) => {
@@ -8994,16 +9002,84 @@ export default function Page() {
       setMessage({ type: "error", text: "Az Excel könyvtár még nem töltődött be." });
       return;
     }
-    const rows: Array<Array<string | number>> = [
-      ["sorszam", "megnevezes", "mennyiseg", "elkeszules_datum", "tipus"],
-      ["R260722217", "Minta gyártandó termék", 35, getLocalDateKey(new Date()), "Normál"],
-      ["R260722214", "Második minta termék", 20, getLocalDateKey(new Date()), "Sürgős"],
-    ];
-    const worksheet = XLSX.utils.aoa_to_sheet(rows);
+
+    const getMachineRowName = (row: MachineIdRow): string => String(
+      row.name ?? row.Name ?? row.machine_name ?? row.machine_id ?? row.megnevezes ?? ""
+    ).trim();
+
+    const getMachineRowOrder = (row: MachineIdRow): number => {
+      const rawOrder =
+        row["megjelenési_sorrend"] ??
+        row.megjelenesi_sorrend ??
+        row.display_order ??
+        row.sorrend ??
+        row.id ??
+        Number.MAX_SAFE_INTEGER;
+      const parsedOrder = Number(rawOrder);
+      return Number.isFinite(parsedOrder) ? parsedOrder : Number.MAX_SAFE_INTEGER;
+    };
+
+    const orderedMachineNames = [...machineIdRows]
+      .sort((left, right) => getMachineRowOrder(left) - getMachineRowOrder(right))
+      .map(getMachineRowName)
+      .filter((name) =>
+        Boolean(name) &&
+        normalizeLooseText(name) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
+        !normalizeLooseText(name).includes("iroda")
+      );
+
+    const sourceNames = orderedMachineNames.length > 0
+      ? orderedMachineNames
+      : machineOptions.filter((name) =>
+          normalizeLooseText(name) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
+          !normalizeLooseText(name).includes("iroda")
+        );
+
+    const uniqueStationNames = Array.from(
+      new Map(sourceNames.map((name) => [normalizeLooseText(name), name])).values()
+    );
+
+    if (uniqueStationNames.length === 0) {
+      setMessage({ type: "error", text: "A minta Excel elkészítéséhez előbb be kell tölteni a machine_id tábla munkaállomásait." });
+      return;
+    }
+
+    const invalidSheetNames = uniqueStationNames.filter(
+      (name) => name.length > 31 || /[\\/?*\[\]:]/.test(name)
+    );
+    if (invalidSheetNames.length > 0) {
+      setMessage({
+        type: "error",
+        text: `Az alábbi machine_id.name értékek nem használhatók változtatás nélkül Excel-munkafülnévként: ${invalidSheetNames.join(", ")}`,
+      });
+      return;
+    }
+
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Munkaállomás terv");
+    const today = getLocalDateKey(new Date());
+
+    uniqueStationNames.forEach((stationName, index) => {
+      const rows: Array<Array<string | number>> = [
+        ["sorszam", "megnevezes", "mennyiseg", "elkeszules_datum", "tipus"],
+        [`MINTA-${String(index + 1).padStart(3, "0")}`, `${stationName} minta termék`, 1, today, "Normál"],
+      ];
+      XLSX.utils.book_append_sheet(
+        workbook,
+        XLSX.utils.aoa_to_sheet(rows),
+        stationName
+      );
+    });
+
     const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
-    downloadBlob("munkaallomas_terv_minta.xlsx", new Blob([output]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    downloadBlob(
+      "Napi_termelesi_terv_minta.xlsx",
+      new Blob([output]),
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    setMessage({
+      type: "success",
+      text: `A minta Excel elkészült ${uniqueStationNames.length} munkaállomási munkafüllel. Az iroda munkafül szándékosan kimaradt.`,
+    });
   }
 
   async function loadProductionPlanItems(plan: ProductionPlanRow): Promise<void> {
