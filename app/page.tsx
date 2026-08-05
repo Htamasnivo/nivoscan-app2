@@ -332,6 +332,30 @@ type StationPlanFileSelection = {
   rows: StationPlanUploadRow[];
 };
 
+type StationPlanExistingRow = StationPlanUploadRow & {
+  id: number | string;
+};
+
+type StationPlanMergeAction = StationPlanUploadRow & {
+  action: "insert" | "add" | "update" | "skip";
+  existing_id?: number | string | null;
+  source_file?: string | null;
+};
+
+type ServerWorkbookSheetPayload = {
+  name: string;
+  rows: Array<Record<string, unknown>>;
+};
+
+type ProductionPlanImportSettingsRow = {
+  id: number;
+  excel_path: string;
+  updated_by?: string | null;
+  updated_at?: string | null;
+  last_import_at?: string | null;
+  last_import_file_modified_at?: string | null;
+};
+
 
 type ReproductionReportFilterMode = "daily" | "weekly" | "monthly" | "yearly" | "custom";
 
@@ -432,6 +456,23 @@ type ScrapReplacementRow = {
   updated_at?: string | null;
 };
 
+type ProductionCardBacklogRow = {
+  id: string;
+  orderNumber: string;
+  productName: string;
+  plannedQuantity: number;
+  completedQuantity: number;
+  remainingQuantity: number;
+  completionDate: string;
+  delayDays: number;
+  status: ProductionMonitorStatus;
+  statusLabel: string;
+  startWorkerName: string;
+  lastWorkerName: string;
+  startedAt: string | null;
+  endedAt: string | null;
+};
+
 type ProductionCardRow = {
   orderNumber: string;
   productName: string;
@@ -454,6 +495,7 @@ type ProductionCardData = {
   tableName: string;
   rows: ProductionCardRow[];
   scrapReplacementRows?: ScrapReplacementRow[];
+  backlogRows?: ProductionCardBacklogRow[];
   lastUpdatedAt: string;
   errorMessage: string;
 };
@@ -533,7 +575,7 @@ type ProductionMonitorTheme = {
   showSummaryCards: boolean;
 };
 
-type ProductionCardTableDataSource = "production-plan" | "scrap-replacement";
+type ProductionCardTableDataSource = "production-plan" | "scrap-replacement" | "backlog";
 
 type ProductionMonitorTableConfig = {
   id: string;
@@ -682,6 +724,34 @@ const PRODUCTION_CARD_SCRAP_FIELD_IDS = [
   PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID,
   PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID,
 ] as const;
+
+const PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID = "__backlog_order_number__";
+const PRODUCTION_CARD_BACKLOG_PRODUCT_FIELD_ID = "__backlog_product_name__";
+const PRODUCTION_CARD_BACKLOG_PLANNED_FIELD_ID = "__backlog_planned_quantity__";
+const PRODUCTION_CARD_BACKLOG_COMPLETED_FIELD_ID = "__backlog_completed_quantity__";
+const PRODUCTION_CARD_BACKLOG_REMAINING_FIELD_ID = "__backlog_remaining_quantity__";
+const PRODUCTION_CARD_BACKLOG_DATE_FIELD_ID = "__backlog_completion_date__";
+const PRODUCTION_CARD_BACKLOG_DELAY_FIELD_ID = "__backlog_delay_days__";
+const PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID = "__backlog_status__";
+const PRODUCTION_CARD_BACKLOG_START_WORKER_FIELD_ID = "__backlog_start_worker__";
+const PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID = "__backlog_last_worker__";
+const PRODUCTION_CARD_BACKLOG_FIELD_IDS = [
+  PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID,
+  PRODUCTION_CARD_BACKLOG_PRODUCT_FIELD_ID,
+  PRODUCTION_CARD_BACKLOG_PLANNED_FIELD_ID,
+  PRODUCTION_CARD_BACKLOG_COMPLETED_FIELD_ID,
+  PRODUCTION_CARD_BACKLOG_REMAINING_FIELD_ID,
+  PRODUCTION_CARD_BACKLOG_DATE_FIELD_ID,
+  PRODUCTION_CARD_BACKLOG_DELAY_FIELD_ID,
+  PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID,
+  PRODUCTION_CARD_BACKLOG_START_WORKER_FIELD_ID,
+  PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID,
+] as const;
+
+const PRODUCTION_PLAN_IMPORT_SETTINGS_TABLE = "production_plan_import_settings";
+const DEFAULT_PRODUCTION_PLAN_SERVER_PATH = "P:\\Gyartas\\Termelesi_terv\\Napi_termelesi_terv.xlsx";
+const PRODUCTION_PLAN_SERVER_IMPORT_API = "/api/production-plan-import";
+
 const PRODUCTION_MONITOR_ORDER_FIELD_ID = "__order_number__";
 const PRODUCTION_MONITOR_MIN_ZOOM = 60;
 const PRODUCTION_MONITOR_MAX_ZOOM = 150;
@@ -910,9 +980,9 @@ function isCarpenterProductionCardStation(stationName: string | null | undefined
 }
 
 function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig): readonly string[] {
-  return table.dataSource === "scrap-replacement"
-    ? PRODUCTION_CARD_SCRAP_FIELD_IDS
-    : PRODUCTION_CARD_FIELD_IDS;
+  if (table.dataSource === "scrap-replacement") return PRODUCTION_CARD_SCRAP_FIELD_IDS;
+  if (table.dataSource === "backlog") return PRODUCTION_CARD_BACKLOG_FIELD_IDS;
+  return PRODUCTION_CARD_FIELD_IDS;
 }
 
 function getProductionCardFieldLabel(fieldId: string): string {
@@ -934,6 +1004,16 @@ function getProductionCardFieldLabel(fieldId: string): string {
   if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID) return "Jelentés ideje";
   if (fieldId === PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID) return "Pótlás kezdete";
   if (fieldId === PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID) return "Pótlás vége";
+  if (fieldId === PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID) return "Sorszám";
+  if (fieldId === PRODUCTION_CARD_BACKLOG_PRODUCT_FIELD_ID) return "Megnevezés";
+  if (fieldId === PRODUCTION_CARD_BACKLOG_PLANNED_FIELD_ID) return "Tervezett mennyiség";
+  if (fieldId === PRODUCTION_CARD_BACKLOG_COMPLETED_FIELD_ID) return "Teljesített mennyiség";
+  if (fieldId === PRODUCTION_CARD_BACKLOG_REMAINING_FIELD_ID) return "Hátralévő";
+  if (fieldId === PRODUCTION_CARD_BACKLOG_DATE_FIELD_ID) return "Terv dátuma";
+  if (fieldId === PRODUCTION_CARD_BACKLOG_DELAY_FIELD_ID) return "Késés";
+  if (fieldId === PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID) return "Állapot";
+  if (fieldId === PRODUCTION_CARD_BACKLOG_START_WORKER_FIELD_ID) return "Indító dolgozó";
+  if (fieldId === PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID) return "Utolsó dolgozó";
   return fieldId;
 }
 
@@ -995,6 +1075,55 @@ function createDefaultScrapReplacementCardTable(theme: ProductionMonitorTheme): 
   return table;
 }
 
+function createDefaultBacklogCardTable(theme: ProductionMonitorTheme): ProductionMonitorTableConfig {
+  const backlogTheme = normalizeProductionMonitorTheme({
+    ...theme,
+    tablePanelBackground: "#422006",
+    tableTitleText: "#fef3c7",
+    tableHeaderBackground: "#a16207",
+    tableHeaderText: "#fffbeb",
+    orderCellBackground: "#fde68a",
+    orderCellText: "#451a03",
+    doneBackground: "#86efac",
+    doneText: "#052e16",
+    inProgressBackground: "#fb923c",
+    inProgressText: "#431407",
+    waitingBackground: "#fde68a",
+    waitingText: "#451a03",
+    borderColor: "#f59e0b",
+    panelRadius: 14,
+  });
+  const table = createDefaultProductionMonitorTable(
+    "Lemaradások – elsőbbségi termelési kártya",
+    "card-table-backlog",
+    backlogTheme
+  );
+  table.dataSource = "backlog";
+  table.fieldOrder = [...PRODUCTION_CARD_BACKLOG_FIELD_IDS];
+  table.hiddenFieldIds = [
+    PRODUCTION_CARD_BACKLOG_COMPLETED_FIELD_ID,
+    PRODUCTION_CARD_BACKLOG_START_WORKER_FIELD_ID,
+    PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID,
+  ];
+  table.fieldStyles = {
+    [PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 1.15,
+      textAlign: "left",
+    },
+    [PRODUCTION_CARD_BACKLOG_PRODUCT_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 1.55,
+      textAlign: "left",
+    },
+    [PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 1.15,
+    },
+  };
+  return table;
+}
+
 function createDefaultProductionCardProfile(stationName = "Munkaállomás"): ProductionMonitorProfile {
   const cleanStationName = String(stationName || "Munkaállomás").trim() || "Munkaállomás";
   const theme = cloneProductionMonitorTheme(PRODUCTION_MONITOR_THEME_PRESETS["industrial-night"].theme);
@@ -1028,9 +1157,10 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
       textAlign: "left",
     },
   };
+  const backlogTable = createDefaultBacklogCardTable(theme);
   const tables = isCarpenterProductionCardStation(cleanStationName)
-    ? [createDefaultScrapReplacementCardTable(theme), table]
-    : [table];
+    ? [createDefaultScrapReplacementCardTable(theme), backlogTable, table]
+    : [backlogTable, table];
   return {
     id: `production-card-${cleanStationName}`,
     name: `${cleanStationName} termelési kártya`,
@@ -1050,10 +1180,14 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
     ? normalized.tables.map((table, index) => {
         const dataSource: ProductionCardTableDataSource = table.dataSource === "scrap-replacement"
           ? "scrap-replacement"
-          : "production-plan";
+          : table.dataSource === "backlog"
+            ? "backlog"
+            : "production-plan";
         const validFields = dataSource === "scrap-replacement"
           ? PRODUCTION_CARD_SCRAP_FIELD_IDS
-          : PRODUCTION_CARD_FIELD_IDS;
+          : dataSource === "backlog"
+            ? PRODUCTION_CARD_BACKLOG_FIELD_IDS
+            : PRODUCTION_CARD_FIELD_IDS;
         return {
           ...table,
           dataSource,
@@ -1071,12 +1205,18 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
       })
     : createDefaultProductionCardProfile(stationName).tables;
 
+  const existingBacklogTable = tables.find((table) => table.dataSource === "backlog");
+  const productionTables = tables.filter((table) => table.dataSource === "production-plan");
+  const backlogTable = existingBacklogTable || createDefaultBacklogCardTable(normalized.theme);
   if (carpenterStation) {
     const existingScrapTable = tables.find((table) => table.dataSource === "scrap-replacement");
-    const productionTables = tables.filter((table) => table.dataSource !== "scrap-replacement");
-    tables = [existingScrapTable || createDefaultScrapReplacementCardTable(normalized.theme), ...productionTables];
+    tables = [
+      existingScrapTable || createDefaultScrapReplacementCardTable(normalized.theme),
+      backlogTable,
+      ...productionTables,
+    ];
   } else {
-    tables = tables.filter((table) => table.dataSource !== "scrap-replacement");
+    tables = [backlogTable, ...productionTables];
   }
 
   if (tables.length === 0) tables = createDefaultProductionCardProfile(stationName).tables;
@@ -1193,7 +1333,11 @@ function normalizeProductionMonitorTable(value: unknown, index: number, fallback
     fieldStyles: Object.fromEntries(
       Object.entries(rawFieldStyles).map(([fieldId, style]) => [fieldId, normalizeProductionMonitorFieldStyle(style)])
     ),
-    dataSource: raw.dataSource === "scrap-replacement" ? "scrap-replacement" : "production-plan",
+    dataSource: raw.dataSource === "scrap-replacement"
+      ? "scrap-replacement"
+      : raw.dataSource === "backlog"
+        ? "backlog"
+        : "production-plan",
   };
 }
 
@@ -2958,6 +3102,11 @@ export default function Page() {
   const [stationPlanFiles, setStationPlanFiles] = useState<Record<string, StationPlanFileSelection>>({});
   const [loadingStationPlanFile, setLoadingStationPlanFile] = useState("");
   const [uploadingStationPlans, setUploadingStationPlans] = useState(false);
+  const [productionPlanServerPath, setProductionPlanServerPath] = useState(DEFAULT_PRODUCTION_PLAN_SERVER_PATH);
+  const [productionPlanServerPathLoaded, setProductionPlanServerPathLoaded] = useState(false);
+  const [refreshingProductionPlanWorkbook, setRefreshingProductionPlanWorkbook] = useState(false);
+  const [productionPlanLastServerImportAt, setProductionPlanLastServerImportAt] = useState("");
+  const [productionPlanLastFileModifiedAt, setProductionPlanLastFileModifiedAt] = useState("");
   const [productionPlans, setProductionPlans] = useState<ProductionPlanRow[]>([]);
   const [selectedProductionPlanId, setSelectedProductionPlanId] = useState<string>("");
   const [productionPlanItems, setProductionPlanItems] = useState<ProductionPlanItemRow[]>([]);
@@ -2996,6 +3145,8 @@ export default function Page() {
     dateKey: getLocalDateKey(new Date()),
     tableName: "",
     rows: [],
+    scrapReplacementRows: [],
+    backlogRows: [],
     lastUpdatedAt: "",
     errorMessage: "",
   });
@@ -3017,6 +3168,8 @@ export default function Page() {
     dateKey: getLocalDateKey(new Date()),
     tableName: "",
     rows: [],
+    scrapReplacementRows: [],
+    backlogRows: [],
     lastUpdatedAt: "",
     errorMessage: "",
   });
@@ -3413,14 +3566,6 @@ export default function Page() {
       flex: "0 0 auto",
     };
 
-    const availableProductionStations = machineOptions.filter(
-      (option) => normalizeLooseText(option) !== normalizeLooseText(DEFAULT_MACHINE_ID)
-    );
-    const stationPlanUploadStations = availableProductionStations.filter(
-      (option) => !normalizeLooseText(option).includes("iroda")
-    );
-    const selectedStationPlanCount = stationPlanUploadStations.filter((station) => Boolean(stationPlanFiles[station])).length;
-
     return (
       <div style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 20, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
@@ -3428,7 +3573,7 @@ export default function Page() {
             <div style={{ fontSize: 13, color: "#38bdf8", fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Irodai modul</div>
             <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: "#f8fafc" }}>Termelés tervezése</h2>
             <div style={{ color: "#94a3b8", maxWidth: 900, lineHeight: 1.5 }}>
-              Állítsd össze a napi gyártási tervet kézi termékfelvitellel vagy Excel / CSV fájlból, majd ellenőrzés után mentsd és aktiváld.
+              A szerveren tárolt közös XLSX minden munkaállomási munkafüle egyetlen frissítéssel betölthető, miközben a kézi tervkiegészítés továbbra is használható.
             </div>
           </div>
           <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
@@ -3441,126 +3586,61 @@ export default function Page() {
             <div style={sectionHeaderStyle}>
               <div style={sectionNumberStyle}>1</div>
               <div>
-                <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Excel / CSV feltöltés</h3>
+                <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Közös XLSX termelési terv</h3>
                 <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13, lineHeight: 1.45 }}>
-                  Válaszd ki külön-külön a machine_id tábla munkaállomásaihoz tartozó napi tervet. Az iroda nem jelenik meg a listában, a kiválasztott fájlokat pedig egyetlen gombbal töltheted fel a megfelelő Supabase-táblákba.
+                  Egyetlen szerveres Excel-fájl minden munkafüle egyszerre kerül beolvasásra. A munkafülek neve egyezzen a machine_id tábla name értékeivel; minden sor a megfelelő <code style={{ color: "#7dd3fc" }}>_terv</code> táblába kerül.
                 </div>
               </div>
             </div>
 
-            {stationPlanUploadStations.length === 0 ? (
-              <div style={{ padding: 16, borderRadius: 12, background: "#020617", border: "1px dashed #475569", color: "#fca5a5" }}>
-                Nem található feltölthető munkaállomás. Ellenőrizd a Supabase machine_id tábla name oszlopát. Az „iroda” nevű sor szándékosan nincs felsorolva.
-              </div>
-            ) : (
-              <div style={{ display: "grid", gap: 12 }}>
-                {stationPlanUploadStations.map((station, index) => {
-                  const selection = stationPlanFiles[station];
-                  const tableName = buildStationPlanTableName(station);
-                  const isReading = loadingStationPlanFile === station;
-                  return (
-                    <div
-                      key={station}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "minmax(240px, 1fr) minmax(260px, 1.2fr) auto",
-                        gap: 14,
-                        alignItems: "center",
-                        padding: 15,
-                        borderRadius: 13,
-                        background: "#020617",
-                        border: selection ? "1px solid #0ea5e9" : "1px solid #334155",
-                      }}
-                    >
-                      <div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
-                          <span style={{ width: 28, height: 28, borderRadius: 9, display: "inline-flex", alignItems: "center", justifyContent: "center", background: "#0c4a6e", color: "#e0f2fe", fontWeight: 900 }}>
-                            {index + 1}
-                          </span>
-                          <strong style={{ color: "#f8fafc", fontSize: 15 }}>{station}</strong>
-                        </div>
-                        <div style={{ marginTop: 7, color: "#64748b", fontSize: 12 }}>
-                          Supabase-tábla: <code style={{ color: "#7dd3fc" }}>{tableName}</code>
-                        </div>
-                      </div>
-
-                      <div style={{ minWidth: 0 }}>
-                        {selection ? (
-                          <div style={{ padding: "10px 12px", borderRadius: 10, background: "#0f172a", border: "1px solid #334155" }}>
-                            <div style={{ color: "#e2e8f0", fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={selection.fileName}>
-                              {selection.fileName}
-                            </div>
-                            <div style={{ marginTop: 4, color: "#4ade80", fontSize: 12 }}>
-                              {selection.rows.length} sor ellenőrizve, feltöltésre kész.
-                            </div>
-                          </div>
-                        ) : (
-                          <div style={{ padding: "10px 12px", borderRadius: 10, background: "#0f172a", border: "1px dashed #475569", color: "#94a3b8" }}>
-                            Nincs fájl kiválasztva.
-                          </div>
-                        )}
-                      </div>
-
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                        <input
-                          ref={(element) => { stationPlanFileInputRefs.current[station] = element; }}
-                          type="file"
-                          accept=".xlsx,.xls,.csv"
-                          style={{ display: "none" }}
-                          onChange={(event) => {
-                            const file = event.target.files?.[0];
-                            if (file) void handleStationPlanFileSelection(station, file);
-                            event.currentTarget.value = "";
-                          }}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => stationPlanFileInputRefs.current[station]?.click()}
-                          disabled={Boolean(loadingStationPlanFile) || uploadingStationPlans}
-                          style={buttonPrimary}
-                        >
-                          {isReading ? "Beolvasás..." : selection ? "Másik fájl tallózása" : "Tallózás"}
-                        </button>
-                        {selection && (
-                          <button
-                            type="button"
-                            onClick={() => setStationPlanFiles((previous) => {
-                              const next = { ...previous };
-                              delete next[station];
-                              return next;
-                            })}
-                            disabled={uploadingStationPlans}
-                            style={buttonSecondary}
-                          >
-                            Törlés
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            <div style={{ marginTop: 16, display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap", padding: 14, borderRadius: 12, background: "#020617", border: "1px solid #334155" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) auto auto", gap: 12, alignItems: "end", padding: 16, borderRadius: 13, background: "#020617", border: "1px solid #334155" }}>
               <div>
-                <div style={{ color: "#e2e8f0", fontWeight: 850 }}>Kiválasztott fájlok: {selectedStationPlanCount}/{stationPlanUploadStations.length}</div>
-                <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 12 }}>
-                  Kötelező Excel-oszlopok: sorszam, megnevezes, mennyiseg, elkeszules_datum, tipus.
+                <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 800 }}>Szerveren tárolt XLSX elérési útja</label>
+                <input
+                  value={productionPlanServerPath}
+                  onChange={(event) => setProductionPlanServerPath(event.target.value.slice(0, 1000))}
+                  placeholder={DEFAULT_PRODUCTION_PLAN_SERVER_PATH}
+                  style={{ ...fieldStyle, width: "100%", boxSizing: "border-box" }}
+                />
+                <div style={{ marginTop: 7, color: "#64748b", fontSize: 12, lineHeight: 1.45 }}>
+                  Alapértelmezett: <code style={{ color: "#7dd3fc" }}>{DEFAULT_PRODUCTION_PLAN_SERVER_PATH}</code>. A Next.js szervert futtató Windows-felhasználónak hozzá kell férnie ehhez a meghajtóhoz.
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>
-                <button type="button" onClick={downloadProductionPlanTemplate} disabled={uploadingStationPlans} style={buttonSecondary}>
-                  Minta Excel letöltése
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void uploadSelectedStationPlans()}
-                  disabled={uploadingStationPlans || selectedStationPlanCount === 0}
-                  style={buttonPrimary}
-                >
-                  {uploadingStationPlans ? "Tervek feltöltése..." : "Összes kiválasztott terv feltöltése"}
-                </button>
+              <button
+                type="button"
+                onClick={() => void saveProductionPlanImportSettings(true).catch((error) => {
+                  setMessage({ type: "error", text: `Az elérési út mentése sikertelen: ${normalizeError(error)}` });
+                })}
+                disabled={!productionPlanServerPathLoaded || refreshingProductionPlanWorkbook}
+                style={buttonSecondary}
+              >
+                Elérési út mentése
+              </button>
+              <button
+                type="button"
+                onClick={() => void refreshProductionPlansFromServerWorkbook()}
+                disabled={refreshingProductionPlanWorkbook || !productionPlanServerPath.trim()}
+                style={buttonPrimary}
+              >
+                {refreshingProductionPlanWorkbook ? "Beolvasás és mentés..." : "Termelési terv frissítése"}
+              </button>
+            </div>
+
+            <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
+              <div style={{ padding: 12, borderRadius: 11, background: "#020617", border: "1px solid #334155" }}>
+                <div style={{ color: "#94a3b8", fontSize: 12 }}>Kötelező mezők minden munkafülön</div>
+                <div style={{ color: "#e2e8f0", fontWeight: 800, marginTop: 4 }}>sorszam · megnevezes · mennyiseg · elkeszules_datum · tipus</div>
+              </div>
+              <div style={{ padding: 12, borderRadius: 11, background: "#020617", border: "1px solid #334155" }}>
+                <div style={{ color: "#94a3b8", fontSize: 12 }}>Utolsó sikeres szerveres frissítés</div>
+                <div style={{ color: productionPlanLastServerImportAt ? "#4ade80" : "#cbd5e1", fontWeight: 800, marginTop: 4 }}>
+                  {productionPlanLastServerImportAt ? formatDateTime(productionPlanLastServerImportAt) : "Még nem történt frissítés"}
+                </div>
+                {productionPlanLastFileModifiedAt && <div style={{ color: "#64748b", fontSize: 11, marginTop: 3 }}>Excel módosítva: {formatDateTime(productionPlanLastFileModifiedAt)}</div>}
+              </div>
+              <div style={{ padding: 12, borderRadius: 11, background: "#020617", border: "1px solid #334155" }}>
+                <div style={{ color: "#94a3b8", fontSize: 12 }}>Egyező sorszám és dátum esetén</div>
+                <div style={{ color: "#e2e8f0", fontWeight: 800, marginTop: 4 }}>Új sor · mennyiség hozzáadása · frissítés · kihagyás</div>
               </div>
             </div>
           </section>
@@ -4528,6 +4608,56 @@ export default function Page() {
     return "in-progress";
   }
 
+  function getBacklogCardFieldValue(row: ProductionCardBacklogRow, fieldId: string): string | number {
+    if (fieldId === PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID) return row.orderNumber;
+    if (fieldId === PRODUCTION_CARD_BACKLOG_PRODUCT_FIELD_ID) return row.productName;
+    if (fieldId === PRODUCTION_CARD_BACKLOG_PLANNED_FIELD_ID) return row.plannedQuantity;
+    if (fieldId === PRODUCTION_CARD_BACKLOG_COMPLETED_FIELD_ID) return row.completedQuantity;
+    if (fieldId === PRODUCTION_CARD_BACKLOG_REMAINING_FIELD_ID) return row.remainingQuantity;
+    if (fieldId === PRODUCTION_CARD_BACKLOG_DATE_FIELD_ID) return row.completionDate;
+    if (fieldId === PRODUCTION_CARD_BACKLOG_DELAY_FIELD_ID) return `${row.delayDays} nap`;
+    if (fieldId === PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID) return row.statusLabel;
+    if (fieldId === PRODUCTION_CARD_BACKLOG_START_WORKER_FIELD_ID) return row.startWorkerName;
+    if (fieldId === PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID) return row.lastWorkerName;
+    return "";
+  }
+
+  function getRelevantCompletionLogsForQuantity(logs: WorkLogRow[], stationName: string): WorkLogRow[] {
+    const endLogs = logs.filter((log) => Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END");
+    if (!isCarpenterStationName(stationName)) return endLogs;
+    const millingLogs = endLogs.filter((log) => String(log.operation_code || "").toUpperCase() === "MARAS");
+    if (millingLogs.length > 0) return millingLogs;
+    const legacyLogs = endLogs.filter((log) => !log.operation_code);
+    return legacyLogs.length > 0 ? legacyLogs : [];
+  }
+
+  function calculateCompletedPlanQuantity(
+    logs: WorkLogRow[],
+    plannedQuantity: number,
+    productType: string,
+    stationName: string
+  ): number {
+    const completionLogs = getRelevantCompletionLogsForQuantity(logs, stationName);
+    if (completionLogs.length === 0) return 0;
+    const normalizedType = normalizeLooseText(productType);
+    let quantityTotal = 0;
+    let hasExplicitQuantity = false;
+    completionLogs.forEach((log) => {
+      const darab = Math.max(0, Number(log.darab) || 0);
+      const szal = Math.max(0, Number(log.szal) || 0);
+      let value = 0;
+      if (normalizedType.includes("szal")) value = szal || darab;
+      else if (normalizedType.includes("darab") || normalizedType.includes("db")) value = darab || szal;
+      else value = darab > 0 && szal > 0 ? Math.max(darab, szal) : darab || szal;
+      if (value > 0) {
+        hasExplicitQuantity = true;
+        quantityTotal += value;
+      }
+    });
+    if (hasExplicitQuantity) return quantityTotal;
+    return Math.max(0, plannedQuantity);
+  }
+
   function resolveProductionCardWorkers(
     logs: WorkLogRow[],
     productionBatchStarts: ProductionBatchRow[],
@@ -4935,6 +5065,149 @@ export default function Page() {
       )));
     }
 
+    const backlogRows: ProductionCardBacklogRow[] = [];
+    const { data: overduePlanData, error: overduePlanError } = await supabase
+      .from(tableName)
+      .select("id, sorszam, megnevezes, mennyiseg, elkeszules_datum, tipus")
+      .lt("elkeszules_datum", dateKey)
+      .order("elkeszules_datum", { ascending: true })
+      .order("id", { ascending: true })
+      .limit(10000);
+
+    if (overduePlanError) {
+      sourceErrors.push(`A lemaradási kártya nem olvasható: ${normalizeError(overduePlanError)}`);
+    } else {
+      const overdueSourceRows = ((overduePlanData || []) as Array<ProductionCardPlanSourceRow & { id?: number | string | null }>)
+        .map((row, index) => ({
+          id: String(row.id ?? `${row.sorszam}-${row.elkeszules_datum}-${index}`),
+          orderNumber: String(row.sorszam ?? "").trim(),
+          productName: String(row.megnevezes ?? "").trim(),
+          plannedQuantity: Math.max(0, parseSpreadsheetNumber(row.mennyiseg) ?? 0),
+          completionDate: String(row.elkeszules_datum ?? "").slice(0, 10),
+          productType: String(row.tipus ?? "").trim(),
+        }))
+        .filter((row) => row.orderNumber && row.completionDate);
+
+      const overdueOrderNumbers = Array.from(new Set(overdueSourceRows.map((row) => row.orderNumber)));
+      const overdueLogs: WorkLogRow[] = [];
+      for (let index = 0; index < overdueOrderNumbers.length; index += 100) {
+        const chunk = overdueOrderNumbers.slice(index, index + 100);
+        const { data: overdueLogData, error: overdueLogError } = await supabase
+          .from("work_logs")
+          .select(selectColumns)
+          .in("order_number", chunk)
+          .eq("machine_id", cleanStationName)
+          .order("created_at", { ascending: true })
+          .limit(10000);
+        if (overdueLogError) throw overdueLogError;
+        overdueLogs.push(...(((overdueLogData || []) as WorkLogRow[]).map((log) => ({
+          ...log,
+          worker_name: log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || null,
+        }))));
+      }
+
+      const overdueBatchStarts: ProductionBatchRow[] = [];
+      if (overdueOrderNumbers.length > 0) {
+        const { data: overdueBatchData, error: overdueBatchError } = await supabase
+          .from("production_batches")
+          .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta, operation_code, operation_status")
+          .eq("machine_id", cleanStationName)
+          .not("start_time", "is", null)
+          .limit(10000);
+        if (overdueBatchError) throw overdueBatchError;
+        const overdueOrderSet = new Set(overdueOrderNumbers.map((orderNumber) => normalizeLooseText(orderNumber)));
+        overdueBatchStarts.push(...(((overdueBatchData || []) as ProductionBatchRow[]).filter((batch) =>
+          Array.isArray(batch.order_ids) && batch.order_ids.some((orderId) => overdueOrderSet.has(normalizeLooseText(String(orderId))))
+        )));
+      }
+
+      const selectedDayEnd = new Date(`${dateKey}T00:00:00`);
+      selectedDayEnd.setDate(selectedDayEnd.getDate() + 1);
+      const selectedDayEndTime = selectedDayEnd.getTime();
+      const selectedDayStartTime = new Date(`${dateKey}T00:00:00`).getTime();
+      const timestampOfLog = (log: WorkLogRow): number => new Date(log.end_time || log.end_timestamp || log.start_time || log.start_timestamp || log.created_at || "").getTime();
+
+      const overdueGroups = new Map<string, typeof overdueSourceRows>();
+      overdueSourceRows.forEach((row) => {
+        const key = normalizeLooseText(row.orderNumber);
+        const group = overdueGroups.get(key) || [];
+        group.push(row);
+        overdueGroups.set(key, group);
+      });
+
+      overdueGroups.forEach((groupRows) => {
+        groupRows.sort((left, right) => {
+          const dateDifference = left.completionDate.localeCompare(right.completionDate);
+          return dateDifference !== 0 ? dateDifference : left.id.localeCompare(right.id, "hu", { numeric: true });
+        });
+        const orderNumber = groupRows[0].orderNumber;
+        const rowLogs = overdueLogs
+          .filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(orderNumber))
+          .filter((log) => {
+            const timestamp = timestampOfLog(log);
+            return Number.isFinite(timestamp) && timestamp < selectedDayEndTime;
+          });
+        const rowBatchStarts = overdueBatchStarts.filter((batch) => {
+          const startTime = new Date(batch.start_time || batch.created_at || "").getTime();
+          return Number.isFinite(startTime) && startTime < selectedDayEndTime && Array.isArray(batch.order_ids) &&
+            batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(orderNumber));
+        });
+        const workerStatus = resolveProductionCardWorkers(rowLogs, rowBatchStarts, orderNumber);
+        const totalPlannedQuantity = groupRows.reduce((sum, row) => sum + row.plannedQuantity, 0);
+        let unallocatedCompletedQuantity = calculateCompletedPlanQuantity(
+          rowLogs,
+          totalPlannedQuantity,
+          groupRows[0].productType,
+          cleanStationName
+        );
+        const completionLogs = getRelevantCompletionLogsForQuantity(rowLogs, cleanStationName);
+        const latestCompletionTime = completionLogs
+          .map((log) => new Date(log.end_time || log.end_timestamp || log.created_at || "").getTime())
+          .filter(Number.isFinite)
+          .sort((left, right) => left - right)
+          .at(-1);
+
+        groupRows.forEach((planRow) => {
+          const completedQuantity = Math.min(planRow.plannedQuantity, Math.max(0, unallocatedCompletedQuantity));
+          unallocatedCompletedQuantity = Math.max(0, unallocatedCompletedQuantity - completedQuantity);
+          const completed = planRow.plannedQuantity <= 0
+            ? workerStatus.status === "done"
+            : completedQuantity >= planRow.plannedQuantity;
+          const completedOnSelectedDate = completed && latestCompletionTime !== undefined &&
+            latestCompletionTime >= selectedDayStartTime && latestCompletionTime < selectedDayEndTime;
+          if (completed && !completedOnSelectedDate) return;
+
+          const hasProgress = completedQuantity > 0 || workerStatus.status === "in-progress";
+          const status: ProductionMonitorStatus = completed ? "done" : hasProgress ? "in-progress" : "waiting";
+          const delayDays = Math.max(1, Math.floor((selectedDayStartTime - new Date(`${planRow.completionDate}T00:00:00`).getTime()) / 86400000));
+          backlogRows.push({
+            id: planRow.id,
+            orderNumber: planRow.orderNumber,
+            productName: planRow.productName,
+            plannedQuantity: planRow.plannedQuantity,
+            completedQuantity,
+            remainingQuantity: Math.max(0, planRow.plannedQuantity - completedQuantity),
+            completionDate: planRow.completionDate,
+            delayDays,
+            status,
+            statusLabel: completed ? "Lemaradás elkészült" : hasProgress ? "Pótlás folyamatban" : "Lemaradás – elvégzendő",
+            startWorkerName: workerStatus.startWorkerName,
+            lastWorkerName: workerStatus.endWorkerName || workerStatus.startWorkerName,
+            startedAt: workerStatus.startedAt,
+            endedAt: workerStatus.endedAt,
+          });
+        });
+      });
+
+      backlogRows.sort((left, right) => {
+        const priority: Record<ProductionMonitorStatus, number> = { waiting: 0, "in-progress": 1, done: 2, "not-required": 3 };
+        const statusDifference = priority[left.status] - priority[right.status];
+        if (statusDifference !== 0) return statusDifference;
+        const dateDifference = left.completionDate.localeCompare(right.completionDate);
+        return dateDifference !== 0 ? dateDifference : left.orderNumber.localeCompare(right.orderNumber, "hu", { numeric: true });
+      });
+    }
+
     const rows: ProductionCardRow[] = planRows.map((planRow) => {
       const rowLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(planRow.orderNumber));
       const rowBatchStarts = batchStarts.filter((batch) =>
@@ -4951,6 +5224,7 @@ export default function Page() {
       tableName,
       rows,
       scrapReplacementRows,
+      backlogRows,
       lastUpdatedAt: new Date().toISOString(),
       errorMessage: rows.length === 0 && sourceErrors.length > 0 ? sourceErrors.join(" | ") : "",
     };
@@ -5095,8 +5369,8 @@ export default function Page() {
   }
 
   function duplicateProductionCardTable(): void {
-    if (activeProductionCardTable.dataSource === "scrap-replacement") {
-      setMessage({ type: "info", text: "A selejtpótlási kártya egyedi rendszerkártya, ezért nem másolható. A megjelenése teljesen szerkeszthető." });
+    if (activeProductionCardTable.dataSource !== "production-plan") {
+      setMessage({ type: "info", text: "Az elsőbbségi rendszerkártyák nem másolhatók, de a megjelenésük teljesen szerkeszthető." });
       return;
     }
     const tableName = `${activeProductionCardTable.name} másolat`;
@@ -5130,8 +5404,8 @@ export default function Page() {
   }
 
   function deleteProductionCardTable(): void {
-    if (activeProductionCardTable.dataSource === "scrap-replacement") {
-      setMessage({ type: "info", text: "A selejtpótlási kártya nem törölhető, de minden mezője és színe személyre szabható." });
+    if (activeProductionCardTable.dataSource !== "production-plan") {
+      setMessage({ type: "info", text: "Az elsőbbségi rendszerkártyák nem törölhetők, de minden mezőjük és színük személyre szabható." });
       return;
     }
     if (productionCardProfile.tables.length <= 1) {
@@ -5202,10 +5476,12 @@ export default function Page() {
     const zoomRatio = profile.zoomPercent / 100;
     const profileTheme = profile.theme;
     const urgentScrapRows = data.scrapReplacementRows || [];
+    const backlogRows = data.backlogRows || [];
 
     const renderTable = (table: ProductionMonitorTableConfig, tableIndex: number): React.JSX.Element => {
       const isActive = table.id === profile.activeTableId;
       const isScrapTable = table.dataSource === "scrap-replacement";
+      const isBacklogTable = table.dataSource === "backlog";
       const theme = table.theme;
       const validFieldIds = getProductionCardFieldIdsForTable(table);
       const orderedFieldIds = [
@@ -5219,9 +5495,9 @@ export default function Page() {
       const cellFontSize = Math.max(7, Math.round((theme.cellFontSize || baseFont) * zoomRatio * 10) / 10);
       const fieldWeights = Object.fromEntries(visibleFieldIds.map((fieldId) => [fieldId, getProductionCardFieldStyle(fieldId, table).widthWeight])) as Record<string, number>;
       const totalWeight = Math.max(0.25, visibleFieldIds.reduce((sum, fieldId) => sum + Math.max(0.25, fieldWeights[fieldId] || 1), 0));
-      const sourceRows = isScrapTable ? urgentScrapRows : data.rows;
+      const sourceRows = isScrapTable ? urgentScrapRows : isBacklogTable ? backlogRows : data.rows;
 
-      if (isScrapTable && sourceRows.length === 0 && !editable) return <React.Fragment key={table.id} />;
+      if ((isScrapTable || isBacklogTable) && sourceRows.length === 0 && !editable) return <React.Fragment key={table.id} />;
 
       return (
         <section
@@ -5229,12 +5505,16 @@ export default function Page() {
           onClick={() => editable && switchProductionCardTable(table.id)}
           style={{
             background: theme.tablePanelBackground,
-            border: editable && isActive ? `3px solid ${theme.accentColor}` : `${isScrapTable ? 3 : 1}px solid ${theme.borderColor}`,
+            border: editable && isActive ? `3px solid ${theme.accentColor}` : `${isScrapTable || isBacklogTable ? 3 : 1}px solid ${theme.borderColor}`,
             borderRadius: theme.panelRadius,
             padding: compact ? 8 : 12,
             marginBottom: compact ? 8 : 14,
             overflow: "hidden",
-            boxShadow: compact ? "none" : isScrapTable ? "0 12px 30px rgba(127,29,29,0.25)" : "0 10px 28px rgba(0,0,0,0.22)",
+            boxShadow: compact ? "none" : isScrapTable
+              ? "0 12px 30px rgba(127,29,29,0.25)"
+              : isBacklogTable
+                ? "0 12px 30px rgba(245,158,11,0.22)"
+                : "0 10px 28px rgba(0,0,0,0.22)",
             cursor: editable ? "pointer" : "default",
           }}
         >
@@ -5246,6 +5526,9 @@ export default function Page() {
               {isScrapTable && (
                 <div style={{ color: theme.tableTitleText, opacity: 0.82, fontSize: compact ? 9 : 11, marginTop: 2 }}>A fóliázó vagy összeszerelő által jelzett pótlás mindig megelőzi a napi tervet.</div>
               )}
+              {isBacklogTable && (
+                <div style={{ color: theme.tableTitleText, opacity: 0.86, fontSize: compact ? 9 : 11, marginTop: 2 }}>A korábbi napokról elmaradt, még nem teljesített mennyiségek a napi terv előtt jelennek meg.</div>
+              )}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
               {isScrapTable && sourceRows.length > 0 && (
@@ -5253,15 +5536,24 @@ export default function Page() {
                   {urgentScrapRows.filter((row) => row.status !== "KESZ").length} sürgős
                 </span>
               )}
+              {isBacklogTable && sourceRows.length > 0 && (
+                <span style={{ background: theme.tableHeaderBackground, color: theme.tableHeaderText, borderRadius: 999, padding: "5px 10px", fontWeight: 900, fontSize: 12 }}>
+                  {backlogRows.filter((row) => row.status !== "done").length} lemaradás
+                </span>
+              )}
               {editable && <span style={{ color: theme.subtitleText, fontSize: 11, fontWeight: 800 }}>{isActive ? "Aktív" : "Kattints a szerkesztéshez"}</span>}
             </div>
           </div>
 
-          {data.errorMessage && !isScrapTable ? (
+          {data.errorMessage && !isScrapTable && !isBacklogTable ? (
             <div style={{ color: "#fecaca", background: "#450a0a", border: "1px solid #ef4444", borderRadius: 10, padding: 12 }}>{data.errorMessage}</div>
           ) : sourceRows.length === 0 ? (
             <div style={{ color: theme.subtitleText, padding: compact ? 14 : 26, textAlign: "center" }}>
-              {isScrapTable ? "Jelenleg nincs selejtpótlásra váró rendelés." : "A kiválasztott naphoz nincs feltöltött termelési terv ezen a munkaállomáson."}
+              {isScrapTable
+                ? "Jelenleg nincs selejtpótlásra váró rendelés."
+                : isBacklogTable
+                  ? "Jelenleg nincs korábbi napról fennmaradt termelési lemaradás."
+                  : "A kiválasztott naphoz nincs feltöltött termelési terv ezen a munkaállomáson."}
             </div>
           ) : visibleFieldIds.length === 0 ? (
             <div style={{ color: theme.subtitleText, padding: 20, textAlign: "center" }}>Minden mező el van rejtve.</div>
@@ -5320,33 +5612,38 @@ export default function Page() {
                 </thead>
                 <tbody>
                   {sourceRows.map((rawRow, rowIndex) => {
-                    const productionRow = !isScrapTable ? rawRow as ProductionCardRow : null;
+                    const productionRow = !isScrapTable && !isBacklogTable ? rawRow as ProductionCardRow : null;
                     const scrapRow = isScrapTable ? rawRow as ScrapReplacementRow : null;
-                    const status = scrapRow ? getScrapReplacementCardStatus(scrapRow) : productionRow!.status;
-                    const rowKey = scrapRow ? String(scrapRow.id) : `${productionRow!.orderNumber}-${rowIndex}`;
+                    const backlogRow = isBacklogTable ? rawRow as ProductionCardBacklogRow : null;
+                    const status = scrapRow ? getScrapReplacementCardStatus(scrapRow) : backlogRow ? backlogRow.status : productionRow!.status;
+                    const rowKey = scrapRow ? String(scrapRow.id) : backlogRow ? backlogRow.id : `${productionRow!.orderNumber}-${rowIndex}`;
                     return (
                       <tr key={`${table.id}-${rowKey}`}>
                         {visibleFieldIds.map((fieldId) => {
                           const style = getProductionCardFieldStyle(fieldId, table);
                           const cellBold = resolveProductionMonitorTriState(style.cellBold, theme.cellBold);
                           const cellItalic = resolveProductionMonitorTriState(style.cellItalic, theme.cellItalic);
-                          const isStatus = fieldId === PRODUCTION_CARD_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID;
-                          const isOrder = fieldId === PRODUCTION_CARD_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID;
+                          const isStatus = fieldId === PRODUCTION_CARD_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID;
+                          const isOrder = fieldId === PRODUCTION_CARD_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID;
                           let background = isOrder ? theme.orderCellBackground : theme.waitingBackground;
                           let color = isOrder ? theme.orderCellText : theme.waitingText;
-                          if (isScrapTable || isStatus) {
+                          if (isScrapTable || isBacklogTable || isStatus) {
                             if (status === "done") { background = theme.doneBackground; color = theme.doneText; }
                             if (status === "in-progress") { background = theme.inProgressBackground; color = theme.inProgressText; }
                             if (status === "waiting") { background = theme.waitingBackground; color = theme.waitingText; }
                           }
                           const value = scrapRow
                             ? getScrapReplacementCardFieldValue(scrapRow, fieldId)
-                            : getProductionCardFieldValue(productionRow!, fieldId);
+                            : backlogRow
+                              ? getBacklogCardFieldValue(backlogRow, fieldId)
+                              : getProductionCardFieldValue(productionRow!, fieldId);
                           const title = scrapRow
                             ? [scrapRow.started_at ? `Indítás: ${formatDateTime(scrapRow.started_at)}` : "", scrapRow.completed_at ? `Kész: ${formatDateTime(scrapRow.completed_at)}` : "", scrapRow.last_worker_name ? `Dolgozó: ${scrapRow.last_worker_name}` : ""].filter(Boolean).join(" | ")
-                            : fieldId === PRODUCTION_CARD_STATUS_FIELD_ID
-                              ? [productionRow!.startWorkerName ? `Indító: ${productionRow!.startWorkerName}` : "", productionRow!.endWorkerName ? `Befejező: ${productionRow!.endWorkerName}` : "", productionRow!.startedAt ? `START: ${formatDateTime(productionRow!.startedAt)}` : "", productionRow!.endedAt ? `END: ${formatDateTime(productionRow!.endedAt)}` : ""].filter(Boolean).join(" | ")
-                              : String(value ?? "");
+                            : backlogRow
+                              ? [backlogRow.startedAt ? `Indítás: ${formatDateTime(backlogRow.startedAt)}` : "", backlogRow.endedAt ? `Utolsó END: ${formatDateTime(backlogRow.endedAt)}` : "", `Teljesítve: ${backlogRow.completedQuantity}/${backlogRow.plannedQuantity}`].filter(Boolean).join(" | ")
+                              : fieldId === PRODUCTION_CARD_STATUS_FIELD_ID
+                                ? [productionRow!.startWorkerName ? `Indító: ${productionRow!.startWorkerName}` : "", productionRow!.endWorkerName ? `Befejező: ${productionRow!.endWorkerName}` : "", productionRow!.startedAt ? `START: ${formatDateTime(productionRow!.startedAt)}` : "", productionRow!.endedAt ? `END: ${formatDateTime(productionRow!.endedAt)}` : ""].filter(Boolean).join(" | ")
+                                : String(value ?? "");
                           return (
                             <td
                               key={`${table.id}-${rowKey}-${fieldId}`}
@@ -5394,6 +5691,7 @@ export default function Page() {
           </div>
         )}
         {profile.tables.filter((table) => table.dataSource === "scrap-replacement").map(renderTable)}
+        {profile.tables.filter((table) => table.dataSource === "backlog").map(renderTable)}
         {profileTheme.showSummaryCards && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(80px, 1fr))", gap: 6, marginBottom: 8 }}>
             <div style={{ background: profileTheme.doneBackground, color: profileTheme.doneText, borderRadius: profileTheme.panelRadius, padding: compact ? 8 : 10 }}><div style={{ fontSize: 10 }}>Kész</div><strong>{data.rows.filter((row) => row.status === "done").length}</strong></div>
@@ -5401,7 +5699,7 @@ export default function Page() {
             <div style={{ background: profileTheme.waitingBackground, color: profileTheme.waitingText, borderRadius: profileTheme.panelRadius, padding: compact ? 8 : 10 }}><div style={{ fontSize: 10 }}>Várakozik</div><strong>{data.rows.filter((row) => row.status === "waiting").length}</strong></div>
           </div>
         )}
-        {profile.tables.filter((table) => table.dataSource !== "scrap-replacement").map(renderTable)}
+        {profile.tables.filter((table) => table.dataSource === "production-plan").map(renderTable)}
       </div>
     );
   }
@@ -5470,14 +5768,20 @@ export default function Page() {
                   <label style={editorLabelStyle}><span>Aktív táblázat</span><select value={activeProductionCardTable.id} onChange={(event) => switchProductionCardTable(event.target.value)} style={editorControlStyle}>{productionCardProfile.tables.map((table) => <option key={table.id} value={table.id}>{table.name}</option>)}</select></label>
                   <label style={editorLabelStyle}><span>Táblázat neve</span><input value={productionCardTableNameDraft} onChange={(event) => setProductionCardTableNameDraft(event.target.value)} maxLength={80} style={editorControlStyle} /></label>
                   <button type="button" onClick={renameProductionCardTable} style={buttonPrimary}>Név mentése</button>
-                  <button type="button" onClick={duplicateProductionCardTable} disabled={activeProductionCardTable.dataSource === "scrap-replacement"} style={buttonSecondary}>Táblázat másolása</button>
-                  <button type="button" onClick={deleteProductionCardTable} disabled={productionCardProfile.tables.length <= 1 || activeProductionCardTable.dataSource === "scrap-replacement"} style={{ ...buttonSecondary, color: "#b91c1c", background: "#fff1f2" }}>Táblázat törlése</button>
+                  <button type="button" onClick={duplicateProductionCardTable} disabled={activeProductionCardTable.dataSource !== "production-plan"} style={buttonSecondary}>Táblázat másolása</button>
+                  <button type="button" onClick={deleteProductionCardTable} disabled={productionCardProfile.tables.length <= 1 || activeProductionCardTable.dataSource !== "production-plan"} style={{ ...buttonSecondary, color: "#b91c1c", background: "#fff1f2" }}>Táblázat törlése</button>
                 </div>
               </div>
 
               {activeProductionCardTable.dataSource === "scrap-replacement" && (
                 <div style={{ marginBottom: 12, padding: 12, borderRadius: 10, background: "#fff7ed", border: "1px solid #ef4444", color: "#991b1b", fontWeight: 800 }}>
                   A Selejtpótlás kártyát szerkeszted. A mezők sorrendje, láthatósága, szélessége, betűi és színei ugyanúgy állíthatók, mint a napi termelési kártyánál. Ez a kártya mindig a napi terv előtt jelenik meg.
+                </div>
+              )}
+
+              {activeProductionCardTable.dataSource === "backlog" && (
+                <div style={{ marginBottom: 12, padding: 12, borderRadius: 10, background: "#fffbeb", border: "1px solid #f59e0b", color: "#92400e", fontWeight: 800 }}>
+                  A Lemaradások kártyát szerkeszted. Ez minden munkaállomáson automatikusan megjelenik, ha korábbi napról teljesítetlen mennyiség maradt, és a napi terv előtt kap helyet.
                 </div>
               )}
 
@@ -7524,6 +7828,13 @@ export default function Page() {
   }, [standaloneProductionMonitor, activeWorker?.id, terminalView, flowStage, managementSection, productionMonitorDate]);
 
   useEffect(() => {
+    if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
+    if (terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "production-plan") return;
+    if (productionPlanServerPathLoaded) return;
+    void loadProductionPlanImportSettings();
+  }, [activeWorker?.id, terminalView, flowStage, managementSection, supabase, productionPlanServerPathLoaded]);
+
+  useEffect(() => {
     const stations = getOrderedDashboardStations();
     if (!productionCardAdminStation && stations.length > 0) {
       setProductionCardAdminStation(stations[0]);
@@ -8133,6 +8444,290 @@ export default function Page() {
     setManualProductionProductName("");
     setManualProductionStations([]);
     setMessage({ type: "success", text: `${orderNumber} hozzáadva a ${productionPlanDate} napi termelési tervhez ${selectedStations.length} kijelölt munkaállomással.` });
+  }
+
+  function parseStationPlanRowsFromWorkbookSheet(
+    rawRows: Array<Record<string, unknown>>,
+    sourceLabel: string
+  ): StationPlanUploadRow[] {
+    if (!rawRows.length) throw new Error(`${sourceLabel}: a munkafül üres.`);
+    const headerSet = new Set(Object.keys(rawRows[0] || {}).map(normalizeSpreadsheetHeader));
+    const requiredHeaders: Array<{ label: string; aliases: string[] }> = [
+      { label: "sorszam", aliases: ["sorszam", "sorszám"] },
+      { label: "megnevezes", aliases: ["megnevezes", "megnevezés"] },
+      { label: "mennyiseg", aliases: ["mennyiseg", "mennyiség"] },
+      { label: "elkeszules_datum", aliases: ["elkeszules_datum", "elkeszules datum", "elkészülés dátum", "elkeszulesdatum"] },
+      { label: "tipus", aliases: ["tipus", "típus"] },
+    ];
+    const missingHeaders = requiredHeaders
+      .filter((header) => !header.aliases.some((alias) => headerSet.has(normalizeSpreadsheetHeader(alias))))
+      .map((header) => header.label);
+    if (missingHeaders.length > 0) throw new Error(`${sourceLabel}: hiányzó Excel-oszlopok: ${missingHeaders.join(", ")}.`);
+
+    const parsedRows: StationPlanUploadRow[] = [];
+    rawRows.forEach((row, index) => {
+      const rowNumber = index + 2;
+      const rawOrderNumber = readSpreadsheetValue(row, ["sorszam", "sorszám"]);
+      const rawProductName = readSpreadsheetValue(row, ["megnevezes", "megnevezés"]);
+      const rawQuantity = readSpreadsheetValue(row, ["mennyiseg", "mennyiség"]);
+      const rawCompletionDate = readSpreadsheetValue(row, ["elkeszules_datum", "elkeszules datum", "elkészülés dátum", "elkeszulesdatum"]);
+      const rawType = readSpreadsheetValue(row, ["tipus", "típus"]);
+      const isCompletelyEmpty = [rawOrderNumber, rawProductName, rawQuantity, rawCompletionDate, rawType]
+        .every((value) => value === null || value === undefined || String(value).trim() === "");
+      if (isCompletelyEmpty) return;
+
+      const sorszam = String(rawOrderNumber ?? "").trim();
+      const megnevezes = String(rawProductName ?? "").trim();
+      const tipus = String(rawType ?? "").trim();
+      const mennyiseg = parseSpreadsheetNumber(rawQuantity);
+      const elkeszulesDatum = parseSpreadsheetDate(rawCompletionDate);
+      if (!sorszam) throw new Error(`${sourceLabel}, ${rowNumber}. sor: a sorszam mező kötelező.`);
+      if (!megnevezes) throw new Error(`${sourceLabel}, ${rowNumber}. sor: a megnevezes mező kötelező.`);
+      if (!tipus) throw new Error(`${sourceLabel}, ${rowNumber}. sor: a tipus mező kötelező.`);
+      if (sorszam.length > 250 || megnevezes.length > 250 || tipus.length > 250) throw new Error(`${sourceLabel}, ${rowNumber}. sor: a szöveges mezők legfeljebb 250 karakteresek lehetnek.`);
+      if (mennyiseg === null || !Number.isInteger(mennyiseg) || mennyiseg < 0) throw new Error(`${sourceLabel}, ${rowNumber}. sor: a mennyiseg csak 0 vagy annál nagyobb egész szám lehet.`);
+      if (!elkeszulesDatum) throw new Error(`${sourceLabel}, ${rowNumber}. sor: az elkeszules_datum nem értelmezhető.`);
+      parsedRows.push({ sorszam, megnevezes, mennyiseg, elkeszules_datum: elkeszulesDatum, tipus });
+    });
+    if (!parsedRows.length) throw new Error(`${sourceLabel}: a munkafül nem tartalmaz feltölthető tervsort.`);
+    return parsedRows;
+  }
+
+  async function loadProductionPlanImportSettings(): Promise<void> {
+    if (!supabase) return;
+    try {
+      const { data, error } = await supabase
+        .from(PRODUCTION_PLAN_IMPORT_SETTINGS_TABLE)
+        .select("id, excel_path, updated_by, updated_at, last_import_at, last_import_file_modified_at")
+        .eq("id", 1)
+        .maybeSingle();
+      if (error) throw error;
+      const settings = data as ProductionPlanImportSettingsRow | null;
+      setProductionPlanServerPath(String(settings?.excel_path || DEFAULT_PRODUCTION_PLAN_SERVER_PATH));
+      setProductionPlanLastServerImportAt(String(settings?.last_import_at || ""));
+      setProductionPlanLastFileModifiedAt(String(settings?.last_import_file_modified_at || ""));
+    } catch (error) {
+      console.error("A termelési terv szerveres elérési útjának betöltése sikertelen:", error);
+      setProductionPlanServerPath(DEFAULT_PRODUCTION_PLAN_SERVER_PATH);
+      setMessage({ type: "error", text: `A szerveres Excel-beállítás nem olvasható. Futtasd le a mellékelt SQL-t. Részletek: ${normalizeError(error)}` });
+    } finally {
+      setProductionPlanServerPathLoaded(true);
+    }
+  }
+
+  async function saveProductionPlanImportSettings(showFeedback = false, importMetadata?: { importedAt: string; fileModifiedAt: string }): Promise<void> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const cleanPath = productionPlanServerPath.trim();
+    if (!cleanPath) throw new Error("Add meg az XLSX-fájl szerveres elérési útját.");
+    const payload: Record<string, unknown> = {
+      id: 1,
+      excel_path: cleanPath,
+      updated_by: String(activeWorker?.["Teljes nev"] || "").trim() || null,
+      updated_at: new Date().toISOString(),
+    };
+    if (importMetadata) {
+      payload.last_import_at = importMetadata.importedAt;
+      payload.last_import_file_modified_at = importMetadata.fileModifiedAt || null;
+    }
+    const { error } = await supabase
+      .from(PRODUCTION_PLAN_IMPORT_SETTINGS_TABLE)
+      .upsert(payload, { onConflict: "id" });
+    if (error) throw error;
+    if (showFeedback) setMessage({ type: "success", text: "A szerveres XLSX elérési útja elmentve." });
+  }
+
+  function askStationPlanConflictAction(
+    stationName: string,
+    row: StationPlanUploadRow,
+    existingRows: StationPlanExistingRow[]
+  ): "insert" | "add" | "update" | "skip" | "cancel" {
+    const answer = window.prompt(
+      `${stationName}: a(z) ${row.sorszam} sorszám ${row.elkeszules_datum} dátummal már szerepel (${existingRows.length} sor).\\n\\n` +
+      `1 = Új sorba felveszem\\n2 = A legutóbbi sor mennyiségéhez hozzáadom (${row.mennyiseg})\\n` +
+      `3 = A legutóbbi sort frissítem az Excel adataira\\n4 = Kihagyom\\n0 = A teljes import megszakítása`,
+      "4"
+    );
+    if (answer === null || answer.trim() === "0") return "cancel";
+    if (answer.trim() === "1") return "insert";
+    if (answer.trim() === "2") return "add";
+    if (answer.trim() === "3") return "update";
+    return "skip";
+  }
+
+  async function buildStationPlanMergeActions(
+    stationName: string,
+    rows: StationPlanUploadRow[],
+    sourceFile: string
+  ): Promise<StationPlanMergeAction[]> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const tableName = buildStationPlanTableName(stationName);
+    const dates = Array.from(new Set(rows.map((row) => row.elkeszules_datum)));
+    const existingRows: StationPlanExistingRow[] = [];
+    for (let index = 0; index < dates.length; index += 100) {
+      const dateChunk = dates.slice(index, index + 100);
+      const { data, error } = await supabase
+        .from(tableName)
+        .select("id, sorszam, megnevezes, mennyiseg, elkeszules_datum, tipus")
+        .in("elkeszules_datum", dateChunk)
+        .order("id", { ascending: true })
+        .limit(10000);
+      if (error) throw error;
+      existingRows.push(...((data || []) as StationPlanExistingRow[]));
+    }
+
+    const actions: StationPlanMergeAction[] = [];
+    const rowKey = (row: Pick<StationPlanUploadRow, "sorszam" | "elkeszules_datum">) =>
+      `${normalizeLooseText(row.sorszam)}|${row.elkeszules_datum}`;
+
+    for (const row of rows) {
+      const key = rowKey(row);
+      const databaseMatches = existingRows.filter((existing) => rowKey(existing) === key);
+      const pendingMatches = actions
+        .map((action, index) => ({ action, index }))
+        .filter(({ action }) => rowKey(action) === key && action.action === "insert");
+
+      if (databaseMatches.length === 0 && pendingMatches.length === 0) {
+        actions.push({ ...row, action: "insert", source_file: sourceFile });
+        continue;
+      }
+
+      const conflictPreview: StationPlanExistingRow[] = [
+        ...databaseMatches,
+        ...pendingMatches.map(({ action, index }) => ({
+          id: `új-import-sor-${index + 1}`,
+          sorszam: action.sorszam,
+          megnevezes: action.megnevezes,
+          mennyiseg: action.mennyiseg,
+          elkeszules_datum: action.elkeszules_datum,
+          tipus: action.tipus,
+        })),
+      ];
+      const selectedAction = askStationPlanConflictAction(stationName, row, conflictPreview);
+      if (selectedAction === "cancel") throw new Error("A felhasználó megszakította a termelési terv importját.");
+      if (selectedAction === "skip") {
+        actions.push({ ...row, action: "skip", source_file: sourceFile });
+        continue;
+      }
+      if (selectedAction === "insert") {
+        actions.push({ ...row, action: "insert", source_file: sourceFile });
+        continue;
+      }
+
+      const latestPending = pendingMatches.at(-1);
+      if (latestPending) {
+        const target = actions[latestPending.index];
+        if (selectedAction === "add") target.mennyiseg += row.mennyiseg;
+        else Object.assign(target, row, { action: "insert", source_file: sourceFile });
+        continue;
+      }
+
+      const latestDatabaseRow = [...databaseMatches]
+        .sort((left, right) => Number(left.id) - Number(right.id))
+        .at(-1);
+      if (!latestDatabaseRow) throw new Error(`${stationName}: a konfliktusos tervsor nem található.`);
+      actions.push({
+        ...row,
+        action: selectedAction,
+        existing_id: latestDatabaseRow.id,
+        source_file: sourceFile,
+      });
+      if (selectedAction === "add") latestDatabaseRow.mennyiseg = Number(latestDatabaseRow.mennyiseg || 0) + row.mennyiseg;
+      else Object.assign(latestDatabaseRow, row);
+    }
+    return actions;
+  }
+
+  async function refreshProductionPlansFromServerWorkbook(): Promise<void> {
+    if (!supabase) {
+      setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
+      return;
+    }
+    const cleanPath = productionPlanServerPath.trim();
+    if (!cleanPath) {
+      setMessage({ type: "error", text: "Add meg az XLSX-fájl szerveres elérési útját." });
+      return;
+    }
+    setRefreshingProductionPlanWorkbook(true);
+    try {
+      await saveProductionPlanImportSettings(false);
+      const response = await fetch(PRODUCTION_PLAN_SERVER_IMPORT_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: cleanPath }),
+      });
+      if (!response.ok) {
+        let errorMessage = `A szerveres XLSX nem olvasható (${response.status}).`;
+        try {
+          const errorPayload = await response.json() as { error?: string };
+          if (errorPayload.error) errorMessage = errorPayload.error;
+        } catch {
+          // A szerver nem JSON hibát küldött.
+        }
+        throw new Error(errorMessage);
+      }
+      const fileModifiedAt = response.headers.get("x-file-modified-at") || "";
+      const XLSX = await waitForXlsx();
+      if (!XLSX.read || !XLSX.utils.sheet_to_json) throw new Error("Az XLSX könyvtár nem támogatja az Excel beolvasását.");
+      const workbook = XLSX.read(await response.arrayBuffer(), { type: "array" });
+      const importStations = machineOptions.filter((station) =>
+        normalizeLooseText(station) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
+        !normalizeLooseText(station).includes("iroda")
+      );
+      const sheets: ServerWorkbookSheetPayload[] = workbook.SheetNames.map((name) => ({
+        name,
+        rows: XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets[name], { defval: "", raw: true }),
+      }));
+      const missingSheets: string[] = [];
+      const failedSheets: string[] = [];
+      const successfulSheets: string[] = [];
+      let totalProcessed = 0;
+      let totalSkipped = 0;
+
+      for (const stationName of importStations) {
+        const sheet = sheets.find((candidate) => candidate.name.trim().toLocaleLowerCase("hu") === stationName.trim().toLocaleLowerCase("hu"));
+        if (!sheet) {
+          missingSheets.push(stationName);
+          continue;
+        }
+        try {
+          const rows = parseStationPlanRowsFromWorkbookSheet(sheet.rows, `„${sheet.name}” munkafül`);
+          const actions = await buildStationPlanMergeActions(stationName, rows, cleanPath);
+          const { data, error } = await supabase.rpc("merge_machine_plan_rows", {
+            p_station_name: stationName,
+            p_rows: actions,
+          });
+          if (error) throw error;
+          const result = data && typeof data === "object" ? data as Record<string, unknown> : {};
+          totalProcessed += Number(result.processed || actions.filter((action) => action.action !== "skip").length);
+          totalSkipped += Number(result.skipped || actions.filter((action) => action.action === "skip").length);
+          successfulSheets.push(`${stationName} (${rows.length} sor)`);
+        } catch (error) {
+          failedSheets.push(`${stationName}: ${normalizeError(error)}`);
+        }
+      }
+
+      if (successfulSheets.length === 0) {
+        throw new Error(`Egyetlen munkafül sem került sikeresen betöltésre.${failedSheets.length ? ` Hibák: ${failedSheets.join(" | ")}` : ""}`);
+      }
+      const importedAt = new Date().toISOString();
+      await saveProductionPlanImportSettings(false, { importedAt, fileModifiedAt });
+      setProductionPlanLastServerImportAt(importedAt);
+      setProductionPlanLastFileModifiedAt(fileModifiedAt);
+      const warningParts = [
+        missingSheets.length ? `Hiányzó munkafülek: ${missingSheets.join(", ")}.` : "",
+        failedSheets.length ? `Hibák: ${failedSheets.join(" | ")}` : "",
+      ].filter(Boolean);
+      setMessage({
+        type: warningParts.length ? "info" : "success",
+        text: `${successfulSheets.length} munkafül sikeresen feldolgozva, ${totalProcessed} adatbázis-művelet, ${totalSkipped} kihagyás. ${successfulSheets.join(", ")}.${warningParts.length ? ` ${warningParts.join(" ")}` : ""}`,
+      });
+      if (productionCardAdminStation) void loadProductionCardData(productionCardAdminStation, productionCardDate);
+    } catch (error) {
+      console.error("SZERVERES TERMELÉSI TERV IMPORT HIBA:", error);
+      setMessage({ type: "error", text: `A közös XLSX termelési terv frissítése sikertelen: ${normalizeError(error)}` });
+    } finally {
+      setRefreshingProductionPlanWorkbook(false);
+    }
   }
 
   async function handleStationPlanFileSelection(stationName: string, file: File): Promise<void> {
