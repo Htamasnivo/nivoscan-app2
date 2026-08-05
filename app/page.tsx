@@ -3566,6 +3566,12 @@ export default function Page() {
       flex: "0 0 auto",
     };
 
+    const availableProductionStations = machineOptions.filter(
+      (option) =>
+        normalizeLooseText(option) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
+        !normalizeLooseText(option).includes("iroda")
+    );
+
     return (
       <div style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 20, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
