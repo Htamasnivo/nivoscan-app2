@@ -7435,10 +7435,13 @@ export default function Page() {
         <div style={cardStyle}>
           <h3 style={{ margin: "0 0 12px", color: "#f8fafc" }}>Eseménynapló</h3>
           <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1280 }}>
               <thead>
                 <tr style={{ textAlign: "left" }}>
                   <th style={tableHeaderStyle}>Időpont</th>
+                  <th style={tableHeaderStyle}>START IDŐ</th>
+                  <th style={tableHeaderStyle}>END IDŐ</th>
+                  <th style={tableHeaderStyle}>ELTELT IDŐ</th>
                   <th style={tableHeaderStyle}>Munkatárs</th>
                   <th style={tableHeaderStyle}>Rendelésszám</th>
                   <th style={tableHeaderStyle}>Esemény</th>
@@ -7450,9 +7453,15 @@ export default function Page() {
                   const action = String(log.action || "").toUpperCase();
                   const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
                   const eventAt = getDashboardLogEventAt(log);
+                  const startAt = getDashboardLogStartAt(log);
+                  const endAt = getDashboardLogEndAt(log);
+                  const elapsedLabel = getDashboardLogElapsedLabel(log);
                   return (
                     <tr key={`${eventAt}-${log.order_number}-${log.worker_id}-${index}`}>
                       <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{formatDateTime(eventAt)}</td>
+                      <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{startAt ? formatDateTime(startAt) : "-"}</td>
+                      <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{endAt ? formatDateTime(endAt) : "-"}</td>
+                      <td style={{ ...tableCellStyle, whiteSpace: "nowrap", fontWeight: 800, color: elapsedLabel === "Folyamatban" ? "#93c5fd" : "#e2e8f0" }}>{elapsedLabel}</td>
                       <td style={tableCellStyle}>{getDashboardLogWorkerName(log)}</td>
                       <td style={{ ...tableCellStyle, fontWeight: 800 }}>{log.order_number || "-"}</td>
                       <td style={tableCellStyle}>
@@ -7465,7 +7474,7 @@ export default function Page() {
                   );
                 })}
                 {visibleEventLogs.length === 0 && (
-                  <tr><td colSpan={5} style={{ padding: 14, color: "#94a3b8" }}>A kiválasztott időszakban, munkaállomáson és dolgozónál nincs esemény.</td></tr>
+                  <tr><td colSpan={8} style={{ padding: 14, color: "#94a3b8" }}>A kiválasztott időszakban, munkaállomáson és dolgozónál nincs esemény.</td></tr>
                 )}
               </tbody>
             </table>
@@ -10330,6 +10339,28 @@ export default function Page() {
     return String(log.start_time || log.start_timestamp || log.created_at || "");
   }
 
+  function getDashboardLogStartAt(log: WorkLogRow): string {
+    return String(log.start_time || log.start_timestamp || "");
+  }
+
+  function getDashboardLogEndAt(log: WorkLogRow): string {
+    return String(log.end_time || log.end_timestamp || "");
+  }
+
+  function getDashboardLogElapsedLabel(log: WorkLogRow): string {
+    const startAt = getDashboardLogStartAt(log);
+    const endAt = getDashboardLogEndAt(log);
+    if (!startAt || !endAt) return "Folyamatban";
+
+    const startMs = new Date(startAt).getTime();
+    const endMs = new Date(endAt).getTime();
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+      return "Folyamatban";
+    }
+
+    return formatDuration(Math.round((endMs - startMs) / 60000));
+  }
+
   function getFilteredDashboardActivity(): {
     openRows: DashboardOpenWorkRow[];
     logs: WorkLogRow[];
@@ -10513,12 +10544,17 @@ export default function Page() {
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(openWorkRows), "Folyamatban lévő munkák");
 
     const eventRows: Array<Array<string | number>> = [
-      ["Időpont", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
+      ["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
       ...filteredActivity.logs.map((log) => {
         const action = String(log.action || "").toUpperCase();
         const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
+        const startAt = getDashboardLogStartAt(log);
+        const endAt = getDashboardLogEndAt(log);
         return [
           formatDateTime(getDashboardLogEventAt(log)),
+          startAt ? formatDateTime(startAt) : "-",
+          endAt ? formatDateTime(endAt) : "-",
+          getDashboardLogElapsedLabel(log),
           getDashboardLogWorkerName(log),
           log.order_number || "-",
           isEnd ? "END" : action || "START",
@@ -10601,13 +10637,18 @@ export default function Page() {
       doc.text("Eseménynapló", 40, activityTableEndY + 28);
       (doc as any).autoTable({
         startY: activityTableEndY + 40,
-        head: [["Időpont", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"]],
+        head: [["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"]],
         body: filteredActivity.logs.length
           ? filteredActivity.logs.slice(0, 250).map((log) => {
               const action = String(log.action || "").toUpperCase();
               const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
+              const startAt = getDashboardLogStartAt(log);
+              const endAt = getDashboardLogEndAt(log);
               return [
                 formatDateTime(getDashboardLogEventAt(log)),
+                startAt ? formatDateTime(startAt) : "-",
+                endAt ? formatDateTime(endAt) : "-",
+                getDashboardLogElapsedLabel(log),
                 getDashboardLogWorkerName(log),
                 log.order_number || "-",
                 isEnd ? "END" : action || "START",
@@ -10615,9 +10656,9 @@ export default function Page() {
                 getNoteBeforeContext(log.note) || "-",
               ];
             })
-          : [["Nincs adat", "-", "-", "-", "-", "-"]],
+          : [["Nincs adat", "-", "-", "-", "-", "-", "-", "-", "-"]],
         theme: "grid",
-        styles: { font: PDF_FONT_FAMILY, fontSize: 7.5, cellPadding: 4, overflow: "linebreak" },
+        styles: { font: PDF_FONT_FAMILY, fontSize: 6.5, cellPadding: 3, overflow: "linebreak" },
         headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold" },
       });
 
