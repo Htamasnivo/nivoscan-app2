@@ -2765,6 +2765,8 @@ function getReproductionReportDateRange(
 
 type DashboardTimeInterval = { startMs: number; endMs: number };
 
+const DASHBOARD_WORKDAY_MINUTES = 8 * 60;
+
 function splitDashboardIntervalByLocalDay(startMs: number, endMs: number): Array<{ dayKey: string; interval: DashboardTimeInterval }> {
   const result: Array<{ dayKey: string; interval: DashboardTimeInterval }> = [];
   let cursor = startMs;
@@ -2990,18 +2992,21 @@ function buildDashboardWorkerAggregation(
   for (const candidate of intervalCandidates) {
     const normalizedWorker = normalizeLooseText(candidate.workerName);
     const normalizedStation = normalizeLooseText(candidate.station);
+    const normalizedOrder = normalizeLooseText(candidate.orderNumber);
     const normalizedBatch = normalizeLooseText(candidate.batchCode);
     const normalizedOperation = normalizeLooseText(candidate.operationCode);
-    const groupKey = normalizedBatch
-      ? `batch|${normalizedBatch}|${normalizedOperation || "legacy"}`
-      : `fallback|${normalizedWorker}|${normalizedStation}|${candidate.startMs}|${candidate.endMs}`;
 
-    const existing = groupedIntervals.get(groupKey);
-    if (!existing) {
+    // Egy kötegsorban ugyanaz a START–END idő több rendelésen is szerepelhet.
+    // A konkrét munkaszakaszt batch + dolgozó + állomás + művelet + időpontok
+    // azonosítják, ezért a köteg ideje csak egyszer kerül be.
+    // Egyedi rendelésnél a rendelés száma is része a kulcsnak; a párhuzamosan
+    // futó időszakokat később a mergeDashboardIntervals csak egyszer számolja.
+    const groupKey = normalizedBatch
+      ? `batch|${normalizedBatch}|${normalizedWorker}|${normalizedStation}|${normalizedOperation || "legacy"}|${candidate.startMs}|${candidate.endMs}`
+      : `single|${normalizedWorker}|${normalizedStation}|${normalizedOrder}|${normalizedOperation || "single"}|${candidate.startMs}|${candidate.endMs}`;
+
+    if (!groupedIntervals.has(groupKey)) {
       groupedIntervals.set(groupKey, { ...candidate });
-    } else {
-      existing.startMs = Math.min(existing.startMs, candidate.startMs);
-      existing.endMs = Math.max(existing.endMs, candidate.endMs);
     }
   }
 
@@ -3010,14 +3015,14 @@ function buildDashboardWorkerAggregation(
     const clippedEndMs = Math.min(candidate.endMs, rangeEndMs);
     if (clippedEndMs <= clippedStartMs) continue;
 
-    const worker = workerMap.get(Number(candidate.workerId)) || workers.find(
-      (item) => normalizeLooseText(item["Teljes nev"]) === normalizeLooseText(candidate.workerName)
-    );
     if (!workerIntervalsByDay.has(candidate.workerName)) {
       workerIntervalsByDay.set(candidate.workerName, new Map<string, DashboardTimeInterval[]>());
     }
     const dayMap = workerIntervalsByDay.get(candidate.workerName)!;
-    splitDashboardIntervalByWorkerSchedule(clippedStartMs, clippedEndMs, worker).forEach(({ dayKey, interval }) => {
+    // A ledolgozott idő mindig a tényleges START és END közötti idő.
+    // Az intervallumot csak napokra bontjuk; a dolgozó beállított műszakideje
+    // nem rövidíti le a rögzített munkaszakaszt.
+    splitDashboardIntervalByLocalDay(clippedStartMs, clippedEndMs).forEach(({ dayKey, interval }) => {
       if (!dayMap.has(dayKey)) dayMap.set(dayKey, []);
       dayMap.get(dayKey)!.push(interval);
     });
@@ -3064,7 +3069,7 @@ function buildDashboardWorkerPerformanceForStation(
       const totalMinutes = dailyMinutes.reduce((sum, minutes) => sum + minutes, 0);
       const activeDayCount = dailyMinutes.length;
       const efficiencyPct = activeDayCount > 0
-        ? Math.round((totalMinutes / (420 * activeDayCount)) * 100)
+        ? Math.round((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * activeDayCount)) * 100)
         : null;
       return {
         workerName,
@@ -3081,7 +3086,7 @@ function buildDashboardWorkerPerformanceForStation(
   const totalMinutes = workerRows.reduce((sum, row) => sum + row.totalMinutes, 0);
   const totalActiveWorkerDays = workerRows.reduce((sum, row) => sum + row.activeDayCount, 0);
   const dailyEfficiencyPct = totalActiveWorkerDays > 0
-    ? Math.round((totalMinutes / (420 * totalActiveWorkerDays)) * 100)
+    ? Math.round((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * totalActiveWorkerDays)) * 100)
     : 0;
 
   return { workerRows, totalMinutes, dailyEfficiencyPct };
@@ -3145,7 +3150,7 @@ function buildDashboardData(
       const totalMinutes = dailyMinutes.reduce((sum, minutes) => sum + minutes, 0);
       const activeDayCount = dailyMinutes.length;
       const efficiencyPct = activeDayCount > 0
-        ? Math.round((totalMinutes / (420 * activeDayCount)) * 100)
+        ? Math.round((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * activeDayCount)) * 100)
         : null;
       return {
         workerName,
@@ -3209,7 +3214,7 @@ function buildDashboardData(
   const totalMinutes = workerRows.reduce((sum, row) => sum + row.totalMinutes, 0);
   const totalActiveWorkerDays = workerRows.reduce((sum, row) => sum + row.activeDayCount, 0);
   const dailyEfficiencyPct = totalActiveWorkerDays > 0
-    ? Math.round((totalMinutes / (420 * totalActiveWorkerDays)) * 100)
+    ? Math.round((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * totalActiveWorkerDays)) * 100)
     : 0;
 
   return {
@@ -7355,7 +7360,7 @@ export default function Page() {
               <div>
                 <h3 style={{ margin: 0, color: "#f8fafc" }}>Dolgozói teljesítmény</h3>
                 <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>
-                  A munkaidő átfedései dolgozónként csak egyszer számítanak. A hatékonyság alapja 7 óra minden olyan napon, amikor volt munkavégzés.
+                  A munkaidő a lezárt START–END szakaszokból számolódik. Az átfedések dolgozónként csak egyszer, a kötegek teljes ideje pedig kötegenként csak egyszer számít. A hatékonyság alapja 8 óra minden olyan napon, amikor volt munkavégzés.
                 </div>
               </div>
               <div style={{ padding: "6px 10px", borderRadius: 999, background: "#082f49", color: "#bae6fd", border: "1px solid #0369a1", fontSize: 12, fontWeight: 800 }}>
@@ -10409,7 +10414,7 @@ export default function Page() {
     const totalMinutes = workerRows.reduce((sum, row) => sum + row.totalMinutes, 0);
     const totalActiveWorkerDays = workerRows.reduce((sum, row) => sum + row.activeDayCount, 0);
     const dailyEfficiencyPct = totalActiveWorkerDays > 0
-      ? Math.round((totalMinutes / (420 * totalActiveWorkerDays)) * 100)
+      ? Math.round((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * totalActiveWorkerDays)) * 100)
       : 0;
 
     return {
