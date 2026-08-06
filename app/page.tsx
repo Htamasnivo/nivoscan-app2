@@ -2899,129 +2899,66 @@ function buildDashboardWorkerAggregation(
   const rangeEndMs = new Date(range.endIso).getTime();
   const workerIntervalsByDay = new Map<string, Map<string, DashboardTimeInterval[]>>();
   const workerClosedRows = new Map<string, number>();
-  const directIntervalKeys = new Set<string>();
-  const intervalCandidates: DashboardWorkerIntervalCandidate[] = [];
 
   for (const log of logs) {
     const worker = workerMap.get(Number(log.worker_id));
-    const workerName = String(log.worker_name || worker?.["Teljes nev"] || `Dolgozó #${log.worker_id}`).trim();
-    const station = resolveLogStation(log, workers);
-    const explicitStart = log.start_time || log.start_timestamp || null;
-    const explicitEnd = log.end_time || log.end_timestamp || (String(log.action || "").toUpperCase() === "END" ? log.created_at : null);
+    const workerName = String(
+      log.worker_name || worker?.["Teljes nev"] || `Dolgozó #${log.worker_id}`
+    ).trim();
 
-    if (explicitEnd && isFullyCompletedEndLog(log)) {
-      const endMs = new Date(explicitEnd).getTime();
-      if (Number.isFinite(endMs) && endMs >= rangeStartMs && endMs < rangeEndMs) {
+    /*
+     * A lezárt tételek száma továbbra is az adott dolgozó által lezárt
+     * work_logs sorok száma. A részlegesen kész Tok + Nyíló sor csak akkor
+     * lezárt tétel, ha a meglévő isFullyCompletedEndLog szabály szerint valóban kész.
+     */
+    const completedEndValue = log.end_time || log.end_timestamp || null;
+    if (completedEndValue && isFullyCompletedEndLog(log)) {
+      const completedEndMs = new Date(completedEndValue).getTime();
+      if (
+        Number.isFinite(completedEndMs) &&
+        completedEndMs >= rangeStartMs &&
+        completedEndMs < rangeEndMs
+      ) {
         workerClosedRows.set(workerName, (workerClosedRows.get(workerName) || 0) + 1);
       }
     }
 
+    /*
+     * A dolgozói munkaidőbe kizárólag olyan work_logs sor kerülhet, amelyben
+     * ugyanazon a soron tényleges START és END idő is található.
+     * Nem használjuk az action/created_at mezőket pótló időpontként, és nem
+     * építünk mesterséges időszakot külön START és END naplósorokból.
+     */
+    const explicitStart = log.start_time || log.start_timestamp || null;
+    const explicitEnd = log.end_time || log.end_timestamp || null;
     if (!explicitStart || !explicitEnd) continue;
-    const startMs = new Date(explicitStart).getTime();
-    const endMs = new Date(explicitEnd).getTime();
-    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) continue;
 
-    const orderNumber = String(log.order_number || "").trim();
-    const directKey = [
-      normalizeLooseText(orderNumber),
-      normalizeLooseText(workerName),
-      normalizeLooseText(station),
-      startMs,
-      endMs,
-    ].join("|");
-    directIntervalKeys.add(directKey);
-    intervalCandidates.push({
-      workerId: Number(log.worker_id),
-      workerName,
-      station,
-      orderNumber,
-      batchCode: String(log.batch_code || "").trim(),
-      operationCode: String(log.operation_code || "").trim(),
-      startMs,
-      endMs,
-    });
-  }
-
-  // Régi adatoknál a START és END külön sor lehet. Ezekből a már meglévő
-  // rendelés-statisztikai logika épít teljes időszakot. Csak akkor vesszük fel,
-  // ha ugyanaz az intervallum közvetlenül még nem volt jelen a work_logs sorban.
-  const orderRows = buildOrderStatistics(logs, workers);
-  for (const row of orderRows) {
-    for (const segment of row.segments) {
-      if (segment.status !== "lezárt" || !segment.endAt) continue;
-      const startMs = new Date(segment.startAt).getTime();
-      const endMs = new Date(segment.endAt).getTime();
-      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) continue;
-
-      const directKey = [
-        normalizeLooseText(row.orderNumber),
-        normalizeLooseText(segment.workerName),
-        normalizeLooseText(segment.station),
-        startMs,
-        endMs,
-      ].join("|");
-      if (directIntervalKeys.has(directKey)) continue;
-
-      const relatedLogs = logs.filter(
-        (log) => normalizeLooseText(String(log.order_number || "")) === normalizeLooseText(row.orderNumber)
-      );
-      const relatedWorker = workers.find(
-        (worker) => normalizeLooseText(worker["Teljes nev"]) === normalizeLooseText(segment.workerName)
-      );
-      const relatedBatchCode = relatedLogs.find((log) => String(log.batch_code || "").trim())?.batch_code || "";
-      const relatedOperationCode = relatedLogs.find((log) => String(log.operation_code || "").trim())?.operation_code || null;
-
-      intervalCandidates.push({
-        workerId: Number(relatedWorker?.id || relatedLogs[0]?.worker_id || 0),
-        workerName: segment.workerName || "Ismeretlen dolgozó",
-        station: segment.station,
-        orderNumber: row.orderNumber,
-        batchCode: String(relatedBatchCode || "").trim(),
-        operationCode: String(relatedOperationCode || "").trim(),
-        startMs,
-        endMs,
-      });
+    const rawStartMs = new Date(explicitStart).getTime();
+    const rawEndMs = new Date(explicitEnd).getTime();
+    if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs) || rawEndMs <= rawStartMs) {
+      continue;
     }
-  }
 
-  // Kötegnél ugyanaz a teljes idő minden rendelési soron szerepelhet.
-  // batch_code esetén a köteget dolgozó + munkaállomás szerint egyszer számoljuk.
-  // Régi, batch_code nélküli kötegeknél az azonos dolgozó + állomás + START + END
-  // kombináció számít egyetlen kötegnek. Egyedi rendelésnél a saját teljes idő marad.
-  const groupedIntervals = new Map<string, DashboardWorkerIntervalCandidate>();
-  for (const candidate of intervalCandidates) {
-    const normalizedWorker = normalizeLooseText(candidate.workerName);
-    const normalizedStation = normalizeLooseText(candidate.station);
-    const normalizedOrder = normalizeLooseText(candidate.orderNumber);
-    const normalizedBatch = normalizeLooseText(candidate.batchCode);
-    const normalizedOperation = normalizeLooseText(candidate.operationCode);
-
-    // Egy kötegsorban ugyanaz a START–END idő több rendelésen is szerepelhet.
-    // A konkrét munkaszakaszt batch + dolgozó + állomás + művelet + időpontok
-    // azonosítják, ezért a köteg ideje csak egyszer kerül be.
-    // Egyedi rendelésnél a rendelés száma is része a kulcsnak; a párhuzamosan
-    // futó időszakokat később a mergeDashboardIntervals csak egyszer számolja.
-    const groupKey = normalizedBatch
-      ? `batch|${normalizedBatch}|${normalizedWorker}|${normalizedStation}|${normalizedOperation || "legacy"}|${candidate.startMs}|${candidate.endMs}`
-      : `single|${normalizedWorker}|${normalizedStation}|${normalizedOrder}|${normalizedOperation || "single"}|${candidate.startMs}|${candidate.endMs}`;
-
-    if (!groupedIntervals.has(groupKey)) {
-      groupedIntervals.set(groupKey, { ...candidate });
-    }
-  }
-
-  for (const candidate of groupedIntervals.values()) {
-    const clippedStartMs = Math.max(candidate.startMs, rangeStartMs);
-    const clippedEndMs = Math.min(candidate.endMs, rangeEndMs);
+    const clippedStartMs = Math.max(rawStartMs, rangeStartMs);
+    const clippedEndMs = Math.min(rawEndMs, rangeEndMs);
     if (clippedEndMs <= clippedStartMs) continue;
 
-    if (!workerIntervalsByDay.has(candidate.workerName)) {
-      workerIntervalsByDay.set(candidate.workerName, new Map<string, DashboardTimeInterval[]>());
+    if (!workerIntervalsByDay.has(workerName)) {
+      workerIntervalsByDay.set(workerName, new Map<string, DashboardTimeInterval[]>());
     }
-    const dayMap = workerIntervalsByDay.get(candidate.workerName)!;
-    // A ledolgozott idő mindig a tényleges START és END közötti idő.
-    // Az intervallumot csak napokra bontjuk; a dolgozó beállított műszakideje
-    // nem rövidíti le a rögzített munkaszakaszt.
+    const dayMap = workerIntervalsByDay.get(workerName)!;
+
+    /*
+     * Az intervallumot helyi naptári napokra bontjuk. Ezért például egy
+     * 23:30–00:30 munkából 30 perc kerül az első, 30 perc a következő napra.
+     *
+     * Minden work_logs sor bekerülhet az intervallumlistába, de az összesítéskor
+     * a mergeDashboardIntervals dolgozónként és naponként uniót képez:
+     *   - az egymást átfedő egyedi rendelések ideje csak egyszer számít;
+     *   - a köteg minden rendelési során ismétlődő azonos START–END idő csak
+     *     egyszer számít;
+     *   - a nem átfedő munkák percei összeadódnak.
+     */
     splitDashboardIntervalByLocalDay(clippedStartMs, clippedEndMs).forEach(({ dayKey, interval }) => {
       if (!dayMap.has(dayKey)) dayMap.set(dayKey, []);
       dayMap.get(dayKey)!.push(interval);
