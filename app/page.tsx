@@ -2767,6 +2767,16 @@ type DashboardTimeInterval = { startMs: number; endMs: number };
 
 const DASHBOARD_WORKDAY_MINUTES = 8 * 60;
 
+function roundDashboardEfficiencyPct(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round(value * 10) / 10;
+}
+
+function formatDashboardEfficiencyPct(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "–";
+  return value.toFixed(1);
+}
+
 function splitDashboardIntervalByLocalDay(startMs: number, endMs: number): Array<{ dayKey: string; interval: DashboardTimeInterval }> {
   const result: Array<{ dayKey: string; interval: DashboardTimeInterval }> = [];
   let cursor = startMs;
@@ -2929,8 +2939,13 @@ function buildDashboardWorkerAggregation(
      * Nem használjuk az action/created_at mezőket pótló időpontként, és nem
      * építünk mesterséges időszakot külön START és END naplósorokból.
      */
-    const explicitStart = log.start_time || log.start_timestamp || null;
-    const explicitEnd = log.end_time || log.end_timestamp || null;
+    // A teljesítményszámítás kizárólag a tényleges, ugyanazon work_logs sorban
+    // tárolt start_time és end_time mezőkből dolgozik. A start_timestamp,
+    // end_timestamp és created_at nem lehet pótló időpont, mert egy nyitott
+    // munkát vagy régi technikai naplóbejegyzést tévesen többórás lezárt
+    // munkává alakíthatna.
+    const explicitStart = String(log.start_time || "").trim();
+    const explicitEnd = String(log.end_time || "").trim();
     if (!explicitStart || !explicitEnd) continue;
 
     const rawStartMs = new Date(explicitStart).getTime();
@@ -2938,6 +2953,14 @@ function buildDashboardWorkerAggregation(
     if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs) || rawEndMs <= rawStartMs) {
       continue;
     }
+
+    // Egy lezárt munkaszakasz akkor tartozik az időszakhoz, ha a START vagy az
+    // END időpontja beleesik. Ez a normál, éjfélen átnyúló munkát mindkét
+    // érintett napon helyesen szétosztja, viszont egy több napon át nyitva
+    // felejtett vagy hibás régi sor nem terheli meg minden köztes napot.
+    const startsInsideRange = rawStartMs >= rangeStartMs && rawStartMs < rangeEndMs;
+    const endsInsideRange = rawEndMs > rangeStartMs && rawEndMs <= rangeEndMs;
+    if (!startsInsideRange && !endsInsideRange) continue;
 
     const clippedStartMs = Math.max(rawStartMs, rangeStartMs);
     const clippedEndMs = Math.min(rawEndMs, rangeEndMs);
@@ -3006,7 +3029,7 @@ function buildDashboardWorkerPerformanceForStation(
       const totalMinutes = dailyMinutes.reduce((sum, minutes) => sum + minutes, 0);
       const activeDayCount = dailyMinutes.length;
       const efficiencyPct = activeDayCount > 0
-        ? Math.round((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * activeDayCount)) * 100)
+        ? roundDashboardEfficiencyPct((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * activeDayCount)) * 100)
         : null;
       return {
         workerName,
@@ -3023,7 +3046,7 @@ function buildDashboardWorkerPerformanceForStation(
   const totalMinutes = workerRows.reduce((sum, row) => sum + row.totalMinutes, 0);
   const totalActiveWorkerDays = workerRows.reduce((sum, row) => sum + row.activeDayCount, 0);
   const dailyEfficiencyPct = totalActiveWorkerDays > 0
-    ? Math.round((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * totalActiveWorkerDays)) * 100)
+    ? roundDashboardEfficiencyPct((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * totalActiveWorkerDays)) * 100)
     : 0;
 
   return { workerRows, totalMinutes, dailyEfficiencyPct };
@@ -3087,7 +3110,7 @@ function buildDashboardData(
       const totalMinutes = dailyMinutes.reduce((sum, minutes) => sum + minutes, 0);
       const activeDayCount = dailyMinutes.length;
       const efficiencyPct = activeDayCount > 0
-        ? Math.round((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * activeDayCount)) * 100)
+        ? roundDashboardEfficiencyPct((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * activeDayCount)) * 100)
         : null;
       return {
         workerName,
@@ -3151,7 +3174,7 @@ function buildDashboardData(
   const totalMinutes = workerRows.reduce((sum, row) => sum + row.totalMinutes, 0);
   const totalActiveWorkerDays = workerRows.reduce((sum, row) => sum + row.activeDayCount, 0);
   const dailyEfficiencyPct = totalActiveWorkerDays > 0
-    ? Math.round((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * totalActiveWorkerDays)) * 100)
+    ? roundDashboardEfficiencyPct((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * totalActiveWorkerDays)) * 100)
     : 0;
 
   return {
@@ -7300,11 +7323,11 @@ export default function Page() {
               <div>
                 <h3 style={{ margin: 0, color: "#f8fafc" }}>Dolgozói teljesítmény</h3>
                 <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>
-                  A munkaidő a lezárt START–END szakaszokból számolódik. Az átfedések dolgozónként csak egyszer, a kötegek teljes ideje pedig kötegenként csak egyszer számít. A hatékonyság alapja 8 óra minden olyan napon, amikor volt munkavégzés.
+                  A munkaidő kizárólag a lezárt work_logs sorok start_time és end_time mezőinek különbségéből számolódik. Az END nélküli munkák nem számítanak bele. Az átfedések dolgozónként csak egyszer, a kötegek teljes ideje pedig kötegenként csak egyszer számít. A hatékonyság alapja 8 óra minden olyan napon, amikor volt lezárt munkavégzés.
                 </div>
               </div>
               <div style={{ padding: "6px 10px", borderRadius: 999, background: "#082f49", color: "#bae6fd", border: "1px solid #0369a1", fontSize: 12, fontWeight: 800 }}>
-                Összesített hatékonyság: {visibleWorkerRows.length > 0 ? `${filteredWorkerStats.dailyEfficiencyPct}%` : "–"}
+                Összesített hatékonyság: {visibleWorkerRows.length > 0 ? `${formatDashboardEfficiencyPct(filteredWorkerStats.dailyEfficiencyPct)}%` : "–"}
               </div>
             </div>
             <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
@@ -7332,7 +7355,7 @@ export default function Page() {
                         <td style={tableCellStyle}>{row.totalDurationLabel}</td>
                         <td style={tableCellStyle}>{row.closedSegments}</td>
                         <td style={{ ...tableCellStyle, color: efficiencyColor, fontWeight: 900 }}>
-                          {row.efficiencyPct === null ? "–" : `${row.efficiencyPct}%`}
+                          {row.efficiencyPct === null ? "–" : `${formatDashboardEfficiencyPct(row.efficiencyPct)}%`}
                           {row.activeDayCount > 1 && (
                             <div style={{ color: "#64748b", fontSize: 11, fontWeight: 600, marginTop: 3 }}>{row.activeDayCount} munkával érintett nap</div>
                           )}
@@ -10477,7 +10500,7 @@ export default function Page() {
     const totalMinutes = workerRows.reduce((sum, row) => sum + row.totalMinutes, 0);
     const totalActiveWorkerDays = workerRows.reduce((sum, row) => sum + row.activeDayCount, 0);
     const dailyEfficiencyPct = totalActiveWorkerDays > 0
-      ? Math.round((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * totalActiveWorkerDays)) * 100)
+      ? roundDashboardEfficiencyPct((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * totalActiveWorkerDays)) * 100)
       : 0;
 
     return {
@@ -10595,7 +10618,7 @@ export default function Page() {
       doc.text("Dolgozó | Ledolgozott idő | Lezárt tételek | Hatékonyság", 40, y);
       y += 16;
       filteredWorkerStats.workerRows.slice(0, 18).forEach((row) => {
-        doc.text(`${row.workerName} | ${row.totalDurationLabel} | ${row.closedSegments} | ${row.efficiencyPct === null ? "-" : `${row.efficiencyPct}%`}`, 40, y);
+        doc.text(`${row.workerName} | ${row.totalDurationLabel} | ${row.closedSegments} | ${row.efficiencyPct === null ? "-" : `${formatDashboardEfficiencyPct(row.efficiencyPct)}%`}`, 40, y);
         y += 15;
       });
 
