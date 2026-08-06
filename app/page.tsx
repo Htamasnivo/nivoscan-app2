@@ -7126,6 +7126,9 @@ export default function Page() {
     const selectedStationValue = filteredWorkerStats.selectedStationValue;
     const selectedWorkerValue = filteredWorkerStats.selectedWorkerValue;
     const visibleWorkerRows = filteredWorkerStats.workerRows;
+    const filteredDashboardActivity = getFilteredDashboardActivity();
+    const visibleOpenRows = filteredDashboardActivity.openRows;
+    const visibleEventLogs = filteredDashboardActivity.logs;
     const visibleStationRows = selectedStationValue === "all"
       ? availableStationRows
       : availableStationRows.filter(
@@ -7412,7 +7415,7 @@ export default function Page() {
                 </tr>
               </thead>
               <tbody>
-                {dashboardData.openRows.map((row) => (
+                {visibleOpenRows.map((row) => (
                   <tr key={`${row.orderNumber}-${row.startedAt}-${row.workerName}`}>
                     <td style={{ ...tableCellStyle, fontWeight: 800 }}>{row.orderNumber}</td>
                     <td style={tableCellStyle}>{row.station || row.role || "-"}</td>
@@ -7421,8 +7424,8 @@ export default function Page() {
                     <td style={{ ...tableCellStyle, color: "#cbd5e1" }}>{row.lastNote || "-"}</td>
                   </tr>
                 ))}
-                {dashboardData.openRows.length === 0 && (
-                  <tr><td colSpan={5} style={{ padding: 14, color: "#94a3b8" }}>Nincs folyamatban lévő munka az időszakban.</td></tr>
+                {visibleOpenRows.length === 0 && (
+                  <tr><td colSpan={5} style={{ padding: 14, color: "#94a3b8" }}>A kiválasztott időszakban, munkaállomáson és dolgozónál nincs folyamatban lévő munka.</td></tr>
                 )}
               </tbody>
             </table>
@@ -7443,13 +7446,14 @@ export default function Page() {
                 </tr>
               </thead>
               <tbody>
-                {dashboardData.logs.slice(0, 250).map((log, index) => {
+                {visibleEventLogs.slice(0, 250).map((log, index) => {
                   const action = String(log.action || "").toUpperCase();
                   const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
+                  const eventAt = getDashboardLogEventAt(log);
                   return (
-                    <tr key={`${log.created_at}-${log.order_number}-${log.worker_id}-${index}`}>
-                      <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{formatDateTime(log.created_at)}</td>
-                      <td style={tableCellStyle}>{log.worker_name || workers.find((worker) => worker.id === log.worker_id)?.["Teljes nev"] || "-"}</td>
+                    <tr key={`${eventAt}-${log.order_number}-${log.worker_id}-${index}`}>
+                      <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{formatDateTime(eventAt)}</td>
+                      <td style={tableCellStyle}>{getDashboardLogWorkerName(log)}</td>
                       <td style={{ ...tableCellStyle, fontWeight: 800 }}>{log.order_number || "-"}</td>
                       <td style={tableCellStyle}>
                         <span style={{ display: "inline-flex", alignItems: "center", borderRadius: 999, padding: "4px 10px", fontSize: 12, fontWeight: 900, background: isEnd ? "#064e3b" : "#1d4ed8", color: isEnd ? "#bbf7d0" : "#dbeafe" }}>
@@ -7460,8 +7464,8 @@ export default function Page() {
                     </tr>
                   );
                 })}
-                {dashboardData.logs.length === 0 && (
-                  <tr><td colSpan={5} style={{ padding: 14, color: "#94a3b8" }}>Nincs esemény az időszakban.</td></tr>
+                {visibleEventLogs.length === 0 && (
+                  <tr><td colSpan={5} style={{ padding: 14, color: "#94a3b8" }}>A kiválasztott időszakban, munkaállomáson és dolgozónál nincs esemény.</td></tr>
                 )}
               </tbody>
             </table>
@@ -10261,7 +10265,7 @@ export default function Page() {
     const rangeStartMs = new Date(range.startIso).getTime();
     const rangeEndMs = new Date(range.endIso).getTime();
     const visibleLogs = allFetchedLogs.filter((log) => {
-      const eventMs = new Date(log.created_at).getTime();
+      const eventMs = new Date(getDashboardLogEventAt(log)).getTime();
       return Number.isFinite(eventMs) && eventMs >= rangeStartMs && eventMs < rangeEndMs;
     });
 
@@ -10309,6 +10313,71 @@ export default function Page() {
     }
   }
 
+  function getDashboardLogWorkerName(log: WorkLogRow): string {
+    return String(
+      log.worker_name ||
+      workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] ||
+      "-"
+    ).trim() || "-";
+  }
+
+  function getDashboardLogEventAt(log: WorkLogRow): string {
+    const action = String(log.action || "").toUpperCase();
+    const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
+    if (isEnd) {
+      return String(log.end_time || log.end_timestamp || log.created_at || "");
+    }
+    return String(log.start_time || log.start_timestamp || log.created_at || "");
+  }
+
+  function getFilteredDashboardActivity(): {
+    openRows: DashboardOpenWorkRow[];
+    logs: WorkLogRow[];
+  } {
+    const filteredWorkerStats = getFilteredDashboardWorkerStats();
+    const selectedStationValue = filteredWorkerStats.selectedStationValue;
+    const selectedWorkerValue = filteredWorkerStats.selectedWorkerValue;
+    const range = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
+    const rangeStartMs = new Date(range.startIso).getTime();
+    const rangeEndMs = new Date(range.endIso).getTime();
+
+    const matchesWorker = (workerName: string): boolean =>
+      selectedWorkerValue === "all" ||
+      normalizeLooseText(workerName) === normalizeLooseText(selectedWorkerValue);
+
+    const matchesStation = (stationName: string): boolean =>
+      selectedStationValue === "all" ||
+      normalizeLooseText(stationName) === normalizeLooseText(selectedStationValue);
+
+    const openRows = dashboardData.openRows
+      .filter((row) => {
+        const startedMs = new Date(row.startedAt).getTime();
+        return Number.isFinite(startedMs) &&
+          startedMs >= rangeStartMs &&
+          startedMs < rangeEndMs &&
+          matchesWorker(row.workerName) &&
+          matchesStation(row.station || row.role || "");
+      })
+      .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime());
+
+    const logs = dashboardData.logs
+      .filter((log) => {
+        const eventAt = getDashboardLogEventAt(log);
+        const eventMs = new Date(eventAt).getTime();
+        return Number.isFinite(eventMs) &&
+          eventMs >= rangeStartMs &&
+          eventMs < rangeEndMs &&
+          matchesWorker(getDashboardLogWorkerName(log)) &&
+          matchesStation(resolveLogStation(log, workers));
+      })
+      .sort((left, right) =>
+        new Date(getDashboardLogEventAt(right)).getTime() -
+        new Date(getDashboardLogEventAt(left)).getTime()
+      );
+
+    return { openRows, logs };
+  }
+
   function getFilteredDashboardWorkerStats(): {
     selectedStationValue: string;
     selectedWorkerValue: string;
@@ -10334,8 +10403,34 @@ export default function Page() {
           (item) => normalizeLooseText(item.stationName) === normalizeLooseText(selectedStationValue)
         ) || { workerRows: [], totalMinutes: 0, dailyEfficiencyPct: 0 };
 
-    const availableWorkerNames = stationStats.workerRows
-      .map((row) => row.workerName)
+    const currentRange = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
+    const currentRangeStartMs = new Date(currentRange.startIso).getTime();
+    const currentRangeEndMs = new Date(currentRange.endIso).getTime();
+    const activityWorkerNames = [
+      ...dashboardData.openRows
+        .filter((row) => {
+          const startedMs = new Date(row.startedAt).getTime();
+          return Number.isFinite(startedMs) &&
+            startedMs >= currentRangeStartMs &&
+            startedMs < currentRangeEndMs &&
+            (selectedStationValue === "all" || normalizeLooseText(row.station || row.role || "") === normalizeLooseText(selectedStationValue));
+        })
+        .map((row) => row.workerName),
+      ...dashboardData.logs
+        .filter((log) => {
+          const eventMs = new Date(getDashboardLogEventAt(log)).getTime();
+          return Number.isFinite(eventMs) &&
+            eventMs >= currentRangeStartMs &&
+            eventMs < currentRangeEndMs &&
+            (selectedStationValue === "all" || normalizeLooseText(resolveLogStation(log, workers)) === normalizeLooseText(selectedStationValue));
+        })
+        .map((log) => getDashboardLogWorkerName(log)),
+    ];
+    const availableWorkerNames = [
+      ...stationStats.workerRows.map((row) => row.workerName),
+      ...activityWorkerNames,
+    ]
+      .filter((name) => Boolean(String(name || "").trim()) && String(name).trim() !== "-")
       .filter((name, index, items) => items.findIndex((item) => normalizeLooseText(item) === normalizeLooseText(name)) === index)
       .sort((a, b) => a.localeCompare(b, "hu"));
     const selectedWorkerValue = dashboardSelectedWorker === "all" || availableWorkerNames.some(
@@ -10386,9 +10481,16 @@ export default function Page() {
     ];
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(workerRows), "Dolgozói teljesítmény");
 
+    const filteredActivity = getFilteredDashboardActivity();
+    const selectedStationValue = filteredWorkerStats.selectedStationValue;
+    const visibleStationRows = selectedStationValue === "all"
+      ? dashboardData.stationEfficiencyRows
+      : dashboardData.stationEfficiencyRows.filter(
+          (row) => normalizeLooseText(row.stationName) === normalizeLooseText(selectedStationValue)
+        );
     const stationRows: Array<Array<string | number>> = [
       ["Munkaállomás", "Tervezett tételek", "Elkészült tételek", "Hátralévő tételek", "Terv szerinti hatékonyság %"],
-      ...dashboardData.stationEfficiencyRows.map((row) => [
+      ...visibleStationRows.map((row) => [
         row.stationName,
         row.plannedItems,
         row.completedItems,
@@ -10398,16 +10500,32 @@ export default function Page() {
     ];
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(stationRows), "Munkaállomási terv");
 
+    const openWorkRows: Array<Array<string | number>> = [
+      ["Rendelésszám", "Munkaállomás", "Dolgozó", "Kezdés", "Megjegyzés"],
+      ...filteredActivity.openRows.map((row) => [
+        row.orderNumber,
+        row.station || row.role || "-",
+        row.workerName,
+        formatDateTime(row.startedAt),
+        row.lastNote || "",
+      ]),
+    ];
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(openWorkRows), "Folyamatban lévő munkák");
+
     const eventRows: Array<Array<string | number>> = [
       ["Időpont", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
-      ...dashboardData.logs.map((log) => [
-        formatDateTime(log.created_at),
-        log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || "-",
-        log.order_number || "-",
-        log.end_time || log.end_timestamp || String(log.action || "").toUpperCase() === "END" ? "END" : "START",
-        resolveLogStation(log, workers),
-        log.note || "",
-      ]),
+      ...filteredActivity.logs.map((log) => {
+        const action = String(log.action || "").toUpperCase();
+        const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
+        return [
+          formatDateTime(getDashboardLogEventAt(log)),
+          getDashboardLogWorkerName(log),
+          log.order_number || "-",
+          isEnd ? "END" : action || "START",
+          resolveLogStation(log, workers),
+          getNoteBeforeContext(log.note) || "",
+        ];
+      }),
     ];
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(eventRows), "Eseménynapló");
 
@@ -10426,16 +10544,20 @@ export default function Page() {
       doc.setFont(PDF_FONT_FAMILY, "normal");
       doc.setFontSize(10);
       const range = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
+      const filteredWorkerStats = getFilteredDashboardWorkerStats();
+      const filteredActivity = getFilteredDashboardActivity();
+      const selectedStationLabel = filteredWorkerStats.selectedStationValue === "all" ? "Összes munkaállomás" : filteredWorkerStats.selectedStationValue;
+      const selectedWorkerLabel = filteredWorkerStats.selectedWorkerValue === "all" ? "Összes dolgozó" : filteredWorkerStats.selectedWorkerValue;
       doc.text(`Időszak: ${range.label}`, 40, 60);
+      doc.text(`Szűrés: ${selectedStationLabel} | ${selectedWorkerLabel}`, 40, 74);
 
-      let y = 88;
+      let y = 102;
       doc.setFont(PDF_FONT_FAMILY, "bold");
       doc.text("Dolgozói teljesítmény", 40, y);
       y += 18;
       doc.setFont(PDF_FONT_FAMILY, "normal");
       doc.text("Dolgozó | Ledolgozott idő | Lezárt tételek | Hatékonyság", 40, y);
       y += 16;
-      const filteredWorkerStats = getFilteredDashboardWorkerStats();
       filteredWorkerStats.workerRows.slice(0, 18).forEach((row) => {
         doc.text(`${row.workerName} | ${row.totalDurationLabel} | ${row.closedSegments} | ${row.efficiencyPct === null ? "-" : `${row.efficiencyPct}%`}`, 40, y);
         y += 15;
@@ -10448,9 +10570,55 @@ export default function Page() {
       doc.setFont(PDF_FONT_FAMILY, "normal");
       doc.text("Munkaállomás | Terv | Kész | Hátralévő | Hatékonyság", 40, y);
       y += 16;
-      dashboardData.stationEfficiencyRows.slice(0, 18).forEach((row) => {
+      const visibleStationRows = filteredWorkerStats.selectedStationValue === "all"
+        ? dashboardData.stationEfficiencyRows
+        : dashboardData.stationEfficiencyRows.filter(
+            (row) => normalizeLooseText(row.stationName) === normalizeLooseText(filteredWorkerStats.selectedStationValue)
+          );
+      visibleStationRows.slice(0, 18).forEach((row) => {
         doc.text(`${row.stationName} | ${row.plannedItems} | ${row.completedItems} | ${Math.max(0, row.plannedItems - row.completedItems)} | ${row.efficiencyPct === null ? "-" : `${row.efficiencyPct}%`}`, 40, y);
         y += 15;
+      });
+
+      (doc as any).addPage();
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(14);
+      doc.text("Folyamatban lévő munkák", 40, 40);
+      (doc as any).autoTable({
+        startY: 54,
+        head: [["Rendelésszám", "Munkaállomás", "Dolgozó", "Kezdés", "Megjegyzés"]],
+        body: filteredActivity.openRows.length
+          ? filteredActivity.openRows.map((row) => [row.orderNumber, row.station || row.role || "-", row.workerName, formatDateTime(row.startedAt), row.lastNote || "-"])
+          : [["Nincs adat", "-", "-", "-", "-"]],
+        theme: "grid",
+        styles: { font: PDF_FONT_FAMILY, fontSize: 8, cellPadding: 5, overflow: "linebreak" },
+        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold" },
+      });
+
+      const activityTableEndY = Number((doc as any).lastAutoTable?.finalY || 90);
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(14);
+      doc.text("Eseménynapló", 40, activityTableEndY + 28);
+      (doc as any).autoTable({
+        startY: activityTableEndY + 40,
+        head: [["Időpont", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"]],
+        body: filteredActivity.logs.length
+          ? filteredActivity.logs.slice(0, 250).map((log) => {
+              const action = String(log.action || "").toUpperCase();
+              const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
+              return [
+                formatDateTime(getDashboardLogEventAt(log)),
+                getDashboardLogWorkerName(log),
+                log.order_number || "-",
+                isEnd ? "END" : action || "START",
+                resolveLogStation(log, workers),
+                getNoteBeforeContext(log.note) || "-",
+              ];
+            })
+          : [["Nincs adat", "-", "-", "-", "-", "-"]],
+        theme: "grid",
+        styles: { font: PDF_FONT_FAMILY, fontSize: 7.5, cellPadding: 4, overflow: "linebreak" },
+        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold" },
       });
 
       const blob = doc.output("blob");
