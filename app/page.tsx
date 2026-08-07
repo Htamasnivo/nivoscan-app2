@@ -3654,7 +3654,22 @@ export default function Page() {
     ];
 
     return (
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18, padding: 6, borderRadius: 14, background: "#0f172a", border: "1px solid #334155" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          flexWrap: "wrap",
+          marginBottom: 18,
+          padding: 6,
+          borderRadius: 14,
+          background: "#0f172a",
+          border: "1px solid #334155",
+          position: "sticky",
+          top: 0,
+          zIndex: 1000,
+          boxShadow: "0 10px 28px rgba(0,0,0,0.32)",
+        }}
+      >
         {items.map((item) => {
           const active = managementSection === item.id;
           return (
@@ -3741,7 +3756,9 @@ export default function Page() {
     );
 
     return (
-      <div style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 20, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 18 }}>
+      <div style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 20, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 0 }}>
+        <ManagementNavigation />
+
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
           <div>
             <div style={{ fontSize: 13, color: "#38bdf8", fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Irodai modul</div>
@@ -3752,8 +3769,6 @@ export default function Page() {
           </div>
           <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
         </div>
-
-        <ManagementNavigation />
 
         <div style={{ display: "grid", gap: 18 }}>
           <section style={sectionCardStyle}>
@@ -5995,7 +6010,9 @@ export default function Page() {
 
     return (
       <div style={{ minHeight: "100vh", background: profileTheme.pageBackground, borderRadius: profileTheme.panelRadius + 4, padding: 18, color: profileTheme.headerPanelText, boxSizing: "border-box" }}>
-        <div style={{ maxWidth: profileTheme.contentMaxWidth, margin: "0 auto" }}>
+        <div style={{ width: "100%", maxWidth: "none", margin: 0 }}>
+          <ManagementNavigation />
+
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, flexWrap: "wrap", background: profileTheme.headerPanelBackground, border: `1px solid ${profileTheme.borderColor}`, borderRadius: profileTheme.panelRadius, padding: 16, marginBottom: 16 }}>
             <div>
               <div style={{ color: profileTheme.accentColor, fontWeight: 900, letterSpacing: 1, fontSize: 12 }}>TERMELÉSI KÁRTYA SZERKESZTŐ</div>
@@ -6015,8 +6032,6 @@ export default function Page() {
               <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
             </div>
           </div>
-
-          <ManagementNavigation />
 
           {productionCardEditMode && (
             <div style={{ background: profileTheme.editorBackground, color: "#1f2937", border: `2px solid ${profileTheme.accentColor}`, borderRadius: profileTheme.panelRadius, padding: 16, marginBottom: 14 }}>
@@ -6490,12 +6505,14 @@ export default function Page() {
           borderRadius: standalone ? 0 : profileTheme.panelRadius + 4,
           padding: 18,
           boxShadow: standalone ? "none" : "0 18px 45px rgba(0,0,0,0.28)",
-          marginTop: standalone ? 0 : 18,
+          marginTop: 0,
           boxSizing: "border-box",
           fontFamily: profileTheme.fontFamily,
         }}
       >
-        <div style={{ width: "100%", maxWidth: profileTheme.contentMaxWidth, margin: "0 auto" }}>
+        <div style={{ width: "100%", maxWidth: standalone ? profileTheme.contentMaxWidth : "none", margin: standalone ? "0 auto" : 0 }}>
+          {!standalone && <ManagementNavigation />}
+
           <div
             style={{
               display: "flex",
@@ -6598,8 +6615,6 @@ export default function Page() {
               {!standalone && <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>}
             </div>
           </div>
-
-          {!standalone && <ManagementNavigation />}
 
           {productionMonitorEditMode && (
             <div
@@ -6992,7 +7007,9 @@ export default function Page() {
     };
 
     return (
-      <div style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 18, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 18 }}>
+      <div style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 18, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 0 }}>
+        <ManagementNavigation />
+
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
           <div>
             <div style={{ color: "#38bdf8", fontWeight: 900, letterSpacing: 1.2, fontSize: 13 }}>ÚJRAGYÁRTÁSI MINŐSÉGJELENTÉS</div>
@@ -7006,8 +7023,6 @@ export default function Page() {
           </div>
           <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
         </div>
-
-        <ManagementNavigation />
 
         <div style={{ ...cardStyle, display: "grid", gap: 12, marginBottom: 14 }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, alignItems: "end" }}>
@@ -7223,6 +7238,8 @@ export default function Page() {
           marginBottom: 18,
         }}
       >
+        <ManagementNavigation />
+
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
           <div>
             <div style={{ fontSize: 13, color: "#38bdf8", fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Management Dashboard</div>
@@ -7304,8 +7321,6 @@ export default function Page() {
             <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
           </div>
         </div>
-
-        <ManagementNavigation />
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 18 }}>
           {dashboardCards.map((card) => (
