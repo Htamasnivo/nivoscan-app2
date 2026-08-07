@@ -76,8 +76,12 @@ type Worker = {
   jelszo_hash?: string | null;
   Esemeny_Koteg?: number | string | null;
   esemeny_koteg?: number | string | null;
+  // Régi mező támogatása a korábbi adatbázis-verziókhoz.
   munka_kezdete?: string | null;
+  // Új, egységes munkaidő-beállítások.
+  munka_kezdese?: string | null;
   munka_vege?: string | null;
+  elszamolt_munkaido?: string | null;
 };
 
 type MachineIdRow = {
@@ -242,6 +246,8 @@ type DashboardWorkerPerformanceRow = {
   totalDurationLabel: string;
   closedSegments: number;
   activeDayCount: number;
+  // A dolgozó saját elszámolt napi munkaideje + az aznapi túlórás órablokkok.
+  accountedMinutes: number;
   efficiencyPct: number | null;
 };
 
@@ -2871,6 +2877,15 @@ type DashboardWorkerIntervalCandidate = {
 type DashboardWorkerAggregation = {
   workerIntervalsByDay: Map<string, Map<string, DashboardTimeInterval[]>>;
   workerClosedRows: Map<string, number>;
+  // Dolgozó -> nap -> elszámolási keret percben.
+  // Alapja a workers.elszamolt_munkaido, amelyet az aznapi túlórás
+  // órablokkok automatikusan 60-60 perccel növelnek.
+  workerAccountedMinutesByDay: Map<string, Map<string, number>>;
+};
+
+type DashboardWorkerDayActivity = {
+  hasActivity: boolean;
+  overtimeBlocks: Set<number>;
 };
 
 function parseDashboardClockMinutes(value: string | null | undefined): number | null {
@@ -2885,54 +2900,176 @@ function parseDashboardClockMinutes(value: string | null | undefined): number | 
   return (hours * 60) + minutes;
 }
 
-function splitDashboardIntervalByWorkerSchedule(
+function getDashboardWorkerShiftStartMinutes(worker: Worker | undefined): number | null {
+  // Az új munka_kezdese mező az elsődleges. A régi munka_kezdete mezőt
+  // kompatibilitási okból továbbra is elfogadjuk.
+  return parseDashboardClockMinutes(worker?.munka_kezdese || worker?.munka_kezdete);
+}
+
+function getDashboardWorkerShiftEndMinutes(worker: Worker | undefined): number | null {
+  return parseDashboardClockMinutes(worker?.munka_vege);
+}
+
+function getDashboardWorkerBaseAccountedMinutes(worker: Worker | undefined): number {
+  return parseDashboardClockMinutes(worker?.elszamolt_munkaido) ?? DASHBOARD_WORKDAY_MINUTES;
+}
+
+function getDashboardLocalDayStartMs(dayKey: string): number {
+  const [year, month, day] = dayKey.split("-").map(Number);
+  return new Date(year, Math.max(0, month - 1), day, 0, 0, 0, 0).getTime();
+}
+
+function getDashboardWorkerDayActivity(
+  activityMap: Map<string, Map<string, DashboardWorkerDayActivity>>,
+  workerName: string,
+  dayKey: string
+): DashboardWorkerDayActivity {
+  if (!activityMap.has(workerName)) {
+    activityMap.set(workerName, new Map<string, DashboardWorkerDayActivity>());
+  }
+  const workerDays = activityMap.get(workerName)!;
+  if (!workerDays.has(dayKey)) {
+    workerDays.set(dayKey, { hasActivity: false, overtimeBlocks: new Set<number>() });
+  }
+  return workerDays.get(dayKey)!;
+}
+
+function markDashboardWorkerMovement(
+  activityMap: Map<string, Map<string, DashboardWorkerDayActivity>>,
+  workerName: string,
+  worker: Worker | undefined,
+  timestampMs: number,
+  rangeStartMs: number,
+  rangeEndMs: number
+): void {
+  if (!Number.isFinite(timestampMs) || timestampMs < rangeStartMs || timestampMs >= rangeEndMs) return;
+
+  const date = new Date(timestampMs);
+  const dayKey = getLocalDateKey(date);
+  const activity = getDashboardWorkerDayActivity(activityMap, workerName, dayKey);
+  activity.hasActivity = true;
+
+  const shiftEndMinutes = getDashboardWorkerShiftEndMinutes(worker);
+  const shiftStartMinutes = getDashboardWorkerShiftStartMinutes(worker);
+  if (shiftStartMinutes === null || shiftEndMinutes === null || shiftEndMinutes <= shiftStartMinutes) return;
+
+  const dayStartMs = getDashboardLocalDayStartMs(dayKey);
+  const shiftEndMs = dayStartMs + shiftEndMinutes * 60_000;
+  const nextMidnightMs = dayStartMs + 24 * 60 * 60_000;
+
+  // Csak a normál munkaidő vége UTÁNI mozgás nyit túlórás órablokkot.
+  // Példa: 14:01 -> 14:00–15:00 blokk, 15:00 -> 15:00–16:00 blokk.
+  if (timestampMs > shiftEndMs && timestampMs < nextMidnightMs) {
+    const blockIndex = Math.floor((timestampMs - shiftEndMs) / (60 * 60_000));
+    if (blockIndex >= 0) activity.overtimeBlocks.add(blockIndex);
+  }
+}
+
+function markDashboardClosedIntervalOvertimeBlocks(
+  activityMap: Map<string, Map<string, DashboardWorkerDayActivity>>,
+  workerName: string,
+  worker: Worker | undefined,
   startMs: number,
-  endMs: number,
-  worker: Worker | undefined
-): Array<{ dayKey: string; interval: DashboardTimeInterval }> {
-  const shiftStartMinutes = parseDashboardClockMinutes(worker?.munka_kezdete);
-  const shiftEndMinutes = parseDashboardClockMinutes(worker?.munka_vege);
-
-  if (shiftStartMinutes === null || shiftEndMinutes === null || shiftStartMinutes === shiftEndMinutes) {
-    return splitDashboardIntervalByLocalDay(startMs, endMs);
+  endMs: number
+): void {
+  const shiftStartMinutes = getDashboardWorkerShiftStartMinutes(worker);
+  const shiftEndMinutes = getDashboardWorkerShiftEndMinutes(worker);
+  if (
+    shiftStartMinutes === null ||
+    shiftEndMinutes === null ||
+    shiftEndMinutes <= shiftStartMinutes ||
+    endMs <= startMs
+  ) {
+    return;
   }
 
-  const result: Array<{ dayKey: string; interval: DashboardTimeInterval }> = [];
-  const firstDate = new Date(startMs);
-  firstDate.setHours(0, 0, 0, 0);
-  firstDate.setDate(firstDate.getDate() - 1);
-  const lastDate = new Date(endMs);
-  lastDate.setHours(0, 0, 0, 0);
-  lastDate.setDate(lastDate.getDate() + 1);
+  const startDayKey = getLocalDateKey(new Date(startMs));
+  const endDayKey = getLocalDateKey(new Date(endMs));
 
-  for (let shiftDay = new Date(firstDate); shiftDay.getTime() <= lastDate.getTime(); shiftDay.setDate(shiftDay.getDate() + 1)) {
-    const shiftStart = new Date(
-      shiftDay.getFullYear(),
-      shiftDay.getMonth(),
-      shiftDay.getDate(),
-      Math.floor(shiftStartMinutes / 60),
-      shiftStartMinutes % 60,
-      0,
-      0
-    ).getTime();
-    const shiftEndDayOffset = shiftEndMinutes <= shiftStartMinutes ? 1 : 0;
-    const shiftEndDay = new Date(
-      shiftDay.getFullYear(),
-      shiftDay.getMonth(),
-      shiftDay.getDate() + shiftEndDayOffset,
-      Math.floor(shiftEndMinutes / 60),
-      shiftEndMinutes % 60,
-      0,
-      0
-    ).getTime();
+  /*
+   * Ha ugyanazon a napon START és END is megvan, a lezárt munkaszakasz
+   * bizonyítja, hogy a dolgozó a köztes órákban is ezen dolgozott.
+   * Ezért minden érintett túlórás órablokkot megnyitunk.
+   *
+   * Éjfélen átnyúló sornál viszont NEM tekintjük automatikusan ledolgozott
+   * időnek az egész éjszakát. Ilyenkor csak a tényleges START/END mozgások
+   * nyitnak túlórás blokkot; a következő napi számlálás a munka_kezdese
+   * időponttól folytatódhat.
+   */
+  if (startDayKey !== endDayKey) return;
 
-    const intersectionStart = Math.max(startMs, shiftStart);
-    const intersectionEnd = Math.min(endMs, shiftEndDay);
-    if (intersectionEnd <= intersectionStart) continue;
+  const dayStartMs = getDashboardLocalDayStartMs(startDayKey);
+  const shiftEndMs = dayStartMs + shiftEndMinutes * 60_000;
+  const nextMidnightMs = dayStartMs + 24 * 60 * 60_000;
+  const overtimeStartMs = Math.max(startMs, shiftEndMs);
+  const overtimeEndMs = Math.min(endMs, nextMidnightMs);
+  if (overtimeEndMs <= overtimeStartMs) return;
 
-    splitDashboardIntervalByLocalDay(intersectionStart, intersectionEnd).forEach((part) => result.push(part));
+  const activity = getDashboardWorkerDayActivity(activityMap, workerName, startDayKey);
+  activity.hasActivity = true;
+
+  const firstBlock = Math.max(0, Math.floor((overtimeStartMs - shiftEndMs) / (60 * 60_000)));
+  const lastBlock = Math.max(
+    firstBlock,
+    Math.floor((Math.max(overtimeStartMs, overtimeEndMs - 1) - shiftEndMs) / (60 * 60_000))
+  );
+  for (let block = firstBlock; block <= lastBlock; block += 1) {
+    activity.overtimeBlocks.add(block);
+  }
+}
+
+function intersectDashboardIntervalWithWorkerDayWindows(
+  part: DashboardTimeInterval,
+  dayKey: string,
+  worker: Worker | undefined,
+  activity: DashboardWorkerDayActivity | undefined
+): DashboardTimeInterval[] {
+  const shiftStartMinutes = getDashboardWorkerShiftStartMinutes(worker);
+  const shiftEndMinutes = getDashboardWorkerShiftEndMinutes(worker);
+
+  // Ha a dolgozónak még nincs beállítva munkaidő, a korábbi viselkedést
+  // tartjuk meg: a tényleges lezárt intervallum teljes része számít.
+  if (
+    shiftStartMinutes === null ||
+    shiftEndMinutes === null ||
+    shiftEndMinutes <= shiftStartMinutes
+  ) {
+    return [part];
   }
 
+  // Többnapos nyitva hagyott sor köztes napját nem számoljuk automatikusan.
+  // Csak olyan nap számíthat, amelyen tényleges START vagy END mozgás történt.
+  if (!activity?.hasActivity) return [];
+
+  const dayStartMs = getDashboardLocalDayStartMs(dayKey);
+  const nextMidnightMs = dayStartMs + 24 * 60 * 60_000;
+  const shiftStartMs = dayStartMs + shiftStartMinutes * 60_000;
+  const shiftEndMs = dayStartMs + shiftEndMinutes * 60_000;
+  const windows: DashboardTimeInterval[] = [
+    { startMs: shiftStartMs, endMs: shiftEndMs },
+  ];
+
+  // A túlórából kizárólag azok az egész órablokkok számíthatnak, amelyekre
+  // az adott napon tényleges START/END mozgás vagy ugyanazon napi lezárt
+  // munkaszakasz bizonyítékot ad.
+  Array.from(activity.overtimeBlocks)
+    .sort((a, b) => a - b)
+    .forEach((blockIndex) => {
+      const blockStartMs = shiftEndMs + blockIndex * 60 * 60_000;
+      const blockEndMs = Math.min(blockStartMs + 60 * 60_000, nextMidnightMs);
+      if (blockStartMs < nextMidnightMs && blockEndMs > blockStartMs) {
+        windows.push({ startMs: blockStartMs, endMs: blockEndMs });
+      }
+    });
+
+  const result: DashboardTimeInterval[] = [];
+  windows.forEach((window) => {
+    const intersectionStart = Math.max(part.startMs, window.startMs);
+    const intersectionEnd = Math.min(part.endMs, window.endMs);
+    if (intersectionEnd > intersectionStart) {
+      result.push({ startMs: intersectionStart, endMs: intersectionEnd });
+    }
+  });
   return result;
 }
 
@@ -2942,25 +3079,84 @@ function buildDashboardWorkerAggregation(
   range: { startIso: string; endIso: string }
 ): DashboardWorkerAggregation {
   const workerMap = new Map<number, Worker>();
-  workers.forEach((worker) => workerMap.set(Number(worker.id), worker));
+  const workerByName = new Map<string, Worker>();
+  workers.forEach((worker) => {
+    workerMap.set(Number(worker.id), worker);
+    const normalizedName = normalizeLooseText(String(worker["Teljes nev"] || ""));
+    if (normalizedName) workerByName.set(normalizedName, worker);
+  });
 
   const rangeStartMs = new Date(range.startIso).getTime();
   const rangeEndMs = new Date(range.endIso).getTime();
   const workerIntervalsByDay = new Map<string, Map<string, DashboardTimeInterval[]>>();
   const workerClosedRows = new Map<string, number>();
+  const workerActivityByDay = new Map<string, Map<string, DashboardWorkerDayActivity>>();
+  const workerConfigByDisplayName = new Map<string, Worker>();
 
+  /*
+   * Első kör: összegyűjtjük a napi START/END mozgásokat és a túlórás
+   * órablokkokat. A START önmagában is mozgásnak számít, ezért például egy
+   * 14:01-kor elindított, de csak másnap befejezett munkánál az első nap
+   * 14:00–15:00 túlórás blokkot kap, az éjszakát viszont nem számoljuk.
+   */
   for (const log of logs) {
-    const worker = workerMap.get(Number(log.worker_id));
+    const workerFromId = workerMap.get(Number(log.worker_id));
     const workerName = String(
-      log.worker_name || worker?.["Teljes nev"] || `Dolgozó #${log.worker_id}`
+      log.worker_name || workerFromId?.["Teljes nev"] || `Dolgozó #${log.worker_id}`
     ).trim();
+    const worker = workerFromId || workerByName.get(normalizeLooseText(workerName));
+    if (worker) workerConfigByDisplayName.set(workerName, worker);
 
-    /*
-     * A lezárt tételek száma továbbra is az adott dolgozó által lezárt
-     * work_logs sorok száma. A részlegesen kész Tok + Nyíló sor csak akkor
-     * lezárt tétel, ha a meglévő isFullyCompletedEndLog szabály szerint valóban kész.
-     */
-    const completedEndValue = log.end_time || log.end_timestamp || null;
+    const explicitStart = String(log.start_time || "").trim();
+    const explicitEnd = String(log.end_time || "").trim();
+    const startMs = explicitStart ? new Date(explicitStart).getTime() : Number.NaN;
+    const endMs = explicitEnd ? new Date(explicitEnd).getTime() : Number.NaN;
+
+    if (Number.isFinite(startMs)) {
+      markDashboardWorkerMovement(
+        workerActivityByDay,
+        workerName,
+        worker,
+        startMs,
+        rangeStartMs,
+        rangeEndMs
+      );
+    }
+    if (Number.isFinite(endMs)) {
+      markDashboardWorkerMovement(
+        workerActivityByDay,
+        workerName,
+        worker,
+        endMs,
+        rangeStartMs,
+        rangeEndMs
+      );
+    }
+    if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
+      markDashboardClosedIntervalOvertimeBlocks(
+        workerActivityByDay,
+        workerName,
+        worker,
+        startMs,
+        endMs
+      );
+    }
+  }
+
+  /*
+   * Második kör: kizárólag lezárt (start_time + end_time) munkaszakaszokat
+   * számolunk tényleges ledolgozott időnek. Az átfedéseket később dolgozónként
+   * és naponként uniózzuk, ezért párhuzamos munka nem duplázza a perceket.
+   */
+  for (const log of logs) {
+    const workerFromId = workerMap.get(Number(log.worker_id));
+    const workerName = String(
+      log.worker_name || workerFromId?.["Teljes nev"] || `Dolgozó #${log.worker_id}`
+    ).trim();
+    const worker = workerFromId || workerByName.get(normalizeLooseText(workerName));
+    if (worker) workerConfigByDisplayName.set(workerName, worker);
+
+    const completedEndValue = log.end_time || null;
     if (completedEndValue && isFullyCompletedEndLog(log)) {
       const completedEndMs = new Date(completedEndValue).getTime();
       if (
@@ -2972,34 +3168,13 @@ function buildDashboardWorkerAggregation(
       }
     }
 
-    /*
-     * A dolgozói munkaidőbe kizárólag olyan work_logs sor kerülhet, amelyben
-     * ugyanazon a soron tényleges START és END idő is található.
-     * Nem használjuk az action/created_at mezőket pótló időpontként, és nem
-     * építünk mesterséges időszakot külön START és END naplósorokból.
-     */
-    // A teljesítményszámítás kizárólag a tényleges, ugyanazon work_logs sorban
-    // tárolt start_time és end_time mezőkből dolgozik. A start_timestamp,
-    // end_timestamp és created_at nem lehet pótló időpont, mert egy nyitott
-    // munkát vagy régi technikai naplóbejegyzést tévesen többórás lezárt
-    // munkává alakíthatna.
     const explicitStart = String(log.start_time || "").trim();
     const explicitEnd = String(log.end_time || "").trim();
     if (!explicitStart || !explicitEnd) continue;
 
     const rawStartMs = new Date(explicitStart).getTime();
     const rawEndMs = new Date(explicitEnd).getTime();
-    if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs) || rawEndMs <= rawStartMs) {
-      continue;
-    }
-
-    // Egy lezárt munkaszakasz akkor tartozik az időszakhoz, ha a START vagy az
-    // END időpontja beleesik. Ez a normál, éjfélen átnyúló munkát mindkét
-    // érintett napon helyesen szétosztja, viszont egy több napon át nyitva
-    // felejtett vagy hibás régi sor nem terheli meg minden köztes napot.
-    const startsInsideRange = rawStartMs >= rangeStartMs && rawStartMs < rangeEndMs;
-    const endsInsideRange = rawEndMs > rangeStartMs && rawEndMs <= rangeEndMs;
-    if (!startsInsideRange && !endsInsideRange) continue;
+    if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs) || rawEndMs <= rawStartMs) continue;
 
     const clippedStartMs = Math.max(rawStartMs, rangeStartMs);
     const clippedEndMs = Math.min(rawEndMs, rangeEndMs);
@@ -3009,25 +3184,47 @@ function buildDashboardWorkerAggregation(
       workerIntervalsByDay.set(workerName, new Map<string, DashboardTimeInterval[]>());
     }
     const dayMap = workerIntervalsByDay.get(workerName)!;
+    const workerActivity = workerActivityByDay.get(workerName);
 
-    /*
-     * Az intervallumot helyi naptári napokra bontjuk. Ezért például egy
-     * 23:30–00:30 munkából 30 perc kerül az első, 30 perc a következő napra.
-     *
-     * Minden work_logs sor bekerülhet az intervallumlistába, de az összesítéskor
-     * a mergeDashboardIntervals dolgozónként és naponként uniót képez:
-     *   - az egymást átfedő egyedi rendelések ideje csak egyszer számít;
-     *   - a köteg minden rendelési során ismétlődő azonos START–END idő csak
-     *     egyszer számít;
-     *   - a nem átfedő munkák percei összeadódnak.
-     */
     splitDashboardIntervalByLocalDay(clippedStartMs, clippedEndMs).forEach(({ dayKey, interval }) => {
+      const allowedParts = intersectDashboardIntervalWithWorkerDayWindows(
+        interval,
+        dayKey,
+        worker,
+        workerActivity?.get(dayKey)
+      );
+      if (allowedParts.length === 0) return;
       if (!dayMap.has(dayKey)) dayMap.set(dayKey, []);
-      dayMap.get(dayKey)!.push(interval);
+      dayMap.get(dayKey)!.push(...allowedParts);
     });
   }
 
-  return { workerIntervalsByDay, workerClosedRows };
+  /*
+   * Napi elszámolási keret:
+   *   alap = workers.elszamolt_munkaido (Lakatosnál 08:00 = 480 perc)
+   *   + minden ténylegesen megkezdett túlórás órablokk után 60 perc.
+   *
+   * A blokkot START vagy END is megnyithatja. Ha csak 14:01-kor van START és
+   * utána aznap nincs több mozgás, csak 15:00-ig nő a keret. Ha ugyanazon
+   * napon egy lezárt munkaszakasz több túlórás órán át tart, az érintett órák
+   * mind bekerülnek. Éjfél utáni időt nem visszük át automatikusan.
+   */
+  const workerAccountedMinutesByDay = new Map<string, Map<string, number>>();
+  workerActivityByDay.forEach((dayMap, workerName) => {
+    const worker = workerConfigByDisplayName.get(workerName) || workerByName.get(normalizeLooseText(workerName));
+    const accountedByDay = new Map<string, number>();
+    dayMap.forEach((activity, dayKey) => {
+      if (!activity.hasActivity) return;
+      const baseMinutes = getDashboardWorkerBaseAccountedMinutes(worker);
+      const overtimeMinutes = activity.overtimeBlocks.size * 60;
+      accountedByDay.set(dayKey, baseMinutes + overtimeMinutes);
+    });
+    if (accountedByDay.size > 0) {
+      workerAccountedMinutesByDay.set(workerName, accountedByDay);
+    }
+  });
+
+  return { workerIntervalsByDay, workerClosedRows, workerAccountedMinutesByDay };
 }
 
 function inferDashboardProductType(orderNumber: string, logs: WorkLogRow[]): string {
@@ -3053,11 +3250,12 @@ function buildDashboardWorkerPerformanceForStation(
   const stationLogs = logs.filter(
     (log) => normalizeLooseText(String(log.machine_id || "").trim()) === normalizedStation
   );
-  const { workerIntervalsByDay, workerClosedRows } = buildDashboardWorkerAggregation(stationLogs, workers, range);
+  const { workerIntervalsByDay, workerClosedRows, workerAccountedMinutesByDay } = buildDashboardWorkerAggregation(stationLogs, workers, range);
 
   const workerNames = new Set<string>([
     ...Array.from(workerIntervalsByDay.keys()),
     ...Array.from(workerClosedRows.keys()),
+    ...Array.from(workerAccountedMinutesByDay.keys()),
   ]);
   const workerRows = Array.from(workerNames)
     .map((workerName) => {
@@ -3066,9 +3264,11 @@ function buildDashboardWorkerPerformanceForStation(
         .map((intervals) => mergeDashboardIntervals(intervals))
         .filter((minutes) => minutes > 0);
       const totalMinutes = dailyMinutes.reduce((sum, minutes) => sum + minutes, 0);
-      const activeDayCount = dailyMinutes.length;
-      const efficiencyPct = activeDayCount > 0
-        ? roundDashboardEfficiencyPct((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * activeDayCount)) * 100)
+      const accountedByDay = workerAccountedMinutesByDay.get(workerName) || new Map<string, number>();
+      const accountedMinutes = Array.from(accountedByDay.values()).reduce((sum, minutes) => sum + minutes, 0);
+      const activeDayCount = accountedByDay.size;
+      const efficiencyPct = accountedMinutes > 0
+        ? roundDashboardEfficiencyPct((totalMinutes / accountedMinutes) * 100)
         : null;
       return {
         workerName,
@@ -3076,6 +3276,7 @@ function buildDashboardWorkerPerformanceForStation(
         totalDurationLabel: formatDuration(totalMinutes),
         closedSegments: workerClosedRows.get(workerName) || 0,
         activeDayCount,
+        accountedMinutes,
         efficiencyPct,
       };
     })
@@ -3083,9 +3284,9 @@ function buildDashboardWorkerPerformanceForStation(
     .sort((a, b) => b.totalMinutes - a.totalMinutes || b.closedSegments - a.closedSegments);
 
   const totalMinutes = workerRows.reduce((sum, row) => sum + row.totalMinutes, 0);
-  const totalActiveWorkerDays = workerRows.reduce((sum, row) => sum + row.activeDayCount, 0);
-  const dailyEfficiencyPct = totalActiveWorkerDays > 0
-    ? roundDashboardEfficiencyPct((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * totalActiveWorkerDays)) * 100)
+  const totalAccountedMinutes = workerRows.reduce((sum, row) => sum + row.accountedMinutes, 0);
+  const dailyEfficiencyPct = totalAccountedMinutes > 0
+    ? roundDashboardEfficiencyPct((totalMinutes / totalAccountedMinutes) * 100)
     : 0;
 
   return { workerRows, totalMinutes, dailyEfficiencyPct };
@@ -3099,7 +3300,7 @@ function buildDashboardData(
   const orderRows = buildOrderStatistics(logs, workers);
   const rangeEndMs = new Date(range.endIso).getTime();
   const openRows: DashboardOpenWorkRow[] = [];
-  const { workerIntervalsByDay, workerClosedRows } = buildDashboardWorkerAggregation(logs, workers, range);
+  const { workerIntervalsByDay, workerClosedRows, workerAccountedMinutesByDay } = buildDashboardWorkerAggregation(logs, workers, range);
   const scrapTotals = new Map<string, number>();
   const productTypeTotals = new Map<string, { totalMinutes: number; closedOrders: number }>();
 
@@ -3139,6 +3340,7 @@ function buildDashboardData(
   const workerNames = new Set<string>([
     ...Array.from(workerIntervalsByDay.keys()),
     ...Array.from(workerClosedRows.keys()),
+    ...Array.from(workerAccountedMinutesByDay.keys()),
   ]);
   const workerRows: DashboardWorkerPerformanceRow[] = Array.from(workerNames)
     .map((workerName) => {
@@ -3147,9 +3349,11 @@ function buildDashboardData(
         .map((intervals) => mergeDashboardIntervals(intervals))
         .filter((minutes) => minutes > 0);
       const totalMinutes = dailyMinutes.reduce((sum, minutes) => sum + minutes, 0);
-      const activeDayCount = dailyMinutes.length;
-      const efficiencyPct = activeDayCount > 0
-        ? roundDashboardEfficiencyPct((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * activeDayCount)) * 100)
+      const accountedByDay = workerAccountedMinutesByDay.get(workerName) || new Map<string, number>();
+      const accountedMinutes = Array.from(accountedByDay.values()).reduce((sum, minutes) => sum + minutes, 0);
+      const activeDayCount = accountedByDay.size;
+      const efficiencyPct = accountedMinutes > 0
+        ? roundDashboardEfficiencyPct((totalMinutes / accountedMinutes) * 100)
         : null;
       return {
         workerName,
@@ -3157,6 +3361,7 @@ function buildDashboardData(
         totalDurationLabel: formatDuration(totalMinutes),
         closedSegments: workerClosedRows.get(workerName) || 0,
         activeDayCount,
+        accountedMinutes,
         efficiencyPct,
       };
     })
@@ -3211,9 +3416,9 @@ function buildDashboardData(
   }));
 
   const totalMinutes = workerRows.reduce((sum, row) => sum + row.totalMinutes, 0);
-  const totalActiveWorkerDays = workerRows.reduce((sum, row) => sum + row.activeDayCount, 0);
-  const dailyEfficiencyPct = totalActiveWorkerDays > 0
-    ? roundDashboardEfficiencyPct((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * totalActiveWorkerDays)) * 100)
+  const totalAccountedMinutes = workerRows.reduce((sum, row) => sum + row.accountedMinutes, 0);
+  const dailyEfficiencyPct = totalAccountedMinutes > 0
+    ? roundDashboardEfficiencyPct((totalMinutes / totalAccountedMinutes) * 100)
     : 0;
 
   return {
@@ -7487,7 +7692,7 @@ export default function Page() {
               <div>
                 <h3 style={{ margin: 0, color: "#f8fafc" }}>Dolgozói teljesítmény</h3>
                 <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>
-                  A munkaidő kizárólag a lezárt work_logs sorok start_time és end_time mezőinek különbségéből számolódik. Az END nélküli munkák nem számítanak bele. Az átfedések dolgozónként csak egyszer, a kötegek teljes ideje pedig kötegenként csak egyszer számít. A hatékonyság alapja 8 óra minden olyan napon, amikor volt lezárt munkavégzés.
+                  A tényleges munkaidő kizárólag a lezárt work_logs sorok start_time és end_time mezőinek különbségéből számolódik. Az END nélküli munkák nem növelik a ledolgozott időt, az átfedések dolgozónként csak egyszer, a kötegek teljes ideje pedig kötegenként csak egyszer számít. A hatékonyság nevezője dolgozónként a workers.elszamolt_munkaido értéke; a munka_vege utáni tényleges START/END mozgások óránként 60 perccel növelik a napi elszámolási keretet. Éjfélen átnyúló nyitott munka éjszakai ideje nem számít, a következő napi számolás a dolgozó munka_kezdese időpontjától folytatódik.
                 </div>
               </div>
               <div style={{ padding: "6px 10px", borderRadius: 999, background: "#082f49", color: "#bae6fd", border: "1px solid #0369a1", fontSize: 12, fontWeight: 800 }}>
@@ -9054,9 +9259,30 @@ export default function Page() {
           Jelszo,
           jelszo_hash,
           Esemeny_Koteg,
-          munka_kezdete,
-          munka_vege
+          munka_kezdese,
+          munka_vege,
+          elszamolt_munkaido
         `);
+
+      // Régi adatbázis-verzió támogatása: ha az új mezők még nincsenek
+      // telepítve, megpróbáljuk a korábbi munka_kezdete / munka_vege párost.
+      if (workerResponse.error && /munka_kezdese|munka_vege|elszamolt_munkaido/i.test(normalizeError(workerResponse.error))) {
+        workerResponse = await supabase
+          .from("workers")
+          .select(`
+            id,
+            "Teljes nev",
+            Munkakor,
+            "Munkakor allomas",
+            Szamozas,
+            Jogosultsagok,
+            Jelszo,
+            jelszo_hash,
+            Esemeny_Koteg,
+            munka_kezdete,
+            munka_vege
+          `);
+      }
 
       if (workerResponse.error && /munka_kezdete|munka_vege/i.test(normalizeError(workerResponse.error))) {
         workerResponse = await supabase
@@ -10994,9 +11220,9 @@ export default function Page() {
           (row) => normalizeLooseText(row.workerName) === normalizeLooseText(selectedWorkerValue)
         );
     const totalMinutes = workerRows.reduce((sum, row) => sum + row.totalMinutes, 0);
-    const totalActiveWorkerDays = workerRows.reduce((sum, row) => sum + row.activeDayCount, 0);
-    const dailyEfficiencyPct = totalActiveWorkerDays > 0
-      ? roundDashboardEfficiencyPct((totalMinutes / (DASHBOARD_WORKDAY_MINUTES * totalActiveWorkerDays)) * 100)
+    const totalAccountedMinutes = workerRows.reduce((sum, row) => sum + row.accountedMinutes, 0);
+    const dailyEfficiencyPct = totalAccountedMinutes > 0
+      ? roundDashboardEfficiencyPct((totalMinutes / totalAccountedMinutes) * 100)
       : 0;
 
     return {
