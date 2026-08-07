@@ -8593,6 +8593,12 @@ export default function Page() {
         ? new Date(sameOrderReports[rowIndex + 1].reported_at).getTime()
         : Number.POSITIVE_INFINITY;
 
+      // A selejtpótlás saját táblája a hiteles időforrás.
+      // reported_at = selejt rögzítése, started_at = pótlás START, completed_at = pótlás END.
+      // A work_logs itt csak a dolgozónevek tartalék forrása.
+      const directStartAt = String(row.started_at || "").trim() || null;
+      const directEndAt = String(row.completed_at || "").trim() || null;
+
       const matchingSegments = workSegments
         .filter((segment) => {
           if (!segment.orderNumbers.some((order) => normalizeLooseText(order) === orderKey)) return false;
@@ -8602,11 +8608,23 @@ export default function Page() {
       const completedSegments = matchingSegments.filter((segment) => segment.endMs !== null && segment.endAt);
       const firstSegment = matchingSegments[0] || null;
       const lastCompletedSegment = completedSegments.length > 0 ? completedSegments[completedSegments.length - 1] : null;
-      const isCompleted = row.status === "KESZ";
-      const durationMinutes = completedSegments.reduce((sum, segment) => sum + segment.durationMinutes, 0);
+
+      const startAt = directStartAt || firstSegment?.startAt || null;
+      const endAt = directEndAt || (row.status === "KESZ" ? (lastCompletedSegment?.endAt || null) : null);
+      const startMs = startAt ? new Date(startAt).getTime() : Number.NaN;
+      const endMs = endAt ? new Date(endAt).getTime() : Number.NaN;
+      const hasValidCompletedRange = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs;
+
+      // Ugyanaz a számolás, mint egyedi rendelésnél: END - START.
+      // Csak lezárt, érvényes START/END párnak van eltelt ideje.
+      const durationMinutes = hasValidCompletedRange
+        ? Math.max(0, Math.round((endMs - startMs) / 60000))
+        : 0;
+
+      const isCompleted = Boolean(endAt) || row.status === "KESZ";
       const status: ScrapReplacementReportDetailRow["status"] = isCompleted
         ? "lezárt"
-        : matchingSegments.length > 0 || row.status !== "VARAKOZIK"
+        : startAt || row.status !== "VARAKOZIK"
           ? "folyamatban"
           : "varakozik";
 
@@ -8617,11 +8635,13 @@ export default function Page() {
         orderNumber: row.order_number,
         defectLabel: getScrapReplacementDefectLabel(row),
         sourceStation: row.source_station,
-        startAt: firstSegment?.startAt || null,
-        endAt: isCompleted ? (lastCompletedSegment?.endAt || null) : null,
+        startAt,
+        endAt,
         durationMinutes,
         startWorkerName: firstSegment?.startWorkerName || "",
-        endWorkerName: isCompleted ? (lastCompletedSegment?.endWorkerName || String(row.last_worker_name || "").trim()) : (lastCompletedSegment?.endWorkerName || ""),
+        endWorkerName: isCompleted
+          ? (lastCompletedSegment?.endWorkerName || String(row.last_worker_name || "").trim())
+          : "",
         statusLabel: getScrapReplacementStatusLabel(row),
         status,
         note: String(row.megjegyzes || "").trim(),
@@ -8762,23 +8782,35 @@ export default function Page() {
         return stationOk && reportedMs >= currentStartMs && reportedMs < currentEndMs;
       });
 
-      // Dolgozói selejtpótlási statisztika: csak lezárt START-END szakaszok.
-      // Az idő ahhoz a dolgozóhoz kerül, aki az END-et lezárta. Köteg esetén a
-      // buildScrapReplacementWorkSegments már csak egyszer tartja meg a teljes kötegidőt.
-      const workerSegments = replacementSegments.filter((segment) => {
-        if (segment.endMs === null || !segment.endAt || !segment.endWorkerName) return false;
-        if (segment.endMs < currentStartMs || segment.endMs >= currentEndMs) return false;
-        if (selectedStation === "all") return true;
-        return getScrapSegmentSourceStations(segment, replacements)
-          .some((station) => normalizeLooseText(station) === normalizeLooseText(selectedStation));
-      });
+      // Dolgozói selejtpótlási statisztika: az asztalos_selejt_potlas.started_at
+      // és completed_at közötti tényleges időből számolunk. Az idő ahhoz a dolgozóhoz
+      // kerül, aki END-del lezárta a pótlást. Kötegnél az azonos batch + START + END
+      // időt csak egyszer vesszük figyelembe.
+      const replacementById = new Map<string, ScrapReplacementRow>();
+      replacements.forEach((replacement) => replacementById.set(String(replacement.id), replacement));
       const workerIntervals = new Map<string, DashboardTimeInterval[]>();
       const workerSegmentCounts = new Map<string, number>();
-      workerSegments.forEach((segment) => {
-        const workerName = segment.endWorkerName.trim();
-        if (!workerName || segment.endMs === null) return;
+      const countedReplacementIntervals = new Set<string>();
+
+      allScrapDetailRows.forEach((detailRow) => {
+        if (!detailRow.startAt || !detailRow.endAt || !detailRow.endWorkerName) return;
+        const startMs = new Date(detailRow.startAt).getTime();
+        const endMs = new Date(detailRow.endAt).getTime();
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return;
+        if (endMs < currentStartMs || endMs >= currentEndMs) return;
+        if (selectedStation !== "all" && normalizeLooseText(detailRow.sourceStation) !== normalizeLooseText(selectedStation)) return;
+
+        const sourceRow = replacementById.get(String(detailRow.replacementId));
+        const batchCode = String(sourceRow?.milling_batch_code || sourceRow?.cutting_batch_code || "").trim();
+        const workerName = detailRow.endWorkerName.trim();
+        const dedupeKey = batchCode
+          ? `batch|${normalizeLooseText(batchCode)}|${detailRow.startAt}|${detailRow.endAt}|${normalizeLooseText(workerName)}`
+          : `single|${String(detailRow.replacementId)}|${detailRow.startAt}|${detailRow.endAt}|${normalizeLooseText(workerName)}`;
+        if (countedReplacementIntervals.has(dedupeKey)) return;
+        countedReplacementIntervals.add(dedupeKey);
+
         if (!workerIntervals.has(workerName)) workerIntervals.set(workerName, []);
-        workerIntervals.get(workerName)!.push({ startMs: segment.startMs, endMs: segment.endMs });
+        workerIntervals.get(workerName)!.push({ startMs, endMs });
         workerSegmentCounts.set(workerName, (workerSegmentCounts.get(workerName) || 0) + 1);
       });
       const workerMinutesMap = new Map<string, number>();
