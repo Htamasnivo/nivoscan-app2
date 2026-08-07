@@ -394,6 +394,39 @@ type ReproductionReportStationRow = {
   averageDurationMinutes: number;
 };
 
+type ScrapReplacementReportDetailRow = {
+  key: string;
+  replacementId: number | string;
+  reportedAt: string;
+  orderNumber: string;
+  defectLabel: string;
+  sourceStation: string;
+  startAt: string | null;
+  endAt: string | null;
+  durationMinutes: number;
+  startWorkerName: string;
+  endWorkerName: string;
+  statusLabel: string;
+  status: "varakozik" | "folyamatban" | "lezárt";
+  note: string;
+};
+
+type ScrapReplacementWorkerRow = {
+  workerName: string;
+  totalMinutes: number;
+  closedSegments: number;
+  averageMinutes: number;
+  sharePct: number;
+};
+
+type ScrapReplacementStationReportRow = {
+  stationName: string;
+  count: number;
+  completedCount: number;
+  openCount: number;
+  sharePct: number;
+};
+
 type ReproductionReportData = {
   currentRows: ReproductionReportDetailRow[];
   previousRows: ReproductionReportDetailRow[];
@@ -403,6 +436,12 @@ type ReproductionReportData = {
   completedTotal: number;
   openTotal: number;
   averageDurationMinutes: number;
+  scrapCurrentRows: ScrapReplacementReportDetailRow[];
+  scrapWorkerRows: ScrapReplacementWorkerRow[];
+  scrapStationRows: ScrapReplacementStationReportRow[];
+  scrapTotalMinutes: number;
+  scrapCompletedTotal: number;
+  scrapOpenTotal: number;
   lastUpdatedAt: string;
 };
 
@@ -3444,6 +3483,12 @@ export default function Page() {
     completedTotal: 0,
     openTotal: 0,
     averageDurationMinutes: 0,
+    scrapCurrentRows: [],
+    scrapWorkerRows: [],
+    scrapStationRows: [],
+    scrapTotalMinutes: 0,
+    scrapCompletedTotal: 0,
+    scrapOpenTotal: 0,
     lastUpdatedAt: "",
   });
   const [loadingDashboard, setLoadingDashboard] = useState(false);
@@ -6990,6 +7035,8 @@ export default function Page() {
     const overallRatioPct = previousTotal > 0 ? Math.round((currentTotal / previousTotal) * 100) : null;
     const overallChangePct = previousTotal > 0 ? Math.round(((currentTotal - previousTotal) / previousTotal) * 100) : null;
     const maxStationCount = Math.max(1, ...reproductionReportData.stationRows.map((row) => row.currentCount));
+    const maxScrapWorkerMinutes = Math.max(1, ...reproductionReportData.scrapWorkerRows.map((row) => row.totalMinutes));
+    const maxScrapStationCount = Math.max(1, ...reproductionReportData.scrapStationRows.map((row) => row.count));
     const stationOptions = getOrderedDashboardStations();
     const ratioColor = overallRatioPct === null ? "#cbd5e1" : overallRatioPct <= 100 ? "#4ade80" : "#f87171";
     const cardStyle: React.CSSProperties = {
@@ -7015,7 +7062,7 @@ export default function Page() {
             <div style={{ color: "#38bdf8", fontWeight: 900, letterSpacing: 1.2, fontSize: 13 }}>ÚJRAGYÁRTÁSI MINŐSÉGJELENTÉS</div>
             <h2 style={{ margin: "6px 0 4px", color: "#f8fafc", fontSize: 30 }}>Újragyártási sorok</h2>
             <div style={{ color: "#94a3b8", lineHeight: 1.5 }}>
-              Munkaállomásonkénti újragyártási gyakoriság, időráfordítás és előző időszakhoz viszonyított változás.
+              Újragyártások és selejtpótlások részletes nyomon követése: rögzítés, státusz, START–END idő, dolgozói időráfordítás és időszakos összehasonlítás.
             </div>
             <div style={{ color: "#64748b", fontSize: 12, marginTop: 6 }}>
               Aktuális: {range.currentLabel} · Összehasonlítás: {range.previousLabel} · Utolsó frissítés: {reproductionReportData.lastUpdatedAt ? formatDateTime(reproductionReportData.lastUpdatedAt) : "–"}
@@ -7070,7 +7117,7 @@ export default function Page() {
             >
               {loadingReproductionReport ? "Frissítés..." : "Frissítés"}
             </button>
-            <button type="button" onClick={() => void exportReproductionReportExcel()} disabled={reproductionReportData.currentRows.length === 0} style={buttonPrimary}>Excel export</button>
+            <button type="button" onClick={() => void exportReproductionReportExcel()} disabled={reproductionReportData.currentRows.length === 0 && reproductionReportData.scrapCurrentRows.length === 0} style={buttonPrimary}>Excel export</button>
           </div>
         </div>
 
@@ -7081,6 +7128,108 @@ export default function Page() {
           <div style={cardStyle}><div style={{ color: "#94a3b8", fontSize: 12 }}>Átlagos újragyártási idő</div><div style={{ color: "#f8fafc", fontSize: 25, fontWeight: 900 }}>{formatDuration(reproductionReportData.averageDurationMinutes)}</div><div style={{ color: "#64748b", fontSize: 12 }}>Csak lezárt újragyártásokból</div></div>
           <div style={cardStyle}><div style={{ color: "#94a3b8", fontSize: 12 }}>Állapot</div><div style={{ color: "#4ade80", fontSize: 21, fontWeight: 900 }}>{reproductionReportData.completedTotal} lezárt</div><div style={{ color: reproductionReportData.openTotal > 0 ? "#fbbf24" : "#64748b", fontSize: 13 }}>{reproductionReportData.openTotal} folyamatban</div></div>
         </div>
+
+        <section style={{ ...cardStyle, marginBottom: 14, borderColor: "#92400e", background: "linear-gradient(145deg, #1c1917 0%, #111827 100%)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+            <div>
+              <h3 style={{ margin: "0 0 4px", color: "#f8fafc", fontSize: 22 }}>Selejtpótlási statisztika</h3>
+              <div style={{ color: "#cbd5e1", fontSize: 12 }}>
+                A részletes lista a kiválasztott időszakban rögzített selejteket mutatja. A dolgozói idő a kiválasztott időszakban END-del lezárt selejtpótlási START–END szakaszokból számolódik, és az END-et végző dolgozóhoz kerül. Kötegnél a teljes kötegidő csak egyszer számít.
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ padding: "7px 10px", borderRadius: 999, background: "#451a03", color: "#fde68a", fontWeight: 900 }}>{reproductionReportData.scrapCurrentRows.length} rögzített selejt</span>
+              <span style={{ padding: "7px 10px", borderRadius: 999, background: "#064e3b", color: "#a7f3d0", fontWeight: 900 }}>{reproductionReportData.scrapCompletedTotal} lezárt</span>
+              <span style={{ padding: "7px 10px", borderRadius: 999, background: "#78350f", color: "#fde68a", fontWeight: 900 }}>{reproductionReportData.scrapOpenTotal} nyitott</span>
+              <span style={{ padding: "7px 10px", borderRadius: 999, background: "#0c4a6e", color: "#bae6fd", fontWeight: 900 }}>{formatDuration(reproductionReportData.scrapTotalMinutes)} pótlási munkaidő</span>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14, marginBottom: 14 }}>
+            <div style={{ border: "1px solid #334155", borderRadius: 12, padding: 14, background: "#071022" }}>
+              <h4 style={{ margin: "0 0 4px", color: "#f8fafc", fontSize: 17 }}>Dolgozónként selejtpótlással töltött idő</h4>
+              <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 12 }}>Az idő annak a dolgozónak a statisztikájába kerül, aki END-del lezárta a pótlási munkaszakaszt.</div>
+              {reproductionReportData.scrapWorkerRows.length === 0 ? (
+                <div style={{ color: "#94a3b8", padding: 18, textAlign: "center" }}>Ebben az időszakban nincs lezárt selejtpótlási munkaidő.</div>
+              ) : (
+                <div style={{ display: "grid", gap: 12 }}>
+                  {reproductionReportData.scrapWorkerRows.map((row) => (
+                    <div key={row.workerName}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+                        <strong style={{ color: "#f8fafc" }}>{row.workerName}</strong>
+                        <span style={{ color: "#fde68a", fontWeight: 900 }}>{formatDuration(row.totalMinutes)}</span>
+                      </div>
+                      <div style={{ height: 12, background: "#1e293b", borderRadius: 999, overflow: "hidden", margin: "6px 0" }}>
+                        <div style={{ width: `${Math.max(2, Math.round((row.totalMinutes / maxScrapWorkerMinutes) * 100))}%`, height: "100%", background: "linear-gradient(90deg, #f59e0b, #fbbf24)", borderRadius: 999 }} />
+                      </div>
+                      <div style={{ color: "#94a3b8", fontSize: 12 }}>{row.closedSegments} lezárt munkaszakasz · átlag {formatDuration(row.averageMinutes)} · az összes pótlási idő {row.sharePct}%-a</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div style={{ border: "1px solid #334155", borderRadius: 12, padding: 14, background: "#071022" }}>
+              <h4 style={{ margin: "0 0 4px", color: "#f8fafc", fontSize: 17 }}>Selejtpótlások forrás munkaállomásonként</h4>
+              <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 12 }}>A kiválasztott időszakban rögzített selejtek száma a selejtet jelentő munkaállomás szerint.</div>
+              {reproductionReportData.scrapStationRows.length === 0 ? (
+                <div style={{ color: "#94a3b8", padding: 18, textAlign: "center" }}>Ebben az időszakban nincs rögzített selejtpótlás.</div>
+              ) : (
+                <div style={{ display: "grid", gap: 12 }}>
+                  {reproductionReportData.scrapStationRows.map((row) => (
+                    <div key={row.stationName}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+                        <strong style={{ color: "#f8fafc" }}>{row.stationName}</strong>
+                        <span style={{ color: "#f8fafc", fontWeight: 900 }}>{row.count} db</span>
+                      </div>
+                      <div style={{ height: 12, background: "#1e293b", borderRadius: 999, overflow: "hidden", margin: "6px 0" }}>
+                        <div style={{ width: `${Math.max(2, Math.round((row.count / maxScrapStationCount) * 100))}%`, height: "100%", background: "linear-gradient(90deg, #0ea5e9, #38bdf8)", borderRadius: 999 }} />
+                      </div>
+                      <div style={{ color: "#94a3b8", fontSize: 12 }}>{row.completedCount} lezárt · {row.openCount} nyitott · részesedés {row.sharePct}%</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <h4 style={{ margin: "0 0 4px", color: "#f8fafc", fontSize: 18 }}>Részletes selejtpótlási napló</h4>
+          <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>Látható, mikor rögzítették a selejtet, mikor indult és zárult a pótlás, mennyi tényleges START–END munkaidő tartozik hozzá, valamint kik dolgoztak rajta.</div>
+          <div style={{ overflow: "auto", maxHeight: 520, border: "1px solid #334155", borderRadius: 12 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1500 }}>
+              <thead style={{ position: "sticky", top: 0, background: "#111c31", zIndex: 1 }}>
+                <tr>
+                  {["Selejt rögzítve", "Sorszám", "Hiba", "Forrás munkaállomás", "START", "END", "Eltelt idő", "Indító dolgozó", "Befejező dolgozó", "Állapot", "Megjegyzés"].map((label) => (
+                    <th key={label} style={{ ...tableCellStyle, color: "#94a3b8", textAlign: "left", fontSize: 12, whiteSpace: "nowrap" }}>{label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {reproductionReportData.scrapCurrentRows.length === 0 ? (
+                  <tr><td colSpan={11} style={{ ...tableCellStyle, color: "#94a3b8", textAlign: "center", padding: 24 }}>A kiválasztott időszakban nincs rögzített selejtpótlási sor.</td></tr>
+                ) : reproductionReportData.scrapCurrentRows.map((row) => (
+                  <tr key={row.key}>
+                    <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{formatDateTime(row.reportedAt)}</td>
+                    <td style={{ ...tableCellStyle, fontWeight: 900 }}>{row.orderNumber}</td>
+                    <td style={tableCellStyle}>{row.defectLabel}</td>
+                    <td style={tableCellStyle}>{row.sourceStation}</td>
+                    <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{row.startAt ? formatDateTime(row.startAt) : "–"}</td>
+                    <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{row.endAt ? formatDateTime(row.endAt) : "–"}</td>
+                    <td style={{ ...tableCellStyle, whiteSpace: "nowrap", fontWeight: 900 }}>{row.endAt ? formatDuration(row.durationMinutes) : row.startAt ? "Folyamatban" : "–"}</td>
+                    <td style={tableCellStyle}>{row.startWorkerName || "–"}</td>
+                    <td style={tableCellStyle}>{row.endWorkerName || "–"}</td>
+                    <td style={tableCellStyle}>
+                      <span style={{ display: "inline-flex", padding: "5px 9px", borderRadius: 999, fontWeight: 900, background: row.status === "lezárt" ? "#064e3b" : row.status === "folyamatban" ? "#78350f" : "#334155", color: row.status === "lezárt" ? "#a7f3d0" : row.status === "folyamatban" ? "#fde68a" : "#e2e8f0" }}>
+                        {row.statusLabel}
+                      </span>
+                    </td>
+                    <td style={{ ...tableCellStyle, minWidth: 220 }}>{row.note || "–"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
 
         <div style={{ display: "grid", gridTemplateColumns: "minmax(340px, 0.9fr) minmax(600px, 1.6fr)", gap: 14, alignItems: "start" }}>
           <section style={cardStyle}>
@@ -8325,6 +8474,179 @@ export default function Page() {
       .sort((left, right) => new Date(right.startAt).getTime() - new Date(left.startAt).getTime());
   }
 
+
+  type ScrapReplacementWorkSegment = {
+    key: string;
+    orderNumbers: string[];
+    stationName: string;
+    batchCode: string;
+    operationCode: string;
+    startAt: string;
+    endAt: string | null;
+    startWorkerName: string;
+    endWorkerName: string;
+    startMs: number;
+    endMs: number | null;
+    durationMinutes: number;
+  };
+
+  function buildScrapReplacementWorkSegments(logs: WorkLogRow[]): ScrapReplacementWorkSegment[] {
+    type MutableSegment = ScrapReplacementWorkSegment & { orderNumberSet: Set<string> };
+    const grouped = new Map<string, MutableSegment>();
+
+    logs.forEach((log) => {
+      if (log.selejt_potlas !== true) return;
+      const orderNumber = String(log.order_number || "").trim();
+      const startAt = String(log.start_time || "").trim();
+      const endAt = String(log.end_time || "").trim();
+      if (!orderNumber || !startAt) return;
+
+      const startMs = new Date(startAt).getTime();
+      const endMs = endAt ? new Date(endAt).getTime() : null;
+      if (!Number.isFinite(startMs)) return;
+      if (endMs !== null && (!Number.isFinite(endMs) || endMs < startMs)) return;
+
+      const batchCode = String(log.batch_code || "").trim();
+      const stationName = String(log.machine_id || "Ismeretlen munkaállomás").trim() || "Ismeretlen munkaállomás";
+      const operationCode = String(log.operation_code || "").trim();
+      const metadata = getStructuredNoteMetadata(log.note);
+      const rowWorkerName = getWorkLogWorkerName(log);
+      const startWorkerName = String(
+        metadata.start_worker_name ||
+        metadata.original_batch_worker_name ||
+        rowWorkerName ||
+        ""
+      ).trim();
+      const endWorkerName = String(
+        metadata.closed_by_worker_name ||
+        metadata.end_worker_name ||
+        (endAt ? rowWorkerName : "") ||
+        ""
+      ).trim();
+
+      // Kötegnél a sok rendelési sor ugyanazt a START-END intervallumot tartalmazza.
+      // Ezért batch_code + munkaállomás + művelet + START + END alapján csak egyszer számoljuk.
+      // Egyedi rendelésnél a sorszám is része a kulcsnak.
+      const key = batchCode
+        ? `batch|${normalizeLooseText(batchCode)}|${normalizeLooseText(stationName)}|${normalizeLooseText(operationCode)}|${startAt}|${endAt || "OPEN"}`
+        : `single|${normalizeLooseText(orderNumber)}|${normalizeLooseText(stationName)}|${normalizeLooseText(operationCode)}|${startAt}|${endAt || "OPEN"}`;
+
+      const existing = grouped.get(key);
+      if (existing) {
+        existing.orderNumberSet.add(orderNumber);
+        existing.orderNumbers = Array.from(existing.orderNumberSet);
+        if (!existing.startWorkerName && startWorkerName) existing.startWorkerName = startWorkerName;
+        if (!existing.endWorkerName && endWorkerName) existing.endWorkerName = endWorkerName;
+        return;
+      }
+
+      const durationMinutes = endMs !== null
+        ? Math.max(0, Math.round((endMs - startMs) / 60000))
+        : 0;
+      grouped.set(key, {
+        key,
+        orderNumbers: [orderNumber],
+        orderNumberSet: new Set([orderNumber]),
+        stationName,
+        batchCode,
+        operationCode,
+        startAt,
+        endAt: endAt || null,
+        startWorkerName,
+        endWorkerName,
+        startMs,
+        endMs,
+        durationMinutes,
+      });
+    });
+
+    return Array.from(grouped.values()).map(({ orderNumberSet: _orderNumberSet, ...segment }) => segment);
+  }
+
+  function buildScrapReplacementDetailRows(
+    replacements: ScrapReplacementRow[],
+    workSegments: ScrapReplacementWorkSegment[]
+  ): ScrapReplacementReportDetailRow[] {
+    const normalizedRows = replacements
+      .map((rawRow) => ({
+        ...rawRow,
+        order_number: String(rawRow.order_number || "").trim(),
+        source_station: String(rawRow.source_station || "").trim() || "Ismeretlen munkaállomás",
+        status: normalizeScrapReplacementStatus(rawRow.status),
+      }))
+      .filter((row) => row.order_number && row.reported_at)
+      .sort((left, right) => new Date(left.reported_at).getTime() - new Date(right.reported_at).getTime());
+
+    const reportsByOrder = new Map<string, ScrapReplacementRow[]>();
+    normalizedRows.forEach((row) => {
+      const key = normalizeLooseText(row.order_number);
+      if (!reportsByOrder.has(key)) reportsByOrder.set(key, []);
+      reportsByOrder.get(key)!.push(row);
+    });
+
+    return normalizedRows.map((row) => {
+      const orderKey = normalizeLooseText(row.order_number);
+      const sameOrderReports = reportsByOrder.get(orderKey) || [];
+      const rowIndex = sameOrderReports.findIndex((candidate) => String(candidate.id) === String(row.id));
+      const reportedMs = new Date(row.reported_at).getTime();
+      const nextReportedMs = rowIndex >= 0 && rowIndex + 1 < sameOrderReports.length
+        ? new Date(sameOrderReports[rowIndex + 1].reported_at).getTime()
+        : Number.POSITIVE_INFINITY;
+
+      const matchingSegments = workSegments
+        .filter((segment) => {
+          if (!segment.orderNumbers.some((order) => normalizeLooseText(order) === orderKey)) return false;
+          return segment.startMs >= reportedMs && segment.startMs < nextReportedMs;
+        })
+        .sort((left, right) => left.startMs - right.startMs);
+      const completedSegments = matchingSegments.filter((segment) => segment.endMs !== null && segment.endAt);
+      const firstSegment = matchingSegments[0] || null;
+      const lastCompletedSegment = completedSegments.length > 0 ? completedSegments[completedSegments.length - 1] : null;
+      const isCompleted = row.status === "KESZ";
+      const durationMinutes = completedSegments.reduce((sum, segment) => sum + segment.durationMinutes, 0);
+      const status: ScrapReplacementReportDetailRow["status"] = isCompleted
+        ? "lezárt"
+        : matchingSegments.length > 0 || row.status !== "VARAKOZIK"
+          ? "folyamatban"
+          : "varakozik";
+
+      return {
+        key: `scrap-${String(row.id)}`,
+        replacementId: row.id,
+        reportedAt: row.reported_at,
+        orderNumber: row.order_number,
+        defectLabel: getScrapReplacementDefectLabel(row),
+        sourceStation: row.source_station,
+        startAt: firstSegment?.startAt || null,
+        endAt: isCompleted ? (lastCompletedSegment?.endAt || null) : null,
+        durationMinutes,
+        startWorkerName: firstSegment?.startWorkerName || "",
+        endWorkerName: isCompleted ? (lastCompletedSegment?.endWorkerName || String(row.last_worker_name || "").trim()) : (lastCompletedSegment?.endWorkerName || ""),
+        statusLabel: getScrapReplacementStatusLabel(row),
+        status,
+        note: String(row.megjegyzes || "").trim(),
+      };
+    }).sort((left, right) => new Date(right.reportedAt).getTime() - new Date(left.reportedAt).getTime());
+  }
+
+  function getScrapSegmentSourceStations(
+    segment: ScrapReplacementWorkSegment,
+    replacements: ScrapReplacementRow[]
+  ): string[] {
+    const endBoundaryMs = segment.endMs ?? Date.now();
+    const stations = new Set<string>();
+    segment.orderNumbers.forEach((orderNumber) => {
+      const orderKey = normalizeLooseText(orderNumber);
+      const candidates = replacements
+        .filter((row) => normalizeLooseText(row.order_number) === orderKey)
+        .filter((row) => new Date(row.reported_at).getTime() <= endBoundaryMs)
+        .sort((left, right) => new Date(right.reported_at).getTime() - new Date(left.reported_at).getTime());
+      const latest = candidates[0];
+      if (latest?.source_station) stations.add(String(latest.source_station).trim());
+    });
+    return Array.from(stations);
+  }
+
   async function loadReproductionReport(
     filterMode = reproductionReportFilterMode,
     dateKey = reproductionReportDate,
@@ -8335,6 +8657,7 @@ export default function Page() {
     setLoadingReproductionReport(true);
     try {
       const range = getReproductionReportDateRange(filterMode, dateKey, dateToKey);
+
       const { data, error } = await supabase
         .from("work_logs")
         .select("worker_id, worker_name, order_number, action, created_at, note, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code")
@@ -8343,6 +8666,23 @@ export default function Page() {
         .order("created_at", { ascending: true })
         .limit(20000);
       if (error) throw error;
+
+      const { data: replacementData, error: replacementError } = await supabase
+        .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
+        .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, megjegyzes, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
+        .lt("reported_at", range.currentEndIso)
+        .order("reported_at", { ascending: true })
+        .limit(20000);
+      if (replacementError) throw replacementError;
+
+      const { data: replacementLogData, error: replacementLogError } = await supabase
+        .from("work_logs")
+        .select("worker_id, worker_name, order_number, action, created_at, note, batch_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, operation_code, selejt_potlas, selejt_forras_munkaallomas")
+        .eq("selejt_potlas", true)
+        .or(`end_time.gte.${range.previousStartIso},start_time.gte.${range.previousStartIso},created_at.gte.${range.previousStartIso}`)
+        .order("created_at", { ascending: true })
+        .limit(20000);
+      if (replacementLogError) throw replacementLogError;
 
       const allRows = buildReproductionReportRows((data || []) as WorkLogRow[]);
       const stationMatches = (row: ReproductionReportDetailRow): boolean =>
@@ -8404,6 +8744,78 @@ export default function Page() {
         };
       }).sort((left, right) => right.currentCount - left.currentCount || left.stationName.localeCompare(right.stationName, "hu"));
 
+      const replacements = ((replacementData || []) as ScrapReplacementRow[]).map((rawRow) => ({
+        ...rawRow,
+        order_number: String(rawRow.order_number || "").trim(),
+        kulso_lap_selejt: Boolean(rawRow.kulso_lap_selejt),
+        belso_lap_selejt: Boolean(rawRow.belso_lap_selejt),
+        toklec_selejt: Boolean(rawRow.toklec_selejt),
+        megjegyzes: rawRow.megjegyzes ? String(rawRow.megjegyzes) : null,
+        source_station: String(rawRow.source_station || "").trim() || "Ismeretlen munkaállomás",
+        status: normalizeScrapReplacementStatus(rawRow.status),
+      }));
+      const replacementSegments = buildScrapReplacementWorkSegments((replacementLogData || []) as WorkLogRow[]);
+      const allScrapDetailRows = buildScrapReplacementDetailRows(replacements, replacementSegments);
+      const scrapCurrentRows = allScrapDetailRows.filter((row) => {
+        const reportedMs = new Date(row.reportedAt).getTime();
+        const stationOk = selectedStation === "all" || normalizeLooseText(row.sourceStation) === normalizeLooseText(selectedStation);
+        return stationOk && reportedMs >= currentStartMs && reportedMs < currentEndMs;
+      });
+
+      // Dolgozói selejtpótlási statisztika: csak lezárt START-END szakaszok.
+      // Az idő ahhoz a dolgozóhoz kerül, aki az END-et lezárta. Köteg esetén a
+      // buildScrapReplacementWorkSegments már csak egyszer tartja meg a teljes kötegidőt.
+      const workerSegments = replacementSegments.filter((segment) => {
+        if (segment.endMs === null || !segment.endAt || !segment.endWorkerName) return false;
+        if (segment.endMs < currentStartMs || segment.endMs >= currentEndMs) return false;
+        if (selectedStation === "all") return true;
+        return getScrapSegmentSourceStations(segment, replacements)
+          .some((station) => normalizeLooseText(station) === normalizeLooseText(selectedStation));
+      });
+      const workerIntervals = new Map<string, DashboardTimeInterval[]>();
+      const workerSegmentCounts = new Map<string, number>();
+      workerSegments.forEach((segment) => {
+        const workerName = segment.endWorkerName.trim();
+        if (!workerName || segment.endMs === null) return;
+        if (!workerIntervals.has(workerName)) workerIntervals.set(workerName, []);
+        workerIntervals.get(workerName)!.push({ startMs: segment.startMs, endMs: segment.endMs });
+        workerSegmentCounts.set(workerName, (workerSegmentCounts.get(workerName) || 0) + 1);
+      });
+      const workerMinutesMap = new Map<string, number>();
+      workerIntervals.forEach((intervals, workerName) => {
+        workerMinutesMap.set(workerName, mergeDashboardIntervals(intervals));
+      });
+      const scrapTotalMinutes = Array.from(workerMinutesMap.values()).reduce((sum, minutes) => sum + minutes, 0);
+      const scrapWorkerRows: ScrapReplacementWorkerRow[] = Array.from(workerMinutesMap.entries())
+        .map(([workerName, totalMinutes]) => {
+          const closedSegments = workerSegmentCounts.get(workerName) || 0;
+          return {
+            workerName,
+            totalMinutes,
+            closedSegments,
+            averageMinutes: closedSegments > 0 ? Math.round(totalMinutes / closedSegments) : 0,
+            sharePct: scrapTotalMinutes > 0 ? Math.round((totalMinutes / scrapTotalMinutes) * 100) : 0,
+          };
+        })
+        .sort((left, right) => right.totalMinutes - left.totalMinutes || left.workerName.localeCompare(right.workerName, "hu"));
+
+      const scrapStationMap = new Map<string, { count: number; completedCount: number; openCount: number }>();
+      scrapCurrentRows.forEach((row) => {
+        const stationName = row.sourceStation || "Ismeretlen munkaállomás";
+        const current = scrapStationMap.get(stationName) || { count: 0, completedCount: 0, openCount: 0 };
+        current.count += 1;
+        if (row.status === "lezárt") current.completedCount += 1;
+        else current.openCount += 1;
+        scrapStationMap.set(stationName, current);
+      });
+      const scrapStationRows: ScrapReplacementStationReportRow[] = Array.from(scrapStationMap.entries())
+        .map(([stationName, values]) => ({
+          stationName,
+          ...values,
+          sharePct: scrapCurrentRows.length > 0 ? Math.round((values.count / scrapCurrentRows.length) * 100) : 0,
+        }))
+        .sort((left, right) => right.count - left.count || left.stationName.localeCompare(right.stationName, "hu"));
+
       const completedRows = currentRows.filter((row) => row.status === "lezárt");
       setReproductionReportData({
         currentRows,
@@ -8416,13 +8828,19 @@ export default function Page() {
         averageDurationMinutes: completedRows.length > 0
           ? Math.round(completedRows.reduce((sum, row) => sum + row.durationMinutes, 0) / completedRows.length)
           : 0,
+        scrapCurrentRows,
+        scrapWorkerRows,
+        scrapStationRows,
+        scrapTotalMinutes,
+        scrapCompletedTotal: scrapCurrentRows.filter((row) => row.status === "lezárt").length,
+        scrapOpenTotal: scrapCurrentRows.filter((row) => row.status !== "lezárt").length,
         lastUpdatedAt: new Date().toISOString(),
       });
     } catch (error) {
       console.error("SUPABASE HIBA loadReproductionReport:", error);
       setMessage({
         type: "error",
-        text: `Az újragyártási riport betöltése sikertelen. Futtasd le a mellékelt SQL-frissítést. Részletek: ${normalizeError(error)}`,
+        text: `Az újragyártási riport betöltése sikertelen. Részletek: ${normalizeError(error)}`,
       });
     } finally {
       setLoadingReproductionReport(false);
@@ -8488,8 +8906,38 @@ export default function Page() {
         row.note || "",
       ]),
     ];
+    const scrapWorkerRows: Array<Array<string | number>> = [
+      ["Dolgozó", "Selejtpótlási idő", "Perc", "Lezárt munkaszakasz", "Átlagidő", "Részesedés %"],
+      ...reproductionReportData.scrapWorkerRows.map((row) => [
+        row.workerName,
+        formatDuration(row.totalMinutes),
+        row.totalMinutes,
+        row.closedSegments,
+        formatDuration(row.averageMinutes),
+        row.sharePct,
+      ]),
+    ];
+    const scrapDetailRows: Array<Array<string | number>> = [
+      ["Selejt rögzítve", "Sorszám", "Hiba", "Forrás munkaállomás", "START", "END", "Eltelt idő", "Perc", "Indító dolgozó", "Befejező dolgozó", "Állapot", "Megjegyzés"],
+      ...reproductionReportData.scrapCurrentRows.map((row) => [
+        formatDateTime(row.reportedAt),
+        row.orderNumber,
+        row.defectLabel,
+        row.sourceStation,
+        row.startAt ? formatDateTime(row.startAt) : "–",
+        row.endAt ? formatDateTime(row.endAt) : "Folyamatban",
+        row.endAt ? formatDuration(row.durationMinutes) : row.startAt ? "Folyamatban" : "–",
+        row.durationMinutes,
+        row.startWorkerName || "–",
+        row.endWorkerName || "–",
+        row.statusLabel,
+        row.note || "",
+      ]),
+    ];
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(summaryRows), "Összesítés");
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(detailRows), "Részletes sorok");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(scrapWorkerRows), "Selejtpótlás dolgozók");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(scrapDetailRows), "Selejtpótlás napló");
     const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
     downloadBlob(
       `ujragyartasi_riport_${reproductionReportDate}.xlsx`,
@@ -8535,6 +8983,7 @@ export default function Page() {
     const channel = supabase
       .channel(`reproduction-report-${reproductionReportFilterMode}-${reproductionReportDate}-${reproductionReportDateTo}-${normalizeLooseText(reproductionReportSelectedStation)}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: CARPENTER_SCRAP_REPLACEMENT_TABLE }, refresh)
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
   }, [supabase, managementSection, reproductionReportFilterMode, reproductionReportDate, reproductionReportDateTo, reproductionReportSelectedStation]);
