@@ -523,23 +523,75 @@ type ScrapReplacementRow = {
 
 type LabelTemplateType = "VAGAS" | "UJRAGYARTAS";
 type LabelTextAlign = "left" | "center" | "right";
+type LabelVerticalAlign = "top" | "middle" | "bottom";
+type LabelRotation = 0 | 90 | 180 | 270;
+type LabelTemplateElementType = "field" | "staticText" | "line" | "box" | "filledBox" | "barcode" | "qrcode";
 
-type LabelTemplateFieldConfig = {
-  key: string;
-  label: string;
+type LabelTemplateElementConfig = {
+  id: string;
+  type: LabelTemplateElementType;
+  key?: string;
+  label?: string;
+  text?: string;
   visible: boolean;
   x: number;
   y: number;
   width: number;
-  fontSize: number;
+  height: number;
+  zIndex: number;
+  fontFamily: string;
+  labelFontSize: number;
+  valueFontSize: number;
+  labelBold: boolean;
   bold: boolean;
+  italic: boolean;
+  underline: boolean;
   align: LabelTextAlign;
+  verticalAlign: LabelVerticalAlign;
+  stackedLabel: boolean;
+  wrap: boolean;
+  maxLines: number;
+  prefix: string;
+  suffix: string;
+  charSpacing: number;
+  rotation: LabelRotation;
+  textColor: string;
+  fillColor: string;
+  borderColor: string;
+  borderWidth: number;
+  borderRadius: number;
+  lineWidth: number;
+  hideWhenEmpty: boolean;
+  showHumanReadable: boolean;
 };
 
 type LabelTemplateConfig = {
   widthMm: number;
   heightMm: number;
-  fields: LabelTemplateFieldConfig[];
+  backgroundColor: string;
+  showBorder: boolean;
+  borderWidth: number;
+  gridEnabled: boolean;
+  gridSizeMm: number;
+  snapToGrid: boolean;
+  elements: LabelTemplateElementConfig[];
+};
+
+type LabelTemplateRecord = {
+  id: string;
+  type: LabelTemplateType;
+  name: string;
+  version: number;
+  active: boolean;
+  config: LabelTemplateConfig;
+  updatedAt: string;
+};
+
+type PrinterCalibrationSettings = {
+  dpi: number;
+  offsetXmm: number;
+  offsetYmm: number;
+  copies: number;
 };
 
 type ReprintRequestRow = ScrapReplacementRow & {
@@ -564,6 +616,7 @@ type LabelPrintJob = {
   title: string;
   data: Record<string, string>;
   requestId?: string | number | null;
+  renderedImages?: Record<string, string>;
 };
 
 type ProductionCardBacklogRow = {
@@ -889,6 +942,7 @@ const LABEL_PRINT_API = "/api/label-print";
 
 const CUTTING_LABEL_FIELDS: Array<{ key: string; label: string }> = [
   { key: "sorszam", label: "Sorszám" },
+  { key: "lap_tipus", label: "Lap típusa" },
   { key: "kulso_lap", label: "Külső lap" },
   { key: "belso_lap", label: "Belső lap" },
   { key: "szin", label: "Szín" },
@@ -897,6 +951,7 @@ const CUTTING_LABEL_FIELDS: Array<{ key: string; label: string }> = [
 
 const REPRINT_LABEL_FIELDS: Array<{ key: string; label: string }> = [
   { key: "sorszam", label: "Sorszám" },
+  { key: "hiba", label: "Hiba" },
   { key: "kulso_lap", label: "Külső lap" },
   { key: "belso_lap", label: "Belső lap" },
   { key: "szin", label: "Szín" },
@@ -909,57 +964,234 @@ const REPRINT_LABEL_FIELDS: Array<{ key: string; label: string }> = [
   { key: "tipus", label: "Típus" },
 ];
 
-function createDefaultLabelTemplate(type: LabelTemplateType): LabelTemplateConfig {
-  const definitions = type === "VAGAS" ? CUTTING_LABEL_FIELDS : REPRINT_LABEL_FIELDS;
-  const widthMm = 58;
-  const heightMm = 40;
-  const top = type === "VAGAS" ? 20 : 15;
-  const usableHeight = 94 - top;
-  const rowHeight = Math.max(6, usableHeight / Math.max(1, definitions.length));
+const LABEL_FONT_OPTIONS = ["Arial", "Segoe UI", "Tahoma", "Verdana", "Consolas"];
+
+function createLabelElement(
+  id: string,
+  type: LabelTemplateElementType,
+  patch: Partial<LabelTemplateElementConfig> = {}
+): LabelTemplateElementConfig {
   return {
-    widthMm,
-    heightMm,
-    fields: definitions.map((field, index) => ({
-      key: field.key,
-      label: field.label,
-      visible: true,
-      x: 4,
-      y: Math.min(92, top + (index * rowHeight)),
-      width: 92,
-      fontSize: type === "VAGAS" ? (index === 0 ? 13 : 8) : (index === 0 ? 11 : 6.8),
-      bold: index === 0,
-      align: "left" as LabelTextAlign,
-    })),
+    id,
+    type,
+    key: "",
+    label: "",
+    text: "",
+    visible: true,
+    x: 4,
+    y: 4,
+    width: 35,
+    height: 12,
+    zIndex: 10,
+    fontFamily: "Arial",
+    labelFontSize: 5.2,
+    valueFontSize: 8,
+    labelBold: true,
+    bold: false,
+    italic: false,
+    underline: false,
+    align: "left",
+    verticalAlign: "top",
+    stackedLabel: false,
+    wrap: false,
+    maxLines: 2,
+    prefix: "",
+    suffix: "",
+    charSpacing: 0,
+    rotation: 0,
+    textColor: "#000000",
+    fillColor: "#ffffff",
+    borderColor: "#000000",
+    borderWidth: 0.6,
+    borderRadius: 0,
+    lineWidth: 0.8,
+    hideWhenEmpty: false,
+    showHumanReadable: false,
+    ...patch,
+  };
+}
+
+function createDefaultLabelTemplate(type: LabelTemplateType): LabelTemplateConfig {
+  if (type === "VAGAS") {
+    return {
+      widthMm: 58,
+      heightMm: 40,
+      backgroundColor: "#ffffff",
+      showBorder: true,
+      borderWidth: 0.7,
+      gridEnabled: true,
+      gridSizeMm: 1,
+      snapToGrid: true,
+      elements: [
+        createLabelElement("cut-header-box", "filledBox", { x: 2, y: 2, width: 96, height: 15, fillColor: "#111827", borderColor: "#111827", zIndex: 1 }),
+        createLabelElement("cut-header", "field", { key: "lap_tipus", label: "", prefix: "VÁGÁS – ", x: 4, y: 3, width: 92, height: 13, valueFontSize: 9, bold: true, align: "center", verticalAlign: "middle", textColor: "#ffffff", zIndex: 20 }),
+        createLabelElement("cut-order", "field", { key: "sorszam", label: "Sorszám", x: 4, y: 20, width: 92, height: 18, labelFontSize: 4.8, valueFontSize: 12, bold: true, align: "center", stackedLabel: true, zIndex: 20 }),
+        createLabelElement("cut-line-1", "line", { x: 3, y: 40, width: 94, height: 0, lineWidth: 0.7, zIndex: 5 }),
+        createLabelElement("cut-outer", "field", { key: "kulso_lap", label: "Külső lap", x: 4, y: 43, width: 92, height: 16, labelFontSize: 4.8, valueFontSize: 8, bold: true, stackedLabel: true, hideWhenEmpty: true, zIndex: 20 }),
+        createLabelElement("cut-inner", "field", { key: "belso_lap", label: "Belső lap", x: 4, y: 43, width: 92, height: 16, labelFontSize: 4.8, valueFontSize: 8, bold: true, stackedLabel: true, hideWhenEmpty: true, zIndex: 20 }),
+        createLabelElement("cut-line-2", "line", { x: 3, y: 61, width: 94, height: 0, lineWidth: 0.7, zIndex: 5 }),
+        createLabelElement("cut-color", "field", { key: "szin", label: "Szín", x: 4, y: 64, width: 52, height: 13, labelFontSize: 4.6, valueFontSize: 7, bold: true, stackedLabel: true, zIndex: 20 }),
+        createLabelElement("cut-type", "field", { key: "tipus", label: "Típus", x: 59, y: 64, width: 37, height: 13, labelFontSize: 4.6, valueFontSize: 7, bold: true, stackedLabel: true, zIndex: 20 }),
+        createLabelElement("cut-barcode", "barcode", { key: "sorszam", x: 4, y: 80, width: 92, height: 16, showHumanReadable: false, zIndex: 20 }),
+      ],
+    };
+  }
+
+  return {
+    widthMm: 58,
+    heightMm: 40,
+    backgroundColor: "#ffffff",
+    showBorder: true,
+    borderWidth: 0.8,
+    gridEnabled: true,
+    gridSizeMm: 1,
+    snapToGrid: true,
+    elements: [
+      createLabelElement("rep-header-box", "filledBox", { x: 2, y: 2, width: 96, height: 13, fillColor: "#111827", borderColor: "#111827", zIndex: 1 }),
+      createLabelElement("rep-header", "staticText", { text: "ÚJRAGYÁRTÁS", x: 4, y: 3, width: 92, height: 11, valueFontSize: 9, bold: true, align: "center", verticalAlign: "middle", textColor: "#ffffff", zIndex: 20 }),
+      createLabelElement("rep-order", "field", { key: "sorszam", label: "Sorszám", x: 4, y: 17, width: 65, height: 15, labelFontSize: 4.4, valueFontSize: 10.5, bold: true, stackedLabel: true, zIndex: 20 }),
+      createLabelElement("rep-qr", "qrcode", { key: "sorszam", x: 73, y: 17, width: 23, height: 23, zIndex: 20 }),
+      createLabelElement("rep-defect", "field", { key: "hiba", label: "Hiba", x: 4, y: 34, width: 65, height: 10, labelFontSize: 4.2, valueFontSize: 6.3, bold: true, zIndex: 20 }),
+      createLabelElement("rep-line-1", "line", { x: 3, y: 46, width: 94, height: 0, lineWidth: 0.7, zIndex: 5 }),
+      createLabelElement("rep-outer", "field", { key: "kulso_lap", label: "Külső lap", x: 4, y: 49, width: 45, height: 10, labelFontSize: 4.1, valueFontSize: 5.8, stackedLabel: true, hideWhenEmpty: true, zIndex: 20 }),
+      createLabelElement("rep-inner", "field", { key: "belso_lap", label: "Belső lap", x: 51, y: 49, width: 45, height: 10, labelFontSize: 4.1, valueFontSize: 5.8, stackedLabel: true, hideWhenEmpty: true, zIndex: 20 }),
+      createLabelElement("rep-color", "field", { key: "szin", label: "Szín", x: 4, y: 62, width: 45, height: 9, labelFontSize: 4, valueFontSize: 5.6, zIndex: 20 }),
+      createLabelElement("rep-milling", "field", { key: "maras_minta", label: "Marásminta", x: 51, y: 62, width: 45, height: 9, labelFontSize: 4, valueFontSize: 5.6, zIndex: 20 }),
+      createLabelElement("rep-width", "field", { key: "szelesseg", label: "Szélesség", x: 4, y: 72, width: 30, height: 8, labelFontSize: 3.8, valueFontSize: 5.2, zIndex: 20 }),
+      createLabelElement("rep-length", "field", { key: "hosszusag", label: "Hosszúság", x: 36, y: 72, width: 30, height: 8, labelFontSize: 3.8, valueFontSize: 5.2, zIndex: 20 }),
+      createLabelElement("rep-type", "field", { key: "tipus", label: "Típus", x: 68, y: 72, width: 28, height: 8, labelFontSize: 3.8, valueFontSize: 5.2, zIndex: 20 }),
+      createLabelElement("rep-date", "field", { key: "datum", label: "Dátum", x: 4, y: 82, width: 45, height: 7, labelFontSize: 3.7, valueFontSize: 4.9, zIndex: 20 }),
+      createLabelElement("rep-worker", "field", { key: "dolgozo", label: "Dolgozó", x: 51, y: 82, width: 45, height: 7, labelFontSize: 3.7, valueFontSize: 4.9, zIndex: 20 }),
+      createLabelElement("rep-note", "field", { key: "megjegyzes", label: "Megjegyzés", x: 4, y: 90, width: 92, height: 8, labelFontSize: 3.7, valueFontSize: 4.8, wrap: true, maxLines: 2, zIndex: 20 }),
+    ],
+  };
+}
+
+function normalizeLabelRotation(value: unknown): LabelRotation {
+  const parsed = Number(value);
+  return parsed === 90 || parsed === 180 || parsed === 270 ? parsed : 0;
+}
+
+function normalizeLabelElement(raw: unknown, fallback?: LabelTemplateElementConfig): LabelTemplateElementConfig {
+  const candidate = raw && typeof raw === "object" ? raw as Partial<LabelTemplateElementConfig> : {};
+  const base = fallback || createLabelElement(`element-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, "field");
+  const allowedTypes: LabelTemplateElementType[] = ["field", "staticText", "line", "box", "filledBox", "barcode", "qrcode"];
+  return {
+    ...base,
+    ...candidate,
+    id: String(candidate.id || base.id),
+    type: allowedTypes.includes(candidate.type as LabelTemplateElementType) ? candidate.type as LabelTemplateElementType : base.type,
+    key: String(candidate.key ?? base.key ?? ""),
+    label: String(candidate.label ?? base.label ?? ""),
+    text: String(candidate.text ?? base.text ?? ""),
+    visible: candidate.visible !== false,
+    x: Number.isFinite(Number(candidate.x)) ? Number(candidate.x) : base.x,
+    y: Number.isFinite(Number(candidate.y)) ? Number(candidate.y) : base.y,
+    width: Number.isFinite(Number(candidate.width)) ? Math.max(0.2, Number(candidate.width)) : base.width,
+    height: Number.isFinite(Number(candidate.height)) ? Math.max(0, Number(candidate.height)) : base.height,
+    zIndex: Number.isFinite(Number(candidate.zIndex)) ? Number(candidate.zIndex) : base.zIndex,
+    fontFamily: String(candidate.fontFamily || base.fontFamily || "Arial"),
+    labelFontSize: Number.isFinite(Number(candidate.labelFontSize)) ? Math.max(3, Number(candidate.labelFontSize)) : base.labelFontSize,
+    valueFontSize: Number.isFinite(Number(candidate.valueFontSize)) ? Math.max(3, Number(candidate.valueFontSize)) : base.valueFontSize,
+    labelBold: candidate.labelBold !== false,
+    bold: Boolean(candidate.bold),
+    italic: Boolean(candidate.italic),
+    underline: Boolean(candidate.underline),
+    align: (["left", "center", "right"] as LabelTextAlign[]).includes(candidate.align as LabelTextAlign) ? candidate.align as LabelTextAlign : base.align,
+    verticalAlign: (["top", "middle", "bottom"] as LabelVerticalAlign[]).includes(candidate.verticalAlign as LabelVerticalAlign) ? candidate.verticalAlign as LabelVerticalAlign : base.verticalAlign,
+    stackedLabel: Boolean(candidate.stackedLabel),
+    wrap: Boolean(candidate.wrap),
+    maxLines: Math.max(1, Math.min(8, Number(candidate.maxLines) || base.maxLines)),
+    prefix: String(candidate.prefix ?? base.prefix ?? ""),
+    suffix: String(candidate.suffix ?? base.suffix ?? ""),
+    charSpacing: Number.isFinite(Number(candidate.charSpacing)) ? Number(candidate.charSpacing) : base.charSpacing,
+    rotation: normalizeLabelRotation(candidate.rotation),
+    textColor: String(candidate.textColor || base.textColor || "#000000"),
+    fillColor: String(candidate.fillColor || base.fillColor || "#ffffff"),
+    borderColor: String(candidate.borderColor || base.borderColor || "#000000"),
+    borderWidth: Number.isFinite(Number(candidate.borderWidth)) ? Math.max(0, Number(candidate.borderWidth)) : base.borderWidth,
+    borderRadius: Number.isFinite(Number(candidate.borderRadius)) ? Math.max(0, Number(candidate.borderRadius)) : base.borderRadius,
+    lineWidth: Number.isFinite(Number(candidate.lineWidth)) ? Math.max(0.1, Number(candidate.lineWidth)) : base.lineWidth,
+    hideWhenEmpty: Boolean(candidate.hideWhenEmpty),
+    showHumanReadable: Boolean(candidate.showHumanReadable),
   };
 }
 
 function normalizeLabelTemplate(raw: unknown, type: LabelTemplateType): LabelTemplateConfig {
   const fallback = createDefaultLabelTemplate(type);
   if (!raw || typeof raw !== "object") return fallback;
-  const candidate = raw as Partial<LabelTemplateConfig>;
-  const rawFields = Array.isArray(candidate.fields) ? candidate.fields : [];
-  const byKey = new Map(rawFields.map((field) => [String((field as LabelTemplateFieldConfig)?.key || ""), field as LabelTemplateFieldConfig]));
+  const candidate = raw as Partial<LabelTemplateConfig> & { fields?: Array<Record<string, unknown>> };
+  let rawElements = Array.isArray(candidate.elements) ? candidate.elements : [];
+  if (rawElements.length === 0 && Array.isArray(candidate.fields)) {
+    // Régi sablonformátum automatikus konvertálása az új grafikus elemrendszerbe.
+    rawElements = candidate.fields.map((field, index) => createLabelElement(
+      `legacy-${String(field.key || index)}`,
+      "field",
+      {
+        key: String(field.key || ""),
+        label: String(field.label || ""),
+        visible: field.visible !== false,
+        x: Number(field.x) || 4,
+        y: Number(field.y) || 4,
+        width: Number(field.width) || 92,
+        height: 10,
+        valueFontSize: Number(field.fontSize) || 7,
+        bold: Boolean(field.bold),
+        align: (["left", "center", "right"] as string[]).includes(String(field.align)) ? field.align as LabelTextAlign : "left",
+      }
+    ));
+  }
+  const normalizedElements = rawElements.length > 0
+    ? rawElements.map((element) => normalizeLabelElement(element))
+    : fallback.elements;
   return {
     widthMm: Number(candidate.widthMm) > 10 ? Number(candidate.widthMm) : fallback.widthMm,
     heightMm: Number(candidate.heightMm) > 10 ? Number(candidate.heightMm) : fallback.heightMm,
-    fields: fallback.fields.map((defaultField) => {
-      const stored = byKey.get(defaultField.key);
-      if (!stored) return defaultField;
-      return {
-        ...defaultField,
-        ...stored,
-        key: defaultField.key,
-        label: defaultField.label,
-        visible: stored.visible !== false,
-        x: Number.isFinite(Number(stored.x)) ? Number(stored.x) : defaultField.x,
-        y: Number.isFinite(Number(stored.y)) ? Number(stored.y) : defaultField.y,
-        width: Number.isFinite(Number(stored.width)) ? Number(stored.width) : defaultField.width,
-        fontSize: Number.isFinite(Number(stored.fontSize)) ? Number(stored.fontSize) : defaultField.fontSize,
-        bold: Boolean(stored.bold),
-        align: (["left", "center", "right"] as LabelTextAlign[]).includes(stored.align) ? stored.align : defaultField.align,
-      };
-    }),
+    backgroundColor: String(candidate.backgroundColor || fallback.backgroundColor),
+    showBorder: candidate.showBorder !== false,
+    borderWidth: Number.isFinite(Number(candidate.borderWidth)) ? Math.max(0, Number(candidate.borderWidth)) : fallback.borderWidth,
+    gridEnabled: candidate.gridEnabled !== false,
+    gridSizeMm: Number(candidate.gridSizeMm) > 0 ? Math.min(20, Number(candidate.gridSizeMm)) : fallback.gridSizeMm,
+    snapToGrid: candidate.snapToGrid !== false,
+    elements: normalizedElements,
   };
+}
+
+function getLabelTemplateFieldDefinitions(type: LabelTemplateType): Array<{ key: string; label: string }> {
+  return type === "VAGAS" ? CUTTING_LABEL_FIELDS : REPRINT_LABEL_FIELDS;
+}
+
+function getLabelSampleData(type: LabelTemplateType, workerName = "Dolgozó"): Record<string, string> {
+  return type === "VAGAS"
+    ? {
+        sorszam: "R260812345",
+        lap_tipus: "KÜLSŐ LAP",
+        kulso_lap: "Külső lap adat",
+        belso_lap: "",
+        szin: "RAL 7016",
+        tipus: "Ajtó",
+      }
+    : {
+        sorszam: "R260812345",
+        hiba: "Külső lap selejt",
+        kulso_lap: "Külső lap adat",
+        belso_lap: "Belső lap adat",
+        szin: "RAL 7016",
+        maras_minta: "M12",
+        szelesseg: "950",
+        hosszusag: "2100",
+        datum: "2026.08.08",
+        megjegyzes: "Pótlás sürgős",
+        dolgozo: workerName,
+        tipus: "Ajtó",
+      };
+}
+
+function labelElementDisplayValue(element: LabelTemplateElementConfig, sample: Record<string, string>): string {
+  if (element.type === "staticText") return element.text || "Szöveg";
+  if (element.type === "line" || element.type === "box" || element.type === "filledBox") return "";
+  const value = element.key ? String(sample[element.key] || "") : "";
+  return `${element.prefix || ""}${value}${element.suffix || ""}`;
 }
 
 function readRecordValue(row: Record<string, unknown> | null | undefined, aliases: string[]): unknown {
@@ -3732,12 +3964,26 @@ export default function Page() {
   const [selectedWindowsPrinter, setSelectedWindowsPrinter] = useState("");
   const [loadingWindowsPrinters, setLoadingWindowsPrinters] = useState(false);
   const [savingCarpenterPrinterSettings, setSavingCarpenterPrinterSettings] = useState(false);
+  const [carpenterPrinterCalibration, setCarpenterPrinterCalibration] = useState<PrinterCalibrationSettings>({ dpi: 203, offsetXmm: 0, offsetYmm: 0, copies: 1 });
   const [activeCarpenterLabelTemplateType, setActiveCarpenterLabelTemplateType] = useState<LabelTemplateType>("VAGAS");
   const [carpenterLabelTemplates, setCarpenterLabelTemplates] = useState<Record<LabelTemplateType, LabelTemplateConfig>>({
     VAGAS: createDefaultLabelTemplate("VAGAS"),
     UJRAGYARTAS: createDefaultLabelTemplate("UJRAGYARTAS"),
   });
+  const [carpenterLabelTemplateVersions, setCarpenterLabelTemplateVersions] = useState<Record<LabelTemplateType, LabelTemplateRecord[]>>({ VAGAS: [], UJRAGYARTAS: [] });
+  const [selectedCarpenterLabelTemplateIds, setSelectedCarpenterLabelTemplateIds] = useState<Record<LabelTemplateType, string>>({ VAGAS: "", UJRAGYARTAS: "" });
+  const [carpenterLabelTemplateNameDraft, setCarpenterLabelTemplateNameDraft] = useState("Alapértelmezett");
+  const [carpenterLabelSelectedElementIds, setCarpenterLabelSelectedElementIds] = useState<string[]>([]);
   const [carpenterPrinterSettingsLoaded, setCarpenterPrinterSettingsLoaded] = useState(false);
+  const carpenterLabelCanvasRef = useRef<HTMLDivElement | null>(null);
+  const carpenterLabelInteractionRef = useRef<{
+    mode: "drag" | "resize";
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    elementIds: string[];
+    initial: Record<string, { x: number; y: number; width: number; height: number }>;
+  } | null>(null);
   const [reprintRequests, setReprintRequests] = useState<ReprintRequestRow[]>([]);
   const [selectedReprintRequestIds, setSelectedReprintRequestIds] = useState<Record<string, boolean>>({});
   const [loadingReprintRequests, setLoadingReprintRequests] = useState(false);
@@ -13920,6 +14166,7 @@ body {
   function buildCuttingLabelData(orderNumberValue: string, planRow: Record<string, unknown> | null): Record<string, string> {
     return {
       sorszam: String(orderNumberValue || "").trim(),
+      lap_tipus: "",
       kulso_lap: valueAsText(readRecordValue(planRow, ["kulso_lap", "külső lap", "kulso lap"])),
       belso_lap: valueAsText(readRecordValue(planRow, ["belso_lap", "belső lap", "belso lap"])),
       szin: valueAsText(readRecordValue(planRow, ["szin", "szín"])),
@@ -13938,6 +14185,7 @@ body {
     const typeValue = String(row.termek_tipus || "").trim() || valueAsText(readRecordValue(source, ["tipus", "típus", "termek_tipus", "terméktípus"]));
     return {
       sorszam: String(row.order_number || "").trim(),
+      hiba: getScrapReplacementDefectLabel(row),
       kulso_lap: outer || (row.kulso_lap_selejt ? "SELEJT" : ""),
       belso_lap: inner || (row.belso_lap_selejt ? "SELEJT" : ""),
       szin: color,
@@ -13967,6 +14215,35 @@ body {
     }
   }
 
+  function getDefaultTemplateRecord(type: LabelTemplateType): LabelTemplateRecord {
+    return {
+      id: "",
+      type,
+      name: type === "VAGAS" ? "Vágás – gyári alap" : "Újragyártás – gyári alap",
+      version: 1,
+      active: true,
+      config: createDefaultLabelTemplate(type),
+      updatedAt: "",
+    };
+  }
+
+  function mapLabelTemplateRow(row: any, type: LabelTemplateType): LabelTemplateRecord {
+    const mergedRaw = {
+      ...(row?.template_json && typeof row.template_json === "object" ? row.template_json : {}),
+      widthMm: Number(row?.width_mm) || undefined,
+      heightMm: Number(row?.height_mm) || undefined,
+    };
+    return {
+      id: String(row?.id || ""),
+      type,
+      name: String(row?.name || (type === "VAGAS" ? "Vágás" : "Újragyártás")).trim(),
+      version: Math.max(1, Number(row?.version) || 1),
+      active: row?.active !== false,
+      config: normalizeLabelTemplate(mergedRaw, type),
+      updatedAt: String(row?.updated_at || ""),
+    };
+  }
+
   async function loadCarpenterPrinterSettings(): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
@@ -13984,37 +14261,69 @@ body {
       }
 
       const [printerResponse, templatesResponse] = await Promise.all([
-        supabase.from(PRINTER_SETTINGS_TABLE).select("machine_name, printer_name, active").eq("machine_name", station).eq("active", true).limit(1),
-        supabase.from(LABEL_TEMPLATES_TABLE).select("template_type, width_mm, height_mm, template_json").eq("machine_name", station).limit(10),
+        supabase.from(PRINTER_SETTINGS_TABLE).select("machine_name, printer_name, active, dpi, offset_x_mm, offset_y_mm, copies").eq("machine_name", station).eq("active", true).limit(1),
+        supabase.from(LABEL_TEMPLATES_TABLE).select("id, template_type, name, version, active, width_mm, height_mm, template_json, updated_at").eq("machine_name", station).order("template_type", { ascending: true }).order("version", { ascending: false }).limit(100),
       ]);
       if (printerResponse.error) throw printerResponse.error;
       if (templatesResponse.error) throw templatesResponse.error;
 
-      const savedPrinter = Array.isArray(printerResponse.data) && printerResponse.data.length > 0
-        ? String((printerResponse.data[0] as any).printer_name || "").trim()
-        : "";
+      const printerRow = Array.isArray(printerResponse.data) && printerResponse.data.length > 0 ? printerResponse.data[0] as any : null;
+      const savedPrinter = printerRow ? String(printerRow.printer_name || "").trim() : "";
       setSelectedWindowsPrinter(savedPrinter || availablePrinters[0] || "");
+      setCarpenterPrinterCalibration({
+        dpi: Math.max(100, Number(printerRow?.dpi) || 203),
+        offsetXmm: Number(printerRow?.offset_x_mm) || 0,
+        offsetYmm: Number(printerRow?.offset_y_mm) || 0,
+        copies: Math.max(1, Math.min(20, Number(printerRow?.copies) || 1)),
+      });
+
+      const rows = (templatesResponse.data || []) as Array<any>;
+      const nextVersions: Record<LabelTemplateType, LabelTemplateRecord[]> = { VAGAS: [], UJRAGYARTAS: [] };
+      rows.forEach((row) => {
+        const type = String(row.template_type || "").toUpperCase() as LabelTemplateType;
+        if (type !== "VAGAS" && type !== "UJRAGYARTAS") return;
+        nextVersions[type].push(mapLabelTemplateRow(row, type));
+      });
 
       const nextTemplates: Record<LabelTemplateType, LabelTemplateConfig> = {
         VAGAS: createDefaultLabelTemplate("VAGAS"),
         UJRAGYARTAS: createDefaultLabelTemplate("UJRAGYARTAS"),
       };
-      ((templatesResponse.data || []) as Array<any>).forEach((row) => {
-        const type = String(row.template_type || "").toUpperCase() as LabelTemplateType;
-        if (type !== "VAGAS" && type !== "UJRAGYARTAS") return;
-        const mergedRaw = {
-          ...(row.template_json && typeof row.template_json === "object" ? row.template_json : {}),
-          widthMm: Number(row.width_mm) || undefined,
-          heightMm: Number(row.height_mm) || undefined,
-        };
-        nextTemplates[type] = normalizeLabelTemplate(mergedRaw, type);
+      const nextSelected: Record<LabelTemplateType, string> = { VAGAS: "", UJRAGYARTAS: "" };
+      (["VAGAS", "UJRAGYARTAS"] as LabelTemplateType[]).forEach((type) => {
+        const records = nextVersions[type];
+        const selected = records.find((record) => record.active) || records[0] || getDefaultTemplateRecord(type);
+        nextTemplates[type] = selected.config;
+        nextSelected[type] = selected.id;
       });
+      setCarpenterLabelTemplateVersions(nextVersions);
       setCarpenterLabelTemplates(nextTemplates);
+      setSelectedCarpenterLabelTemplateIds(nextSelected);
+      const currentRecord = nextVersions[activeCarpenterLabelTemplateType].find((row) => row.id === nextSelected[activeCarpenterLabelTemplateType]);
+      setCarpenterLabelTemplateNameDraft(currentRecord?.name || (activeCarpenterLabelTemplateType === "VAGAS" ? "Vágás – gyári alap" : "Újragyártás – gyári alap"));
+      setCarpenterLabelSelectedElementIds([]);
       setCarpenterPrinterSettingsLoaded(true);
     } catch (error) {
       console.error("Nyomtató beállítások betöltési hiba:", error);
       setMessage({ type: "error", text: normalizeError(error) });
     }
+  }
+
+  function switchCarpenterLabelTemplateType(type: LabelTemplateType): void {
+    setActiveCarpenterLabelTemplateType(type);
+    setCarpenterLabelSelectedElementIds([]);
+    const selectedId = selectedCarpenterLabelTemplateIds[type];
+    const record = carpenterLabelTemplateVersions[type].find((item) => item.id === selectedId);
+    setCarpenterLabelTemplateNameDraft(record?.name || (type === "VAGAS" ? "Vágás – gyári alap" : "Újragyártás – gyári alap"));
+  }
+
+  function selectCarpenterLabelTemplateVersion(type: LabelTemplateType, id: string): void {
+    const record = carpenterLabelTemplateVersions[type].find((item) => item.id === id);
+    if (!record) return;
+    setSelectedCarpenterLabelTemplateIds((previous) => ({ ...previous, [type]: id }));
+    setCarpenterLabelTemplates((previous) => ({ ...previous, [type]: record.config }));
+    setCarpenterLabelTemplateNameDraft(record.name);
+    setCarpenterLabelSelectedElementIds([]);
   }
 
   function updateCarpenterLabelTemplate(type: LabelTemplateType, patch: Partial<LabelTemplateConfig>): void {
@@ -14024,45 +14333,360 @@ body {
     }));
   }
 
-  function updateCarpenterLabelField(type: LabelTemplateType, key: string, patch: Partial<LabelTemplateFieldConfig>): void {
+  function updateCarpenterLabelElement(type: LabelTemplateType, id: string, patch: Partial<LabelTemplateElementConfig>): void {
     setCarpenterLabelTemplates((previous) => ({
       ...previous,
       [type]: {
         ...previous[type],
-        fields: previous[type].fields.map((field) => field.key === key ? { ...field, ...patch } : field),
+        elements: previous[type].elements.map((element) => element.id === id ? normalizeLabelElement({ ...element, ...patch }, element) : element),
       },
     }));
   }
 
-  async function saveCarpenterPrinterSettings(): Promise<void> {
-    if (!supabase) return;
-    const station = getCurrentMachineIdForInsert();
-    if (!selectedWindowsPrinter.trim()) {
-      setMessage({ type: "error", text: "Válassz ki egy Windowsban telepített nyomtatót." });
-      return;
-    }
-    setSavingCarpenterPrinterSettings(true);
-    try {
-      const nowIso = new Date().toISOString();
-      const printerResponse = await supabase.from(PRINTER_SETTINGS_TABLE).upsert({
-        machine_name: station,
-        printer_name: selectedWindowsPrinter.trim(),
-        active: true,
-        updated_at: nowIso,
-      }, { onConflict: "machine_name" });
-      if (printerResponse.error) throw printerResponse.error;
+  function getLabelSnapPct(template: LabelTemplateConfig, axis: "x" | "y"): number {
+    const totalMm = axis === "x" ? template.widthMm : template.heightMm;
+    if (!template.snapToGrid || template.gridSizeMm <= 0 || totalMm <= 0) return 0;
+    return (template.gridSizeMm / totalMm) * 100;
+  }
 
-      const templateRows = (["VAGAS", "UJRAGYARTAS"] as LabelTemplateType[]).map((type) => ({
+  function snapLabelPct(value: number, template: LabelTemplateConfig, axis: "x" | "y"): number {
+    const step = getLabelSnapPct(template, axis);
+    if (step <= 0) return value;
+    return Math.round(value / step) * step;
+  }
+
+  function addCarpenterLabelElement(type: LabelTemplateType, elementType: LabelTemplateElementType, fieldKey = ""): void {
+    const definitions = getLabelTemplateFieldDefinitions(type);
+    const definition = definitions.find((field) => field.key === fieldKey);
+    const id = `label-${elementType}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const existing = carpenterLabelTemplates[type].elements;
+    const maxZ = existing.reduce((max, element) => Math.max(max, element.zIndex), 0);
+    const basePatch: Partial<LabelTemplateElementConfig> = { x: 8, y: 8, width: 40, height: 12, zIndex: maxZ + 1 };
+    let element = createLabelElement(id, elementType, basePatch);
+    if (elementType === "field") {
+      element = createLabelElement(id, "field", { ...basePatch, key: fieldKey || definitions[0]?.key || "sorszam", label: definition?.label || definitions[0]?.label || "Mező", valueFontSize: 8, labelFontSize: 5 });
+    } else if (elementType === "staticText") {
+      element = createLabelElement(id, "staticText", { ...basePatch, text: "Új szöveg", bold: true, valueFontSize: 8 });
+    } else if (elementType === "line") {
+      element = createLabelElement(id, "line", { ...basePatch, width: 60, height: 0, lineWidth: 0.8, zIndex: maxZ + 1 });
+    } else if (elementType === "box") {
+      element = createLabelElement(id, "box", { ...basePatch, width: 45, height: 22, borderWidth: 0.7 });
+    } else if (elementType === "filledBox") {
+      element = createLabelElement(id, "filledBox", { ...basePatch, width: 45, height: 18, fillColor: "#111827", borderColor: "#111827" });
+    } else if (elementType === "barcode" || elementType === "qrcode") {
+      element = createLabelElement(id, elementType, { ...basePatch, key: fieldKey || "sorszam", width: elementType === "qrcode" ? 24 : 60, height: elementType === "qrcode" ? 24 : 16 });
+    }
+    updateCarpenterLabelTemplate(type, { elements: [...existing, element] });
+    setCarpenterLabelSelectedElementIds([id]);
+  }
+
+  function addCarpenterVerticalLine(type: LabelTemplateType): void {
+    const existing = carpenterLabelTemplates[type].elements;
+    const maxZ = existing.reduce((max, element) => Math.max(max, element.zIndex), 0);
+    const id = `label-vline-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const element = createLabelElement(id, "line", { x: 50, y: 20, width: 0.3, height: 55, lineWidth: 0.8, zIndex: maxZ + 1 });
+    updateCarpenterLabelTemplate(type, { elements: [...existing, element] });
+    setCarpenterLabelSelectedElementIds([id]);
+  }
+
+  function addCarpenterHeaderBlock(type: LabelTemplateType): void {
+    const existing = carpenterLabelTemplates[type].elements;
+    const maxZ = existing.reduce((max, element) => Math.max(max, element.zIndex), 0);
+    const token = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const box = createLabelElement(`label-header-box-${token}`, "filledBox", { x: 4, y: 4, width: 92, height: 16, fillColor: "#111827", borderColor: "#111827", zIndex: maxZ + 1 });
+    const title = createLabelElement(`label-header-text-${token}`, "staticText", { text: "FEJLÉC", x: 6, y: 5, width: 88, height: 14, valueFontSize: 9, bold: true, align: "center", verticalAlign: "middle", textColor: "#ffffff", zIndex: maxZ + 2 });
+    updateCarpenterLabelTemplate(type, { elements: [...existing, box, title] });
+    setCarpenterLabelSelectedElementIds([title.id]);
+  }
+
+  function deleteSelectedCarpenterLabelElements(type: LabelTemplateType): void {
+    if (carpenterLabelSelectedElementIds.length === 0) return;
+    const selected = new Set(carpenterLabelSelectedElementIds);
+    updateCarpenterLabelTemplate(type, { elements: carpenterLabelTemplates[type].elements.filter((element) => !selected.has(element.id)) });
+    setCarpenterLabelSelectedElementIds([]);
+  }
+
+  function duplicateSelectedCarpenterLabelElements(type: LabelTemplateType): void {
+    const selected = new Set(carpenterLabelSelectedElementIds);
+    const copies = carpenterLabelTemplates[type].elements.filter((element) => selected.has(element.id)).map((element, index) => ({
+      ...element,
+      id: `${element.id}-copy-${Date.now()}-${index}`,
+      x: Math.min(95, element.x + 3),
+      y: Math.min(95, element.y + 3),
+      zIndex: element.zIndex + 1,
+    }));
+    if (copies.length === 0) return;
+    updateCarpenterLabelTemplate(type, { elements: [...carpenterLabelTemplates[type].elements, ...copies] });
+    setCarpenterLabelSelectedElementIds(copies.map((element) => element.id));
+  }
+
+  function changeSelectedCarpenterLabelZ(type: LabelTemplateType, delta: number): void {
+    const selected = new Set(carpenterLabelSelectedElementIds);
+    updateCarpenterLabelTemplate(type, {
+      elements: carpenterLabelTemplates[type].elements.map((element) => selected.has(element.id) ? { ...element, zIndex: Math.max(0, element.zIndex + delta) } : element),
+    });
+  }
+
+  function alignSelectedCarpenterLabelElements(type: LabelTemplateType, mode: "left" | "hcenter" | "right" | "top" | "vcenter" | "bottom"): void {
+    const template = carpenterLabelTemplates[type];
+    const selected = template.elements.filter((element) => carpenterLabelSelectedElementIds.includes(element.id));
+    if (selected.length < 2) return;
+    const left = Math.min(...selected.map((element) => element.x));
+    const right = Math.max(...selected.map((element) => element.x + element.width));
+    const top = Math.min(...selected.map((element) => element.y));
+    const bottom = Math.max(...selected.map((element) => element.y + element.height));
+    const hCenter = (left + right) / 2;
+    const vCenter = (top + bottom) / 2;
+    const selectedSet = new Set(carpenterLabelSelectedElementIds);
+    updateCarpenterLabelTemplate(type, {
+      elements: template.elements.map((element) => {
+        if (!selectedSet.has(element.id)) return element;
+        if (mode === "left") return { ...element, x: left };
+        if (mode === "right") return { ...element, x: right - element.width };
+        if (mode === "hcenter") return { ...element, x: hCenter - (element.width / 2) };
+        if (mode === "top") return { ...element, y: top };
+        if (mode === "bottom") return { ...element, y: bottom - element.height };
+        return { ...element, y: vCenter - (element.height / 2) };
+      }),
+    });
+  }
+
+  function distributeSelectedCarpenterLabelElements(type: LabelTemplateType, axis: "horizontal" | "vertical"): void {
+    const template = carpenterLabelTemplates[type];
+    const selected = template.elements.filter((element) => carpenterLabelSelectedElementIds.includes(element.id));
+    if (selected.length < 3) return;
+    const sorted = [...selected].sort((a, b) => axis === "horizontal" ? a.x - b.x : a.y - b.y);
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+    const startCenter = axis === "horizontal" ? first.x + first.width / 2 : first.y + first.height / 2;
+    const endCenter = axis === "horizontal" ? last.x + last.width / 2 : last.y + last.height / 2;
+    const step = (endCenter - startCenter) / (sorted.length - 1);
+    const patches = new Map<string, Partial<LabelTemplateElementConfig>>();
+    sorted.forEach((element, index) => {
+      const targetCenter = startCenter + (step * index);
+      patches.set(element.id, axis === "horizontal" ? { x: targetCenter - element.width / 2 } : { y: targetCenter - element.height / 2 });
+    });
+    updateCarpenterLabelTemplate(type, { elements: template.elements.map((element) => patches.has(element.id) ? { ...element, ...patches.get(element.id) } : element) });
+  }
+
+  function beginCarpenterLabelInteraction(event: React.PointerEvent<HTMLElement>, type: LabelTemplateType, elementId: string, mode: "drag" | "resize"): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const template = carpenterLabelTemplates[type];
+    let ids = carpenterLabelSelectedElementIds;
+    if (event.shiftKey) {
+      ids = ids.includes(elementId) ? ids.filter((id) => id !== elementId) : [...ids, elementId];
+      setCarpenterLabelSelectedElementIds(ids);
+    } else if (!ids.includes(elementId)) {
+      ids = [elementId];
+      setCarpenterLabelSelectedElementIds(ids);
+    }
+    if (mode === "resize") ids = [elementId];
+    const initial: Record<string, { x: number; y: number; width: number; height: number }> = {};
+    template.elements.filter((element) => ids.includes(element.id)).forEach((element) => {
+      initial[element.id] = { x: element.x, y: element.y, width: element.width, height: element.height };
+    });
+    carpenterLabelInteractionRef.current = {
+      mode,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      elementIds: ids,
+      initial,
+    };
+    try { (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId); } catch { /* ignore */ }
+  }
+
+  function moveCarpenterLabelInteraction(event: React.PointerEvent<HTMLElement>, type: LabelTemplateType): void {
+    const interaction = carpenterLabelInteractionRef.current;
+    const canvas = carpenterLabelCanvasRef.current;
+    if (!interaction || interaction.pointerId !== event.pointerId || !canvas) return;
+    event.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const dx = ((event.clientX - interaction.startClientX) / rect.width) * 100;
+    const dy = ((event.clientY - interaction.startClientY) / rect.height) * 100;
+    const template = carpenterLabelTemplates[type];
+    const updated = template.elements.map((element) => {
+      const initial = interaction.initial[element.id];
+      if (!initial) return element;
+      if (interaction.mode === "resize") {
+        const width = Math.max(1, Math.min(100 - initial.x, snapLabelPct(initial.width + dx, template, "x")));
+        const height = Math.max(element.type === "line" ? 0 : 1, Math.min(100 - initial.y, snapLabelPct(initial.height + dy, template, "y")));
+        return { ...element, width, height };
+      }
+      const x = Math.max(0, Math.min(100 - element.width, snapLabelPct(initial.x + dx, template, "x")));
+      const y = Math.max(0, Math.min(100 - element.height, snapLabelPct(initial.y + dy, template, "y")));
+      return { ...element, x, y };
+    });
+    updateCarpenterLabelTemplate(type, { elements: updated });
+  }
+
+  function endCarpenterLabelInteraction(event: React.PointerEvent<HTMLElement>): void {
+    const interaction = carpenterLabelInteractionRef.current;
+    if (!interaction || interaction.pointerId !== event.pointerId) return;
+    carpenterLabelInteractionRef.current = null;
+    try { (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId); } catch { /* ignore */ }
+  }
+
+  async function savePrinterConfigurationOnly(): Promise<void> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const station = getCurrentMachineIdForInsert();
+    if (!selectedWindowsPrinter.trim()) throw new Error("Válassz ki egy Windowsban telepített nyomtatót.");
+    const nowIso = new Date().toISOString();
+    const response = await supabase.from(PRINTER_SETTINGS_TABLE).upsert({
+      machine_name: station,
+      printer_name: selectedWindowsPrinter.trim(),
+      active: true,
+      dpi: Math.max(100, Math.round(carpenterPrinterCalibration.dpi || 203)),
+      offset_x_mm: Number(carpenterPrinterCalibration.offsetXmm) || 0,
+      offset_y_mm: Number(carpenterPrinterCalibration.offsetYmm) || 0,
+      copies: Math.max(1, Math.min(20, Math.round(carpenterPrinterCalibration.copies || 1))),
+      updated_at: nowIso,
+    }, { onConflict: "machine_name" });
+    if (response.error) throw response.error;
+  }
+
+  async function persistCurrentCarpenterLabelTemplate(type: LabelTemplateType, asCopy = false): Promise<LabelTemplateRecord> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const station = getCurrentMachineIdForInsert();
+    const existingRecords = carpenterLabelTemplateVersions[type];
+    const selectedId = selectedCarpenterLabelTemplateIds[type];
+    const selectedRecord = existingRecords.find((row) => row.id === selectedId);
+    const config = carpenterLabelTemplates[type];
+    const workerName = String(activeWorker?.["Teljes nev"] || "").trim() || "Ismeretlen";
+    const nowIso = new Date().toISOString();
+
+    if (asCopy || !selectedRecord?.id) {
+      const suggested = `${type === "VAGAS" ? "Vágás" : "Újragyártás"} v${Math.max(0, ...existingRecords.map((row) => row.version)) + 1}`;
+      const currentDraftName = type === activeCarpenterLabelTemplateType ? carpenterLabelTemplateNameDraft.trim() : "";
+      const prompted = asCopy && typeof window !== "undefined" ? window.prompt("Új sablon neve:", suggested) : (currentDraftName || selectedRecord?.name || suggested);
+      if (prompted === null) throw new Error("A másolat mentése megszakítva.");
+      const name = String(prompted || suggested).trim().slice(0, 120);
+      const version = Math.max(0, ...existingRecords.map((row) => row.version)) + 1;
+      const active = existingRecords.length === 0;
+      const insertResponse = await supabase.from(LABEL_TEMPLATES_TABLE).insert({
         machine_name: station,
         template_type: type,
-        width_mm: carpenterLabelTemplates[type].widthMm,
-        height_mm: carpenterLabelTemplates[type].heightMm,
-        template_json: carpenterLabelTemplates[type],
+        name,
+        version,
+        active,
+        width_mm: config.widthMm,
+        height_mm: config.heightMm,
+        template_json: config,
+        template_schema_version: 2,
+        created_by: workerName,
+        updated_by: workerName,
+        created_at: nowIso,
         updated_at: nowIso,
+      }).select("id, template_type, name, version, active, width_mm, height_mm, template_json, updated_at").single();
+      if (insertResponse.error) throw insertResponse.error;
+      const record = mapLabelTemplateRow(insertResponse.data, type);
+      setCarpenterLabelTemplateVersions((previous) => ({ ...previous, [type]: [record, ...previous[type]] }));
+      setSelectedCarpenterLabelTemplateIds((previous) => ({ ...previous, [type]: record.id }));
+      setCarpenterLabelTemplateNameDraft(record.name);
+      return record;
+    }
+
+    const name = (type === activeCarpenterLabelTemplateType ? carpenterLabelTemplateNameDraft.trim() : "") || selectedRecord.name;
+    const updateResponse = await supabase.from(LABEL_TEMPLATES_TABLE).update({
+      name,
+      width_mm: config.widthMm,
+      height_mm: config.heightMm,
+      template_json: config,
+      template_schema_version: 2,
+      updated_by: workerName,
+      updated_at: nowIso,
+    }).eq("id", selectedRecord.id).select("id, template_type, name, version, active, width_mm, height_mm, template_json, updated_at").single();
+    if (updateResponse.error) throw updateResponse.error;
+    const record = mapLabelTemplateRow(updateResponse.data, type);
+    setCarpenterLabelTemplateVersions((previous) => ({
+      ...previous,
+      [type]: previous[type].map((row) => row.id === record.id ? record : row),
+    }));
+    return record;
+  }
+
+  async function activateCurrentCarpenterLabelTemplate(type: LabelTemplateType): Promise<void> {
+    if (!supabase) return;
+    setSavingCarpenterPrinterSettings(true);
+    try {
+      const record = await persistCurrentCarpenterLabelTemplate(type, false);
+      const station = getCurrentMachineIdForInsert();
+      const offResponse = await supabase.from(LABEL_TEMPLATES_TABLE).update({ active: false }).eq("machine_name", station).eq("template_type", type);
+      if (offResponse.error) throw offResponse.error;
+      const onResponse = await supabase.from(LABEL_TEMPLATES_TABLE).update({ active: true, updated_at: new Date().toISOString() }).eq("id", record.id);
+      if (onResponse.error) throw onResponse.error;
+      setCarpenterLabelTemplateVersions((previous) => ({
+        ...previous,
+        [type]: previous[type].map((row) => ({ ...row, active: row.id === record.id })),
       }));
-      const templateResponse = await supabase.from(LABEL_TEMPLATES_TABLE).upsert(templateRows, { onConflict: "machine_name,template_type" });
-      if (templateResponse.error) throw templateResponse.error;
-      setMessage({ type: "success", text: `A(z) ${station} munkaállomás nyomtatója és mindkét címkesablonja elmentve.` });
+      setMessage({ type: "success", text: `Aktív sablon: ${record.name} v${record.version}. Ettől kezdve a nyomtatás ezt használja.` });
+    } catch (error) {
+      setMessage({ type: "error", text: normalizeError(error) });
+    } finally {
+      setSavingCarpenterPrinterSettings(false);
+    }
+  }
+
+  async function saveCurrentCarpenterLabelTemplate(type: LabelTemplateType, asCopy = false): Promise<void> {
+    setSavingCarpenterPrinterSettings(true);
+    try {
+      const record = await persistCurrentCarpenterLabelTemplate(type, asCopy);
+      setMessage({ type: "success", text: `${record.name} v${record.version} sablon elmentve${record.active ? " és aktív" : ""}.` });
+    } catch (error) {
+      if (normalizeError(error) !== "A másolat mentése megszakítva.") setMessage({ type: "error", text: normalizeError(error) });
+    } finally {
+      setSavingCarpenterPrinterSettings(false);
+    }
+  }
+
+  function resetCurrentCarpenterLabelTemplate(type: LabelTemplateType): void {
+    if (typeof window !== "undefined" && !window.confirm("Biztosan visszaállítod a gyári alap sablont? Az adatbázis csak a Mentés megnyomásakor változik.")) return;
+    updateCarpenterLabelTemplate(type, createDefaultLabelTemplate(type));
+    setCarpenterLabelSelectedElementIds([]);
+    setMessage({ type: "info", text: "A gyári alap sablon betöltve. Mentésig csak a szerkesztőben változott." });
+  }
+
+  function buildBarcodeRenderedImage(value: string, widthPx = 900, heightPx = 220, showText = false): string {
+    if (typeof document === "undefined") return "";
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(240, widthPx);
+    canvas.height = Math.max(80, heightPx);
+    JsBarcode(canvas, value || "-", {
+      format: "CODE128",
+      width: 2,
+      height: Math.max(45, Math.round(canvas.height * 0.68)),
+      displayValue: showText,
+      margin: 2,
+      fontSize: 18,
+      background: "#ffffff",
+      lineColor: "#000000",
+    });
+    return canvas.toDataURL("image/png");
+  }
+
+  function prepareLabelJobsWithRenderedBarcodes(template: LabelTemplateConfig, jobs: LabelPrintJob[]): LabelPrintJob[] {
+    const barcodeElements = template.elements.filter((element) => element.visible && element.type === "barcode");
+    if (barcodeElements.length === 0) return jobs;
+    return jobs.map((job) => {
+      const renderedImages = { ...(job.renderedImages || {}) };
+      barcodeElements.forEach((element) => {
+        const value = element.key ? String(job.data[element.key] || "").trim() : "";
+        if (!value) return;
+        renderedImages[element.id] = buildBarcodeRenderedImage(value, 900, 220, element.showHumanReadable);
+      });
+      return { ...job, renderedImages };
+    });
+  }
+
+  async function saveCarpenterPrinterSettings(): Promise<void> {
+    setSavingCarpenterPrinterSettings(true);
+    try {
+      await savePrinterConfigurationOnly();
+      await persistCurrentCarpenterLabelTemplate("VAGAS", false);
+      await persistCurrentCarpenterLabelTemplate("UJRAGYARTAS", false);
+      setMessage({ type: "success", text: `A(z) ${getCurrentMachineIdForInsert()} nyomtató- és sablonbeállításai elmentve.` });
       setFlowStage("batch-selection");
     } catch (error) {
       setMessage({ type: "error", text: normalizeError(error) });
@@ -14071,43 +14695,71 @@ body {
     }
   }
 
-  async function loadActivePrintConfiguration(type: LabelTemplateType): Promise<{ printerName: string; template: LabelTemplateConfig }> {
+  async function loadActivePrintConfiguration(type: LabelTemplateType): Promise<{ printerName: string; template: LabelTemplateConfig; calibration: PrinterCalibrationSettings; templateRecord: LabelTemplateRecord | null }> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     const station = getCurrentMachineIdForInsert();
     const [printerResponse, templateResponse] = await Promise.all([
-      supabase.from(PRINTER_SETTINGS_TABLE).select("printer_name").eq("machine_name", station).eq("active", true).limit(1),
-      supabase.from(LABEL_TEMPLATES_TABLE).select("width_mm, height_mm, template_json").eq("machine_name", station).eq("template_type", type).limit(1),
+      supabase.from(PRINTER_SETTINGS_TABLE).select("printer_name, dpi, offset_x_mm, offset_y_mm, copies").eq("machine_name", station).eq("active", true).limit(1),
+      supabase.from(LABEL_TEMPLATES_TABLE).select("id, template_type, name, version, active, width_mm, height_mm, template_json, updated_at").eq("machine_name", station).eq("template_type", type).eq("active", true).order("version", { ascending: false }).limit(1),
     ]);
     if (printerResponse.error) throw printerResponse.error;
     if (templateResponse.error) throw templateResponse.error;
-    const printerName = Array.isArray(printerResponse.data) && printerResponse.data.length > 0
-      ? String((printerResponse.data[0] as any).printer_name || "").trim()
-      : "";
-    if (!printerName) throw new Error(`Ehhez a munkaállomáshoz nincs aktív nyomtató beállítva. Nyisd meg a Nyomtató beállításai menüt.`);
+    const printerRow = Array.isArray(printerResponse.data) && printerResponse.data.length > 0 ? printerResponse.data[0] as any : null;
+    const printerName = printerRow ? String(printerRow.printer_name || "").trim() : "";
+    if (!printerName) throw new Error("Ehhez a munkaállomáshoz nincs aktív nyomtató beállítva. Nyisd meg a Nyomtató beállításai menüt.");
     const rawTemplate = Array.isArray(templateResponse.data) && templateResponse.data.length > 0 ? templateResponse.data[0] as any : null;
-    const template = normalizeLabelTemplate(rawTemplate ? {
-      ...(rawTemplate.template_json || {}),
-      widthMm: rawTemplate.width_mm,
-      heightMm: rawTemplate.height_mm,
-    } : null, type);
-    return { printerName, template };
+    const templateRecord = rawTemplate ? mapLabelTemplateRow(rawTemplate, type) : null;
+    return {
+      printerName,
+      template: templateRecord?.config || createDefaultLabelTemplate(type),
+      calibration: {
+        dpi: Math.max(100, Number(printerRow?.dpi) || 203),
+        offsetXmm: Number(printerRow?.offset_x_mm) || 0,
+        offsetYmm: Number(printerRow?.offset_y_mm) || 0,
+        copies: Math.max(1, Math.min(20, Number(printerRow?.copies) || 1)),
+      },
+      templateRecord,
+    };
   }
 
-  async function sendLabelJobsToPrinter(type: LabelTemplateType, jobs: LabelPrintJob[]): Promise<{ printerName: string; printedCount: number }> {
-    if (jobs.length === 0) return { printerName: "", printedCount: 0 };
-    const config = await loadActivePrintConfiguration(type);
+  async function sendLabelJobsWithExplicitConfig(printerName: string, template: LabelTemplateConfig, calibration: PrinterCalibrationSettings, jobs: LabelPrintJob[]): Promise<{ printerName: string; printedCount: number; templateRecord?: LabelTemplateRecord | null; copies?: number }> {
+    if (!printerName.trim()) throw new Error("Nincs kiválasztott nyomtató.");
+    const preparedJobs = prepareLabelJobsWithRenderedBarcodes(template, jobs);
     const response = await fetch(LABEL_PRINT_API, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        printerName: config.printerName,
-        template: config.template,
-        jobs,
-      }),
+      body: JSON.stringify({ printerName, template, printSettings: calibration, jobs: preparedJobs }),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(String(payload?.error || "A címkenyomtatás sikertelen."));
-    return { printerName: config.printerName, printedCount: Number(payload?.printedCount) || jobs.length };
+    return { printerName, printedCount: Number(payload?.printedCount) || jobs.length, copies: Math.max(1, Math.min(20, Math.round(calibration.copies || 1))) };
+  }
+
+  async function sendLabelJobsToPrinter(type: LabelTemplateType, jobs: LabelPrintJob[]): Promise<{ printerName: string; printedCount: number; templateRecord?: LabelTemplateRecord | null; copies?: number }> {
+    if (jobs.length === 0) return { printerName: "", printedCount: 0, templateRecord: null, copies: 1 };
+    const config = await loadActivePrintConfiguration(type);
+    const result = await sendLabelJobsWithExplicitConfig(config.printerName, config.template, config.calibration, jobs);
+    return { ...result, templateRecord: config.templateRecord };
+  }
+
+  async function testCurrentCarpenterLabelTemplate(type: LabelTemplateType): Promise<void> {
+    setSavingCarpenterPrinterSettings(true);
+    try {
+      await savePrinterConfigurationOnly();
+      const sample = getLabelSampleData(type, String(activeWorker?.["Teljes nev"] || "Dolgozó"));
+      const jobs: LabelPrintJob[] = type === "VAGAS"
+        ? [
+            { title: "TESZT – VÁGÁS – KÜLSŐ LAP", data: { ...sample, lap_tipus: "KÜLSŐ LAP", belso_lap: "" } },
+            { title: "TESZT – VÁGÁS – BELSŐ LAP", data: { ...sample, lap_tipus: "BELSŐ LAP", kulso_lap: "" } },
+          ]
+        : [{ title: "TESZT – ÚJRAGYÁRTÁS", data: sample }];
+      const result = await sendLabelJobsWithExplicitConfig(selectedWindowsPrinter, carpenterLabelTemplates[type], carpenterPrinterCalibration, jobs);
+      setMessage({ type: "success", text: `${result.printedCount} db tesztcímke elküldve a(z) ${result.printerName} nyomtatóra.` });
+    } catch (error) {
+      setMessage({ type: "error", text: normalizeError(error) });
+    } finally {
+      setSavingCarpenterPrinterSettings(false);
+    }
   }
 
   async function printCuttingLabelsForOrders(orderNumbers: string[]): Promise<number> {
@@ -14124,8 +14776,15 @@ body {
     orderNumbers.forEach((order) => {
       const planRow = planByOrder.get(normalizeLooseText(order)) || null;
       const data = buildCuttingLabelData(order, planRow);
-      jobs.push({ title: "VÁGÁS – KÜLSŐ LAP", data: { ...data, lap_tipus: "Külső lap" } });
-      jobs.push({ title: "VÁGÁS – BELSŐ LAP", data: { ...data, lap_tipus: "Belső lap" } });
+      // Egy sorszámhoz pontosan két különálló címke készül: külső és belső lap.
+      jobs.push({
+        title: "VÁGÁS – KÜLSŐ LAP",
+        data: { ...data, lap_tipus: "KÜLSŐ LAP", kulso_lap: data.kulso_lap, belso_lap: "" },
+      });
+      jobs.push({
+        title: "VÁGÁS – BELSŐ LAP",
+        data: { ...data, lap_tipus: "BELSŐ LAP", kulso_lap: "", belso_lap: data.belso_lap },
+      });
     });
     const result = await sendLabelJobsToPrinter("VAGAS", jobs);
     return result.printedCount;
@@ -14161,7 +14820,7 @@ body {
     }
   }
 
-  async function markReprintRequestsPrinted(rows: ReprintRequestRow[], printerName: string): Promise<void> {
+  async function markReprintRequestsPrinted(rows: ReprintRequestRow[], printerName: string, templateRecord?: LabelTemplateRecord | null, copies = 1): Promise<void> {
     if (!supabase || rows.length === 0) return;
     const nowIso = new Date().toISOString();
     const printedBy = String(activeWorker?.["Teljes nev"] || "").trim() || "Ismeretlen";
@@ -14170,7 +14829,7 @@ body {
         printed: true,
         printed_at: nowIso,
         printed_by: printedBy,
-        print_count: (Number(row.print_count) || 0) + 1,
+        print_count: (Number(row.print_count) || 0) + Math.max(1, Math.min(20, Math.round(copies || 1))),
         updated_at: nowIso,
       }).eq("id", row.id);
       if (updateResponse.error) throw updateResponse.error;
@@ -14180,6 +14839,11 @@ body {
         machine_name: getCurrentMachineIdForInsert(),
         printer_name: printerName,
         template_type: "UJRAGYARTAS",
+        template_id: templateRecord?.id ? Number(templateRecord.id) || null : null,
+        template_name: templateRecord?.name || null,
+        template_version: templateRecord?.version || null,
+        label_variant: getScrapReplacementDefectLabel(row),
+        copies: Math.max(1, Math.min(20, Math.round(copies || 1))),
         printed_by: printedBy,
         printed_at: nowIso,
       });
@@ -14200,7 +14864,7 @@ body {
         requestId: row.id,
       }));
       const result = await sendLabelJobsToPrinter("UJRAGYARTAS", jobs);
-      await markReprintRequestsPrinted(rows, result.printerName);
+      await markReprintRequestsPrinted(rows, result.printerName, result.templateRecord, result.copies || 1);
       await loadCarpenterReprintRequests();
       setMessage({ type: "success", text: `${result.printedCount} db újragyártási címke elküldve a(z) ${result.printerName} nyomtatóra.` });
     } catch (error) {
@@ -16742,46 +17406,182 @@ body {
   }
 
 
-  function renderLabelTemplatePreview(type: LabelTemplateType): React.JSX.Element {
-    const template = carpenterLabelTemplates[type];
-    const sample = type === "VAGAS"
-      ? { sorszam: "R260812345", kulso_lap: "Külső lap adat", belso_lap: "Belső lap adat", szin: "RAL 7016", tipus: "Ajtó" }
-      : { sorszam: "R260812345", kulso_lap: "Külső lap", belso_lap: "Belső lap", szin: "RAL 7016", maras_minta: "M12", szelesseg: "950", hosszusag: "2100", datum: "2026.08.08", megjegyzes: "Pótlás sürgős", dolgozo: activeWorker?.["Teljes nev"] || "Dolgozó", tipus: "Ajtó" };
-    const scale = Math.min(8.2, 560 / Math.max(1, template.widthMm));
+  function renderLabelElementPreview(type: LabelTemplateType, element: LabelTemplateElementConfig, sample: Record<string, string>, selected: boolean): React.JSX.Element {
+    const value = labelElementDisplayValue(element, sample);
+    const selectionStyle: React.CSSProperties = selected ? { outline: "2px solid #0ea5e9", outlineOffset: 1 } : {};
+    const common: React.CSSProperties = {
+      position: "absolute",
+      left: `${element.x}%`,
+      top: `${element.y}%`,
+      width: `${element.width}%`,
+      height: element.type === "line" && element.height === 0 ? 2 : `${Math.max(0.4, element.height)}%`,
+      zIndex: element.zIndex,
+      transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined,
+      transformOrigin: "center center",
+      cursor: "move",
+      userSelect: "none",
+      touchAction: "none",
+      boxSizing: "border-box",
+      ...selectionStyle,
+    };
+
+    let content: React.ReactNode = null;
+    if (element.type === "line") {
+      content = <div style={{ width: "100%", height: Math.max(1, element.lineWidth * 1.7), background: element.borderColor }} />;
+    } else if (element.type === "box" || element.type === "filledBox") {
+      content = <div style={{ width: "100%", height: "100%", border: `${Math.max(0.5, element.borderWidth)}px solid ${element.borderColor}`, borderRadius: element.borderRadius, background: element.type === "filledBox" ? element.fillColor : "transparent", boxSizing: "border-box" }} />;
+    } else if (element.type === "barcode") {
+      content = value ? <div style={{ width: "100%", height: "100%", overflow: "hidden", background: "#fff", display: "grid", placeItems: "center" }}><Code128Barcode value={value} height={Math.max(24, Math.round(55 + element.height))} /></div> : <div style={{ fontSize: 10, color: "#64748b" }}>VONALKÓD</div>;
+    } else if (element.type === "qrcode") {
+      content = <div style={{ width: "100%", height: "100%", minHeight: 28, display: "grid", placeItems: "center", color: "#111827", background: "repeating-conic-gradient(#111 0 25%, #fff 0 50%) 50% / 8px 8px", border: "1px solid #111" }}><span style={{ background: "rgba(255,255,255,.9)", padding: "2px 4px", fontSize: 8, fontWeight: 900 }}>QR</span></div>;
+    } else {
+      const textStyle: React.CSSProperties = {
+        width: "100%",
+        height: "100%",
+        display: "flex",
+        flexDirection: element.stackedLabel ? "column" : "row",
+        alignItems: element.align === "center" ? "center" : element.align === "right" ? "flex-end" : "flex-start",
+        justifyContent: element.verticalAlign === "middle" ? "center" : element.verticalAlign === "bottom" ? "flex-end" : "flex-start",
+        color: element.textColor,
+        fontFamily: element.fontFamily,
+        textAlign: element.align,
+        overflow: "hidden",
+        lineHeight: 1.05,
+        whiteSpace: element.wrap ? "normal" : "nowrap",
+      };
+      content = element.type === "staticText" ? (
+        <div style={{ ...textStyle, fontSize: element.valueFontSize, fontWeight: element.bold ? 900 : 500, fontStyle: element.italic ? "italic" : "normal", textDecoration: element.underline ? "underline" : "none", letterSpacing: element.charSpacing }}>{value || "Szöveg"}</div>
+      ) : (
+        <div style={textStyle}>
+          {element.label ? <span style={{ fontSize: element.labelFontSize, fontWeight: element.labelBold ? 900 : 500, marginRight: element.stackedLabel ? 0 : 4 }}>{element.label}{element.stackedLabel ? "" : ":"}</span> : null}
+          <span style={{ fontSize: element.valueFontSize, fontWeight: element.bold ? 900 : 500, fontStyle: element.italic ? "italic" : "normal", textDecoration: element.underline ? "underline" : "none", letterSpacing: element.charSpacing }}>{value || (element.hideWhenEmpty ? "" : "-")}</span>
+        </div>
+      );
+    }
+
     return (
-      <div style={{ display: "grid", justifyItems: "center", gap: 8 }}>
-        <div style={{ color: "#94a3b8", fontSize: 12 }}>Élő címke-előnézet · {template.widthMm} × {template.heightMm} mm</div>
-        <div style={{
-          width: template.widthMm * scale,
-          height: template.heightMm * scale,
-          maxWidth: "100%",
-          position: "relative",
-          background: "#ffffff",
-          color: "#111827",
-          border: "2px solid #0f172a",
-          boxShadow: "0 12px 28px rgba(0,0,0,0.25)",
-          overflow: "hidden",
-        }}>
-          <div style={{ position: "absolute", left: "3%", top: "2%", right: "3%", textAlign: "center", fontSize: 11, fontWeight: 900 }}>
-            {type === "VAGAS" ? "VÁGÁSI CÍMKE – KÜLSŐ / BELSŐ LAP" : "ÚJRAGYÁRTÁSI CÍMKE"}
-          </div>
-          {template.fields.filter((field) => field.visible).map((field) => (
-            <div key={field.key} style={{
-              position: "absolute",
-              left: `${Math.max(0, Math.min(95, field.x))}%`,
-              top: `${Math.max(0, Math.min(95, field.y))}%`,
-              width: `${Math.max(5, Math.min(100, field.width))}%`,
-              fontSize: Math.max(5, field.fontSize),
-              fontWeight: field.bold ? 900 : 500,
-              textAlign: field.align,
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              lineHeight: 1.05,
-            }}>
-              <strong>{field.label}:</strong> {(sample as Record<string, string>)[field.key] || "-"}
+      <div
+        key={element.id}
+        style={common}
+        onPointerDown={(event) => beginCarpenterLabelInteraction(event, type, element.id, "drag")}
+        onPointerMove={(event) => moveCarpenterLabelInteraction(event, type)}
+        onPointerUp={endCarpenterLabelInteraction}
+        onPointerCancel={endCarpenterLabelInteraction}
+      >
+        {content}
+        {selected && element.type !== "line" && (
+          <div
+            onPointerDown={(event) => beginCarpenterLabelInteraction(event, type, element.id, "resize")}
+            onPointerMove={(event) => moveCarpenterLabelInteraction(event, type)}
+            onPointerUp={endCarpenterLabelInteraction}
+            onPointerCancel={endCarpenterLabelInteraction}
+            style={{ position: "absolute", width: 12, height: 12, right: -7, bottom: -7, borderRadius: 3, background: "#0ea5e9", border: "2px solid #fff", cursor: "nwse-resize", zIndex: 999 }}
+          />
+        )}
+      </div>
+    );
+  }
+
+  function renderLabelTemplatePreview(type: LabelTemplateType, editable = false): React.JSX.Element {
+    const template = carpenterLabelTemplates[type];
+    const sample = getLabelSampleData(type, String(activeWorker?.["Teljes nev"] || "Dolgozó"));
+    const scale = Math.min(12, 720 / Math.max(1, template.widthMm));
+    const widthPx = template.widthMm * scale;
+    const heightPx = template.heightMm * scale;
+    const gridX = (template.gridSizeMm / template.widthMm) * 100;
+    const gridY = (template.gridSizeMm / template.heightMm) * 100;
+    const selected = new Set(carpenterLabelSelectedElementIds);
+    return (
+      <div style={{ display: "grid", justifyItems: "center", gap: 8, width: "100%" }}>
+        <div style={{ color: "#94a3b8", fontSize: 12 }}>Élő címke-előnézet · {template.widthMm} × {template.heightMm} mm · {editable ? "fogd és húzd az elemeket" : "előnézet"}</div>
+        <div
+          ref={editable ? carpenterLabelCanvasRef : undefined}
+          onPointerDown={(event) => { if (event.target === event.currentTarget) setCarpenterLabelSelectedElementIds([]); }}
+          style={{
+            width: widthPx,
+            height: heightPx,
+            maxWidth: "100%",
+            position: "relative",
+            backgroundColor: template.backgroundColor,
+            color: "#111827",
+            border: template.showBorder ? `${Math.max(1, template.borderWidth * 1.5)}px solid #111827` : "1px dashed #94a3b8",
+            boxShadow: "0 12px 32px rgba(0,0,0,0.28)",
+            overflow: "hidden",
+            backgroundImage: editable && template.gridEnabled
+              ? `linear-gradient(to right, rgba(14,165,233,.14) 1px, transparent 1px), linear-gradient(to bottom, rgba(14,165,233,.14) 1px, transparent 1px)`
+              : undefined,
+            backgroundSize: editable && template.gridEnabled ? `${Math.max(3, gridX)}% ${Math.max(3, gridY)}%` : undefined,
+            touchAction: "none",
+          }}
+        >
+          {[...template.elements].filter((element) => element.visible).sort((a, b) => a.zIndex - b.zIndex).map((element) => renderLabelElementPreview(type, element, sample, selected.has(element.id)))}
+        </div>
+      </div>
+    );
+  }
+
+  function renderCarpenterLabelElementProperties(type: LabelTemplateType): React.JSX.Element {
+    const template = carpenterLabelTemplates[type];
+    const selectedElements = template.elements.filter((element) => carpenterLabelSelectedElementIds.includes(element.id));
+    const element = selectedElements.length === 1 ? selectedElements[0] : null;
+    const controlStyle: React.CSSProperties = { ...fieldStyle, background: "#020617", color: "#f8fafc", border: "1px solid #334155", padding: 8 };
+    const smallLabel: React.CSSProperties = { display: "grid", gap: 5, color: "#cbd5e1", fontWeight: 800, fontSize: 12 };
+    if (!element) {
+      return <div style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.5 }}>{selectedElements.length > 1 ? `${selectedElements.length} elem kijelölve. Használd az igazítási és elosztási gombokat.` : "Kattints egy elemre a címkén a részletes formázáshoz."}</div>;
+    }
+    const fieldDefs = getLabelTemplateFieldDefinitions(type);
+    return (
+      <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}><strong>{element.type === "field" ? (element.label || element.key) : element.type}</strong><span style={{ color: "#64748b", fontSize: 11 }}>{element.id}</span></div>
+        {(element.type === "field" || element.type === "barcode" || element.type === "qrcode") && (
+          <label style={smallLabel}>Adatmező<select value={element.key || ""} onChange={(e) => updateCarpenterLabelElement(type, element.id, { key: e.target.value, label: element.type === "field" ? (fieldDefs.find((field) => field.key === e.target.value)?.label || element.label) : element.label })} style={controlStyle}>{fieldDefs.map((field) => <option key={field.key} value={field.key}>{field.label}</option>)}</select></label>
+        )}
+        {element.type === "field" && <label style={smallLabel}>Mező felirata<input value={element.label || ""} onChange={(e) => updateCarpenterLabelElement(type, element.id, { label: e.target.value })} style={controlStyle} /></label>}
+        {element.type === "staticText" && <label style={smallLabel}>Szöveg<input value={element.text || ""} onChange={(e) => updateCarpenterLabelElement(type, element.id, { text: e.target.value })} style={controlStyle} /></label>}
+        {(element.type === "field" || element.type === "staticText") && (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <label style={smallLabel}>Betűtípus<select value={element.fontFamily} onChange={(e) => updateCarpenterLabelElement(type, element.id, { fontFamily: e.target.value })} style={controlStyle}>{LABEL_FONT_OPTIONS.map((font) => <option key={font} value={font}>{font}</option>)}</select></label>
+              <label style={smallLabel}>Érték betűméret<input type="number" min={3} max={48} step={0.5} value={element.valueFontSize} onChange={(e) => updateCarpenterLabelElement(type, element.id, { valueFontSize: Number(e.target.value) })} style={controlStyle} /></label>
+              {element.type === "field" && <label style={smallLabel}>Felirat betűméret<input type="number" min={3} max={32} step={0.5} value={element.labelFontSize} onChange={(e) => updateCarpenterLabelElement(type, element.id, { labelFontSize: Number(e.target.value) })} style={controlStyle} /></label>}
+              <label style={smallLabel}>Karakterköz<input type="number" min={-1} max={8} step={0.25} value={element.charSpacing} onChange={(e) => updateCarpenterLabelElement(type, element.id, { charSpacing: Number(e.target.value) })} style={controlStyle} /></label>
             </div>
-          ))}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6 }}>
+              <button type="button" onClick={() => updateCarpenterLabelElement(type, element.id, { bold: !element.bold })} style={element.bold ? buttonPrimary : buttonSecondary}>B</button>
+              <button type="button" onClick={() => updateCarpenterLabelElement(type, element.id, { italic: !element.italic })} style={element.italic ? buttonPrimary : buttonSecondary}><i>I</i></button>
+              <button type="button" onClick={() => updateCarpenterLabelElement(type, element.id, { underline: !element.underline })} style={element.underline ? buttonPrimary : buttonSecondary}><u>U</u></button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <label style={smallLabel}>Igazítás<select value={element.align} onChange={(e) => updateCarpenterLabelElement(type, element.id, { align: e.target.value as LabelTextAlign })} style={controlStyle}><option value="left">Balra</option><option value="center">Középre</option><option value="right">Jobbra</option></select></label>
+              <label style={smallLabel}>Függőleges<select value={element.verticalAlign} onChange={(e) => updateCarpenterLabelElement(type, element.id, { verticalAlign: e.target.value as LabelVerticalAlign })} style={controlStyle}><option value="top">Felül</option><option value="middle">Középen</option><option value="bottom">Alul</option></select></label>
+              <label style={smallLabel}>Forgatás<select value={element.rotation} onChange={(e) => updateCarpenterLabelElement(type, element.id, { rotation: Number(e.target.value) as LabelRotation })} style={controlStyle}><option value={0}>0°</option><option value={90}>90°</option><option value={180}>180°</option><option value={270}>270°</option></select></label>
+              <label style={smallLabel}>Szövegszín<input type="color" value={element.textColor} onChange={(e) => updateCarpenterLabelElement(type, element.id, { textColor: e.target.value })} style={{ ...controlStyle, height: 42 }} /></label>
+            </div>
+            {element.type === "field" && (
+              <div style={{ display: "grid", gap: 7 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}><input type="checkbox" checked={element.stackedLabel} onChange={(e) => updateCarpenterLabelElement(type, element.id, { stackedLabel: e.target.checked })} />Felirat és érték egymás alatt</label>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}><input type="checkbox" checked={element.labelBold} onChange={(e) => updateCarpenterLabelElement(type, element.id, { labelBold: e.target.checked })} />Felirat félkövér</label>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}><input type="checkbox" checked={element.hideWhenEmpty} onChange={(e) => updateCarpenterLabelElement(type, element.id, { hideWhenEmpty: e.target.checked })} />Üres értéknél ne nyomtassa</label>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}><input type="checkbox" checked={element.wrap} onChange={(e) => updateCarpenterLabelElement(type, element.id, { wrap: e.target.checked })} />Sortörés engedélyezése</label>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}><label style={smallLabel}>Előtag<input value={element.prefix} onChange={(e) => updateCarpenterLabelElement(type, element.id, { prefix: e.target.value })} style={controlStyle} /></label><label style={smallLabel}>Utótag<input value={element.suffix} onChange={(e) => updateCarpenterLabelElement(type, element.id, { suffix: e.target.value })} style={controlStyle} /></label></div>
+              </div>
+            )}
+          </>
+        )}
+        {(element.type === "box" || element.type === "filledBox" || element.type === "line") && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            {element.type !== "line" && <label style={smallLabel}>Háttér<input type="color" value={element.fillColor} onChange={(e) => updateCarpenterLabelElement(type, element.id, { fillColor: e.target.value })} style={{ ...controlStyle, height: 42 }} /></label>}
+            <label style={smallLabel}>Vonal színe<input type="color" value={element.borderColor} onChange={(e) => updateCarpenterLabelElement(type, element.id, { borderColor: e.target.value })} style={{ ...controlStyle, height: 42 }} /></label>
+            <label style={smallLabel}>Vonalvastagság<input type="number" min={0.1} max={8} step={0.1} value={element.type === "line" ? element.lineWidth : element.borderWidth} onChange={(e) => updateCarpenterLabelElement(type, element.id, element.type === "line" ? { lineWidth: Number(e.target.value) } : { borderWidth: Number(e.target.value) })} style={controlStyle} /></label>
+            {element.type !== "line" && <label style={smallLabel}>Lekerekítés<input type="number" min={0} max={20} step={0.5} value={element.borderRadius} onChange={(e) => updateCarpenterLabelElement(type, element.id, { borderRadius: Number(e.target.value) })} style={controlStyle} /></label>}
+          </div>
+        )}
+        {(element.type === "barcode" || element.type === "qrcode") && <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}><input type="checkbox" checked={element.showHumanReadable} onChange={(e) => updateCarpenterLabelElement(type, element.id, { showHumanReadable: e.target.checked })} />Érték kiírása a kód alatt</label>}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 8 }}>
+          <label style={smallLabel}>X %<input type="number" min={0} max={100} step={0.1} value={element.x} onChange={(e) => updateCarpenterLabelElement(type, element.id, { x: Number(e.target.value) })} style={controlStyle} /></label>
+          <label style={smallLabel}>Y %<input type="number" min={0} max={100} step={0.1} value={element.y} onChange={(e) => updateCarpenterLabelElement(type, element.id, { y: Number(e.target.value) })} style={controlStyle} /></label>
+          <label style={smallLabel}>Szélesség %<input type="number" min={0.2} max={100} step={0.1} value={element.width} onChange={(e) => updateCarpenterLabelElement(type, element.id, { width: Number(e.target.value) })} style={controlStyle} /></label>
+          <label style={smallLabel}>Magasság %<input type="number" min={0} max={100} step={0.1} value={element.height} onChange={(e) => updateCarpenterLabelElement(type, element.id, { height: Number(e.target.value) })} style={controlStyle} /></label>
         </div>
       </div>
     );
@@ -16790,25 +17590,29 @@ body {
   function renderCarpenterPrinterSettings(): React.JSX.Element {
     const type = activeCarpenterLabelTemplateType;
     const template = carpenterLabelTemplates[type];
+    const versions = carpenterLabelTemplateVersions[type];
+    const selectedId = selectedCarpenterLabelTemplateIds[type];
+    const selectedRecord = versions.find((row) => row.id === selectedId);
     const controlStyle: React.CSSProperties = { ...fieldStyle, background: "#020617", color: "#f8fafc", border: "1px solid #334155" };
+    const panelStyle: React.CSSProperties = { background: "#0f172a", border: "1px solid #334155", borderRadius: 14, padding: 16 };
     return (
       <div style={{ display: "grid", gap: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <div>
-            <div style={{ color: "#38bdf8", fontWeight: 900, fontSize: 13, letterSpacing: 0.8 }}>ASZTALOS SZABÁSZ</div>
-            <h2 style={{ margin: "4px 0", color: "#f8fafc" }}>Nyomtató beállításai</h2>
-            <div style={{ color: "#94a3b8", fontSize: 13 }}>Munkaállomás: {getCurrentMachineIdForInsert()} · A beállítások és sablonok Supabase-ban mentődnek.</div>
+            <div style={{ color: "#38bdf8", fontWeight: 900, fontSize: 13, letterSpacing: 0.8 }}>ASZTALOS SZABÁSZ · PROFESSZIONÁLIS CÍMKERENDSZER</div>
+            <h2 style={{ margin: "4px 0", color: "#f8fafc" }}>Nyomtató és címkesablon beállításai</h2>
+            <div style={{ color: "#94a3b8", fontSize: 13 }}>Munkaállomás: {getCurrentMachineIdForInsert()} · A nyomtató, kalibráció, verziózott sablonok és aktív sablon Supabase-ban mentődik.</div>
           </div>
           <button type="button" onClick={() => setFlowStage("batch-selection")} style={buttonSecondary}>Vissza</button>
         </div>
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <button type="button" onClick={() => setCarpenterPrinterTab("printer")} style={carpenterPrinterTab === "printer" ? buttonPrimary : buttonSecondary}>Nyomtató hozzáadása</button>
-          <button type="button" onClick={() => setCarpenterPrinterTab("templates")} style={carpenterPrinterTab === "templates" ? buttonPrimary : buttonSecondary}>Sablonok beállítása</button>
+          <button type="button" onClick={() => setCarpenterPrinterTab("templates")} style={carpenterPrinterTab === "templates" ? buttonPrimary : buttonSecondary}>Profi sablonszerkesztő</button>
         </div>
 
         {carpenterPrinterTab === "printer" ? (
-          <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 14, padding: 18 }}>
+          <div style={{ ...panelStyle, display: "grid", gap: 16 }}>
             <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 1fr) auto", gap: 12, alignItems: "end" }}>
               <label style={{ display: "grid", gap: 7, color: "#cbd5e1", fontWeight: 800 }}>
                 Windowsban telepített címkenyomtató
@@ -16817,55 +17621,97 @@ body {
                   {windowsPrinters.map((printer) => <option key={printer} value={printer}>{printer}</option>)}
                 </select>
               </label>
-              <button type="button" onClick={() => void fetchWindowsPrinters()} disabled={loadingWindowsPrinters} style={buttonSecondary}>
-                {loadingWindowsPrinters ? "Keresés..." : "Nyomtatólista frissítése"}
-              </button>
+              <button type="button" onClick={() => void fetchWindowsPrinters()} disabled={loadingWindowsPrinters} style={buttonSecondary}>{loadingWindowsPrinters ? "Keresés..." : "Nyomtatólista frissítése"}</button>
             </div>
-            {windowsPrinters.length === 0 && carpenterPrinterSettingsLoaded && (
-              <div style={{ marginTop: 12, color: "#fbbf24", fontSize: 13 }}>
-                A szerver nem adott vissza Windows-nyomtatót. A Next.js szervert annak a Windows gépnek kell futtatnia, amelyen a címkenyomtató telepítve van.
-              </div>
-            )}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(150px, 1fr))", gap: 10 }}>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Nyomtatási DPI<input type="number" min={100} max={1200} value={carpenterPrinterCalibration.dpi} onChange={(e) => setCarpenterPrinterCalibration((prev) => ({ ...prev, dpi: Number(e.target.value) }))} style={controlStyle} /></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Vízszintes korrekció (mm)<input type="number" min={-20} max={20} step={0.1} value={carpenterPrinterCalibration.offsetXmm} onChange={(e) => setCarpenterPrinterCalibration((prev) => ({ ...prev, offsetXmm: Number(e.target.value) }))} style={controlStyle} /></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Függőleges korrekció (mm)<input type="number" min={-20} max={20} step={0.1} value={carpenterPrinterCalibration.offsetYmm} onChange={(e) => setCarpenterPrinterCalibration((prev) => ({ ...prev, offsetYmm: Number(e.target.value) }))} style={controlStyle} /></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Alap példányszám<input type="number" min={1} max={20} value={carpenterPrinterCalibration.copies} onChange={(e) => setCarpenterPrinterCalibration((prev) => ({ ...prev, copies: Number(e.target.value) }))} style={controlStyle} /></label>
+            </div>
+            <div style={{ padding: 12, borderRadius: 10, background: "#020617", color: "#94a3b8", fontSize: 12, lineHeight: 1.5 }}>A DPI és az X/Y korrekció címkenyomtató-kalibrációhoz használható. A Citizen CL-S621 tipikusan 203 DPI-s, de a tényleges Windows driver beállítás marad az elsődleges.</div>
+            {windowsPrinters.length === 0 && carpenterPrinterSettingsLoaded && <div style={{ color: "#fbbf24", fontSize: 13 }}>A szerver nem adott vissza Windows-nyomtatót. A Next.js szervert annak a Windows gépnek kell futtatnia, amelyen a címkenyomtató telepítve van.</div>}
+            <div><button type="button" onClick={() => void (async () => { try { setSavingCarpenterPrinterSettings(true); await savePrinterConfigurationOnly(); setMessage({ type: "success", text: "Nyomtató és kalibráció elmentve." }); } catch (error) { setMessage({ type: "error", text: normalizeError(error) }); } finally { setSavingCarpenterPrinterSettings(false); } })()} disabled={savingCarpenterPrinterSettings} style={buttonPrimary}>Nyomtatóbeállítás mentése</button></div>
           </div>
         ) : (
-          <div style={{ display: "grid", gap: 14 }}>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button type="button" onClick={() => setActiveCarpenterLabelTemplateType("VAGAS")} style={type === "VAGAS" ? buttonPrimary : buttonSecondary}>Vágási címke</button>
-              <button type="button" onClick={() => setActiveCarpenterLabelTemplateType("UJRAGYARTAS")} style={type === "UJRAGYARTAS" ? buttonPrimary : buttonSecondary}>Újragyártási címke</button>
+          <div style={{ display: "grid", gap: 12 }}>
+            <div style={{ ...panelStyle, display: "grid", gap: 12 }}>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <button type="button" onClick={() => switchCarpenterLabelTemplateType("VAGAS")} style={type === "VAGAS" ? buttonPrimary : buttonSecondary}>Vágási címke · külső/belső külön</button>
+                <button type="button" onClick={() => switchCarpenterLabelTemplateType("UJRAGYARTAS")} style={type === "UJRAGYARTAS" ? buttonPrimary : buttonSecondary}>Újragyártási címke</button>
+                <span style={{ color: "#64748b", fontSize: 12 }}>Nyomtatáskor mindig az AKTÍV verzió használódik.</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 1fr) minmax(220px, 1fr) auto", gap: 10, alignItems: "end" }}>
+                <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Sablonverzió<select value={selectedId} onChange={(e) => selectCarpenterLabelTemplateVersion(type, e.target.value)} style={controlStyle}><option value="">Gyári alap / még nincs mentve</option>{versions.map((record) => <option key={record.id} value={record.id}>{record.active ? "★ AKTÍV · " : ""}{record.name} · v{record.version}</option>)}</select></label>
+                <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Sablon neve<input value={carpenterLabelTemplateNameDraft} onChange={(e) => setCarpenterLabelTemplateNameDraft(e.target.value.slice(0, 120))} style={controlStyle} /></label>
+                <div style={{ color: selectedRecord?.active ? "#86efac" : "#fbbf24", fontWeight: 900, paddingBottom: 11 }}>{selectedRecord?.active ? `AKTÍV v${selectedRecord.version}` : selectedRecord ? `Nem aktív · v${selectedRecord.version}` : "Még nincs mentve"}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button type="button" onClick={() => void saveCurrentCarpenterLabelTemplate(type, false)} disabled={savingCarpenterPrinterSettings} style={buttonPrimary}>Mentés</button>
+                <button type="button" onClick={() => void saveCurrentCarpenterLabelTemplate(type, true)} disabled={savingCarpenterPrinterSettings} style={buttonSecondary}>Mentés másolatként</button>
+                <button type="button" onClick={() => void activateCurrentCarpenterLabelTemplate(type)} disabled={savingCarpenterPrinterSettings} style={{ ...buttonPrimary, background: "#059669" }}>Aktiválás</button>
+                <button type="button" onClick={() => void testCurrentCarpenterLabelTemplate(type)} disabled={savingCarpenterPrinterSettings || !selectedWindowsPrinter} style={buttonSecondary}>Teszt nyomtatás</button>
+                <button type="button" onClick={() => resetCurrentCarpenterLabelTemplate(type)} style={{ ...buttonSecondary, borderColor: "#f59e0b", color: "#fde68a" }}>Alapértelmezett visszaállítása</button>
+              </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(520px, 1.15fr) minmax(360px, 0.85fr)", gap: 16, alignItems: "start" }}>
-              <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 14, padding: 16 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
-                  <label style={{ display: "grid", gap: 6, color: "#cbd5e1", fontWeight: 800 }}>Szélesség (mm)<input type="number" min={20} max={200} step={1} value={template.widthMm} onChange={(e) => updateCarpenterLabelTemplate(type, { widthMm: Math.max(20, Number(e.target.value) || 58) })} style={controlStyle} /></label>
-                  <label style={{ display: "grid", gap: 6, color: "#cbd5e1", fontWeight: 800 }}>Magasság (mm)<input type="number" min={15} max={200} step={1} value={template.heightMm} onChange={(e) => updateCarpenterLabelTemplate(type, { heightMm: Math.max(15, Number(e.target.value) || 40) })} style={controlStyle} /></label>
+
+            <div style={{ display: "grid", gridTemplateColumns: "280px minmax(560px, 1fr) 330px", gap: 12, alignItems: "start" }}>
+              <div style={{ ...panelStyle, display: "grid", gap: 12, position: "sticky", top: 82 }}>
+                <strong>Elemek és címkeméret</strong>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800 }}>Szélesség mm<input type="number" min={20} max={200} value={template.widthMm} onChange={(e) => updateCarpenterLabelTemplate(type, { widthMm: Math.max(20, Number(e.target.value) || 58) })} style={controlStyle} /></label>
+                  <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800 }}>Magasság mm<input type="number" min={15} max={200} value={template.heightMm} onChange={(e) => updateCarpenterLabelTemplate(type, { heightMm: Math.max(15, Number(e.target.value) || 40) })} style={controlStyle} /></label>
+                  <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800 }}>Háttér<input type="color" value={template.backgroundColor} onChange={(e) => updateCarpenterLabelTemplate(type, { backgroundColor: e.target.value })} style={{ ...controlStyle, height: 40 }} /></label>
+                  <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800 }}>Rács mm<input type="number" min={0.5} max={20} step={0.5} value={template.gridSizeMm} onChange={(e) => updateCarpenterLabelTemplate(type, { gridSizeMm: Number(e.target.value) || 1 })} style={controlStyle} /></label>
                 </div>
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
-                    <thead><tr>{["Mező", "Látható", "X %", "Y %", "Szélesség %", "Betű", "Félkövér", "Igazítás"].map((label) => <th key={label} style={{ padding: 8, borderBottom: "1px solid #334155", color: "#94a3b8", textAlign: "left", fontSize: 11 }}>{label}</th>)}</tr></thead>
-                    <tbody>{template.fields.map((field) => (
-                      <tr key={field.key}>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{field.label}</td>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}><input type="checkbox" checked={field.visible} onChange={(e) => updateCarpenterLabelField(type, field.key, { visible: e.target.checked })} /></td>
-                        <td style={{ padding: 6, borderBottom: "1px solid #1e293b" }}><input type="number" min={0} max={95} value={field.x} onChange={(e) => updateCarpenterLabelField(type, field.key, { x: Number(e.target.value) })} style={{ ...controlStyle, width: 74, padding: 7 }} /></td>
-                        <td style={{ padding: 6, borderBottom: "1px solid #1e293b" }}><input type="number" min={0} max={95} value={field.y} onChange={(e) => updateCarpenterLabelField(type, field.key, { y: Number(e.target.value) })} style={{ ...controlStyle, width: 74, padding: 7 }} /></td>
-                        <td style={{ padding: 6, borderBottom: "1px solid #1e293b" }}><input type="number" min={5} max={100} value={field.width} onChange={(e) => updateCarpenterLabelField(type, field.key, { width: Number(e.target.value) })} style={{ ...controlStyle, width: 84, padding: 7 }} /></td>
-                        <td style={{ padding: 6, borderBottom: "1px solid #1e293b" }}><input type="number" min={5} max={28} step={0.5} value={field.fontSize} onChange={(e) => updateCarpenterLabelField(type, field.key, { fontSize: Number(e.target.value) })} style={{ ...controlStyle, width: 78, padding: 7 }} /></td>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}><input type="checkbox" checked={field.bold} onChange={(e) => updateCarpenterLabelField(type, field.key, { bold: e.target.checked })} /></td>
-                        <td style={{ padding: 6, borderBottom: "1px solid #1e293b" }}><select value={field.align} onChange={(e) => updateCarpenterLabelField(type, field.key, { align: e.target.value as LabelTextAlign })} style={{ ...controlStyle, width: 105, padding: 7 }}><option value="left">Bal</option><option value="center">Közép</option><option value="right">Jobb</option></select></td>
-                      </tr>
-                    ))}</tbody>
-                  </table>
+                <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 800 }}><input type="checkbox" checked={template.gridEnabled} onChange={(e) => updateCarpenterLabelTemplate(type, { gridEnabled: e.target.checked })} />Rács mutatása</label>
+                <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 800 }}><input type="checkbox" checked={template.snapToGrid} onChange={(e) => updateCarpenterLabelTemplate(type, { snapToGrid: e.target.checked })} />Rácshoz igazítás</label>
+                <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 800 }}><input type="checkbox" checked={template.showBorder} onChange={(e) => updateCarpenterLabelTemplate(type, { showBorder: e.target.checked })} />Címkekeret nyomtatása</label>
+                <div style={{ borderTop: "1px solid #334155", paddingTop: 10, display: "grid", gap: 7 }}>
+                  <strong style={{ fontSize: 12 }}>Dinamikus mező hozzáadása</strong>
+                  <select onChange={(e) => { if (e.target.value) { addCarpenterLabelElement(type, "field", e.target.value); e.target.value = ""; } }} defaultValue="" style={controlStyle}><option value="">-- mező kiválasztása --</option>{getLabelTemplateFieldDefinitions(type).map((field) => <option key={field.key} value={field.key}>{field.label}</option>)}</select>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  <button type="button" onClick={() => addCarpenterLabelElement(type, "staticText")} style={buttonSecondary}>Szöveg</button>
+                  <button type="button" onClick={() => addCarpenterHeaderBlock(type)} style={buttonSecondary}>Fejléc blokk</button>
+                  <button type="button" onClick={() => addCarpenterLabelElement(type, "line")} style={buttonSecondary}>Vonal H</button>
+                  <button type="button" onClick={() => addCarpenterVerticalLine(type)} style={buttonSecondary}>Vonal V</button>
+                  <button type="button" onClick={() => addCarpenterLabelElement(type, "box")} style={buttonSecondary}>Keret</button>
+                  <button type="button" onClick={() => addCarpenterLabelElement(type, "filledBox")} style={buttonSecondary}>Kitöltött blokk</button>
+                  <button type="button" onClick={() => addCarpenterLabelElement(type, "barcode", "sorszam")} style={buttonSecondary}>Vonalkód</button>
+                  <button type="button" onClick={() => addCarpenterLabelElement(type, "qrcode", "sorszam")} style={buttonSecondary}>QR-kód</button>
+                </div>
+                <div style={{ borderTop: "1px solid #334155", paddingTop: 10, display: "grid", gap: 6 }}>
+                  <strong style={{ fontSize: 12 }}>Kijelölt elemek</strong>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 5 }}>
+                    {[ ["Bal", "left"], ["Közép", "hcenter"], ["Jobb", "right"], ["Felül", "top"], ["Közép", "vcenter"], ["Alul", "bottom"] ].map(([label, mode]) => <button key={mode} type="button" onClick={() => alignSelectedCarpenterLabelElements(type, mode as any)} style={{ ...buttonSecondary, padding: "7px 5px", fontSize: 11 }}>{label}</button>)}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}><button type="button" onClick={() => distributeSelectedCarpenterLabelElements(type, "horizontal")} style={{ ...buttonSecondary, padding: 7, fontSize: 11 }}>Vízsz. elosztás</button><button type="button" onClick={() => distributeSelectedCarpenterLabelElements(type, "vertical")} style={{ ...buttonSecondary, padding: 7, fontSize: 11 }}>Függ. elosztás</button></div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}><button type="button" onClick={() => duplicateSelectedCarpenterLabelElements(type)} style={{ ...buttonSecondary, padding: 7 }}>Másolás</button><button type="button" onClick={() => deleteSelectedCarpenterLabelElements(type)} style={{ ...buttonSecondary, padding: 7, borderColor: "#ef4444", color: "#fecaca" }}>Törlés</button></div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}><button type="button" onClick={() => changeSelectedCarpenterLabelZ(type, 1)} style={{ ...buttonSecondary, padding: 7 }}>Előrébb</button><button type="button" onClick={() => changeSelectedCarpenterLabelZ(type, -1)} style={{ ...buttonSecondary, padding: 7 }}>Hátrébb</button></div>
                 </div>
               </div>
-              <div style={{ background: "#e2e8f0", borderRadius: 14, padding: 16, minHeight: 360, display: "grid", placeItems: "center", overflow: "auto" }}>
-                {renderLabelTemplatePreview(type)}
+
+              <div style={{ background: "#cbd5e1", borderRadius: 14, padding: 18, minHeight: 520, display: "grid", placeItems: "center", overflow: "auto" }}>
+                {renderLabelTemplatePreview(type, true)}
               </div>
+
+              <div style={{ ...panelStyle, display: "grid", gap: 10, position: "sticky", top: 82, maxHeight: "calc(100vh - 100px)", overflowY: "auto" }}>
+                <strong>Elem tulajdonságai</strong>
+                {renderCarpenterLabelElementProperties(type)}
+              </div>
+            </div>
+
+            <div style={{ ...panelStyle, display: "grid", gap: 10 }}>
+              <strong>Nyomtatási előnézet</strong>
+              <div style={{ color: "#94a3b8", fontSize: 12, lineHeight: 1.5 }}>{type === "VAGAS" ? "A vágásnál egy sorszámhoz két külön címke nyomtatódik. A külső címkén csak a Külső lap mező, a belső címkén csak a Belső lap mező kap értéket." : "Az újragyártási minta részletesen tartalmazza a hibát, lapadatokat, színt, marásmintát, méreteket, dátumot, megjegyzést és dolgozót."}</div>
+              {renderLabelTemplatePreview(type, false)}
             </div>
           </div>
         )}
 
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <button type="button" onClick={() => void saveCarpenterPrinterSettings()} disabled={savingCarpenterPrinterSettings} style={buttonPrimary}>{savingCarpenterPrinterSettings ? "Mentés..." : "Mentés és vissza"}</button>
+          <button type="button" onClick={() => void saveCarpenterPrinterSettings()} disabled={savingCarpenterPrinterSettings} style={buttonPrimary}>{savingCarpenterPrinterSettings ? "Mentés..." : "Minden mentése és vissza"}</button>
           <button type="button" onClick={() => setFlowStage("batch-selection")} style={buttonSecondary}>Mégse</button>
         </div>
       </div>
