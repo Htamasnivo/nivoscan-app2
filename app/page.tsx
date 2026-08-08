@@ -103,7 +103,7 @@ type WorkflowMode = "single" | "batch" | "end";
 type BatchOperationCode = "SZABAS" | "MARAS";
 type BatchOperationStatus = "SZABAS_FOLYAMATBAN" | "MARASRA_VAR" | "MARAS_FOLYAMATBAN" | "KESZ";
 type BatchListMode = "end" | "start-milling";
-type FlowStage = "idle" | "dashboard" | "batch-selection" | "batch-operation-selection" | "event-scan" | "batch-scan" | "start-scan" | "order-scan" | "active-batch-list" | "end-batch-detail";
+type FlowStage = "idle" | "dashboard" | "batch-selection" | "batch-operation-selection" | "event-scan" | "batch-scan" | "start-scan" | "order-scan" | "active-batch-list" | "end-batch-detail" | "carpenter-printer-settings" | "carpenter-reprint-requests";
 
 type EventCard = {
   id: string;
@@ -520,6 +520,52 @@ type ScrapReplacementRow = {
   updated_at?: string | null;
 };
 
+
+type LabelTemplateType = "VAGAS" | "UJRAGYARTAS";
+type LabelTextAlign = "left" | "center" | "right";
+
+type LabelTemplateFieldConfig = {
+  key: string;
+  label: string;
+  visible: boolean;
+  x: number;
+  y: number;
+  width: number;
+  fontSize: number;
+  bold: boolean;
+  align: LabelTextAlign;
+};
+
+type LabelTemplateConfig = {
+  widthMm: number;
+  heightMm: number;
+  fields: LabelTemplateFieldConfig[];
+};
+
+type ReprintRequestRow = ScrapReplacementRow & {
+  kulso_lap?: string | null;
+  belso_lap?: string | null;
+  szin?: string | null;
+  maras_minta?: string | null;
+  szelesseg?: string | number | null;
+  hosszusag?: string | number | null;
+  termek_tipus?: string | null;
+  termek_megnevezes?: string | null;
+  terv_datum?: string | null;
+  mennyiseg?: string | number | null;
+  termelesi_kartya_adatok?: Record<string, unknown> | null;
+  printed?: boolean | null;
+  printed_at?: string | null;
+  printed_by?: string | null;
+  print_count?: number | null;
+};
+
+type LabelPrintJob = {
+  title: string;
+  data: Record<string, string>;
+  requestId?: string | number | null;
+};
+
 type ProductionCardBacklogRow = {
   id: string;
   orderNumber: string;
@@ -833,6 +879,103 @@ const PRODUCTION_CARD_BACKLOG_FIELD_IDS = [
   PRODUCTION_CARD_BACKLOG_TOK_FIELD_ID,
   PRODUCTION_CARD_BACKLOG_NYILO_FIELD_ID,
 ] as const;
+
+
+const PRINTER_SETTINGS_TABLE = "printer_settings";
+const LABEL_TEMPLATES_TABLE = "label_templates";
+const LABEL_PRINT_LOG_TABLE = "label_print_log";
+const WINDOWS_PRINTERS_API = "/api/windows-printers";
+const LABEL_PRINT_API = "/api/label-print";
+
+const CUTTING_LABEL_FIELDS: Array<{ key: string; label: string }> = [
+  { key: "sorszam", label: "Sorszám" },
+  { key: "kulso_lap", label: "Külső lap" },
+  { key: "belso_lap", label: "Belső lap" },
+  { key: "szin", label: "Szín" },
+  { key: "tipus", label: "Típus" },
+];
+
+const REPRINT_LABEL_FIELDS: Array<{ key: string; label: string }> = [
+  { key: "sorszam", label: "Sorszám" },
+  { key: "kulso_lap", label: "Külső lap" },
+  { key: "belso_lap", label: "Belső lap" },
+  { key: "szin", label: "Szín" },
+  { key: "maras_minta", label: "Marásminta" },
+  { key: "szelesseg", label: "Szélesség" },
+  { key: "hosszusag", label: "Hosszúság" },
+  { key: "datum", label: "Dátum" },
+  { key: "megjegyzes", label: "Megjegyzés" },
+  { key: "dolgozo", label: "Dolgozó" },
+  { key: "tipus", label: "Típus" },
+];
+
+function createDefaultLabelTemplate(type: LabelTemplateType): LabelTemplateConfig {
+  const definitions = type === "VAGAS" ? CUTTING_LABEL_FIELDS : REPRINT_LABEL_FIELDS;
+  const widthMm = 58;
+  const heightMm = 40;
+  const top = type === "VAGAS" ? 20 : 15;
+  const usableHeight = 94 - top;
+  const rowHeight = Math.max(6, usableHeight / Math.max(1, definitions.length));
+  return {
+    widthMm,
+    heightMm,
+    fields: definitions.map((field, index) => ({
+      key: field.key,
+      label: field.label,
+      visible: true,
+      x: 4,
+      y: Math.min(92, top + (index * rowHeight)),
+      width: 92,
+      fontSize: type === "VAGAS" ? (index === 0 ? 13 : 8) : (index === 0 ? 11 : 6.8),
+      bold: index === 0,
+      align: "left" as LabelTextAlign,
+    })),
+  };
+}
+
+function normalizeLabelTemplate(raw: unknown, type: LabelTemplateType): LabelTemplateConfig {
+  const fallback = createDefaultLabelTemplate(type);
+  if (!raw || typeof raw !== "object") return fallback;
+  const candidate = raw as Partial<LabelTemplateConfig>;
+  const rawFields = Array.isArray(candidate.fields) ? candidate.fields : [];
+  const byKey = new Map(rawFields.map((field) => [String((field as LabelTemplateFieldConfig)?.key || ""), field as LabelTemplateFieldConfig]));
+  return {
+    widthMm: Number(candidate.widthMm) > 10 ? Number(candidate.widthMm) : fallback.widthMm,
+    heightMm: Number(candidate.heightMm) > 10 ? Number(candidate.heightMm) : fallback.heightMm,
+    fields: fallback.fields.map((defaultField) => {
+      const stored = byKey.get(defaultField.key);
+      if (!stored) return defaultField;
+      return {
+        ...defaultField,
+        ...stored,
+        key: defaultField.key,
+        label: defaultField.label,
+        visible: stored.visible !== false,
+        x: Number.isFinite(Number(stored.x)) ? Number(stored.x) : defaultField.x,
+        y: Number.isFinite(Number(stored.y)) ? Number(stored.y) : defaultField.y,
+        width: Number.isFinite(Number(stored.width)) ? Number(stored.width) : defaultField.width,
+        fontSize: Number.isFinite(Number(stored.fontSize)) ? Number(stored.fontSize) : defaultField.fontSize,
+        bold: Boolean(stored.bold),
+        align: (["left", "center", "right"] as LabelTextAlign[]).includes(stored.align) ? stored.align : defaultField.align,
+      };
+    }),
+  };
+}
+
+function readRecordValue(row: Record<string, unknown> | null | undefined, aliases: string[]): unknown {
+  if (!row) return null;
+  const normalizedAliases = aliases.map((alias) => normalizeLooseText(alias));
+  for (const [key, value] of Object.entries(row)) {
+    if (normalizedAliases.includes(normalizeLooseText(key))) return value;
+  }
+  return null;
+}
+
+function valueAsText(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number" && !Number.isFinite(value)) return "";
+  return String(value).trim();
+}
 
 const PRODUCTION_PLAN_IMPORT_SETTINGS_TABLE = "production_plan_import_settings";
 const DEFAULT_PRODUCTION_PLAN_SERVER_PATH = "P:\\Gyartas\\Termelesi_terv\\Napi_termelesi_terv.xlsx";
@@ -3582,6 +3725,23 @@ export default function Page() {
   });
   const [terminalProductionCardProfile, setTerminalProductionCardProfile] = useState<ProductionMonitorProfile>(() => createDefaultProductionCardProfile());
   const [loadingTerminalProductionCard, setLoadingTerminalProductionCard] = useState(false);
+
+
+  const [carpenterPrinterTab, setCarpenterPrinterTab] = useState<"printer" | "templates">("printer");
+  const [windowsPrinters, setWindowsPrinters] = useState<string[]>([]);
+  const [selectedWindowsPrinter, setSelectedWindowsPrinter] = useState("");
+  const [loadingWindowsPrinters, setLoadingWindowsPrinters] = useState(false);
+  const [savingCarpenterPrinterSettings, setSavingCarpenterPrinterSettings] = useState(false);
+  const [activeCarpenterLabelTemplateType, setActiveCarpenterLabelTemplateType] = useState<LabelTemplateType>("VAGAS");
+  const [carpenterLabelTemplates, setCarpenterLabelTemplates] = useState<Record<LabelTemplateType, LabelTemplateConfig>>({
+    VAGAS: createDefaultLabelTemplate("VAGAS"),
+    UJRAGYARTAS: createDefaultLabelTemplate("UJRAGYARTAS"),
+  });
+  const [carpenterPrinterSettingsLoaded, setCarpenterPrinterSettingsLoaded] = useState(false);
+  const [reprintRequests, setReprintRequests] = useState<ReprintRequestRow[]>([]);
+  const [selectedReprintRequestIds, setSelectedReprintRequestIds] = useState<Record<string, boolean>>({});
+  const [loadingReprintRequests, setLoadingReprintRequests] = useState(false);
+  const [printingReprintRequests, setPrintingReprintRequests] = useState(false);
 
   const activeProductionMonitorProfile = useMemo(
     () => productionMonitorProfiles.find((profile) => profile.id === activeProductionMonitorProfileId)
@@ -11648,6 +11808,8 @@ START: ${formatDateTime(startAt)}`
     setActiveWorker(null);
     setWorkflowMode(null);
     setFlowStage("idle");
+    setSelectedReprintRequestIds({});
+    setReprintRequests([]);
     setWorkerEventKoteg(1);
     setSelectedBatchOperation(null);
     setBatchOperationInput("");
@@ -13675,8 +13837,12 @@ body {
   }): Promise<void> {
     if (!supabase || !activeWorker || (!params.outerScrap && !params.innerScrap && !params.toklecScrap)) return;
 
+    const planRow = await fetchCarpenterPlanDataForOrder(params.orderNumber);
+    const planSnapshot = buildScrapPlanSnapshot(planRow);
+
     const basePayload = {
       order_number: params.orderNumber,
+      ...planSnapshot,
       source_station: params.sourceStation,
       source_work_log_id: String(params.workLogId),
       status: "VARAKOZIK",
@@ -13712,6 +13878,336 @@ body {
 
     const { error } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).insert(rows);
     if (error) throw error;
+  }
+
+
+  async function fetchCarpenterPlanDataForOrder(orderNumberValue: string): Promise<Record<string, unknown> | null> {
+    if (!supabase) return null;
+    const cleanOrder = String(orderNumberValue || "").trim();
+    if (!cleanOrder) return null;
+    const tableName = buildStationPlanTableName("Asztalos");
+    const response = await supabase
+      .from(tableName)
+      .select("*")
+      .eq("sorszam", cleanOrder)
+      .order("elkeszules_datum", { ascending: false })
+      .limit(1);
+    if (response.error) {
+      console.warn(`Nem sikerült a ${tableName} táblából kiolvasni a címkeadatokat:`, response.error);
+      return null;
+    }
+    return Array.isArray(response.data) && response.data.length > 0
+      ? response.data[0] as Record<string, unknown>
+      : null;
+  }
+
+  function buildScrapPlanSnapshot(planRow: Record<string, unknown> | null): Record<string, unknown> {
+    return {
+      termelesi_kartya_adatok: planRow || {},
+      kulso_lap: valueAsText(readRecordValue(planRow, ["kulso_lap", "külső lap", "kulso lap"])) || null,
+      belso_lap: valueAsText(readRecordValue(planRow, ["belso_lap", "belső lap", "belso lap"])) || null,
+      szin: valueAsText(readRecordValue(planRow, ["szin", "szín"])) || null,
+      maras_minta: valueAsText(readRecordValue(planRow, ["maras_minta", "marásminta", "maras minta", "marás minta"])) || null,
+      szelesseg: valueAsText(readRecordValue(planRow, ["szelesseg", "szélesség"])) || null,
+      hosszusag: valueAsText(readRecordValue(planRow, ["hosszusag", "hosszúság"])) || null,
+      termek_tipus: valueAsText(readRecordValue(planRow, ["tipus", "típus", "termek_tipus", "terméktípus"])) || null,
+      termek_megnevezes: valueAsText(readRecordValue(planRow, ["megnevezes", "megnevezés"])) || null,
+      terv_datum: parseSpreadsheetDate(readRecordValue(planRow, ["elkeszules_datum", "elkészülés dátum", "elkeszules datum"])) || null,
+      mennyiseg: valueAsText(readRecordValue(planRow, ["mennyiseg", "mennyiség"])) || null,
+    };
+  }
+
+  function buildCuttingLabelData(orderNumberValue: string, planRow: Record<string, unknown> | null): Record<string, string> {
+    return {
+      sorszam: String(orderNumberValue || "").trim(),
+      kulso_lap: valueAsText(readRecordValue(planRow, ["kulso_lap", "külső lap", "kulso lap"])),
+      belso_lap: valueAsText(readRecordValue(planRow, ["belso_lap", "belső lap", "belso lap"])),
+      szin: valueAsText(readRecordValue(planRow, ["szin", "szín"])),
+      tipus: valueAsText(readRecordValue(planRow, ["tipus", "típus", "termek_tipus", "terméktípus"])),
+    };
+  }
+
+  function buildReprintLabelData(row: ReprintRequestRow): Record<string, string> {
+    const source = row.termelesi_kartya_adatok || {};
+    const outer = String(row.kulso_lap || "").trim() || valueAsText(readRecordValue(source, ["kulso_lap", "külső lap", "kulso lap"]));
+    const inner = String(row.belso_lap || "").trim() || valueAsText(readRecordValue(source, ["belso_lap", "belső lap", "belso lap"]));
+    const color = String(row.szin || "").trim() || valueAsText(readRecordValue(source, ["szin", "szín"]));
+    const milling = String(row.maras_minta || "").trim() || valueAsText(readRecordValue(source, ["maras_minta", "marásminta", "maras minta", "marás minta"]));
+    const width = valueAsText(row.szelesseg) || valueAsText(readRecordValue(source, ["szelesseg", "szélesség"]));
+    const length = valueAsText(row.hosszusag) || valueAsText(readRecordValue(source, ["hosszusag", "hosszúság"]));
+    const typeValue = String(row.termek_tipus || "").trim() || valueAsText(readRecordValue(source, ["tipus", "típus", "termek_tipus", "terméktípus"]));
+    return {
+      sorszam: String(row.order_number || "").trim(),
+      kulso_lap: outer || (row.kulso_lap_selejt ? "SELEJT" : ""),
+      belso_lap: inner || (row.belso_lap_selejt ? "SELEJT" : ""),
+      szin: color,
+      maras_minta: milling,
+      szelesseg: width,
+      hosszusag: length,
+      datum: row.reported_at ? formatDateTime(row.reported_at) : "",
+      megjegyzes: String(row.megjegyzes || "").trim(),
+      dolgozo: String(row.reported_by_worker_name || "").trim(),
+      tipus: typeValue,
+    };
+  }
+
+  async function fetchWindowsPrinters(): Promise<string[]> {
+    setLoadingWindowsPrinters(true);
+    try {
+      const response = await fetch(WINDOWS_PRINTERS_API, { method: "GET", cache: "no-store" });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(String(payload?.error || "Nem sikerült lekérni a Windows nyomtatókat."));
+      const printers = Array.isArray(payload?.printers)
+        ? payload.printers.map((printer: unknown) => String(printer || "").trim()).filter(Boolean)
+        : [];
+      setWindowsPrinters(printers);
+      return printers;
+    } finally {
+      setLoadingWindowsPrinters(false);
+    }
+  }
+
+  async function loadCarpenterPrinterSettings(): Promise<void> {
+    if (!supabase) {
+      setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
+      return;
+    }
+    setCarpenterPrinterSettingsLoaded(false);
+    const station = getCurrentMachineIdForInsert();
+    try {
+      let availablePrinters: string[] = [];
+      try {
+        availablePrinters = await fetchWindowsPrinters();
+      } catch (error) {
+        console.warn("Windows nyomtatólista hiba:", error);
+        setWindowsPrinters([]);
+      }
+
+      const [printerResponse, templatesResponse] = await Promise.all([
+        supabase.from(PRINTER_SETTINGS_TABLE).select("machine_name, printer_name, active").eq("machine_name", station).eq("active", true).limit(1),
+        supabase.from(LABEL_TEMPLATES_TABLE).select("template_type, width_mm, height_mm, template_json").eq("machine_name", station).limit(10),
+      ]);
+      if (printerResponse.error) throw printerResponse.error;
+      if (templatesResponse.error) throw templatesResponse.error;
+
+      const savedPrinter = Array.isArray(printerResponse.data) && printerResponse.data.length > 0
+        ? String((printerResponse.data[0] as any).printer_name || "").trim()
+        : "";
+      setSelectedWindowsPrinter(savedPrinter || availablePrinters[0] || "");
+
+      const nextTemplates: Record<LabelTemplateType, LabelTemplateConfig> = {
+        VAGAS: createDefaultLabelTemplate("VAGAS"),
+        UJRAGYARTAS: createDefaultLabelTemplate("UJRAGYARTAS"),
+      };
+      ((templatesResponse.data || []) as Array<any>).forEach((row) => {
+        const type = String(row.template_type || "").toUpperCase() as LabelTemplateType;
+        if (type !== "VAGAS" && type !== "UJRAGYARTAS") return;
+        const mergedRaw = {
+          ...(row.template_json && typeof row.template_json === "object" ? row.template_json : {}),
+          widthMm: Number(row.width_mm) || undefined,
+          heightMm: Number(row.height_mm) || undefined,
+        };
+        nextTemplates[type] = normalizeLabelTemplate(mergedRaw, type);
+      });
+      setCarpenterLabelTemplates(nextTemplates);
+      setCarpenterPrinterSettingsLoaded(true);
+    } catch (error) {
+      console.error("Nyomtató beállítások betöltési hiba:", error);
+      setMessage({ type: "error", text: normalizeError(error) });
+    }
+  }
+
+  function updateCarpenterLabelTemplate(type: LabelTemplateType, patch: Partial<LabelTemplateConfig>): void {
+    setCarpenterLabelTemplates((previous) => ({
+      ...previous,
+      [type]: { ...previous[type], ...patch },
+    }));
+  }
+
+  function updateCarpenterLabelField(type: LabelTemplateType, key: string, patch: Partial<LabelTemplateFieldConfig>): void {
+    setCarpenterLabelTemplates((previous) => ({
+      ...previous,
+      [type]: {
+        ...previous[type],
+        fields: previous[type].fields.map((field) => field.key === key ? { ...field, ...patch } : field),
+      },
+    }));
+  }
+
+  async function saveCarpenterPrinterSettings(): Promise<void> {
+    if (!supabase) return;
+    const station = getCurrentMachineIdForInsert();
+    if (!selectedWindowsPrinter.trim()) {
+      setMessage({ type: "error", text: "Válassz ki egy Windowsban telepített nyomtatót." });
+      return;
+    }
+    setSavingCarpenterPrinterSettings(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const printerResponse = await supabase.from(PRINTER_SETTINGS_TABLE).upsert({
+        machine_name: station,
+        printer_name: selectedWindowsPrinter.trim(),
+        active: true,
+        updated_at: nowIso,
+      }, { onConflict: "machine_name" });
+      if (printerResponse.error) throw printerResponse.error;
+
+      const templateRows = (["VAGAS", "UJRAGYARTAS"] as LabelTemplateType[]).map((type) => ({
+        machine_name: station,
+        template_type: type,
+        width_mm: carpenterLabelTemplates[type].widthMm,
+        height_mm: carpenterLabelTemplates[type].heightMm,
+        template_json: carpenterLabelTemplates[type],
+        updated_at: nowIso,
+      }));
+      const templateResponse = await supabase.from(LABEL_TEMPLATES_TABLE).upsert(templateRows, { onConflict: "machine_name,template_type" });
+      if (templateResponse.error) throw templateResponse.error;
+      setMessage({ type: "success", text: `A(z) ${station} munkaállomás nyomtatója és mindkét címkesablonja elmentve.` });
+      setFlowStage("batch-selection");
+    } catch (error) {
+      setMessage({ type: "error", text: normalizeError(error) });
+    } finally {
+      setSavingCarpenterPrinterSettings(false);
+    }
+  }
+
+  async function loadActivePrintConfiguration(type: LabelTemplateType): Promise<{ printerName: string; template: LabelTemplateConfig }> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const station = getCurrentMachineIdForInsert();
+    const [printerResponse, templateResponse] = await Promise.all([
+      supabase.from(PRINTER_SETTINGS_TABLE).select("printer_name").eq("machine_name", station).eq("active", true).limit(1),
+      supabase.from(LABEL_TEMPLATES_TABLE).select("width_mm, height_mm, template_json").eq("machine_name", station).eq("template_type", type).limit(1),
+    ]);
+    if (printerResponse.error) throw printerResponse.error;
+    if (templateResponse.error) throw templateResponse.error;
+    const printerName = Array.isArray(printerResponse.data) && printerResponse.data.length > 0
+      ? String((printerResponse.data[0] as any).printer_name || "").trim()
+      : "";
+    if (!printerName) throw new Error(`Ehhez a munkaállomáshoz nincs aktív nyomtató beállítva. Nyisd meg a Nyomtató beállításai menüt.`);
+    const rawTemplate = Array.isArray(templateResponse.data) && templateResponse.data.length > 0 ? templateResponse.data[0] as any : null;
+    const template = normalizeLabelTemplate(rawTemplate ? {
+      ...(rawTemplate.template_json || {}),
+      widthMm: rawTemplate.width_mm,
+      heightMm: rawTemplate.height_mm,
+    } : null, type);
+    return { printerName, template };
+  }
+
+  async function sendLabelJobsToPrinter(type: LabelTemplateType, jobs: LabelPrintJob[]): Promise<{ printerName: string; printedCount: number }> {
+    if (jobs.length === 0) return { printerName: "", printedCount: 0 };
+    const config = await loadActivePrintConfiguration(type);
+    const response = await fetch(LABEL_PRINT_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        printerName: config.printerName,
+        template: config.template,
+        jobs,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(String(payload?.error || "A címkenyomtatás sikertelen."));
+    return { printerName: config.printerName, printedCount: Number(payload?.printedCount) || jobs.length };
+  }
+
+  async function printCuttingLabelsForOrders(orderNumbers: string[]): Promise<number> {
+    if (!supabase || orderNumbers.length === 0) return 0;
+    const tableName = buildStationPlanTableName("Asztalos");
+    const response = await supabase.from(tableName).select("*").in("sorszam", orderNumbers).limit(10000);
+    if (response.error) throw response.error;
+    const planByOrder = new Map<string, Record<string, unknown>>();
+    ((response.data || []) as Array<Record<string, unknown>>).forEach((row) => {
+      const order = valueAsText(readRecordValue(row, ["sorszam", "sorszám"]));
+      if (order) planByOrder.set(normalizeLooseText(order), row);
+    });
+    const jobs: LabelPrintJob[] = [];
+    orderNumbers.forEach((order) => {
+      const planRow = planByOrder.get(normalizeLooseText(order)) || null;
+      const data = buildCuttingLabelData(order, planRow);
+      jobs.push({ title: "VÁGÁS – KÜLSŐ LAP", data: { ...data, lap_tipus: "Külső lap" } });
+      jobs.push({ title: "VÁGÁS – BELSŐ LAP", data: { ...data, lap_tipus: "Belső lap" } });
+    });
+    const result = await sendLabelJobsToPrinter("VAGAS", jobs);
+    return result.printedCount;
+  }
+
+  async function loadCarpenterReprintRequests(): Promise<void> {
+    if (!supabase) return;
+    setLoadingReprintRequests(true);
+    try {
+      const response = await supabase
+        .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
+        .select("*")
+        .or("kulso_lap_selejt.eq.true,belso_lap_selejt.eq.true,toklec_selejt.eq.true")
+        .order("reported_at", { ascending: false })
+        .limit(2000);
+      if (response.error) throw response.error;
+      const rows = ((response.data || []) as Array<any>).map((rawRow) => ({
+        ...rawRow,
+        order_number: String(rawRow.order_number || "").trim(),
+        kulso_lap_selejt: Boolean(rawRow.kulso_lap_selejt),
+        belso_lap_selejt: Boolean(rawRow.belso_lap_selejt),
+        toklec_selejt: Boolean(rawRow.toklec_selejt),
+        source_station: String(rawRow.source_station || "").trim(),
+        status: normalizeScrapReplacementStatus(rawRow.status),
+        print_count: Number(rawRow.print_count) || 0,
+      })) as ReprintRequestRow[];
+      setReprintRequests(rows);
+      setSelectedReprintRequestIds({});
+    } catch (error) {
+      setMessage({ type: "error", text: normalizeError(error) });
+    } finally {
+      setLoadingReprintRequests(false);
+    }
+  }
+
+  async function markReprintRequestsPrinted(rows: ReprintRequestRow[], printerName: string): Promise<void> {
+    if (!supabase || rows.length === 0) return;
+    const nowIso = new Date().toISOString();
+    const printedBy = String(activeWorker?.["Teljes nev"] || "").trim() || "Ismeretlen";
+    for (const row of rows) {
+      const updateResponse = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).update({
+        printed: true,
+        printed_at: nowIso,
+        printed_by: printedBy,
+        print_count: (Number(row.print_count) || 0) + 1,
+        updated_at: nowIso,
+      }).eq("id", row.id);
+      if (updateResponse.error) throw updateResponse.error;
+      const logResponse = await supabase.from(LABEL_PRINT_LOG_TABLE).insert({
+        request_id: String(row.id),
+        order_number: row.order_number,
+        machine_name: getCurrentMachineIdForInsert(),
+        printer_name: printerName,
+        template_type: "UJRAGYARTAS",
+        printed_by: printedBy,
+        printed_at: nowIso,
+      });
+      if (logResponse.error) console.warn("Nyomtatási napló mentési hiba:", logResponse.error);
+    }
+  }
+
+  async function printReprintRequestRows(rows: ReprintRequestRow[]): Promise<void> {
+    if (rows.length === 0) {
+      setMessage({ type: "info", text: "Nincs nyomtatásra kijelölt újragyártási kérelem." });
+      return;
+    }
+    setPrintingReprintRequests(true);
+    try {
+      const jobs = rows.map((row) => ({
+        title: `ÚJRAGYÁRTÁS – ${getScrapReplacementDefectLabel(row)}`,
+        data: buildReprintLabelData(row),
+        requestId: row.id,
+      }));
+      const result = await sendLabelJobsToPrinter("UJRAGYARTAS", jobs);
+      await markReprintRequestsPrinted(rows, result.printerName);
+      await loadCarpenterReprintRequests();
+      setMessage({ type: "success", text: `${result.printedCount} db újragyártási címke elküldve a(z) ${result.printerName} nyomtatóra.` });
+    } catch (error) {
+      setMessage({ type: "error", text: normalizeError(error) });
+    } finally {
+      setPrintingReprintRequests(false);
+    }
   }
 
   function isTwoStageAsztalosWorker(worker: Worker | null = activeWorker): boolean {
@@ -15084,6 +15580,17 @@ body {
         });
       }
 
+      let cuttingLabelPrintSuffix = "";
+      if (isTwoStageAsztalos && selectedBatchOperation === "SZABAS") {
+        try {
+          const printedCount = await printCuttingLabelsForOrders(ordersForSave);
+          cuttingLabelPrintSuffix = ` Címkenyomtatás: ${printedCount} db vágási címke elküldve.`;
+        } catch (printError) {
+          console.error("Vágási címkenyomtatás hiba:", printError);
+          cuttingLabelPrintSuffix = ` A köteg mentve, de a címkenyomtatás sikertelen: ${normalizeError(printError)}`;
+        }
+      }
+
       const savedBatch: ProductionBatchRow = {
         id: data?.id,
         batch_code: data?.batch_code ?? generatedBatchCode,
@@ -15100,11 +15607,12 @@ body {
       setCreatedBatch(savedBatch);
       await stopScannerAsync();
       setScanModalOpen(false);
+      const batchSuccessText = isTwoStageAsztalos
+        ? "A Szabás köteg sikeresen létrejött és Szabás folyamatban állapotba került."
+        : "Sikeresen mentve a rendelés!";
       setMessage({
         type: "success",
-        text: isTwoStageAsztalos
-          ? "A Szabás köteg sikeresen létrejött és Szabás folyamatban állapotba került."
-          : "Sikeresen mentve a rendelés!",
+        text: `${batchSuccessText}${cuttingLabelPrintSuffix}`,
       });
       setBatchOrders([]);
       setBatchOrderProductionMeta({});
@@ -16233,6 +16741,195 @@ body {
     );
   }
 
+
+  function renderLabelTemplatePreview(type: LabelTemplateType): React.JSX.Element {
+    const template = carpenterLabelTemplates[type];
+    const sample = type === "VAGAS"
+      ? { sorszam: "R260812345", kulso_lap: "Külső lap adat", belso_lap: "Belső lap adat", szin: "RAL 7016", tipus: "Ajtó" }
+      : { sorszam: "R260812345", kulso_lap: "Külső lap", belso_lap: "Belső lap", szin: "RAL 7016", maras_minta: "M12", szelesseg: "950", hosszusag: "2100", datum: "2026.08.08", megjegyzes: "Pótlás sürgős", dolgozo: activeWorker?.["Teljes nev"] || "Dolgozó", tipus: "Ajtó" };
+    const scale = Math.min(8.2, 560 / Math.max(1, template.widthMm));
+    return (
+      <div style={{ display: "grid", justifyItems: "center", gap: 8 }}>
+        <div style={{ color: "#94a3b8", fontSize: 12 }}>Élő címke-előnézet · {template.widthMm} × {template.heightMm} mm</div>
+        <div style={{
+          width: template.widthMm * scale,
+          height: template.heightMm * scale,
+          maxWidth: "100%",
+          position: "relative",
+          background: "#ffffff",
+          color: "#111827",
+          border: "2px solid #0f172a",
+          boxShadow: "0 12px 28px rgba(0,0,0,0.25)",
+          overflow: "hidden",
+        }}>
+          <div style={{ position: "absolute", left: "3%", top: "2%", right: "3%", textAlign: "center", fontSize: 11, fontWeight: 900 }}>
+            {type === "VAGAS" ? "VÁGÁSI CÍMKE – KÜLSŐ / BELSŐ LAP" : "ÚJRAGYÁRTÁSI CÍMKE"}
+          </div>
+          {template.fields.filter((field) => field.visible).map((field) => (
+            <div key={field.key} style={{
+              position: "absolute",
+              left: `${Math.max(0, Math.min(95, field.x))}%`,
+              top: `${Math.max(0, Math.min(95, field.y))}%`,
+              width: `${Math.max(5, Math.min(100, field.width))}%`,
+              fontSize: Math.max(5, field.fontSize),
+              fontWeight: field.bold ? 900 : 500,
+              textAlign: field.align,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              lineHeight: 1.05,
+            }}>
+              <strong>{field.label}:</strong> {(sample as Record<string, string>)[field.key] || "-"}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  function renderCarpenterPrinterSettings(): React.JSX.Element {
+    const type = activeCarpenterLabelTemplateType;
+    const template = carpenterLabelTemplates[type];
+    const controlStyle: React.CSSProperties = { ...fieldStyle, background: "#020617", color: "#f8fafc", border: "1px solid #334155" };
+    return (
+      <div style={{ display: "grid", gap: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div>
+            <div style={{ color: "#38bdf8", fontWeight: 900, fontSize: 13, letterSpacing: 0.8 }}>ASZTALOS SZABÁSZ</div>
+            <h2 style={{ margin: "4px 0", color: "#f8fafc" }}>Nyomtató beállításai</h2>
+            <div style={{ color: "#94a3b8", fontSize: 13 }}>Munkaállomás: {getCurrentMachineIdForInsert()} · A beállítások és sablonok Supabase-ban mentődnek.</div>
+          </div>
+          <button type="button" onClick={() => setFlowStage("batch-selection")} style={buttonSecondary}>Vissza</button>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <button type="button" onClick={() => setCarpenterPrinterTab("printer")} style={carpenterPrinterTab === "printer" ? buttonPrimary : buttonSecondary}>Nyomtató hozzáadása</button>
+          <button type="button" onClick={() => setCarpenterPrinterTab("templates")} style={carpenterPrinterTab === "templates" ? buttonPrimary : buttonSecondary}>Sablonok beállítása</button>
+        </div>
+
+        {carpenterPrinterTab === "printer" ? (
+          <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 14, padding: 18 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 1fr) auto", gap: 12, alignItems: "end" }}>
+              <label style={{ display: "grid", gap: 7, color: "#cbd5e1", fontWeight: 800 }}>
+                Windowsban telepített címkenyomtató
+                <select value={selectedWindowsPrinter} onChange={(event) => setSelectedWindowsPrinter(event.target.value)} style={controlStyle}>
+                  <option value="">-- válassz nyomtatót --</option>
+                  {windowsPrinters.map((printer) => <option key={printer} value={printer}>{printer}</option>)}
+                </select>
+              </label>
+              <button type="button" onClick={() => void fetchWindowsPrinters()} disabled={loadingWindowsPrinters} style={buttonSecondary}>
+                {loadingWindowsPrinters ? "Keresés..." : "Nyomtatólista frissítése"}
+              </button>
+            </div>
+            {windowsPrinters.length === 0 && carpenterPrinterSettingsLoaded && (
+              <div style={{ marginTop: 12, color: "#fbbf24", fontSize: 13 }}>
+                A szerver nem adott vissza Windows-nyomtatót. A Next.js szervert annak a Windows gépnek kell futtatnia, amelyen a címkenyomtató telepítve van.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ display: "grid", gap: 14 }}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button type="button" onClick={() => setActiveCarpenterLabelTemplateType("VAGAS")} style={type === "VAGAS" ? buttonPrimary : buttonSecondary}>Vágási címke</button>
+              <button type="button" onClick={() => setActiveCarpenterLabelTemplateType("UJRAGYARTAS")} style={type === "UJRAGYARTAS" ? buttonPrimary : buttonSecondary}>Újragyártási címke</button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(520px, 1.15fr) minmax(360px, 0.85fr)", gap: 16, alignItems: "start" }}>
+              <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 14, padding: 16 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+                  <label style={{ display: "grid", gap: 6, color: "#cbd5e1", fontWeight: 800 }}>Szélesség (mm)<input type="number" min={20} max={200} step={1} value={template.widthMm} onChange={(e) => updateCarpenterLabelTemplate(type, { widthMm: Math.max(20, Number(e.target.value) || 58) })} style={controlStyle} /></label>
+                  <label style={{ display: "grid", gap: 6, color: "#cbd5e1", fontWeight: 800 }}>Magasság (mm)<input type="number" min={15} max={200} step={1} value={template.heightMm} onChange={(e) => updateCarpenterLabelTemplate(type, { heightMm: Math.max(15, Number(e.target.value) || 40) })} style={controlStyle} /></label>
+                </div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+                    <thead><tr>{["Mező", "Látható", "X %", "Y %", "Szélesség %", "Betű", "Félkövér", "Igazítás"].map((label) => <th key={label} style={{ padding: 8, borderBottom: "1px solid #334155", color: "#94a3b8", textAlign: "left", fontSize: 11 }}>{label}</th>)}</tr></thead>
+                    <tbody>{template.fields.map((field) => (
+                      <tr key={field.key}>
+                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{field.label}</td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}><input type="checkbox" checked={field.visible} onChange={(e) => updateCarpenterLabelField(type, field.key, { visible: e.target.checked })} /></td>
+                        <td style={{ padding: 6, borderBottom: "1px solid #1e293b" }}><input type="number" min={0} max={95} value={field.x} onChange={(e) => updateCarpenterLabelField(type, field.key, { x: Number(e.target.value) })} style={{ ...controlStyle, width: 74, padding: 7 }} /></td>
+                        <td style={{ padding: 6, borderBottom: "1px solid #1e293b" }}><input type="number" min={0} max={95} value={field.y} onChange={(e) => updateCarpenterLabelField(type, field.key, { y: Number(e.target.value) })} style={{ ...controlStyle, width: 74, padding: 7 }} /></td>
+                        <td style={{ padding: 6, borderBottom: "1px solid #1e293b" }}><input type="number" min={5} max={100} value={field.width} onChange={(e) => updateCarpenterLabelField(type, field.key, { width: Number(e.target.value) })} style={{ ...controlStyle, width: 84, padding: 7 }} /></td>
+                        <td style={{ padding: 6, borderBottom: "1px solid #1e293b" }}><input type="number" min={5} max={28} step={0.5} value={field.fontSize} onChange={(e) => updateCarpenterLabelField(type, field.key, { fontSize: Number(e.target.value) })} style={{ ...controlStyle, width: 78, padding: 7 }} /></td>
+                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}><input type="checkbox" checked={field.bold} onChange={(e) => updateCarpenterLabelField(type, field.key, { bold: e.target.checked })} /></td>
+                        <td style={{ padding: 6, borderBottom: "1px solid #1e293b" }}><select value={field.align} onChange={(e) => updateCarpenterLabelField(type, field.key, { align: e.target.value as LabelTextAlign })} style={{ ...controlStyle, width: 105, padding: 7 }}><option value="left">Bal</option><option value="center">Közép</option><option value="right">Jobb</option></select></td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              </div>
+              <div style={{ background: "#e2e8f0", borderRadius: 14, padding: 16, minHeight: 360, display: "grid", placeItems: "center", overflow: "auto" }}>
+                {renderLabelTemplatePreview(type)}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <button type="button" onClick={() => void saveCarpenterPrinterSettings()} disabled={savingCarpenterPrinterSettings} style={buttonPrimary}>{savingCarpenterPrinterSettings ? "Mentés..." : "Mentés és vissza"}</button>
+          <button type="button" onClick={() => setFlowStage("batch-selection")} style={buttonSecondary}>Mégse</button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderCarpenterReprintRequests(): React.JSX.Element {
+    const selectedRows = reprintRequests.filter((row) => selectedReprintRequestIds[String(row.id)]);
+    const allSelected = reprintRequests.length > 0 && reprintRequests.every((row) => selectedReprintRequestIds[String(row.id)]);
+    return (
+      <div style={{ display: "grid", gap: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div>
+            <div style={{ color: "#fb7185", fontWeight: 900, fontSize: 13, letterSpacing: 0.8 }}>ASZTALOS SZABÁSZ</div>
+            <h2 style={{ margin: "4px 0", color: "#f8fafc" }}>Újragyártási kérelmek</h2>
+            <div style={{ color: "#94a3b8", fontSize: 13 }}>Minden külső lap, belső lap és Tokléc selejt megjelenik. A címkeadatok a selejt rögzítésekor eltárolt termelési kártya adataiból jönnek.</div>
+          </div>
+          <button type="button" onClick={() => setFlowStage("batch-selection")} style={buttonSecondary}>Vissza</button>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <button type="button" onClick={() => void loadCarpenterReprintRequests()} disabled={loadingReprintRequests} style={buttonSecondary}>{loadingReprintRequests ? "Betöltés..." : "Frissítés"}</button>
+          <button type="button" onClick={() => setSelectedReprintRequestIds(Object.fromEntries(reprintRequests.map((row) => [String(row.id), !allSelected])))} style={buttonSecondary}>{allSelected ? "Kijelölés törlése" : "Mind kijelölése"}</button>
+          <button type="button" onClick={() => void printReprintRequestRows(selectedRows)} disabled={printingReprintRequests || selectedRows.length === 0} style={buttonPrimary}>Kijelöltek nyomtatása ({selectedRows.length})</button>
+          <button type="button" onClick={() => void printReprintRequestRows(reprintRequests)} disabled={printingReprintRequests || reprintRequests.length === 0} style={buttonPrimary}>{printingReprintRequests ? "Nyomtatás..." : `Összes nyomtatása (${reprintRequests.length})`}</button>
+        </div>
+
+        <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 14, overflow: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1350 }}>
+            <thead><tr>{["", "Sorszám", "Hiba", "Külső lap", "Belső lap", "Szín", "Marásminta", "Szélesség", "Hosszúság", "Típus", "Megjegyzés", "Selejtet jelentette", "Rögzítve", "Állapot", "Nyomtatva", "Nyomtatás"].map((label) => <th key={label} style={{ padding: "10px 8px", borderBottom: "1px solid #334155", color: "#94a3b8", fontSize: 11, textAlign: "left", whiteSpace: "nowrap" }}>{label}</th>)}</tr></thead>
+            <tbody>
+              {reprintRequests.length === 0 ? (
+                <tr><td colSpan={16} style={{ padding: 28, textAlign: "center", color: "#94a3b8" }}>{loadingReprintRequests ? "Újragyártási kérelmek betöltése..." : "Nincs megjeleníthető selejtes újragyártási kérelem."}</td></tr>
+              ) : reprintRequests.map((row) => {
+                const source = row.termelesi_kartya_adatok || {};
+                const cell = (direct: unknown, aliases: string[]) => valueAsText(direct) || valueAsText(readRecordValue(source, aliases)) || "-";
+                return (
+                  <tr key={String(row.id)} style={{ background: row.status === "KESZ" ? "rgba(16,185,129,0.08)" : row.printed ? "rgba(37,99,235,0.07)" : "transparent" }}>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}><input type="checkbox" checked={Boolean(selectedReprintRequestIds[String(row.id)])} onChange={(e) => setSelectedReprintRequestIds((prev) => ({ ...prev, [String(row.id)]: e.target.checked }))} /></td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 900 }}>{row.order_number}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b", color: "#fca5a5", fontWeight: 800 }}>{getScrapReplacementDefectLabel(row)}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.kulso_lap, ["kulso_lap", "külső lap"])}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.belso_lap, ["belso_lap", "belső lap"])}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.szin, ["szin", "szín"])}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.maras_minta, ["maras_minta", "marásminta", "marás minta"])}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.szelesseg, ["szelesseg", "szélesség"])}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.hosszusag, ["hosszusag", "hosszúság"])}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.termek_tipus, ["tipus", "típus", "termek_tipus"])}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b", maxWidth: 260 }}>{row.megjegyzes || "-"}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b", whiteSpace: "nowrap" }}>{row.reported_by_worker_name || "-"}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b", whiteSpace: "nowrap" }}>{row.reported_at ? formatDateTime(row.reported_at) : "-"}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b", whiteSpace: "nowrap" }}>{getScrapReplacementStatusLabel(row)}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b", whiteSpace: "nowrap" }}>{row.printed ? `${row.print_count || 1}× · ${row.printed_at ? formatDateTime(row.printed_at) : ""}` : "Nem"}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}><button type="button" onClick={() => void printReprintRequestRows([row])} disabled={printingReprintRequests} style={{ ...buttonPrimary, padding: "8px 12px", whiteSpace: "nowrap" }}>Nyomtatás</button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
   if (standaloneProductionMonitor) {
     return ProductionPlanMonitor({ standalone: true });
   }
@@ -16250,7 +16947,7 @@ body {
         justifyContent: "center",
       }}
     >
-      <div style={{ width: "100%", maxWidth: flowStage === "dashboard" ? "none" : (step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId) ? 1700 : 960) }}>
+      <div style={{ width: "100%", maxWidth: flowStage === "dashboard" || flowStage === "carpenter-printer-settings" || flowStage === "carpenter-reprint-requests" ? "none" : (step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId) ? 1700 : 960) }}>
         <h1 style={{ fontSize: 34, marginBottom: 8, color: "#f8fafc", textAlign: "center" }}>Dolgozói beléptető</h1>
         <p style={{ color: "#cbd5e1", marginBottom: 24, textAlign: "center" }}>
           Név azonosítás, jelszó ahol kell, majd egyesével jelentés vagy műhely esetén köteg létrehozás, a meglévő scanneres sebesség megtartásával
@@ -16892,7 +17589,11 @@ body {
 
           {step === 4 && activeWorker && !isManagementDashboardWorker(activeWorker) && (
             <div>
-              {flowStage === "batch-selection" ? (
+              {flowStage === "carpenter-printer-settings" ? (
+                renderCarpenterPrinterSettings()
+              ) : flowStage === "carpenter-reprint-requests" ? (
+                renderCarpenterReprintRequests()
+              ) : flowStage === "batch-selection" ? (
                 <>
                   <div style={{ marginBottom: 18, color: "#cbd5e1" }}>
                     {workerEventKoteg === 3 ? (
@@ -16988,6 +17689,16 @@ body {
                       );
                     })}
                   </div>
+
+                  {workerEventKoteg === 3 && (
+                    <div style={{ marginBottom: 18, background: "linear-gradient(135deg, rgba(14,116,144,0.18), rgba(15,23,42,0.96))", border: "1px solid #0e7490", borderRadius: 14, padding: 16 }}>
+                      <div style={{ fontWeight: 900, color: "#7dd3fc", marginBottom: 10 }}>Asztalos szabász kiegészítő funkciók</div>
+                      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                        <button type="button" onClick={() => { setFlowStage("carpenter-reprint-requests"); void loadCarpenterReprintRequests(); }} style={buttonPrimary}>Újragyártási kérelmek</button>
+                        <button type="button" onClick={() => { setCarpenterPrinterTab("printer"); setFlowStage("carpenter-printer-settings"); void loadCarpenterPrinterSettings(); }} style={buttonSecondary}>Nyomtató beállításai</button>
+                      </div>
+                    </div>
+                  )}
 
                   <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
                     <button onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
