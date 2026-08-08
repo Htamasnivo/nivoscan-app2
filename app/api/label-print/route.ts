@@ -416,7 +416,7 @@ foreach ($job in $jobs) {
                     $graphics.DrawString($valueText, $valueFont, $brush, $valueRect, $format)
                   } finally { $labelFormat.Dispose() }
                 } else {
-                  $labelText = "${label}:"
+                  $labelText = ([string]$label) + ':'
                   $labelSize = $graphics.MeasureString($labelText, $labelFont)
                   $labelRect = New-Object System.Drawing.RectangleF($rect.X, $rect.Y, [Math]::Min($rect.Width, $labelSize.Width + 2), $rect.Height)
                   $graphics.DrawString($labelText, $labelFont, $brush, $labelRect)
