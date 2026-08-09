@@ -521,7 +521,26 @@ type ScrapReplacementRow = {
 };
 
 
-type LabelTemplateType = "VAGAS" | "UJRAGYARTAS";
+type LabelTemplateType = "VAGAS_KULSO" | "VAGAS_BELSO" | "UJRAGYARTAS";
+type CuttingLabelTemplateType = "VAGAS_KULSO" | "VAGAS_BELSO";
+type CuttingLabelPresetId = "industrial" | "minimal" | "order-focus" | "barcode-focus" | "workshop";
+
+const CUTTING_LABEL_TEMPLATE_TYPES: CuttingLabelTemplateType[] = ["VAGAS_KULSO", "VAGAS_BELSO"];
+const ALL_LABEL_TEMPLATE_TYPES: LabelTemplateType[] = ["VAGAS_KULSO", "VAGAS_BELSO", "UJRAGYARTAS"];
+
+function isCuttingLabelTemplateType(type: LabelTemplateType): type is CuttingLabelTemplateType {
+  return type === "VAGAS_KULSO" || type === "VAGAS_BELSO";
+}
+
+function getLabelTemplateDisplayName(type: LabelTemplateType): string {
+  if (type === "VAGAS_KULSO") return "Vágás – Külső lap";
+  if (type === "VAGAS_BELSO") return "Vágás – Belső lap";
+  return "Újragyártás";
+}
+
+function getOppositeCuttingLabelTemplateType(type: CuttingLabelTemplateType): CuttingLabelTemplateType {
+  return type === "VAGAS_KULSO" ? "VAGAS_BELSO" : "VAGAS_KULSO";
+}
 type LabelTextAlign = "left" | "center" | "right";
 type LabelVerticalAlign = "top" | "middle" | "bottom";
 type LabelRotation = 0 | 90 | 180 | 270;
@@ -937,6 +956,7 @@ const PRODUCTION_CARD_BACKLOG_FIELD_IDS = [
 const PRINTER_SETTINGS_TABLE = "printer_settings";
 const LABEL_TEMPLATES_TABLE = "label_templates";
 const LABEL_PRINT_LOG_TABLE = "label_print_log";
+const DYNAMIC_PRODUCTION_PLAN_TABLE = "termelesi_terv";
 const WINDOWS_PRINTERS_API = "/api/windows-printers";
 const LABEL_PRINT_API = "/api/label-print";
 
@@ -965,6 +985,14 @@ const REPRINT_LABEL_FIELDS: Array<{ key: string; label: string }> = [
 ];
 
 const LABEL_FONT_OPTIONS = ["Arial", "Segoe UI", "Tahoma", "Verdana", "Consolas"];
+
+const CUTTING_LABEL_PRESETS: Array<{ id: CuttingLabelPresetId; name: string; description: string }> = [
+  { id: "industrial", name: "Ipari blokk", description: "Erős fejléc, nagy sorszám, klasszikus műhelycímke." },
+  { id: "minimal", name: "Tiszta minimal", description: "Sok fehér tér, vékony elválasztók, gyors olvashatóság." },
+  { id: "order-focus", name: "Nagy sorszám", description: "A rendelésazonosító dominál, alatta a lap/szín/típus." },
+  { id: "barcode-focus", name: "Vonalkód fókusz", description: "Nagy Code128 és kompakt gyártási adatok." },
+  { id: "workshop", name: "Műhely kártya", description: "Tagolt mezőblokkok, erős keretek, távolról is olvasható." },
+];
 
 function createLabelElement(
   id: string,
@@ -1011,32 +1039,107 @@ function createLabelElement(
   };
 }
 
-function createDefaultLabelTemplate(type: LabelTemplateType): LabelTemplateConfig {
-  if (type === "VAGAS") {
+function createCuttingLabelPreset(type: CuttingLabelTemplateType, presetId: CuttingLabelPresetId): LabelTemplateConfig {
+  const isOuter = type === "VAGAS_KULSO";
+  const lapKey = isOuter ? "kulso_lap" : "belso_lap";
+  const lapLabel = isOuter ? "Külső lap" : "Belső lap";
+  const header = isOuter ? "VÁGÁS – KÜLSŐ LAP" : "VÁGÁS – BELSŐ LAP";
+  const base: Omit<LabelTemplateConfig, "elements"> = {
+    widthMm: 58,
+    heightMm: 40,
+    backgroundColor: "#ffffff",
+    showBorder: true,
+    borderWidth: 0.7,
+    gridEnabled: true,
+    gridSizeMm: 1,
+    snapToGrid: true,
+  };
+
+  if (presetId === "minimal") {
     return {
-      widthMm: 58,
-      heightMm: 40,
-      backgroundColor: "#ffffff",
-      showBorder: true,
-      borderWidth: 0.7,
-      gridEnabled: true,
-      gridSizeMm: 1,
-      snapToGrid: true,
+      ...base,
+      borderWidth: 0.45,
       elements: [
-        createLabelElement("cut-header-box", "filledBox", { x: 2, y: 2, width: 96, height: 15, fillColor: "#111827", borderColor: "#111827", zIndex: 1 }),
-        createLabelElement("cut-header", "field", { key: "lap_tipus", label: "", prefix: "VÁGÁS – ", x: 4, y: 3, width: 92, height: 13, valueFontSize: 9, bold: true, align: "center", verticalAlign: "middle", textColor: "#ffffff", zIndex: 20 }),
-        createLabelElement("cut-order", "field", { key: "sorszam", label: "Sorszám", x: 4, y: 20, width: 92, height: 18, labelFontSize: 4.8, valueFontSize: 12, bold: true, align: "center", stackedLabel: true, zIndex: 20 }),
-        createLabelElement("cut-line-1", "line", { x: 3, y: 40, width: 94, height: 0, lineWidth: 0.7, zIndex: 5 }),
-        createLabelElement("cut-outer", "field", { key: "kulso_lap", label: "Külső lap", x: 4, y: 43, width: 92, height: 16, labelFontSize: 4.8, valueFontSize: 8, bold: true, stackedLabel: true, hideWhenEmpty: true, zIndex: 20 }),
-        createLabelElement("cut-inner", "field", { key: "belso_lap", label: "Belső lap", x: 4, y: 43, width: 92, height: 16, labelFontSize: 4.8, valueFontSize: 8, bold: true, stackedLabel: true, hideWhenEmpty: true, zIndex: 20 }),
-        createLabelElement("cut-line-2", "line", { x: 3, y: 61, width: 94, height: 0, lineWidth: 0.7, zIndex: 5 }),
-        createLabelElement("cut-color", "field", { key: "szin", label: "Szín", x: 4, y: 64, width: 52, height: 13, labelFontSize: 4.6, valueFontSize: 7, bold: true, stackedLabel: true, zIndex: 20 }),
-        createLabelElement("cut-type", "field", { key: "tipus", label: "Típus", x: 59, y: 64, width: 37, height: 13, labelFontSize: 4.6, valueFontSize: 7, bold: true, stackedLabel: true, zIndex: 20 }),
-        createLabelElement("cut-barcode", "barcode", { key: "sorszam", x: 4, y: 80, width: 92, height: 16, showHumanReadable: false, zIndex: 20 }),
+        createLabelElement("min-header", "staticText", { text: header, x: 4, y: 4, width: 92, height: 9, valueFontSize: 7.2, bold: true, align: "left", verticalAlign: "middle", zIndex: 20 }),
+        createLabelElement("min-line-1", "line", { x: 4, y: 15, width: 92, height: 0, lineWidth: 0.45, zIndex: 5 }),
+        createLabelElement("min-order", "field", { key: "sorszam", label: "Sorszám", x: 4, y: 18, width: 92, height: 18, labelFontSize: 4.2, valueFontSize: 12.5, bold: true, stackedLabel: true, zIndex: 20 }),
+        createLabelElement("min-lap", "field", { key: lapKey, label: lapLabel, x: 4, y: 39, width: 60, height: 16, labelFontSize: 4.2, valueFontSize: 8, bold: true, stackedLabel: true, zIndex: 20 }),
+        createLabelElement("min-color", "field", { key: "szin", label: "Szín", x: 67, y: 39, width: 29, height: 16, labelFontSize: 4.2, valueFontSize: 7, bold: true, stackedLabel: true, zIndex: 20 }),
+        createLabelElement("min-type", "field", { key: "tipus", label: "Típus", x: 4, y: 58, width: 40, height: 12, labelFontSize: 4, valueFontSize: 6.5, stackedLabel: true, zIndex: 20 }),
+        createLabelElement("min-barcode", "barcode", { key: "sorszam", x: 47, y: 58, width: 49, height: 33, showHumanReadable: false, zIndex: 20 }),
       ],
     };
   }
 
+  if (presetId === "order-focus") {
+    return {
+      ...base,
+      elements: [
+        createLabelElement("of-header-box", "filledBox", { x: 2, y: 2, width: 96, height: 11, fillColor: "#111827", borderColor: "#111827", zIndex: 1 }),
+        createLabelElement("of-header", "staticText", { text: header, x: 4, y: 3, width: 92, height: 9, valueFontSize: 7.5, bold: true, align: "center", verticalAlign: "middle", textColor: "#ffffff", zIndex: 20 }),
+        createLabelElement("of-order", "field", { key: "sorszam", label: "", x: 3, y: 16, width: 94, height: 27, valueFontSize: 16, bold: true, align: "center", verticalAlign: "middle", zIndex: 20 }),
+        createLabelElement("of-line", "line", { x: 4, y: 45, width: 92, height: 0, lineWidth: 0.8, zIndex: 5 }),
+        createLabelElement("of-lap", "field", { key: lapKey, label: lapLabel, x: 4, y: 49, width: 55, height: 17, labelFontSize: 4.2, valueFontSize: 8.2, bold: true, stackedLabel: true, zIndex: 20 }),
+        createLabelElement("of-color", "field", { key: "szin", label: "Szín", x: 62, y: 49, width: 34, height: 17, labelFontSize: 4.2, valueFontSize: 7.2, bold: true, stackedLabel: true, zIndex: 20 }),
+        createLabelElement("of-type", "field", { key: "tipus", label: "Típus", x: 4, y: 69, width: 38, height: 12, labelFontSize: 4, valueFontSize: 6.3, stackedLabel: true, zIndex: 20 }),
+        createLabelElement("of-barcode", "barcode", { key: "sorszam", x: 45, y: 69, width: 51, height: 24, showHumanReadable: false, zIndex: 20 }),
+      ],
+    };
+  }
+
+  if (presetId === "barcode-focus") {
+    return {
+      ...base,
+      elements: [
+        createLabelElement("bc-header", "staticText", { text: header, x: 4, y: 3, width: 92, height: 8, valueFontSize: 7.2, bold: true, align: "center", zIndex: 20 }),
+        createLabelElement("bc-order", "field", { key: "sorszam", label: "Sorszám", x: 4, y: 13, width: 92, height: 13, labelFontSize: 4, valueFontSize: 10, bold: true, align: "center", stackedLabel: true, zIndex: 20 }),
+        createLabelElement("bc-barcode", "barcode", { key: "sorszam", x: 4, y: 29, width: 92, height: 31, showHumanReadable: true, zIndex: 20 }),
+        createLabelElement("bc-line", "line", { x: 4, y: 63, width: 92, height: 0, lineWidth: 0.6, zIndex: 5 }),
+        createLabelElement("bc-lap", "field", { key: lapKey, label: lapLabel, x: 4, y: 67, width: 45, height: 18, labelFontSize: 4, valueFontSize: 7, bold: true, stackedLabel: true, zIndex: 20 }),
+        createLabelElement("bc-color", "field", { key: "szin", label: "Szín", x: 52, y: 67, width: 25, height: 18, labelFontSize: 4, valueFontSize: 6.4, bold: true, stackedLabel: true, zIndex: 20 }),
+        createLabelElement("bc-type", "field", { key: "tipus", label: "Típus", x: 80, y: 67, width: 16, height: 18, labelFontSize: 3.8, valueFontSize: 5.5, stackedLabel: true, zIndex: 20 }),
+      ],
+    };
+  }
+
+  if (presetId === "workshop") {
+    return {
+      ...base,
+      borderWidth: 1,
+      elements: [
+        createLabelElement("ws-header-box", "filledBox", { x: 2, y: 2, width: 96, height: 14, fillColor: "#0f172a", borderColor: "#0f172a", zIndex: 1 }),
+        createLabelElement("ws-header", "staticText", { text: header, x: 4, y: 3, width: 92, height: 12, valueFontSize: 8.5, bold: true, align: "center", verticalAlign: "middle", textColor: "#ffffff", zIndex: 20 }),
+        createLabelElement("ws-order-box", "box", { x: 3, y: 19, width: 94, height: 23, borderWidth: 1, zIndex: 4 }),
+        createLabelElement("ws-order", "field", { key: "sorszam", label: "SORSZÁM", x: 5, y: 21, width: 90, height: 19, labelFontSize: 4.6, valueFontSize: 13.5, bold: true, align: "center", stackedLabel: true, zIndex: 20 }),
+        createLabelElement("ws-lap-box", "box", { x: 3, y: 45, width: 58, height: 23, borderWidth: 0.8, zIndex: 4 }),
+        createLabelElement("ws-lap", "field", { key: lapKey, label: lapLabel, x: 5, y: 47, width: 54, height: 19, labelFontSize: 4.3, valueFontSize: 8, bold: true, stackedLabel: true, zIndex: 20 }),
+        createLabelElement("ws-info-box", "box", { x: 63, y: 45, width: 34, height: 23, borderWidth: 0.8, zIndex: 4 }),
+        createLabelElement("ws-color", "field", { key: "szin", label: "Szín", x: 65, y: 47, width: 30, height: 9, labelFontSize: 3.8, valueFontSize: 5.8, bold: true, zIndex: 20 }),
+        createLabelElement("ws-type", "field", { key: "tipus", label: "Típus", x: 65, y: 57, width: 30, height: 9, labelFontSize: 3.8, valueFontSize: 5.8, zIndex: 20 }),
+        createLabelElement("ws-barcode", "barcode", { key: "sorszam", x: 4, y: 72, width: 92, height: 22, showHumanReadable: false, zIndex: 20 }),
+      ],
+    };
+  }
+
+  // industrial – alapértelmezett
+  return {
+    ...base,
+    elements: [
+      createLabelElement("cut-header-box", "filledBox", { x: 2, y: 2, width: 96, height: 15, fillColor: "#111827", borderColor: "#111827", zIndex: 1 }),
+      createLabelElement("cut-header", "staticText", { text: header, x: 4, y: 3, width: 92, height: 13, valueFontSize: 9, bold: true, align: "center", verticalAlign: "middle", textColor: "#ffffff", zIndex: 20 }),
+      createLabelElement("cut-order", "field", { key: "sorszam", label: "Sorszám", x: 4, y: 20, width: 92, height: 18, labelFontSize: 4.8, valueFontSize: 12, bold: true, align: "center", stackedLabel: true, zIndex: 20 }),
+      createLabelElement("cut-line-1", "line", { x: 3, y: 40, width: 94, height: 0, lineWidth: 0.7, zIndex: 5 }),
+      createLabelElement("cut-lap", "field", { key: lapKey, label: lapLabel, x: 4, y: 43, width: 92, height: 16, labelFontSize: 4.8, valueFontSize: 8, bold: true, stackedLabel: true, zIndex: 20 }),
+      createLabelElement("cut-line-2", "line", { x: 3, y: 61, width: 94, height: 0, lineWidth: 0.7, zIndex: 5 }),
+      createLabelElement("cut-color", "field", { key: "szin", label: "Szín", x: 4, y: 64, width: 52, height: 13, labelFontSize: 4.6, valueFontSize: 7, bold: true, stackedLabel: true, zIndex: 20 }),
+      createLabelElement("cut-type", "field", { key: "tipus", label: "Típus", x: 59, y: 64, width: 37, height: 13, labelFontSize: 4.6, valueFontSize: 7, bold: true, stackedLabel: true, zIndex: 20 }),
+      createLabelElement("cut-barcode", "barcode", { key: "sorszam", x: 4, y: 80, width: 92, height: 16, showHumanReadable: false, zIndex: 20 }),
+    ],
+  };
+}
+
+function createDefaultLabelTemplate(type: LabelTemplateType): LabelTemplateConfig {
+  if (isCuttingLabelTemplateType(type)) return createCuttingLabelPreset(type, "industrial");
   return {
     widthMm: 58,
     heightMm: 40,
@@ -1066,7 +1169,6 @@ function createDefaultLabelTemplate(type: LabelTemplateType): LabelTemplateConfi
     ],
   };
 }
-
 function normalizeLabelRotation(value: unknown): LabelRotation {
   const parsed = Number(value);
   return parsed === 90 || parsed === 180 || parsed === 270 ? parsed : 0;
@@ -1158,33 +1260,36 @@ function normalizeLabelTemplate(raw: unknown, type: LabelTemplateType): LabelTem
 }
 
 function getLabelTemplateFieldDefinitions(type: LabelTemplateType): Array<{ key: string; label: string }> {
-  return type === "VAGAS" ? CUTTING_LABEL_FIELDS : REPRINT_LABEL_FIELDS;
+  if (type === "VAGAS_KULSO") return CUTTING_LABEL_FIELDS.filter((field) => field.key !== "belso_lap");
+  if (type === "VAGAS_BELSO") return CUTTING_LABEL_FIELDS.filter((field) => field.key !== "kulso_lap");
+  return REPRINT_LABEL_FIELDS;
 }
 
 function getLabelSampleData(type: LabelTemplateType, workerName = "Dolgozó"): Record<string, string> {
-  return type === "VAGAS"
-    ? {
-        sorszam: "R260812345",
-        lap_tipus: "KÜLSŐ LAP",
-        kulso_lap: "Külső lap adat",
-        belso_lap: "",
-        szin: "RAL 7016",
-        tipus: "Ajtó",
-      }
-    : {
-        sorszam: "R260812345",
-        hiba: "Külső lap selejt",
-        kulso_lap: "Külső lap adat",
-        belso_lap: "Belső lap adat",
-        szin: "RAL 7016",
-        maras_minta: "M12",
-        szelesseg: "950",
-        hosszusag: "2100",
-        datum: "2026.08.08",
-        megjegyzes: "Pótlás sürgős",
-        dolgozo: workerName,
-        tipus: "Ajtó",
-      };
+  if (isCuttingLabelTemplateType(type)) {
+    return {
+      sorszam: "R260812345",
+      lap_tipus: type === "VAGAS_KULSO" ? "KÜLSŐ LAP" : "BELSŐ LAP",
+      kulso_lap: type === "VAGAS_KULSO" ? "Wenge" : "",
+      belso_lap: type === "VAGAS_BELSO" ? "Wenge" : "",
+      szin: "Wenge",
+      tipus: "Ajtó",
+    };
+  }
+  return {
+    sorszam: "R260812345",
+    hiba: "Külső lap selejt",
+    kulso_lap: "Wenge",
+    belso_lap: "Wenge",
+    szin: "Wenge",
+    maras_minta: "M01",
+    szelesseg: "900",
+    hosszusag: "2100",
+    datum: "2026. 08. 09.",
+    megjegyzes: "Minta selejtpótlási címke",
+    dolgozo: workerName,
+    tipus: "Ajtó",
+  };
 }
 
 function labelElementDisplayValue(element: LabelTemplateElementConfig, sample: Record<string, string>): string {
@@ -3965,13 +4070,14 @@ export default function Page() {
   const [loadingWindowsPrinters, setLoadingWindowsPrinters] = useState(false);
   const [savingCarpenterPrinterSettings, setSavingCarpenterPrinterSettings] = useState(false);
   const [carpenterPrinterCalibration, setCarpenterPrinterCalibration] = useState<PrinterCalibrationSettings>({ dpi: 203, offsetXmm: 0, offsetYmm: 0, copies: 1 });
-  const [activeCarpenterLabelTemplateType, setActiveCarpenterLabelTemplateType] = useState<LabelTemplateType>("VAGAS");
+  const [activeCarpenterLabelTemplateType, setActiveCarpenterLabelTemplateType] = useState<LabelTemplateType>("VAGAS_KULSO");
   const [carpenterLabelTemplates, setCarpenterLabelTemplates] = useState<Record<LabelTemplateType, LabelTemplateConfig>>({
-    VAGAS: createDefaultLabelTemplate("VAGAS"),
+    VAGAS_KULSO: createDefaultLabelTemplate("VAGAS_KULSO"),
+    VAGAS_BELSO: createDefaultLabelTemplate("VAGAS_BELSO"),
     UJRAGYARTAS: createDefaultLabelTemplate("UJRAGYARTAS"),
   });
-  const [carpenterLabelTemplateVersions, setCarpenterLabelTemplateVersions] = useState<Record<LabelTemplateType, LabelTemplateRecord[]>>({ VAGAS: [], UJRAGYARTAS: [] });
-  const [selectedCarpenterLabelTemplateIds, setSelectedCarpenterLabelTemplateIds] = useState<Record<LabelTemplateType, string>>({ VAGAS: "", UJRAGYARTAS: "" });
+  const [carpenterLabelTemplateVersions, setCarpenterLabelTemplateVersions] = useState<Record<LabelTemplateType, LabelTemplateRecord[]>>({ VAGAS_KULSO: [], VAGAS_BELSO: [], UJRAGYARTAS: [] });
+  const [selectedCarpenterLabelTemplateIds, setSelectedCarpenterLabelTemplateIds] = useState<Record<LabelTemplateType, string>>({ VAGAS_KULSO: "", VAGAS_BELSO: "", UJRAGYARTAS: "" });
   const [carpenterLabelTemplateNameDraft, setCarpenterLabelTemplateNameDraft] = useState("Alapértelmezett");
   const [carpenterLabelSelectedElementIds, setCarpenterLabelSelectedElementIds] = useState<string[]>([]);
   const [carpenterPrinterSettingsLoaded, setCarpenterPrinterSettingsLoaded] = useState(false);
@@ -10045,6 +10151,45 @@ export default function Page() {
     return actions;
   }
 
+  function serializeDynamicPlanRow(row: Record<string, unknown>): Record<string, unknown> {
+    const serialized: Record<string, unknown> = {};
+    Object.entries(row || {}).forEach(([key, value]) => {
+      if (value === undefined) return;
+      if (value instanceof Date) serialized[key] = value.toISOString();
+      else if (typeof value === "number" && !Number.isFinite(value)) serialized[key] = null;
+      else serialized[key] = value;
+    });
+    return serialized;
+  }
+
+  async function syncDynamicProductionPlanRows(stationName: string, rawRows: Array<Record<string, unknown>>, sourceFile: string): Promise<number> {
+    if (!supabase || rawRows.length === 0) return 0;
+    const importedAt = new Date().toISOString();
+    const payload = rawRows.map((rawRow) => {
+      const orderNumber = String(readSpreadsheetValue(rawRow, ["sorszam", "sorszám", "Rendelésszám", "Rendelesszam", "order_number"]) ?? "").trim();
+      const completionDate = parseSpreadsheetDate(readSpreadsheetValue(rawRow, ["elkeszules_datum", "elkeszules datum", "elkészülés dátum", "elkeszulesdatum"]));
+      if (!orderNumber || !completionDate) return null;
+      return {
+        machine_name: stationName,
+        sorszam: orderNumber,
+        elkeszules_datum: completionDate,
+        adat: serializeDynamicPlanRow(rawRow),
+        source_file: sourceFile,
+        imported_at: importedAt,
+        updated_at: importedAt,
+      };
+    }).filter((row): row is NonNullable<typeof row> => Boolean(row));
+
+    for (let index = 0; index < payload.length; index += 500) {
+      const chunk = payload.slice(index, index + 500);
+      const response = await supabase.from(DYNAMIC_PRODUCTION_PLAN_TABLE).upsert(chunk, {
+        onConflict: "machine_name,sorszam,elkeszules_datum",
+      });
+      if (response.error) throw response.error;
+    }
+    return payload.length;
+  }
+
   async function refreshProductionPlansFromServerWorkbook(): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
@@ -10105,6 +10250,7 @@ export default function Page() {
             p_rows: actions,
           });
           if (error) throw error;
+          await syncDynamicProductionPlanRows(stationName, sheet.rows, cleanPath);
           const result = data && typeof data === "object" ? data as Record<string, unknown> : {};
           totalProcessed += Number(result.processed || actions.filter((action) => action.action !== "skip").length);
           totalSkipped += Number(result.skipped || actions.filter((action) => action.action === "skip").length);
@@ -10267,6 +10413,7 @@ export default function Page() {
           continue;
         }
 
+        await syncDynamicProductionPlanRows(stationName, selection.rows as unknown as Array<Record<string, unknown>>, selection.fileName || "kézi feltöltés");
         const insertedCount = typeof data === "number" ? data : Number(data || selection.rows.length);
         uploadedRowCount += Number.isFinite(insertedCount) ? insertedCount : selection.rows.length;
         successfulStations.push(stationName);
@@ -14219,7 +14366,7 @@ body {
     return {
       id: "",
       type,
-      name: type === "VAGAS" ? "Vágás – gyári alap" : "Újragyártás – gyári alap",
+      name: `${getLabelTemplateDisplayName(type)} – gyári alap`,
       version: 1,
       active: true,
       config: createDefaultLabelTemplate(type),
@@ -14236,7 +14383,7 @@ body {
     return {
       id: String(row?.id || ""),
       type,
-      name: String(row?.name || (type === "VAGAS" ? "Vágás" : "Újragyártás")).trim(),
+      name: String(row?.name || getLabelTemplateDisplayName(type)).trim(),
       version: Math.max(1, Number(row?.version) || 1),
       active: row?.active !== false,
       config: normalizeLabelTemplate(mergedRaw, type),
@@ -14278,19 +14425,20 @@ body {
       });
 
       const rows = (templatesResponse.data || []) as Array<any>;
-      const nextVersions: Record<LabelTemplateType, LabelTemplateRecord[]> = { VAGAS: [], UJRAGYARTAS: [] };
+      const nextVersions: Record<LabelTemplateType, LabelTemplateRecord[]> = { VAGAS_KULSO: [], VAGAS_BELSO: [], UJRAGYARTAS: [] };
       rows.forEach((row) => {
         const type = String(row.template_type || "").toUpperCase() as LabelTemplateType;
-        if (type !== "VAGAS" && type !== "UJRAGYARTAS") return;
+        if (!ALL_LABEL_TEMPLATE_TYPES.includes(type)) return;
         nextVersions[type].push(mapLabelTemplateRow(row, type));
       });
 
       const nextTemplates: Record<LabelTemplateType, LabelTemplateConfig> = {
-        VAGAS: createDefaultLabelTemplate("VAGAS"),
+        VAGAS_KULSO: createDefaultLabelTemplate("VAGAS_KULSO"),
+        VAGAS_BELSO: createDefaultLabelTemplate("VAGAS_BELSO"),
         UJRAGYARTAS: createDefaultLabelTemplate("UJRAGYARTAS"),
       };
-      const nextSelected: Record<LabelTemplateType, string> = { VAGAS: "", UJRAGYARTAS: "" };
-      (["VAGAS", "UJRAGYARTAS"] as LabelTemplateType[]).forEach((type) => {
+      const nextSelected: Record<LabelTemplateType, string> = { VAGAS_KULSO: "", VAGAS_BELSO: "", UJRAGYARTAS: "" };
+      ALL_LABEL_TEMPLATE_TYPES.forEach((type) => {
         const records = nextVersions[type];
         const selected = records.find((record) => record.active) || records[0] || getDefaultTemplateRecord(type);
         nextTemplates[type] = selected.config;
@@ -14300,7 +14448,7 @@ body {
       setCarpenterLabelTemplates(nextTemplates);
       setSelectedCarpenterLabelTemplateIds(nextSelected);
       const currentRecord = nextVersions[activeCarpenterLabelTemplateType].find((row) => row.id === nextSelected[activeCarpenterLabelTemplateType]);
-      setCarpenterLabelTemplateNameDraft(currentRecord?.name || (activeCarpenterLabelTemplateType === "VAGAS" ? "Vágás – gyári alap" : "Újragyártás – gyári alap"));
+      setCarpenterLabelTemplateNameDraft(currentRecord?.name || `${getLabelTemplateDisplayName(activeCarpenterLabelTemplateType)} – gyári alap`);
       setCarpenterLabelSelectedElementIds([]);
       setCarpenterPrinterSettingsLoaded(true);
     } catch (error) {
@@ -14314,7 +14462,47 @@ body {
     setCarpenterLabelSelectedElementIds([]);
     const selectedId = selectedCarpenterLabelTemplateIds[type];
     const record = carpenterLabelTemplateVersions[type].find((item) => item.id === selectedId);
-    setCarpenterLabelTemplateNameDraft(record?.name || (type === "VAGAS" ? "Vágás – gyári alap" : "Újragyártás – gyári alap"));
+    setCarpenterLabelTemplateNameDraft(record?.name || `${getLabelTemplateDisplayName(type)} – gyári alap`);
+  }
+
+  function adaptCuttingTemplateForTarget(source: LabelTemplateConfig, targetType: CuttingLabelTemplateType): LabelTemplateConfig {
+    const targetIsOuter = targetType === "VAGAS_KULSO";
+    const sourceKey = targetIsOuter ? "belso_lap" : "kulso_lap";
+    const targetKey = targetIsOuter ? "kulso_lap" : "belso_lap";
+    const targetLabel = targetIsOuter ? "Külső lap" : "Belső lap";
+    const targetHeader = targetIsOuter ? "VÁGÁS – KÜLSŐ LAP" : "VÁGÁS – BELSŐ LAP";
+    return {
+      ...source,
+      elements: source.elements.map((element) => {
+        const next = { ...element };
+        if (next.key === sourceKey || next.key === "kulso_lap" || next.key === "belso_lap") {
+          next.key = targetKey;
+          next.label = targetLabel;
+        }
+        if (next.type === "staticText" && String(next.text || "").toLocaleUpperCase("hu").includes("VÁGÁS")) {
+          next.text = targetHeader;
+        }
+        return next;
+      }),
+    };
+  }
+
+  function copyCuttingTemplateToOther(sourceType: CuttingLabelTemplateType): void {
+    const targetType = getOppositeCuttingLabelTemplateType(sourceType);
+    const sourceTemplate = carpenterLabelTemplates[sourceType];
+    const copied = adaptCuttingTemplateForTarget(JSON.parse(JSON.stringify(sourceTemplate)) as LabelTemplateConfig, targetType);
+    setCarpenterLabelTemplates((previous) => ({ ...previous, [targetType]: copied }));
+    setSelectedCarpenterLabelTemplateIds((previous) => ({ ...previous, [targetType]: "" }));
+    setMessage({ type: "info", text: `${getLabelTemplateDisplayName(sourceType)} beállításai átmásolva ide: ${getLabelTemplateDisplayName(targetType)}. A céloldalon nyomd meg a Mentés / Aktiválás gombot.` });
+  }
+
+  function applyCuttingLabelPreset(type: CuttingLabelTemplateType, presetId: CuttingLabelPresetId): void {
+    const preset = CUTTING_LABEL_PRESETS.find((item) => item.id === presetId);
+    updateCarpenterLabelTemplate(type, createCuttingLabelPreset(type, presetId));
+    setSelectedCarpenterLabelTemplateIds((previous) => ({ ...previous, [type]: "" }));
+    setCarpenterLabelTemplateNameDraft(`${getLabelTemplateDisplayName(type)} – ${preset?.name || "sablon"}`);
+    setCarpenterLabelSelectedElementIds([]);
+    setMessage({ type: "info", text: `${preset?.name || "Sablon"} stílus betöltve. Mentésig csak a szerkesztőben változott.` });
   }
 
   function selectCarpenterLabelTemplateVersion(type: LabelTemplateType, id: string): void {
@@ -14558,7 +14746,7 @@ body {
     const nowIso = new Date().toISOString();
 
     if (asCopy || !selectedRecord?.id) {
-      const suggested = `${type === "VAGAS" ? "Vágás" : "Újragyártás"} v${Math.max(0, ...existingRecords.map((row) => row.version)) + 1}`;
+      const suggested = `${getLabelTemplateDisplayName(type)} v${Math.max(0, ...existingRecords.map((row) => row.version)) + 1}`;
       const currentDraftName = type === activeCarpenterLabelTemplateType ? carpenterLabelTemplateNameDraft.trim() : "";
       const prompted = asCopy && typeof window !== "undefined" ? window.prompt("Új sablon neve:", suggested) : (currentDraftName || selectedRecord?.name || suggested);
       if (prompted === null) throw new Error("A másolat mentése megszakítva.");
@@ -14684,7 +14872,8 @@ body {
     setSavingCarpenterPrinterSettings(true);
     try {
       await savePrinterConfigurationOnly();
-      await persistCurrentCarpenterLabelTemplate("VAGAS", false);
+      await persistCurrentCarpenterLabelTemplate("VAGAS_KULSO", false);
+      await persistCurrentCarpenterLabelTemplate("VAGAS_BELSO", false);
       await persistCurrentCarpenterLabelTemplate("UJRAGYARTAS", false);
       setMessage({ type: "success", text: `A(z) ${getCurrentMachineIdForInsert()} nyomtató- és sablonbeállításai elmentve.` });
       setFlowStage("batch-selection");
@@ -14747,13 +14936,12 @@ body {
     try {
       await savePrinterConfigurationOnly();
       const sample = getLabelSampleData(type, String(activeWorker?.["Teljes nev"] || "Dolgozó"));
-      const jobs: LabelPrintJob[] = type === "VAGAS"
-        ? [
-            { title: "TESZT – VÁGÁS – KÜLSŐ LAP", data: { ...sample, lap_tipus: "KÜLSŐ LAP", belso_lap: "" } },
-            { title: "TESZT – VÁGÁS – BELSŐ LAP", data: { ...sample, lap_tipus: "BELSŐ LAP", kulso_lap: "" } },
-          ]
-        : [{ title: "TESZT – ÚJRAGYÁRTÁS", data: sample }];
-      const result = await sendLabelJobsWithExplicitConfig(selectedWindowsPrinter, carpenterLabelTemplates[type], carpenterPrinterCalibration, jobs);
+      const title = type === "VAGAS_KULSO"
+        ? "TESZT – VÁGÁS – KÜLSŐ LAP"
+        : type === "VAGAS_BELSO"
+          ? "TESZT – VÁGÁS – BELSŐ LAP"
+          : "TESZT – ÚJRAGYÁRTÁS";
+      const result = await sendLabelJobsWithExplicitConfig(selectedWindowsPrinter, carpenterLabelTemplates[type], carpenterPrinterCalibration, [{ title, data: sample }]);
       setMessage({ type: "success", text: `${result.printedCount} db tesztcímke elküldve a(z) ${result.printerName} nyomtatóra.` });
     } catch (error) {
       setMessage({ type: "error", text: normalizeError(error) });
@@ -14762,34 +14950,162 @@ body {
     }
   }
 
-  async function printCuttingLabelsForOrders(orderNumbers: string[]): Promise<number> {
-    if (!supabase || orderNumbers.length === 0) return 0;
-    const tableName = buildStationPlanTableName("Asztalos");
-    const response = await supabase.from(tableName).select("*").in("sorszam", orderNumbers).limit(10000);
-    if (response.error) throw response.error;
-    const planByOrder = new Map<string, Record<string, unknown>>();
-    ((response.data || []) as Array<Record<string, unknown>>).forEach((row) => {
-      const order = valueAsText(readRecordValue(row, ["sorszam", "sorszám"]));
-      if (order) planByOrder.set(normalizeLooseText(order), row);
-    });
-    const jobs: LabelPrintJob[] = [];
-    orderNumbers.forEach((order) => {
-      const planRow = planByOrder.get(normalizeLooseText(order)) || null;
-      const data = buildCuttingLabelData(order, planRow);
-      // Egy sorszámhoz pontosan két különálló címke készül: külső és belső lap.
-      jobs.push({
-        title: "VÁGÁS – KÜLSŐ LAP",
-        data: { ...data, lap_tipus: "KÜLSŐ LAP", kulso_lap: data.kulso_lap, belso_lap: "" },
+  async function loadCuttingProductionPlanRows(orderNumbers: string[]): Promise<Map<string, Record<string, unknown>>> {
+    const result = new Map<string, Record<string, unknown>>();
+    if (!supabase || orderNumbers.length === 0) return result;
+
+    // Elsődleges forrás: dinamikus, központi termelesi_terv tábla. Azonos sorszám több dátummal is létezhet;
+    // a legfrissebb elkészülési dátumú sor kerül kiválasztásra.
+    const dynamicResponse = await supabase
+      .from(DYNAMIC_PRODUCTION_PLAN_TABLE)
+      .select("sorszam, elkeszules_datum, adat")
+      .eq("machine_name", "Asztalos")
+      .in("sorszam", orderNumbers)
+      .order("elkeszules_datum", { ascending: false })
+      .limit(10000);
+
+    if (!dynamicResponse.error) {
+      ((dynamicResponse.data || []) as Array<Record<string, unknown>>).forEach((row) => {
+        const order = valueAsText(row.sorszam);
+        const key = normalizeLooseText(order);
+        if (!key || result.has(key)) return;
+        const rawData = row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)
+          ? row.adat as Record<string, unknown>
+          : {};
+        result.set(key, { ...rawData, sorszam: order, elkeszules_datum: row.elkeszules_datum });
       });
-      jobs.push({
-        title: "VÁGÁS – BELSŐ LAP",
-        data: { ...data, lap_tipus: "BELSŐ LAP", kulso_lap: "", belso_lap: data.belso_lap },
+    } else {
+      console.warn("termelesi_terv címkeadat-forrás nem olvasható, visszaállás asztalos_terv-re:", dynamicResponse.error);
+    }
+
+    const missing = orderNumbers.filter((order) => !result.has(normalizeLooseText(order)));
+    if (missing.length > 0) {
+      const tableName = buildStationPlanTableName("Asztalos");
+      const fallbackResponse = await supabase.from(tableName).select("*").in("sorszam", missing).limit(10000);
+      if (fallbackResponse.error) throw fallbackResponse.error;
+      ((fallbackResponse.data || []) as Array<Record<string, unknown>>).forEach((row) => {
+        const order = valueAsText(readRecordValue(row, ["sorszam", "sorszám"]));
+        const key = normalizeLooseText(order);
+        if (key && !result.has(key)) result.set(key, row);
       });
-    });
-    const result = await sendLabelJobsToPrinter("VAGAS", jobs);
-    return result.printedCount;
+    }
+    return result;
   }
 
+  async function logAutomaticCuttingLabelPrint(params: {
+    batchCode: string;
+    orderNumber: string;
+    type: CuttingLabelTemplateType;
+    printerName: string;
+    templateRecord: LabelTemplateRecord | null;
+    copies: number;
+  }): Promise<void> {
+    if (!supabase) return;
+    const printedBy = String(activeWorker?.["Teljes nev"] || "").trim() || "Ismeretlen";
+    const response = await supabase.from(LABEL_PRINT_LOG_TABLE).insert({
+      request_id: params.batchCode,
+      batch_code: params.batchCode,
+      order_number: params.orderNumber,
+      machine_name: getCurrentMachineIdForInsert(),
+      printer_name: params.printerName,
+      template_type: params.type,
+      template_id: params.templateRecord?.id ? Number(params.templateRecord.id) : null,
+      template_name: params.templateRecord?.name || getLabelTemplateDisplayName(params.type),
+      template_version: params.templateRecord?.version || null,
+      label_variant: params.type === "VAGAS_KULSO" ? "KULSO_LAP" : "BELSO_LAP",
+      print_reason: "SZABAS_START_AUTO",
+      copies: Math.max(1, Math.round(params.copies || 1)),
+      printed_by: printedBy,
+      printed_at: new Date().toISOString(),
+    });
+    if (response.error) console.warn("Vágási címke naplózási hiba:", response.error);
+  }
+
+  async function printCuttingLabelsForOrders(orderNumbers: string[], batchCode: string): Promise<{ printedCount: number; warnings: string[] }> {
+    if (!supabase || orderNumbers.length === 0) return { printedCount: 0, warnings: [] };
+
+    // Dupla automatikus nyomtatás elleni védelem ugyanarra a szabási kötegre.
+    const previousPrints = await supabase
+      .from(LABEL_PRINT_LOG_TABLE)
+      .select("id")
+      .eq("batch_code", batchCode)
+      .in("template_type", ["VAGAS_KULSO", "VAGAS_BELSO"])
+      .limit(1);
+    if (!previousPrints.error && (previousPrints.data || []).length > 0) {
+      const confirmed = typeof window === "undefined" ? false : window.confirm("Ehhez a szabási köteghez a címkék már ki lettek nyomtatva. Biztosan újranyomtatod?");
+      if (!confirmed) return { printedCount: 0, warnings: ["Az újranyomtatást megszakítottad."] };
+    }
+
+    const [outerConfig, innerConfig, planByOrder] = await Promise.all([
+      loadActivePrintConfiguration("VAGAS_KULSO"),
+      loadActivePrintConfiguration("VAGAS_BELSO"),
+      loadCuttingProductionPlanRows(orderNumbers),
+    ]);
+
+    if (outerConfig.printerName !== innerConfig.printerName) {
+      throw new Error("A külső és belső címke ugyanahhoz a munkaállomási nyomtatóhoz kell tartozzon. Mentsd újra a nyomtatóbeállítást.");
+    }
+
+    let printedCount = 0;
+    const warnings: string[] = [];
+
+    // Szándékosan sorosan nyomtatunk: R1 külső -> R1 belső -> R2 külső -> R2 belső.
+    for (const order of orderNumbers) {
+      const planRow = planByOrder.get(normalizeLooseText(order)) || null;
+      const baseData = buildCuttingLabelData(order, planRow);
+      const outerValue = String(baseData.kulso_lap || "").trim();
+      const innerValue = String(baseData.belso_lap || "").trim();
+      if (!outerValue) warnings.push(`${order}: hiányzik a Külső lap adat`);
+      if (!innerValue) warnings.push(`${order}: hiányzik a Belső lap adat`);
+
+      const outerData = {
+        ...baseData,
+        lap_tipus: "KÜLSŐ LAP",
+        kulso_lap: outerValue || "NINCS ADAT",
+        belso_lap: "",
+      };
+      const innerData = {
+        ...baseData,
+        lap_tipus: "BELSŐ LAP",
+        kulso_lap: "",
+        belso_lap: innerValue || "NINCS ADAT",
+      };
+
+      const outerResult = await sendLabelJobsWithExplicitConfig(
+        outerConfig.printerName,
+        outerConfig.template,
+        outerConfig.calibration,
+        [{ title: "VÁGÁS – KÜLSŐ LAP", data: outerData }]
+      );
+      printedCount += outerResult.printedCount;
+      await logAutomaticCuttingLabelPrint({
+        batchCode,
+        orderNumber: order,
+        type: "VAGAS_KULSO",
+        printerName: outerConfig.printerName,
+        templateRecord: outerConfig.templateRecord,
+        copies: outerConfig.calibration.copies,
+      });
+
+      const innerResult = await sendLabelJobsWithExplicitConfig(
+        innerConfig.printerName,
+        innerConfig.template,
+        innerConfig.calibration,
+        [{ title: "VÁGÁS – BELSŐ LAP", data: innerData }]
+      );
+      printedCount += innerResult.printedCount;
+      await logAutomaticCuttingLabelPrint({
+        batchCode,
+        orderNumber: order,
+        type: "VAGAS_BELSO",
+        printerName: innerConfig.printerName,
+        templateRecord: innerConfig.templateRecord,
+        copies: innerConfig.calibration.copies,
+      });
+    }
+
+    return { printedCount, warnings };
+  }
   async function loadCarpenterReprintRequests(): Promise<void> {
     if (!supabase) return;
     setLoadingReprintRequests(true);
@@ -16247,8 +16563,8 @@ body {
       let cuttingLabelPrintSuffix = "";
       if (isTwoStageAsztalos && selectedBatchOperation === "SZABAS") {
         try {
-          const printedCount = await printCuttingLabelsForOrders(ordersForSave);
-          cuttingLabelPrintSuffix = ` Címkenyomtatás: ${printedCount} db vágási címke elküldve.`;
+          const printResult = await printCuttingLabelsForOrders(ordersForSave, generatedBatchCode);
+          cuttingLabelPrintSuffix = ` Címkenyomtatás: ${printResult.printedCount} db vágási címke elküldve.${printResult.warnings.length ? ` Figyelmeztetés: ${printResult.warnings.join("; ")}.` : ""}`;
         } catch (printError) {
           console.error("Vágási címkenyomtatás hiba:", printError);
           cuttingLabelPrintSuffix = ` A köteg mentve, de a címkenyomtatás sikertelen: ${normalizeError(printError)}`;
@@ -17637,10 +17953,30 @@ body {
           <div style={{ display: "grid", gap: 12 }}>
             <div style={{ ...panelStyle, display: "grid", gap: 12 }}>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                <button type="button" onClick={() => switchCarpenterLabelTemplateType("VAGAS")} style={type === "VAGAS" ? buttonPrimary : buttonSecondary}>Vágási címke · külső/belső külön</button>
+                <button type="button" onClick={() => switchCarpenterLabelTemplateType(isCuttingLabelTemplateType(type) ? type : "VAGAS_KULSO")} style={isCuttingLabelTemplateType(type) ? buttonPrimary : buttonSecondary}>Vágási címke</button>
                 <button type="button" onClick={() => switchCarpenterLabelTemplateType("UJRAGYARTAS")} style={type === "UJRAGYARTAS" ? buttonPrimary : buttonSecondary}>Újragyártási címke</button>
                 <span style={{ color: "#64748b", fontSize: 12 }}>Nyomtatáskor mindig az AKTÍV verzió használódik.</span>
               </div>
+              {isCuttingLabelTemplateType(type) && (
+                <div style={{ display: "grid", gap: 10, padding: 12, borderRadius: 12, border: "1px solid #334155", background: "#020617" }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <strong style={{ color: "#e2e8f0" }}>Vágási címke beállítása:</strong>
+                    <button type="button" onClick={() => switchCarpenterLabelTemplateType("VAGAS_KULSO")} style={type === "VAGAS_KULSO" ? buttonPrimary : buttonSecondary}>Külső lap címke</button>
+                    <button type="button" onClick={() => switchCarpenterLabelTemplateType("VAGAS_BELSO")} style={type === "VAGAS_BELSO" ? buttonPrimary : buttonSecondary}>Belső lap címke</button>
+                    <button type="button" onClick={() => copyCuttingTemplateToOther(type)} style={{ ...buttonSecondary, borderColor: "#22c55e", color: "#bbf7d0" }}>
+                      {type === "VAGAS_KULSO" ? "Külső beállítások → Belső" : "Belső beállítások → Külső"}
+                    </button>
+                  </div>
+                  <div style={{ color: "#94a3b8", fontSize: 12 }}>A két címke teljesen külön sablon és külön aktív verzió. A másolás a teljes méretet, elemeket és formázást átviszi, a Külső/Belső adatmezőt automatikusan átfordítja.</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(130px, 1fr))", gap: 7 }}>
+                    {CUTTING_LABEL_PRESETS.map((preset) => (
+                      <button key={preset.id} type="button" title={preset.description} onClick={() => applyCuttingLabelPreset(type, preset.id)} style={{ ...buttonSecondary, padding: "9px 8px", fontSize: 11 }}>
+                        {preset.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 1fr) minmax(220px, 1fr) auto", gap: 10, alignItems: "end" }}>
                 <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Sablonverzió<select value={selectedId} onChange={(e) => selectCarpenterLabelTemplateVersion(type, e.target.value)} style={controlStyle}><option value="">Gyári alap / még nincs mentve</option>{versions.map((record) => <option key={record.id} value={record.id}>{record.active ? "★ AKTÍV · " : ""}{record.name} · v{record.version}</option>)}</select></label>
                 <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Sablon neve<input value={carpenterLabelTemplateNameDraft} onChange={(e) => setCarpenterLabelTemplateNameDraft(e.target.value.slice(0, 120))} style={controlStyle} /></label>
@@ -17704,7 +18040,7 @@ body {
 
             <div style={{ ...panelStyle, display: "grid", gap: 10 }}>
               <strong>Nyomtatási előnézet</strong>
-              <div style={{ color: "#94a3b8", fontSize: 12, lineHeight: 1.5 }}>{type === "VAGAS" ? "A vágásnál egy sorszámhoz két külön címke nyomtatódik. A külső címkén csak a Külső lap mező, a belső címkén csak a Belső lap mező kap értéket." : "Az újragyártási minta részletesen tartalmazza a hibát, lapadatokat, színt, marásmintát, méreteket, dátumot, megjegyzést és dolgozót."}</div>
+              <div style={{ color: "#94a3b8", fontSize: 12, lineHeight: 1.5 }}>{isCuttingLabelTemplateType(type) ? `Ez a ${type === "VAGAS_KULSO" ? "KÜLSŐ" : "BELSŐ"} lap önálló vágási címkéje. Egy rendelés START-jakor először a külső, közvetlenül utána a belső címke nyomtatódik.` : "Az újragyártási minta részletesen tartalmazza a hibát, lapadatokat, színt, marásmintát, méreteket, dátumot, megjegyzést és dolgozót."}</div>
               {renderLabelTemplatePreview(type, false)}
             </div>
           </div>
