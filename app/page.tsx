@@ -339,6 +339,8 @@ type StationPlanUploadRow = {
   mennyiseg: number;
   elkeszules_datum: string;
   tipus: string;
+  adat: Record<string, unknown>;
+  [key: string]: unknown;
 };
 
 type StationPlanFileSelection = {
@@ -544,7 +546,7 @@ function getOppositeCuttingLabelTemplateType(type: CuttingLabelTemplateType): Cu
 type LabelTextAlign = "left" | "center" | "right";
 type LabelVerticalAlign = "top" | "middle" | "bottom";
 type LabelRotation = 0 | 90 | 180 | 270;
-type LabelTemplateElementType = "field" | "staticText" | "line" | "box" | "filledBox" | "barcode" | "qrcode";
+type LabelTemplateElementType = "field" | "staticText" | "line" | "box" | "filledBox" | "barcode" | "qrcode" | "image";
 
 type LabelTemplateElementConfig = {
   id: string;
@@ -582,6 +584,13 @@ type LabelTemplateElementConfig = {
   lineWidth: number;
   hideWhenEmpty: boolean;
   showHumanReadable: boolean;
+  imageUrl: string;
+  imageStoragePath: string;
+  imageFit: "contain" | "cover";
+  keepAspectRatio: boolean;
+  imageAspectRatio: number;
+  opacity: number;
+  locked: boolean;
 };
 
 type LabelTemplateConfig = {
@@ -681,6 +690,7 @@ type ProductionCardRow = {
   tokKeszAt: string | null;
   nyiloKeszWorkerName: string;
   nyiloKeszAt: string | null;
+  planData: Record<string, unknown>;
 };
 
 type ProductionCardData = {
@@ -898,7 +908,127 @@ const PRODUCTION_CARD_FIELD_IDS = [
   PRODUCTION_CARD_END_WORKER_FIELD_ID,
   PRODUCTION_CARD_TOK_FIELD_ID,
   PRODUCTION_CARD_NYILO_FIELD_ID,
-] as const;
+ ] as const;
+
+type StationPlanFieldDataType = "text" | "integer" | "date";
+type StationPlanFieldDefinition = { key: string; label: string; dataType: StationPlanFieldDataType };
+
+const STATION_PLAN_REQUIRED_FIELD_KEYS = new Set(["sorszam", "megnevezes", "mennyiseg", "elkeszules_datum", "tipus"]);
+const STATION_PLAN_BASE_FIELD_DEFINITIONS: StationPlanFieldDefinition[] = [
+  { key: "sorszam", label: "sorszam", dataType: "text" },
+  { key: "gyartasi_szam", label: "gyártási szám", dataType: "text" },
+  { key: "megnevezes", label: "megnevezes", dataType: "text" },
+  { key: "mennyiseg", label: "mennyiseg", dataType: "integer" },
+  { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
+  { key: "tipus", label: "tipus", dataType: "text" },
+];
+
+const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[]> = {
+  csolezer: [...STATION_PLAN_BASE_FIELD_DEFINITIONS,
+    { key: "bevilagitok_szama", label: "bevilágítók száma", dataType: "text" },
+    { key: "villanyora", label: "villanyóra", dataType: "text" },
+    { key: "szarny", label: "szárny", dataType: "text" },
+    { key: "normaido", label: "normaidő", dataType: "text" },
+    { key: "prioritas", label: "prioritás", dataType: "text" },
+  ],
+  osszeallitas: [...STATION_PLAN_BASE_FIELD_DEFINITIONS,
+    { key: "bevilagitok_szama", label: "bevilágítók száma", dataType: "text" },
+    { key: "villanyora", label: "villanyóra", dataType: "text" },
+    { key: "szarny", label: "szárny", dataType: "text" },
+    { key: "normaido", label: "normaidő", dataType: "text" },
+    { key: "prioritas", label: "prioritás", dataType: "text" },
+  ],
+  lakatos: [...STATION_PLAN_BASE_FIELD_DEFINITIONS,
+    { key: "bevilagitok_szama", label: "bevilágítók száma", dataType: "text" },
+    { key: "villanyora", label: "villanyóra", dataType: "text" },
+    { key: "szarny", label: "szárny", dataType: "text" },
+    { key: "normaido", label: "normaidő", dataType: "text" },
+    { key: "prioritas", label: "prioritás", dataType: "text" },
+    { key: "takaro_kivul", label: "takaró kívül", dataType: "text" },
+    { key: "takaro_belul", label: "takaró belül", dataType: "text" },
+  ],
+  szinter: [...STATION_PLAN_BASE_FIELD_DEFINITIONS,
+    { key: "tokozat_szine", label: "tokozat színe", dataType: "text" },
+    { key: "takaro", label: "takaró", dataType: "text" },
+    { key: "osszefogo_lemez", label: "összefogó lemez", dataType: "text" },
+    { key: "beszereles_datuma", label: "beszerelés dátuma", dataType: "date" },
+  ],
+  asztalos: [...STATION_PLAN_BASE_FIELD_DEFINITIONS,
+    { key: "bevilagitok_szama", label: "bevilágítók száma", dataType: "text" },
+    { key: "villanyora", label: "villanyóra", dataType: "text" },
+    { key: "szarny", label: "szárny", dataType: "text" },
+    { key: "normaido", label: "normaidő", dataType: "text" },
+    { key: "prioritas", label: "prioritás", dataType: "text" },
+    { key: "tok_szelesseg", label: "tok szélesség", dataType: "text" },
+    { key: "tok_magassag", label: "tok magasság", dataType: "text" },
+    { key: "szin_tipus_kivul", label: "szín típus kívül", dataType: "text" },
+    { key: "szin_tipus_belul", label: "szín típus belül", dataType: "text" },
+    { key: "szin_kivul", label: "szín kívül", dataType: "text" },
+    { key: "szin_belul", label: "szín belül", dataType: "text" },
+    { key: "marasminta_kivul", label: "marásminta kívül", dataType: "text" },
+    { key: "marasminta_belul", label: "marásminta belül", dataType: "text" },
+    { key: "beepites_datuma", label: "beépítés dátuma", dataType: "date" },
+  ],
+  szereles: [...STATION_PLAN_BASE_FIELD_DEFINITIONS,
+    { key: "telephely", label: "telephely", dataType: "text" },
+    { key: "felmero", label: "felmérő", dataType: "text" },
+    { key: "szin", label: "szín", dataType: "text" },
+    { key: "uveg", label: "üveg", dataType: "text" },
+    { key: "nyilo", label: "nyíló", dataType: "text" },
+    { key: "tok", label: "tok", dataType: "text" },
+    { key: "lap", label: "lap", dataType: "text" },
+    { key: "elszallitos", label: "elszállítós", dataType: "text" },
+  ],
+  primapower: [...STATION_PLAN_BASE_FIELD_DEFINITIONS,
+    { key: "zar", label: "zár", dataType: "text" },
+    { key: "szin", label: "szín", dataType: "text" },
+    { key: "tokozat_szine", label: "tokozat színe", dataType: "text" },
+    { key: "tok_szelesseg", label: "tok szélesség", dataType: "text" },
+    { key: "tok_magassag", label: "tok magasság", dataType: "text" },
+    { key: "meret", label: "méret", dataType: "text" },
+    { key: "minta", label: "minta", dataType: "text" },
+    { key: "inox_szine", label: "inox színe", dataType: "text" },
+    { key: "kuszob", label: "küszöb", dataType: "text" },
+    { key: "projekt_neve", label: "projekt neve", dataType: "text" },
+  ],
+  csomagolas: [...STATION_PLAN_BASE_FIELD_DEFINITIONS],
+  foliazo: [...STATION_PLAN_BASE_FIELD_DEFINITIONS,
+    { key: "fa_szine_kivul", label: "fa színe kívül", dataType: "text" },
+    { key: "fa_szine_belul", label: "fa színe belül", dataType: "text" },
+  ],
+  fenyezo: [...STATION_PLAN_BASE_FIELD_DEFINITIONS,
+    { key: "fa_szine_kivul", label: "fa színe kívül", dataType: "text" },
+    { key: "fa_szine_belul", label: "fa színe belül", dataType: "text" },
+  ],
+};
+
+const PRODUCTION_CARD_PLAN_FIELD_PREFIX = "__plan_field__:";
+const LABEL_ASSETS_BUCKET = "label-assets";
+const LABEL_ASSETS_TABLE = "label_assets";
+const LABEL_IMAGE_MAX_FILE_BYTES = 5 * 1024 * 1024;
+
+function normalizePlanColumnName(value: string): string {
+  return normalizeLooseText(value)
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function getStationPlanFieldDefinitions(stationName: string | null | undefined): StationPlanFieldDefinition[] {
+  const key = normalizePlanColumnName(String(stationName || ""));
+  return STATION_PLAN_FIELD_DEFINITIONS[key] || STATION_PLAN_BASE_FIELD_DEFINITIONS;
+}
+
+function getStationPlanExtraFieldDefinitions(stationName: string | null | undefined): StationPlanFieldDefinition[] {
+  return getStationPlanFieldDefinitions(stationName).filter((field) => !STATION_PLAN_REQUIRED_FIELD_KEYS.has(field.key));
+}
+
+function getStationPlanFieldLabel(fieldKey: string): string {
+  for (const definitions of Object.values(STATION_PLAN_FIELD_DEFINITIONS)) {
+    const field = definitions.find((item) => item.key === fieldKey);
+    if (field) return field.label;
+  }
+  return fieldKey.replace(/_/g, " ");
+}
 
 const PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID = "__scrap_order_number__";
 const PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID = "__scrap_defect__";
@@ -1035,6 +1165,13 @@ function createLabelElement(
     lineWidth: 0.8,
     hideWhenEmpty: false,
     showHumanReadable: false,
+    imageUrl: "",
+    imageStoragePath: "",
+    imageFit: "contain",
+    keepAspectRatio: true,
+    imageAspectRatio: 1,
+    opacity: 1,
+    locked: false,
     ...patch,
   };
 }
@@ -1177,7 +1314,7 @@ function normalizeLabelRotation(value: unknown): LabelRotation {
 function normalizeLabelElement(raw: unknown, fallback?: LabelTemplateElementConfig): LabelTemplateElementConfig {
   const candidate = raw && typeof raw === "object" ? raw as Partial<LabelTemplateElementConfig> : {};
   const base = fallback || createLabelElement(`element-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, "field");
-  const allowedTypes: LabelTemplateElementType[] = ["field", "staticText", "line", "box", "filledBox", "barcode", "qrcode"];
+  const allowedTypes: LabelTemplateElementType[] = ["field", "staticText", "line", "box", "filledBox", "barcode", "qrcode", "image"];
   return {
     ...base,
     ...candidate,
@@ -1216,6 +1353,13 @@ function normalizeLabelElement(raw: unknown, fallback?: LabelTemplateElementConf
     lineWidth: Number.isFinite(Number(candidate.lineWidth)) ? Math.max(0.1, Number(candidate.lineWidth)) : base.lineWidth,
     hideWhenEmpty: Boolean(candidate.hideWhenEmpty),
     showHumanReadable: Boolean(candidate.showHumanReadable),
+    imageUrl: String(candidate.imageUrl ?? base.imageUrl ?? ""),
+    imageStoragePath: String(candidate.imageStoragePath ?? base.imageStoragePath ?? ""),
+    imageFit: candidate.imageFit === "cover" ? "cover" : "contain",
+    keepAspectRatio: candidate.keepAspectRatio !== false,
+    imageAspectRatio: Number.isFinite(Number(candidate.imageAspectRatio)) && Number(candidate.imageAspectRatio) > 0 ? Number(candidate.imageAspectRatio) : (base.imageAspectRatio || 1),
+    opacity: Number.isFinite(Number(candidate.opacity)) ? Math.max(0, Math.min(1, Number(candidate.opacity))) : (base.opacity ?? 1),
+    locked: Boolean(candidate.locked),
   };
 }
 
@@ -1545,13 +1689,18 @@ function isCarpenterProductionCardStation(stationName: string | null | undefined
   return normalizeLooseText(String(stationName || "")).includes("asztalos");
 }
 
-function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig): readonly string[] {
+function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, stationName = ""): readonly string[] {
   if (table.dataSource === "scrap-replacement") return PRODUCTION_CARD_SCRAP_FIELD_IDS;
   if (table.dataSource === "backlog") return PRODUCTION_CARD_BACKLOG_FIELD_IDS;
-  return PRODUCTION_CARD_FIELD_IDS;
+  const extraFields = getStationPlanExtraFieldDefinitions(stationName)
+    .map((field) => `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${field.key}`);
+  return [...PRODUCTION_CARD_FIELD_IDS, ...extraFields];
 }
 
 function getProductionCardFieldLabel(fieldId: string): string {
+  if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
+    return getStationPlanFieldLabel(fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length));
+  }
   if (fieldId === PRODUCTION_CARD_ORDER_FIELD_ID) return "Sorszám";
   if (fieldId === PRODUCTION_CARD_PRODUCT_FIELD_ID) return "Megnevezés";
   if (fieldId === PRODUCTION_CARD_QUANTITY_FIELD_ID) return "Mennyiség";
@@ -4080,6 +4229,7 @@ export default function Page() {
   const [selectedCarpenterLabelTemplateIds, setSelectedCarpenterLabelTemplateIds] = useState<Record<LabelTemplateType, string>>({ VAGAS_KULSO: "", VAGAS_BELSO: "", UJRAGYARTAS: "" });
   const [carpenterLabelTemplateNameDraft, setCarpenterLabelTemplateNameDraft] = useState("Alapértelmezett");
   const [carpenterLabelSelectedElementIds, setCarpenterLabelSelectedElementIds] = useState<string[]>([]);
+  const [uploadingCarpenterLabelImage, setUploadingCarpenterLabelImage] = useState(false);
   const [carpenterPrinterSettingsLoaded, setCarpenterPrinterSettingsLoaded] = useState(false);
   const carpenterLabelCanvasRef = useRef<HTMLDivElement | null>(null);
   const carpenterLabelInteractionRef = useRef<{
@@ -5536,6 +5686,13 @@ export default function Page() {
   }
 
   function getProductionCardFieldValue(row: ProductionCardRow, fieldId: string): string | number {
+    if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
+      const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
+      const value = row.planData?.[key];
+      if (value === null || value === undefined) return "";
+      if (typeof value === "object") return JSON.stringify(value);
+      return String(value);
+    }
     if (fieldId === PRODUCTION_CARD_ORDER_FIELD_ID) return row.orderNumber;
     if (fieldId === PRODUCTION_CARD_PRODUCT_FIELD_ID) return row.productName;
     if (fieldId === PRODUCTION_CARD_QUANTITY_FIELD_ID) return row.quantity ?? "";
@@ -5814,7 +5971,7 @@ export default function Page() {
       setProductionCardProfile(result.profile);
       const activeTable = result.profile.tables.find((table) => table.id === result.profile.activeTableId) || result.profile.tables[0];
       setProductionCardTableNameDraft(activeTable?.name || "Termelési kártya");
-      setSelectedProductionCardStyleFieldId(activeTable ? (getProductionCardFieldIdsForTable(activeTable)[0] || PRODUCTION_CARD_ORDER_FIELD_ID) : PRODUCTION_CARD_ORDER_FIELD_ID);
+      setSelectedProductionCardStyleFieldId(activeTable ? (getProductionCardFieldIdsForTable(activeTable, productionCardAdminStation)[0] || PRODUCTION_CARD_ORDER_FIELD_ID) : PRODUCTION_CARD_ORDER_FIELD_ID);
       setProductionCardLastSavedAt(result.updatedAt);
       productionCardLastSavedPayloadRef.current = JSON.stringify(result.profile);
     } catch (error) {
@@ -5880,11 +6037,12 @@ export default function Page() {
       quantity: number | null;
       completionDate: string;
       productType: string;
+      planData: Record<string, unknown>;
     }> = [];
 
     const stationPlanResponse = await supabase
       .from(tableName)
-      .select("sorszam, megnevezes, mennyiseg, elkeszules_datum, tipus")
+      .select("*")
       .eq("elkeszules_datum", dateKey)
       .order("sorszam", { ascending: true })
       .limit(10000);
@@ -5893,13 +6051,18 @@ export default function Page() {
       sourceErrors.push(`A(z) ${tableName} tábla nem olvasható: ${normalizeError(stationPlanResponse.error)}`);
     } else {
       stationPlanRows.push(...(((stationPlanResponse.data || []) as ProductionCardPlanSourceRow[])
-        .map((row) => ({
-          orderNumber: String(row.sorszam ?? "").trim(),
-          productName: String(row.megnevezes ?? "").trim(),
-          quantity: parseSpreadsheetNumber(row.mennyiseg),
-          completionDate: String(row.elkeszules_datum ?? dateKey).slice(0, 10),
-          productType: String(row.tipus ?? "").trim(),
-        }))
+        .map((row) => {
+          const raw = row as unknown as Record<string, unknown>;
+          const jsonData = raw.adat && typeof raw.adat === "object" && !Array.isArray(raw.adat) ? raw.adat as Record<string, unknown> : {};
+          return {
+            orderNumber: String(row.sorszam ?? "").trim(),
+            productName: String(row.megnevezes ?? "").trim(),
+            quantity: parseSpreadsheetNumber(row.mennyiseg),
+            completionDate: String(row.elkeszules_datum ?? dateKey).slice(0, 10),
+            productType: String(row.tipus ?? "").trim(),
+            planData: { ...jsonData, ...raw },
+          };
+        })
         .filter((row) => Boolean(row.orderNumber))));
     }
 
@@ -5940,6 +6103,7 @@ export default function Page() {
       quantity: number | null;
       completionDate: string;
       productType: string;
+      planData: Record<string, unknown>;
     }> = [];
 
     if (commonPlan) {
@@ -5981,6 +6145,7 @@ export default function Page() {
               : Number(item.planned_quantity),
             completionDate: dateKey,
             productType: String(commonPlan?.name || "Közös termelési terv").trim(),
+            planData: {},
           });
         });
       }
@@ -6031,6 +6196,7 @@ export default function Page() {
       quantity: number | null;
       completionDate: string;
       productType: string;
+      planData: Record<string, unknown>;
     }>();
 
     stationPlanRows.forEach((row) => mergedPlanRows.set(normalizeLooseText(row.orderNumber), row));
@@ -6079,7 +6245,7 @@ export default function Page() {
     const backlogRows: ProductionCardBacklogRow[] = [];
     const { data: overduePlanData, error: overduePlanError } = await supabase
       .from(tableName)
-      .select("id, sorszam, megnevezes, mennyiseg, elkeszules_datum, tipus")
+      .select("*")
       .lt("elkeszules_datum", dateKey)
       .order("elkeszules_datum", { ascending: true })
       .order("id", { ascending: true })
@@ -6373,7 +6539,7 @@ export default function Page() {
     if (!table) return;
     updateProductionCardProfile((profile) => ({ ...profile, activeTableId: table.id }));
     setProductionCardTableNameDraft(table.name);
-    setSelectedProductionCardStyleFieldId(getProductionCardFieldIdsForTable(table)[0] || PRODUCTION_CARD_ORDER_FIELD_ID);
+    setSelectedProductionCardStyleFieldId(getProductionCardFieldIdsForTable(table, productionCardAdminStation)[0] || PRODUCTION_CARD_ORDER_FIELD_ID);
   }
 
   function createProductionCardTable(): void {
@@ -6446,7 +6612,7 @@ export default function Page() {
   function reorderProductionCardField(draggedFieldId: string, targetFieldId: string): void {
     if (!draggedFieldId || !targetFieldId || draggedFieldId === targetFieldId) return;
     updateActiveProductionCardTable((table) => {
-      const validFields = getProductionCardFieldIdsForTable(table);
+      const validFields = getProductionCardFieldIdsForTable(table, productionCardAdminStation);
       const currentOrder = [
         ...table.fieldOrder.filter((fieldId) => validFields.includes(fieldId)),
         ...validFields.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
@@ -6460,7 +6626,7 @@ export default function Page() {
 
   function moveProductionCardField(fieldId: string, direction: -1 | 1): void {
     updateActiveProductionCardTable((table) => {
-      const validFields = getProductionCardFieldIdsForTable(table);
+      const validFields = getProductionCardFieldIdsForTable(table, productionCardAdminStation);
       const order = [
         ...table.fieldOrder.filter((candidate) => validFields.includes(candidate)),
         ...validFields.filter((candidate) => !table.fieldOrder.includes(candidate)),
@@ -6487,7 +6653,7 @@ export default function Page() {
     const reset = createDefaultProductionCardProfile(productionCardAdminStation || "Munkaállomás");
     setProductionCardProfile(reset);
     setProductionCardTableNameDraft(reset.tables[0].name);
-    setSelectedProductionCardStyleFieldId(getProductionCardFieldIdsForTable(reset.tables[0])[0] || PRODUCTION_CARD_ORDER_FIELD_ID);
+    setSelectedProductionCardStyleFieldId(getProductionCardFieldIdsForTable(reset.tables[0], productionCardAdminStation)[0] || PRODUCTION_CARD_ORDER_FIELD_ID);
     setMessage({ type: "success", text: "A termelési kártya megjelenése visszaállt az alapértelmezettre." });
   }
 
@@ -6508,7 +6674,7 @@ export default function Page() {
       const isScrapTable = table.dataSource === "scrap-replacement";
       const isBacklogTable = table.dataSource === "backlog";
       const theme = table.theme;
-      const validFieldIds = getProductionCardFieldIdsForTable(table);
+      const validFieldIds = getProductionCardFieldIdsForTable(table, data.stationName);
       const orderedFieldIds = [
         ...table.fieldOrder.filter((fieldId) => (validFieldIds as readonly string[]).includes(fieldId)),
         ...validFieldIds.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
@@ -6749,7 +6915,7 @@ export default function Page() {
 
   function ProductionCardAdmin(): React.JSX.Element {
     const stations = getOrderedDashboardStations();
-    const allFieldIds = [...getProductionCardFieldIdsForTable(activeProductionCardTable)];
+    const allFieldIds = [...getProductionCardFieldIdsForTable(activeProductionCardTable, productionCardAdminStation)];
     const selectedFieldId = (allFieldIds as readonly string[]).includes(selectedProductionCardStyleFieldId)
       ? selectedProductionCardStyleFieldId
       : allFieldIds[0] || PRODUCTION_CARD_ORDER_FIELD_ID;
@@ -9962,7 +10128,8 @@ export default function Page() {
 
   function parseStationPlanRowsFromWorkbookSheet(
     rawRows: Array<Record<string, unknown>>,
-    sourceLabel: string
+    sourceLabel: string,
+    stationName = ""
   ): StationPlanUploadRow[] {
     if (!rawRows.length) throw new Error(`${sourceLabel}: a munkafül üres.`);
     const headerSet = new Set(Object.keys(rawRows[0] || {}).map(normalizeSpreadsheetHeader));
@@ -9978,16 +10145,23 @@ export default function Page() {
       .map((header) => header.label);
     if (missingHeaders.length > 0) throw new Error(`${sourceLabel}: hiányzó Excel-oszlopok: ${missingHeaders.join(", ")}.`);
 
+    const definitions = getStationPlanFieldDefinitions(stationName);
+    const definitionByKey = new Map(definitions.map((field) => [field.key, field]));
     const parsedRows: StationPlanUploadRow[] = [];
     rawRows.forEach((row, index) => {
       const rowNumber = index + 2;
+      const normalizedRawRow: Record<string, unknown> = {};
+      Object.entries(row || {}).forEach(([rawKey, rawValue]) => {
+        const key = normalizePlanColumnName(rawKey);
+        if (key) normalizedRawRow[key] = rawValue;
+      });
+
       const rawOrderNumber = readSpreadsheetValue(row, ["sorszam", "sorszám"]);
       const rawProductName = readSpreadsheetValue(row, ["megnevezes", "megnevezés"]);
       const rawQuantity = readSpreadsheetValue(row, ["mennyiseg", "mennyiség"]);
       const rawCompletionDate = readSpreadsheetValue(row, ["elkeszules_datum", "elkeszules datum", "elkészülés dátum", "elkeszulesdatum"]);
       const rawType = readSpreadsheetValue(row, ["tipus", "típus"]);
-      const isCompletelyEmpty = [rawOrderNumber, rawProductName, rawQuantity, rawCompletionDate, rawType]
-        .every((value) => value === null || value === undefined || String(value).trim() === "");
+      const isCompletelyEmpty = Object.values(row || {}).every((value) => value === null || value === undefined || String(value).trim() === "");
       if (isCompletelyEmpty) return;
 
       const sorszam = String(rawOrderNumber ?? "").trim();
@@ -10001,7 +10175,40 @@ export default function Page() {
       if (sorszam.length > 250 || megnevezes.length > 250 || tipus.length > 250) throw new Error(`${sourceLabel}, ${rowNumber}. sor: a szöveges mezők legfeljebb 250 karakteresek lehetnek.`);
       if (mennyiseg === null || !Number.isInteger(mennyiseg) || mennyiseg < 0) throw new Error(`${sourceLabel}, ${rowNumber}. sor: a mennyiseg csak 0 vagy annál nagyobb egész szám lehet.`);
       if (!elkeszulesDatum) throw new Error(`${sourceLabel}, ${rowNumber}. sor: az elkeszules_datum nem értelmezhető.`);
-      parsedRows.push({ sorszam, megnevezes, mennyiseg, elkeszules_datum: elkeszulesDatum, tipus });
+
+      const normalizedValues: Record<string, unknown> = {};
+      definitions.forEach((definition) => {
+        if (["sorszam", "megnevezes", "mennyiseg", "elkeszules_datum", "tipus"].includes(definition.key)) return;
+        const rawValue = normalizedRawRow[definition.key];
+        if (definition.dataType === "date") {
+          normalizedValues[definition.key] = rawValue === null || rawValue === undefined || String(rawValue).trim() === "" ? null : parseSpreadsheetDate(rawValue);
+        } else if (definition.dataType === "integer") {
+          normalizedValues[definition.key] = parseSpreadsheetNumber(rawValue);
+        } else {
+          const text = rawValue === null || rawValue === undefined ? "" : String(rawValue).trim();
+          if (text.length > 1000) throw new Error(`${sourceLabel}, ${rowNumber}. sor, ${definition.label}: legfeljebb 1000 karakter lehet.`);
+          normalizedValues[definition.key] = text || null;
+        }
+      });
+
+      const adat: Record<string, unknown> = {};
+      Object.entries(normalizedRawRow).forEach(([key, rawValue]) => {
+        const definition = definitionByKey.get(key);
+        if (definition?.dataType === "date") adat[key] = rawValue === "" ? null : (parseSpreadsheetDate(rawValue) || rawValue);
+        else if (definition?.dataType === "integer") adat[key] = parseSpreadsheetNumber(rawValue);
+        else if (rawValue instanceof Date) adat[key] = rawValue.toISOString();
+        else adat[key] = rawValue;
+      });
+
+      parsedRows.push({
+        sorszam,
+        megnevezes,
+        mennyiseg,
+        elkeszules_datum: elkeszulesDatum,
+        tipus,
+        adat,
+        ...normalizedValues,
+      });
     });
     if (!parsedRows.length) throw new Error(`${sourceLabel}: a munkafül nem tartalmaz feltölthető tervsort.`);
     return parsedRows;
@@ -10114,6 +10321,7 @@ export default function Page() {
           mennyiseg: action.mennyiseg,
           elkeszules_datum: action.elkeszules_datum,
           tipus: action.tipus,
+          adat: action.adat || {},
         })),
       ];
       const selectedAction = askStationPlanConflictAction(stationName, row, conflictPreview);
@@ -10139,16 +10347,50 @@ export default function Page() {
         .sort((left, right) => Number(left.id) - Number(right.id))
         .at(-1);
       if (!latestDatabaseRow) throw new Error(`${stationName}: a konfliktusos tervsor nem található.`);
+      const nextQuantity = selectedAction === "add"
+        ? Number(latestDatabaseRow.mennyiseg || 0) + Number(row.mennyiseg || 0)
+        : row.mennyiseg;
       actions.push({
         ...row,
+        mennyiseg: nextQuantity,
         action: selectedAction,
         existing_id: latestDatabaseRow.id,
         source_file: sourceFile,
       });
-      if (selectedAction === "add") latestDatabaseRow.mennyiseg = Number(latestDatabaseRow.mennyiseg || 0) + row.mennyiseg;
+      if (selectedAction === "add") latestDatabaseRow.mennyiseg = nextQuantity;
       else Object.assign(latestDatabaseRow, row);
     }
     return actions;
+  }
+
+  async function applyStationPlanMergeActions(stationName: string, actions: StationPlanMergeAction[]): Promise<{ processed: number; skipped: number }> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const tableName = buildStationPlanTableName(stationName);
+    let processed = 0;
+    let skipped = 0;
+    for (const actionRow of actions) {
+      const { action, existing_id, ...row } = actionRow;
+      if (action === "skip") { skipped += 1; continue; }
+      const nowIso = new Date().toISOString();
+      if (action === "insert") {
+        const payload = { ...row, imported_at: nowIso, updated_at: nowIso };
+        const { error } = await supabase.from(tableName).insert(payload);
+        if (error) throw error;
+        processed += 1;
+        continue;
+      }
+      if (existing_id === null || existing_id === undefined || existing_id === "") throw new Error(`${stationName}: hiányzik a frissítendő tervsor azonosítója.`);
+      if (action === "add") {
+        const { error } = await supabase.from(tableName).update({ mennyiseg: row.mennyiseg, source_file: row.source_file || null, updated_at: nowIso }).eq("id", existing_id);
+        if (error) throw error;
+      } else {
+        const payload = { ...row, updated_at: nowIso };
+        const { error } = await supabase.from(tableName).update(payload).eq("id", existing_id);
+        if (error) throw error;
+      }
+      processed += 1;
+    }
+    return { processed, skipped };
   }
 
   function serializeDynamicPlanRow(row: Record<string, unknown>): Record<string, unknown> {
@@ -10173,7 +10415,9 @@ export default function Page() {
         machine_name: stationName,
         sorszam: orderNumber,
         elkeszules_datum: completionDate,
-        adat: serializeDynamicPlanRow(rawRow),
+        adat: rawRow.adat && typeof rawRow.adat === "object" && !Array.isArray(rawRow.adat)
+          ? serializeDynamicPlanRow(rawRow.adat as Record<string, unknown>)
+          : serializeDynamicPlanRow(rawRow),
         source_file: sourceFile,
         imported_at: importedAt,
         updated_at: importedAt,
@@ -10243,17 +10487,12 @@ export default function Page() {
           continue;
         }
         try {
-          const rows = parseStationPlanRowsFromWorkbookSheet(sheet.rows, `„${sheet.name}” munkafül`);
+          const rows = parseStationPlanRowsFromWorkbookSheet(sheet.rows, `„${sheet.name}” munkafül`, stationName);
           const actions = await buildStationPlanMergeActions(stationName, rows, cleanPath);
-          const { data, error } = await supabase.rpc("merge_machine_plan_rows", {
-            p_station_name: stationName,
-            p_rows: actions,
-          });
-          if (error) throw error;
-          await syncDynamicProductionPlanRows(stationName, sheet.rows, cleanPath);
-          const result = data && typeof data === "object" ? data as Record<string, unknown> : {};
-          totalProcessed += Number(result.processed || actions.filter((action) => action.action !== "skip").length);
-          totalSkipped += Number(result.skipped || actions.filter((action) => action.action === "skip").length);
+          const result = await applyStationPlanMergeActions(stationName, actions);
+          await syncDynamicProductionPlanRows(stationName, rows as unknown as Array<Record<string, unknown>>, cleanPath);
+          totalProcessed += result.processed;
+          totalSkipped += result.skipped;
           successfulSheets.push(`${stationName} (${rows.length} sor)`);
         } catch (error) {
           failedSheets.push(`${stationName}: ${normalizeError(error)}`);
@@ -10300,63 +10539,7 @@ export default function Page() {
       const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(firstSheet, { defval: "", raw: true });
       if (!rawRows.length) throw new Error("A kiválasztott munkalap üres.");
 
-      const headerSet = new Set(Object.keys(rawRows[0] || {}).map(normalizeSpreadsheetHeader));
-      const requiredHeaders: Array<{ label: string; aliases: string[] }> = [
-        { label: "sorszam", aliases: ["sorszam", "sorszám"] },
-        { label: "megnevezes", aliases: ["megnevezes", "megnevezés"] },
-        { label: "mennyiseg", aliases: ["mennyiseg", "mennyiség"] },
-        { label: "elkeszules_datum", aliases: ["elkeszules_datum", "elkeszules datum", "elkészülés dátum", "elkeszulesdatum"] },
-        { label: "tipus", aliases: ["tipus", "típus"] },
-      ];
-      const missingHeaders = requiredHeaders
-        .filter((header) => !header.aliases.some((alias) => headerSet.has(normalizeSpreadsheetHeader(alias))))
-        .map((header) => header.label);
-      if (missingHeaders.length > 0) {
-        throw new Error(`Hiányzó Excel-oszlopok: ${missingHeaders.join(", ")}.`);
-      }
-
-      const parsedRows: StationPlanUploadRow[] = [];
-      rawRows.forEach((row, index) => {
-        const rowNumber = index + 2;
-        const rawOrderNumber = readSpreadsheetValue(row, ["sorszam", "sorszám"]);
-        const rawProductName = readSpreadsheetValue(row, ["megnevezes", "megnevezés"]);
-        const rawQuantity = readSpreadsheetValue(row, ["mennyiseg", "mennyiség"]);
-        const rawCompletionDate = readSpreadsheetValue(row, ["elkeszules_datum", "elkeszules datum", "elkészülés dátum", "elkeszulesdatum"]);
-        const rawType = readSpreadsheetValue(row, ["tipus", "típus"]);
-
-        const isCompletelyEmpty = [rawOrderNumber, rawProductName, rawQuantity, rawCompletionDate, rawType]
-          .every((value) => value === null || value === undefined || String(value).trim() === "");
-        if (isCompletelyEmpty) return;
-
-        const sorszam = String(rawOrderNumber ?? "").trim();
-        const megnevezes = String(rawProductName ?? "").trim();
-        const tipus = String(rawType ?? "").trim();
-        const mennyiseg = parseSpreadsheetNumber(rawQuantity);
-        const elkeszulesDatum = parseSpreadsheetDate(rawCompletionDate);
-
-        if (!sorszam) throw new Error(`${rowNumber}. sor: a sorszam mező kötelező.`);
-        if (!megnevezes) throw new Error(`${rowNumber}. sor: a megnevezes mező kötelező.`);
-        if (!tipus) throw new Error(`${rowNumber}. sor: a tipus mező kötelező.`);
-        if (sorszam.length > 250 || megnevezes.length > 250 || tipus.length > 250) {
-          throw new Error(`${rowNumber}. sor: a szöveges mezők legfeljebb 250 karakteresek lehetnek.`);
-        }
-        if (mennyiseg === null || !Number.isInteger(mennyiseg) || mennyiseg < 0) {
-          throw new Error(`${rowNumber}. sor: a mennyiseg csak 0 vagy annál nagyobb egész szám lehet.`);
-        }
-        if (!elkeszulesDatum) {
-          throw new Error(`${rowNumber}. sor: az elkeszules_datum nem értelmezhető. Használj például 2026-07-31 formátumot.`);
-        }
-
-        parsedRows.push({
-          sorszam,
-          megnevezes,
-          mennyiseg,
-          elkeszules_datum: elkeszulesDatum,
-          tipus,
-        });
-      });
-
-      if (!parsedRows.length) throw new Error("A kiválasztott fájl nem tartalmaz feltölthető tervsort.");
+      const parsedRows = parseStationPlanRowsFromWorkbookSheet(rawRows, `„${firstSheetName}” munkafül`, stationName);
 
       setStationPlanFiles((previous) => ({
         ...previous,
@@ -10402,21 +10585,17 @@ export default function Page() {
         const selection = stationPlanFiles[stationName];
         if (!selection) continue;
 
-        const { data, error } = await supabase.rpc("replace_machine_plan", {
-          p_station_name: stationName,
-          p_rows: selection.rows,
-        });
-
-        if (error) {
+        try {
+          const actions = await buildStationPlanMergeActions(stationName, selection.rows, selection.fileName || "kézi feltöltés");
+          const result = await applyStationPlanMergeActions(stationName, actions);
+          await syncDynamicProductionPlanRows(stationName, selection.rows as unknown as Array<Record<string, unknown>>, selection.fileName || "kézi feltöltés");
+          uploadedRowCount += result.processed;
+          successfulStations.push(stationName);
+        } catch (error) {
           console.error(`SUPABASE HIBA ${buildStationPlanTableName(stationName)}:`, error);
           failedStations.push(`${stationName}: ${normalizeError(error)}`);
           continue;
         }
-
-        await syncDynamicProductionPlanRows(stationName, selection.rows as unknown as Array<Record<string, unknown>>, selection.fileName || "kézi feltöltés");
-        const insertedCount = typeof data === "number" ? data : Number(data || selection.rows.length);
-        uploadedRowCount += Number.isFinite(insertedCount) ? insertedCount : selection.rows.length;
-        successfulStations.push(stationName);
       }
 
       if (successfulStations.length > 0) {
@@ -10578,7 +10757,7 @@ export default function Page() {
 
     const uniqueStationNames = Array.from(
       new Map(sourceNames.map((name) => [normalizeLooseText(name), name])).values()
-    );
+    ) as string[];
 
     if (uniqueStationNames.length === 0) {
       setMessage({ type: "error", text: "A minta Excel elkészítéséhez előbb be kell tölteni a machine_id tábla munkaállomásait." });
@@ -10600,9 +10779,18 @@ export default function Page() {
     const today = getLocalDateKey(new Date());
 
     uniqueStationNames.forEach((stationName, index) => {
+      const definitions = getStationPlanFieldDefinitions(stationName);
+      const sampleByKey: Record<string, string | number> = {
+        sorszam: `MINTA-${String(index + 1).padStart(3, "0")}`,
+        gyartasi_szam: "",
+        megnevezes: `${stationName} minta termék`,
+        mennyiseg: 1,
+        elkeszules_datum: today,
+        tipus: "Normál",
+      };
       const rows: Array<Array<string | number>> = [
-        ["sorszam", "megnevezes", "mennyiseg", "elkeszules_datum", "tipus"],
-        [`MINTA-${String(index + 1).padStart(3, "0")}`, `${stationName} minta termék`, 1, today, "Normál"],
+        definitions.map((definition) => definition.label),
+        definitions.map((definition) => sampleByKey[definition.key] ?? ""),
       ];
       XLSX.utils.book_append_sheet(
         workbook,
@@ -10744,6 +10932,7 @@ export default function Page() {
               mennyiseg: Math.max(0, Math.trunc(parseSpreadsheetNumber(row.mennyiseg) || 0)),
               elkeszules_datum: String(row.elkeszules_datum ?? dateKey).slice(0, 10),
               tipus: String(row.tipus ?? "").trim() || "Kézi rögzítés",
+              adat: {},
             }))
             .filter((row) => Boolean(row.sorszam));
         }
@@ -10764,6 +10953,7 @@ export default function Page() {
           mennyiseg: Math.max(0, Math.trunc(Number(item.planned_quantity) || 0)),
           elkeszules_datum: dateKey,
           tipus: "Kézi rögzítés",
+          adat: {},
         }));
         const payloadRows = [...preservedExternalRows, ...commonPlanRows].filter((row) => Boolean(row.sorszam));
         if (payloadRows.length === 0) continue;
@@ -14297,12 +14487,12 @@ body {
   function buildScrapPlanSnapshot(planRow: Record<string, unknown> | null): Record<string, unknown> {
     return {
       termelesi_kartya_adatok: planRow || {},
-      kulso_lap: valueAsText(readRecordValue(planRow, ["kulso_lap", "külső lap", "kulso lap"])) || null,
-      belso_lap: valueAsText(readRecordValue(planRow, ["belso_lap", "belső lap", "belso lap"])) || null,
-      szin: valueAsText(readRecordValue(planRow, ["szin", "szín"])) || null,
-      maras_minta: valueAsText(readRecordValue(planRow, ["maras_minta", "marásminta", "maras minta", "marás minta"])) || null,
-      szelesseg: valueAsText(readRecordValue(planRow, ["szelesseg", "szélesség"])) || null,
-      hosszusag: valueAsText(readRecordValue(planRow, ["hosszusag", "hosszúság"])) || null,
+      kulso_lap: valueAsText(readRecordValue(planRow, ["kulso_lap", "külső lap", "kulso lap", "szin_kivul", "szín kívül", "szin_tipus_kivul", "szín típus kívül"])) || null,
+      belso_lap: valueAsText(readRecordValue(planRow, ["belso_lap", "belső lap", "belso lap", "szin_belul", "szín belül", "szin_tipus_belul", "szín típus belül"])) || null,
+      szin: valueAsText(readRecordValue(planRow, ["szin", "szín", "szin_kivul", "szín kívül", "szin_belul", "szín belül"])) || null,
+      maras_minta: valueAsText(readRecordValue(planRow, ["maras_minta", "marásminta", "maras minta", "marás minta", "marasminta_kivul", "marásminta kívül", "marasminta_belul", "marásminta belül"])) || null,
+      szelesseg: valueAsText(readRecordValue(planRow, ["szelesseg", "szélesség", "tok_szelesseg", "tok szélesség"])) || null,
+      hosszusag: valueAsText(readRecordValue(planRow, ["hosszusag", "hosszúság", "tok_magassag", "tok magasság"])) || null,
       termek_tipus: valueAsText(readRecordValue(planRow, ["tipus", "típus", "termek_tipus", "terméktípus"])) || null,
       termek_megnevezes: valueAsText(readRecordValue(planRow, ["megnevezes", "megnevezés"])) || null,
       terv_datum: parseSpreadsheetDate(readRecordValue(planRow, ["elkeszules_datum", "elkészülés dátum", "elkeszules datum"])) || null,
@@ -14314,21 +14504,21 @@ body {
     return {
       sorszam: String(orderNumberValue || "").trim(),
       lap_tipus: "",
-      kulso_lap: valueAsText(readRecordValue(planRow, ["kulso_lap", "külső lap", "kulso lap"])),
-      belso_lap: valueAsText(readRecordValue(planRow, ["belso_lap", "belső lap", "belso lap"])),
-      szin: valueAsText(readRecordValue(planRow, ["szin", "szín"])),
+      kulso_lap: valueAsText(readRecordValue(planRow, ["kulso_lap", "külső lap", "kulso lap", "szin_kivul", "szín kívül", "szin_tipus_kivul", "szín típus kívül"])),
+      belso_lap: valueAsText(readRecordValue(planRow, ["belso_lap", "belső lap", "belso lap", "szin_belul", "szín belül", "szin_tipus_belul", "szín típus belül"])),
+      szin: valueAsText(readRecordValue(planRow, ["szin", "szín", "szin_kivul", "szín kívül", "szin_belul", "szín belül"])),
       tipus: valueAsText(readRecordValue(planRow, ["tipus", "típus", "termek_tipus", "terméktípus"])),
     };
   }
 
   function buildReprintLabelData(row: ReprintRequestRow): Record<string, string> {
     const source = row.termelesi_kartya_adatok || {};
-    const outer = String(row.kulso_lap || "").trim() || valueAsText(readRecordValue(source, ["kulso_lap", "külső lap", "kulso lap"]));
-    const inner = String(row.belso_lap || "").trim() || valueAsText(readRecordValue(source, ["belso_lap", "belső lap", "belso lap"]));
-    const color = String(row.szin || "").trim() || valueAsText(readRecordValue(source, ["szin", "szín"]));
-    const milling = String(row.maras_minta || "").trim() || valueAsText(readRecordValue(source, ["maras_minta", "marásminta", "maras minta", "marás minta"]));
-    const width = valueAsText(row.szelesseg) || valueAsText(readRecordValue(source, ["szelesseg", "szélesség"]));
-    const length = valueAsText(row.hosszusag) || valueAsText(readRecordValue(source, ["hosszusag", "hosszúság"]));
+    const outer = String(row.kulso_lap || "").trim() || valueAsText(readRecordValue(source, ["kulso_lap", "külső lap", "kulso lap", "szin_kivul", "szín kívül", "szin_tipus_kivul", "szín típus kívül"]));
+    const inner = String(row.belso_lap || "").trim() || valueAsText(readRecordValue(source, ["belso_lap", "belső lap", "belso lap", "szin_belul", "szín belül", "szin_tipus_belul", "szín típus belül"]));
+    const color = String(row.szin || "").trim() || valueAsText(readRecordValue(source, ["szin", "szín", "szin_kivul", "szín kívül", "szin_belul", "szín belül"]));
+    const milling = String(row.maras_minta || "").trim() || valueAsText(readRecordValue(source, ["maras_minta", "marásminta", "maras minta", "marás minta", "marasminta_kivul", "marásminta kívül", "marasminta_belul", "marásminta belül"]));
+    const width = valueAsText(row.szelesseg) || valueAsText(readRecordValue(source, ["szelesseg", "szélesség", "tok_szelesseg", "tok szélesség"]));
+    const length = valueAsText(row.hosszusag) || valueAsText(readRecordValue(source, ["hosszusag", "hosszúság", "tok_magassag", "tok magasság"]));
     const typeValue = String(row.termek_tipus || "").trim() || valueAsText(readRecordValue(source, ["tipus", "típus", "termek_tipus", "terméktípus"]));
     return {
       sorszam: String(row.order_number || "").trim(),
@@ -14543,6 +14733,89 @@ body {
     return Math.round(value / step) * step;
   }
 
+  async function convertLabelImageToPng(file: File): Promise<{ blob: Blob; aspectRatio: number }> {
+    if (file.size > LABEL_IMAGE_MAX_FILE_BYTES) throw new Error("A kép legfeljebb 5 MB lehet.");
+    if (!["image/png", "image/jpeg", "image/webp", "image/svg+xml"].includes(file.type)) throw new Error("PNG, JPG, WebP vagy SVG kép tölthető fel.");
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("A kiválasztott kép nem olvasható."));
+        img.src = objectUrl;
+      });
+      const naturalWidth = Math.max(1, image.naturalWidth || image.width);
+      const naturalHeight = Math.max(1, image.naturalHeight || image.height);
+      const maxSide = 2400;
+      const scale = Math.min(1, maxSide / Math.max(naturalWidth, naturalHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(naturalHeight * scale));
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("A kép feldolgozása nem támogatott ebben a böngészőben.");
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error("A PNG kép előállítása sikertelen.")), "image/png", 1));
+      return { blob, aspectRatio: naturalWidth / naturalHeight };
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+  async function uploadCarpenterLabelImage(type: LabelTemplateType, file: File): Promise<void> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    setUploadingCarpenterLabelImage(true);
+    try {
+      const prepared = await convertLabelImageToPng(file);
+      const station = normalizePlanColumnName(getCurrentMachineIdForInsert()) || "munkaallomas";
+      const safeName = normalizePlanColumnName(file.name.replace(/\.[^.]+$/, "")) || "logo";
+      const storagePath = `${station}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}.png`;
+      const { error: uploadError } = await supabase.storage.from(LABEL_ASSETS_BUCKET).upload(storagePath, prepared.blob, { contentType: "image/png", cacheControl: "3600", upsert: false });
+      if (uploadError) throw uploadError;
+      const { data } = supabase.storage.from(LABEL_ASSETS_BUCKET).getPublicUrl(storagePath);
+      const imageUrl = String(data?.publicUrl || "").trim();
+      if (!imageUrl) throw new Error("A feltöltött kép publikus URL-je nem hozható létre.");
+      const assetInsert = await supabase.from(LABEL_ASSETS_TABLE).insert({
+        machine_name: getCurrentMachineIdForInsert(),
+        storage_path: storagePath,
+        public_url: imageUrl,
+        original_name: file.name,
+        mime_type: "image/png",
+        created_by: String(activeWorker?.["Teljes nev"] || "").trim() || null,
+      });
+      if (assetInsert.error) throw assetInsert.error;
+      const template = carpenterLabelTemplates[type];
+      const maxZ = template.elements.reduce((max, element) => Math.max(max, element.zIndex), 0);
+      const width = 28;
+      const height = Math.max(4, Math.min(45, width * template.widthMm / (prepared.aspectRatio * template.heightMm)));
+      const id = `label-image-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const element = createLabelElement(id, "image", {
+        x: 5, y: 5, width, height, zIndex: maxZ + 1, imageUrl, imageStoragePath: storagePath, imageFit: "contain", keepAspectRatio: true, imageAspectRatio: prepared.aspectRatio, opacity: 1,
+      });
+      updateCarpenterLabelTemplate(type, { elements: [...template.elements, element] });
+      setCarpenterLabelSelectedElementIds([id]);
+      setMessage({ type: "success", text: "A kép/logó feltöltve. Helyezd el a címkén, majd mentsd a sablont." });
+    } finally {
+      setUploadingCarpenterLabelImage(false);
+    }
+  }
+
+  function updateCarpenterLabelElementDimension(type: LabelTemplateType, element: LabelTemplateElementConfig, axis: "width" | "height", nextValue: number): void {
+    const template = carpenterLabelTemplates[type];
+    const value = Math.max(0.2, Math.min(100, Number(nextValue) || 0.2));
+    if (element.type !== "image" || !element.keepAspectRatio || !(element.imageAspectRatio > 0)) {
+      updateCarpenterLabelElement(type, element.id, { [axis]: value } as Partial<LabelTemplateElementConfig>);
+      return;
+    }
+    if (axis === "width") {
+      const height = Math.max(0.2, Math.min(100 - element.y, value * template.widthMm / (element.imageAspectRatio * template.heightMm)));
+      updateCarpenterLabelElement(type, element.id, { width: Math.min(value, 100 - element.x), height });
+    } else {
+      const width = Math.max(0.2, Math.min(100 - element.x, value * element.imageAspectRatio * template.heightMm / template.widthMm));
+      updateCarpenterLabelElement(type, element.id, { height: Math.min(value, 100 - element.y), width });
+    }
+  }
+
   function addCarpenterLabelElement(type: LabelTemplateType, elementType: LabelTemplateElementType, fieldKey = ""): void {
     const definitions = getLabelTemplateFieldDefinitions(type);
     const definition = definitions.find((field) => field.key === fieldKey);
@@ -14563,6 +14836,8 @@ body {
       element = createLabelElement(id, "filledBox", { ...basePatch, width: 45, height: 18, fillColor: "#111827", borderColor: "#111827" });
     } else if (elementType === "barcode" || elementType === "qrcode") {
       element = createLabelElement(id, elementType, { ...basePatch, key: fieldKey || "sorszam", width: elementType === "qrcode" ? 24 : 60, height: elementType === "qrcode" ? 24 : 16 });
+    } else if (elementType === "image") {
+      element = createLabelElement(id, "image", { ...basePatch, width: 28, height: 20, keepAspectRatio: true, imageAspectRatio: 1, imageFit: "contain" });
     }
     updateCarpenterLabelTemplate(type, { elements: [...existing, element] });
     setCarpenterLabelSelectedElementIds([id]);
@@ -14661,6 +14936,11 @@ body {
     event.preventDefault();
     event.stopPropagation();
     const template = carpenterLabelTemplates[type];
+    const targetElement = template.elements.find((element) => element.id === elementId);
+    if (targetElement?.locked) {
+      setCarpenterLabelSelectedElementIds([elementId]);
+      return;
+    }
     let ids = carpenterLabelSelectedElementIds;
     if (event.shiftKey) {
       ids = ids.includes(elementId) ? ids.filter((id) => id !== elementId) : [...ids, elementId];
@@ -14700,7 +14980,10 @@ body {
       if (!initial) return element;
       if (interaction.mode === "resize") {
         const width = Math.max(1, Math.min(100 - initial.x, snapLabelPct(initial.width + dx, template, "x")));
-        const height = Math.max(element.type === "line" ? 0 : 1, Math.min(100 - initial.y, snapLabelPct(initial.height + dy, template, "y")));
+        let height = Math.max(element.type === "line" ? 0 : 1, Math.min(100 - initial.y, snapLabelPct(initial.height + dy, template, "y")));
+        if (element.type === "image" && element.keepAspectRatio && element.imageAspectRatio > 0) {
+          height = Math.max(1, Math.min(100 - initial.y, width * template.widthMm / (element.imageAspectRatio * template.heightMm)));
+        }
         return { ...element, width, height };
       }
       const x = Math.max(0, Math.min(100 - element.width, snapLabelPct(initial.x + dx, template, "x")));
@@ -15063,12 +15346,14 @@ body {
         lap_tipus: "KÜLSŐ LAP",
         kulso_lap: outerValue || "NINCS ADAT",
         belso_lap: "",
+        szin: valueAsText(readRecordValue(planRow, ["szin_kivul", "szín kívül", "szin", "szín"])) || baseData.szin,
       };
       const innerData = {
         ...baseData,
         lap_tipus: "BELSŐ LAP",
         kulso_lap: "",
         belso_lap: innerValue || "NINCS ADAT",
+        szin: valueAsText(readRecordValue(planRow, ["szin_belul", "szín belül", "szin", "szín"])) || baseData.szin,
       };
 
       const outerResult = await sendLabelJobsWithExplicitConfig(
@@ -17734,7 +18019,7 @@ body {
       zIndex: element.zIndex,
       transform: element.rotation ? `rotate(${element.rotation}deg)` : undefined,
       transformOrigin: "center center",
-      cursor: "move",
+      cursor: element.locked ? "not-allowed" : "move",
       userSelect: "none",
       touchAction: "none",
       boxSizing: "border-box",
@@ -17750,6 +18035,10 @@ body {
       content = value ? <div style={{ width: "100%", height: "100%", overflow: "hidden", background: "#fff", display: "grid", placeItems: "center" }}><Code128Barcode value={value} height={Math.max(24, Math.round(55 + element.height))} /></div> : <div style={{ fontSize: 10, color: "#64748b" }}>VONALKÓD</div>;
     } else if (element.type === "qrcode") {
       content = <div style={{ width: "100%", height: "100%", minHeight: 28, display: "grid", placeItems: "center", color: "#111827", background: "repeating-conic-gradient(#111 0 25%, #fff 0 50%) 50% / 8px 8px", border: "1px solid #111" }}><span style={{ background: "rgba(255,255,255,.9)", padding: "2px 4px", fontSize: 8, fontWeight: 900 }}>QR</span></div>;
+    } else if (element.type === "image") {
+      content = element.imageUrl
+        ? <img src={element.imageUrl} alt="Címkekép" draggable={false} style={{ width: "100%", height: "100%", objectFit: element.imageFit, opacity: element.opacity, display: "block", pointerEvents: "none" }} />
+        : <div style={{ width: "100%", height: "100%", display: "grid", placeItems: "center", border: "1px dashed #64748b", color: "#64748b", fontSize: 9 }}>KÉP / LOGÓ</div>;
     } else {
       const textStyle: React.CSSProperties = {
         width: "100%",
@@ -17785,7 +18074,7 @@ body {
         onPointerCancel={endCarpenterLabelInteraction}
       >
         {content}
-        {selected && element.type !== "line" && (
+        {selected && element.type !== "line" && !element.locked && (
           <div
             onPointerDown={(event) => beginCarpenterLabelInteraction(event, type, element.id, "resize")}
             onPointerMove={(event) => moveCarpenterLabelInteraction(event, type)}
@@ -17893,11 +18182,20 @@ body {
           </div>
         )}
         {(element.type === "barcode" || element.type === "qrcode") && <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}><input type="checkbox" checked={element.showHumanReadable} onChange={(e) => updateCarpenterLabelElement(type, element.id, { showHumanReadable: e.target.checked })} />Érték kiírása a kód alatt</label>}
+        {element.type === "image" && (
+          <div style={{ display: "grid", gap: 8 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}><input type="checkbox" checked={element.keepAspectRatio} onChange={(e) => updateCarpenterLabelElement(type, element.id, { keepAspectRatio: e.target.checked })} />Arányos méretezés</label>
+            <label style={smallLabel}>Kép illesztése<select value={element.imageFit} onChange={(e) => updateCarpenterLabelElement(type, element.id, { imageFit: e.target.value === "cover" ? "cover" : "contain" })} style={controlStyle}><option value="contain">Illesztés – teljes kép</option><option value="cover">Kitöltés – vágással</option></select></label>
+            <label style={smallLabel}>Forgatás<select value={element.rotation} onChange={(e) => updateCarpenterLabelElement(type, element.id, { rotation: Number(e.target.value) as LabelRotation })} style={controlStyle}><option value={0}>0°</option><option value={90}>90°</option><option value={180}>180°</option><option value={270}>270°</option></select></label>
+            <label style={smallLabel}>Átlátszóság ({Math.round(element.opacity * 100)}%)<input type="range" min={0.1} max={1} step={0.05} value={element.opacity} onChange={(e) => updateCarpenterLabelElement(type, element.id, { opacity: Number(e.target.value) })} style={{ width: "100%" }} /></label>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800 }}><input type="checkbox" checked={element.locked} onChange={(e) => updateCarpenterLabelElement(type, element.id, { locked: e.target.checked })} />Pozíció és méret zárolása</label>
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 8 }}>
           <label style={smallLabel}>X %<input type="number" min={0} max={100} step={0.1} value={element.x} onChange={(e) => updateCarpenterLabelElement(type, element.id, { x: Number(e.target.value) })} style={controlStyle} /></label>
           <label style={smallLabel}>Y %<input type="number" min={0} max={100} step={0.1} value={element.y} onChange={(e) => updateCarpenterLabelElement(type, element.id, { y: Number(e.target.value) })} style={controlStyle} /></label>
-          <label style={smallLabel}>Szélesség %<input type="number" min={0.2} max={100} step={0.1} value={element.width} onChange={(e) => updateCarpenterLabelElement(type, element.id, { width: Number(e.target.value) })} style={controlStyle} /></label>
-          <label style={smallLabel}>Magasság %<input type="number" min={0} max={100} step={0.1} value={element.height} onChange={(e) => updateCarpenterLabelElement(type, element.id, { height: Number(e.target.value) })} style={controlStyle} /></label>
+          <label style={smallLabel}>Szélesség %<input type="number" min={0.2} max={100} step={0.1} value={element.width} onChange={(e) => updateCarpenterLabelElementDimension(type, element, "width", Number(e.target.value))} style={controlStyle} /></label>
+          <label style={smallLabel}>Magasság %<input type="number" min={0} max={100} step={0.1} value={element.height} onChange={(e) => updateCarpenterLabelElementDimension(type, element, "height", Number(e.target.value))} style={controlStyle} /></label>
         </div>
       </div>
     );
@@ -18016,6 +18314,10 @@ body {
                   <button type="button" onClick={() => addCarpenterLabelElement(type, "filledBox")} style={buttonSecondary}>Kitöltött blokk</button>
                   <button type="button" onClick={() => addCarpenterLabelElement(type, "barcode", "sorszam")} style={buttonSecondary}>Vonalkód</button>
                   <button type="button" onClick={() => addCarpenterLabelElement(type, "qrcode", "sorszam")} style={buttonSecondary}>QR-kód</button>
+                  <label style={{ ...buttonSecondary, display: "grid", placeItems: "center", cursor: uploadingCarpenterLabelImage ? "wait" : "pointer", opacity: uploadingCarpenterLabelImage ? 0.6 : 1 }}>
+                    {uploadingCarpenterLabelImage ? "Kép feltöltése..." : "Kép / logó"}
+                    <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" disabled={uploadingCarpenterLabelImage} onChange={(event) => { const file = event.target.files?.[0]; event.currentTarget.value = ""; if (file) void uploadCarpenterLabelImage(type, file).catch((error) => setMessage({ type: "error", text: `A kép feltöltése sikertelen: ${normalizeError(error)}` })); }} style={{ display: "none" }} />
+                  </label>
                 </div>
                 <div style={{ borderTop: "1px solid #334155", paddingTop: 10, display: "grid", gap: 6 }}>
                   <strong style={{ fontSize: 12 }}>Kijelölt elemek</strong>
@@ -18089,12 +18391,12 @@ body {
                     <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}><input type="checkbox" checked={Boolean(selectedReprintRequestIds[String(row.id)])} onChange={(e) => setSelectedReprintRequestIds((prev) => ({ ...prev, [String(row.id)]: e.target.checked }))} /></td>
                     <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 900 }}>{row.order_number}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #1e293b", color: "#fca5a5", fontWeight: 800 }}>{getScrapReplacementDefectLabel(row)}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.kulso_lap, ["kulso_lap", "külső lap"])}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.belso_lap, ["belso_lap", "belső lap"])}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.kulso_lap, ["kulso_lap", "külső lap", "szin_kivul", "szín kívül", "szin_tipus_kivul", "szín típus kívül"])}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.belso_lap, ["belso_lap", "belső lap", "szin_belul", "szín belül", "szin_tipus_belul", "szín típus belül"])}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.szin, ["szin", "szín"])}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.maras_minta, ["maras_minta", "marásminta", "marás minta"])}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.szelesseg, ["szelesseg", "szélesség"])}</td>
-                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.hosszusag, ["hosszusag", "hosszúság"])}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.maras_minta, ["maras_minta", "marásminta", "marás minta", "marasminta_kivul", "marásminta kívül", "marasminta_belul", "marásminta belül"])}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.szelesseg, ["szelesseg", "szélesség", "tok_szelesseg", "tok szélesség"])}</td>
+                    <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.hosszusag, ["hosszusag", "hosszúság", "tok_magassag", "tok magasság"])}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{cell(row.termek_tipus, ["tipus", "típus", "termek_tipus"])}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #1e293b", maxWidth: 260 }}>{row.megjegyzes || "-"}</td>
                     <td style={{ padding: 8, borderBottom: "1px solid #1e293b", whiteSpace: "nowrap" }}>{row.reported_by_worker_name || "-"}</td>
