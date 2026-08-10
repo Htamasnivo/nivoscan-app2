@@ -13,7 +13,7 @@ const execFileAsync = promisify(execFile);
 
 type LabelElement = {
   id: string;
-  type: "field" | "staticText" | "line" | "box" | "filledBox" | "barcode" | "qrcode";
+  type: "field" | "staticText" | "line" | "box" | "filledBox" | "barcode" | "qrcode" | "image";
   key?: string;
   label?: string;
   text?: string;
@@ -47,6 +47,13 @@ type LabelElement = {
   lineWidth?: number;
   hideWhenEmpty?: boolean;
   showHumanReadable?: boolean;
+  imageUrl?: string;
+  imageStoragePath?: string;
+  imageFit?: "contain" | "cover";
+  keepAspectRatio?: boolean;
+  imageAspectRatio?: number;
+  opacity?: number;
+  locked?: boolean;
 };
 
 type LegacyPrintField = {
@@ -134,6 +141,13 @@ function normalizeTemplate(template: PrintTemplate): PrintTemplate {
       lineWidth: 0.8,
       hideWhenEmpty: false,
       showHumanReadable: false,
+      imageUrl: "",
+      imageStoragePath: "",
+      imageFit: "contain" as const,
+      keepAspectRatio: true,
+      imageAspectRatio: 1,
+      opacity: 1,
+      locked: false,
     })),
   };
 }
@@ -169,6 +183,32 @@ async function prepareQrImages(template: PrintTemplate, jobs: PrintJob[]): Promi
     output.push({ ...job, renderedImages });
   }
   return output;
+}
+
+async function prepareTemplateAssetImages(template: PrintTemplate, jobs: PrintJob[]): Promise<PrintJob[]> {
+  const imageElements = (template.elements || []).filter((element) => element.visible !== false && element.type === "image" && String(element.imageUrl || "").trim());
+  if (imageElements.length === 0) return jobs;
+
+  const cached = new Map<string, string>();
+  for (const element of imageElements) {
+    const url = String(element.imageUrl || "").trim();
+    if (!url || cached.has(url)) continue;
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) throw new Error(`A címkéhez tartozó kép nem tölthető le (${response.status}).`);
+    const contentType = response.headers.get("content-type") || "image/png";
+    const buffer = Buffer.from(await response.arrayBuffer());
+    cached.set(url, `data:${contentType};base64,${buffer.toString("base64")}`);
+  }
+
+  return jobs.map((job) => {
+    const renderedImages: Record<string, string> = { ...(job.renderedImages || {}) };
+    imageElements.forEach((element) => {
+      const url = String(element.imageUrl || "").trim();
+      const dataUrl = cached.get(url);
+      if (dataUrl) renderedImages[element.id] = dataUrl;
+    });
+    return { ...job, renderedImages };
+  });
 }
 
 const POWERSHELL_PRINT_SCRIPT = String.raw`
@@ -347,14 +387,49 @@ foreach ($job in $jobs) {
             continue
           }
 
-          if ($etype -eq 'barcode' -or $etype -eq 'qrcode') {
+          if ($etype -eq 'barcode' -or $etype -eq 'qrcode' -or $etype -eq 'image') {
             $imageData = $null
             if ($null -ne $job.renderedImages -and $job.renderedImages.PSObject.Properties.Name -contains [string]$element.id) {
               $imageData = [string]$job.renderedImages.PSObject.Properties[[string]$element.id].Value
             }
             $loaded = Load-DataUrlImage $imageData
             if ($null -ne $loaded) {
-              try { $graphics.DrawImage($loaded.Image, $rect) } finally { $loaded.Image.Dispose(); $loaded.Stream.Dispose() }
+              try {
+                if ($etype -eq 'image') {
+                  $state = $graphics.Save()
+                  $attrs = New-Object System.Drawing.Imaging.ImageAttributes
+                  try {
+                    $rotation = [int]$element.rotation
+                    if ($rotation -ne 0) {
+                      $cx = $rect.X + ($rect.Width / 2.0); $cy = $rect.Y + ($rect.Height / 2.0)
+                      $graphics.TranslateTransform($cx, $cy); $graphics.RotateTransform($rotation); $graphics.TranslateTransform(-$cx, -$cy)
+                    }
+                    $opacity = [single]1.0
+                    if ($null -ne $element.opacity) { $opacity = [single][Math]::Max(0.0, [Math]::Min(1.0, [double]$element.opacity)) }
+                    $matrix = New-Object System.Drawing.Imaging.ColorMatrix
+                    $matrix.Matrix33 = $opacity
+                    $attrs.SetColorMatrix($matrix, [System.Drawing.Imaging.ColorMatrixFlag]::Default, [System.Drawing.Imaging.ColorAdjustType]::Bitmap)
+                    $srcW = [single]$loaded.Image.Width; $srcH = [single]$loaded.Image.Height
+                    $fit = [string]$element.imageFit
+                    if ($fit -eq 'cover' -and $srcW -gt 0 -and $srcH -gt 0 -and $rect.Width -gt 0 -and $rect.Height -gt 0) {
+                      $srcRatio = $srcW / $srcH; $dstRatio = $rect.Width / $rect.Height
+                      $sx = [single]0; $sy = [single]0; $sw = $srcW; $sh = $srcH
+                      if ($srcRatio -gt $dstRatio) { $sw = $srcH * $dstRatio; $sx = ($srcW - $sw) / 2.0 } else { $sh = $srcW / $dstRatio; $sy = ($srcH - $sh) / 2.0 }
+                      $graphics.DrawImage($loaded.Image, $rect, $sx, $sy, $sw, $sh, [System.Drawing.GraphicsUnit]::Pixel, $attrs)
+                    } else {
+                      $target = $rect
+                      if ($srcW -gt 0 -and $srcH -gt 0 -and $rect.Width -gt 0 -and $rect.Height -gt 0) {
+                        $scale = [Math]::Min($rect.Width / $srcW, $rect.Height / $srcH)
+                        $tw = [single]($srcW * $scale); $th = [single]($srcH * $scale)
+                        $target = New-Object System.Drawing.RectangleF(($rect.X + ($rect.Width - $tw) / 2.0), ($rect.Y + ($rect.Height - $th) / 2.0), $tw, $th)
+                      }
+                      $graphics.DrawImage($loaded.Image, $target, 0, 0, $srcW, $srcH, [System.Drawing.GraphicsUnit]::Pixel, $attrs)
+                    }
+                  } finally { $attrs.Dispose(); $graphics.Restore($state) }
+                } else {
+                  $graphics.DrawImage($loaded.Image, $rect)
+                }
+              } finally { $loaded.Image.Dispose(); $loaded.Stream.Dispose() }
             }
             continue
           }
@@ -472,7 +547,8 @@ export async function POST(request: Request) {
     }
     if (originalJobs.length === 0) return NextResponse.json({ error: "Nincs nyomtatandó címke." }, { status: 400 });
 
-    const jobs = await prepareQrImages(template, originalJobs);
+    const qrJobs = await prepareQrImages(template, originalJobs);
+    const jobs = await prepareTemplateAssetImages(template, qrJobs);
     const token = crypto.randomBytes(8).toString("hex");
     configPath = path.join(os.tmpdir(), `nivo-label-${token}.json`);
     scriptPath = path.join(os.tmpdir(), `nivo-label-${token}.ps1`);
