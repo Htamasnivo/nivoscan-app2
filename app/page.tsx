@@ -327,7 +327,7 @@ type DashboardData = {
 };
 
 type DashboardFilterMode = "daily" | "weekly" | "monthly" | "custom";
-type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "reproduction-report";
+type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "reproduction-report" | "label-printer" | "report-delivery";
 type OfficePageKey = ManagementSection;
 type OfficeThemePresetId = "industrial-night" | "graphite" | "steel-blue" | "light-office" | "contrast-monitor" | "custom";
 type OfficeThemeConfig = {
@@ -404,6 +404,8 @@ function createDefaultOfficeThemeMap(): Record<OfficePageKey, OfficeThemeConfig>
     "production-monitor": cloneOfficeTheme(base),
     "production-card": cloneOfficeTheme(base),
     "reproduction-report": cloneOfficeTheme(base),
+    "label-printer": cloneOfficeTheme(base),
+    "report-delivery": cloneOfficeTheme(base),
   };
 }
 function createDefaultOfficeThemePresetMap(): Record<OfficePageKey, OfficeThemePresetId> {
@@ -413,6 +415,8 @@ function createDefaultOfficeThemePresetMap(): Record<OfficePageKey, OfficeThemeP
     "production-monitor": "industrial-night",
     "production-card": "industrial-night",
     "reproduction-report": "industrial-night",
+    "label-printer": "industrial-night",
+    "report-delivery": "industrial-night",
   };
 }
 
@@ -973,6 +977,95 @@ type ReportSettings = {
   sendHour: string;
   autoSendEnabled: boolean;
   frequency: ReportFrequency;
+};
+
+type ReportDeliveryReportType =
+  | "worker-analysis"
+  | "worker-comparison"
+  | "reproduction"
+  | "scrap-replacement"
+  | "station-performance"
+  | "plan-vs-completed"
+  | "closed-orders"
+  | "custom";
+
+type ReportDeliveryFrequency = "daily" | "weekly" | "monthly";
+type ReportDeliveryPeriodScope = "current" | "previous";
+type ReportDeliveryProductType = "all" | "Standard" | "Plus" | "Extra";
+type ReportDeliveryBlock =
+  | "worker-analysis"
+  | "worker-comparison"
+  | "reproduction"
+  | "scrap-replacement"
+  | "station-performance"
+  | "plan-vs-completed"
+  | "closed-orders";
+
+type ReportDeliveryProfile = {
+  id: string;
+  name: string;
+  recipients: string[];
+  stationFilter: string;
+  workerFilter: string;
+  orderFilter: string;
+  productTypeFilter: ReportDeliveryProductType;
+  reportType: ReportDeliveryReportType;
+  customBlocks: ReportDeliveryBlock[];
+  frequency: ReportDeliveryFrequency;
+  periodScope: ReportDeliveryPeriodScope;
+  sendTime: string;
+  weeklyDay: number;
+  monthlyDay: number;
+  active: boolean;
+  lastSentMarker: string;
+  lastSentAt: string;
+  lastSendError: string;
+  createdBy: string;
+  updatedAt: string;
+};
+
+const REPORT_DELIVERY_REPORT_TYPE_LABELS: Record<ReportDeliveryReportType, string> = {
+  "worker-analysis": "Dolgozói időszaki elemzés",
+  "worker-comparison": "Dolgozói összehasonlítás",
+  reproduction: "Újragyártási riport",
+  "scrap-replacement": "Selejtpótlási riport",
+  "station-performance": "Munkaállomás teljesítmény",
+  "plan-vs-completed": "Termelési terv vs. elkészült",
+  "closed-orders": "Lezárt rendelések",
+  custom: "Egyedi kombinált riport",
+};
+
+const REPORT_DELIVERY_BLOCK_OPTIONS: Array<{ id: ReportDeliveryBlock; label: string }> = [
+  { id: "worker-analysis", label: "Dolgozói időszaki elemzés" },
+  { id: "worker-comparison", label: "Dolgozói összehasonlítás" },
+  { id: "reproduction", label: "Újragyártási riport" },
+  { id: "scrap-replacement", label: "Selejtpótlási riport" },
+  { id: "station-performance", label: "Munkaállomás teljesítmény" },
+  { id: "plan-vs-completed", label: "Termelési terv vs. elkészült" },
+  { id: "closed-orders", label: "Lezárt rendelések" },
+];
+
+const DEFAULT_REPORT_DELIVERY_PROFILE: ReportDeliveryProfile = {
+  id: "",
+  name: "Új automatikus riport",
+  recipients: [],
+  stationFilter: "all",
+  workerFilter: "all",
+  orderFilter: "",
+  productTypeFilter: "all",
+  reportType: "worker-analysis",
+  customBlocks: ["worker-analysis"],
+  frequency: "monthly",
+  periodScope: "previous",
+  sendTime: "06:00",
+  weeklyDay: 1,
+  monthlyDay: 1,
+  active: false,
+  lastSentMarker: "",
+  lastSentAt: "",
+  lastSendError: "",
+  createdBy: "",
+  updatedAt: "",
 };
 
 
@@ -2397,6 +2490,7 @@ async function ensureProductionBatchStartMachineSaved(
 }
 const REPORT_SETTINGS_STORAGE_KEY = "work-report-settings-v2";
 const REPORT_AUTO_SEND_MARKER_KEY = "work-report-last-auto-send-v1";
+const REPORT_DELIVERY_PROFILES_TABLE = "report_delivery_profiles";
 const DEFAULT_REPORT_SETTINGS: ReportSettings = {
   recipients: [],
   refreshMinutes: 15,
@@ -4516,6 +4610,14 @@ export default function Page() {
   const [reportSettings, setReportSettings] = useState<ReportSettings>(DEFAULT_REPORT_SETTINGS);
   const [reportSettingsLoaded, setReportSettingsLoaded] = useState(false);
 
+  const [officeLabelPrinterStation, setOfficeLabelPrinterStation] = useState("Asztalos");
+  const [reportDeliveryProfiles, setReportDeliveryProfiles] = useState<ReportDeliveryProfile[]>([]);
+  const [reportDeliveryDraft, setReportDeliveryDraft] = useState<ReportDeliveryProfile>({ ...DEFAULT_REPORT_DELIVERY_PROFILE });
+  const [reportDeliveryProfilesLoaded, setReportDeliveryProfilesLoaded] = useState(false);
+  const [reportDeliveryLoading, setReportDeliveryLoading] = useState(false);
+  const [reportDeliverySaving, setReportDeliverySaving] = useState(false);
+  const reportDeliveryAutoCheckBusyRef = useRef(false);
+
   const [scanModalOpen, setScanModalOpen] = useState(false);
   const [scanMode, setScanMode] = useState<"order" | "action" | "event" | "batch" | "activeBatch">("order");
   const [scanSupported, setScanSupported] = useState(true);
@@ -4748,7 +4850,7 @@ export default function Page() {
       const nextPresets = createDefaultOfficeThemePresetMap();
       ((response.data || []) as Array<{ page_key?: string | null; theme_preset?: string | null; theme_json?: Record<string, unknown> | null }>).forEach((row) => {
         const pageKey = String(row.page_key || "") as OfficePageKey;
-        if (!["dashboard", "production-plan", "production-monitor", "production-card", "reproduction-report"].includes(pageKey)) return;
+        if (!["dashboard", "production-plan", "production-monitor", "production-card", "reproduction-report", "label-printer", "report-delivery"].includes(pageKey)) return;
         const presetRaw = String(row.theme_preset || "industrial-night") as OfficeThemePresetId;
         const validPreset: OfficeThemePresetId = ["industrial-night", "graphite", "steel-blue", "light-office", "contrast-monitor", "custom"].includes(presetRaw)
           ? presetRaw
@@ -4818,6 +4920,636 @@ export default function Page() {
     void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, []);
   }
 
+
+  function mapReportDeliveryProfileRow(row: Record<string, unknown>): ReportDeliveryProfile {
+    const recipientsRaw = row.recipients;
+    const recipients = Array.isArray(recipientsRaw)
+      ? recipientsRaw.map((value) => String(value || "").trim()).filter(Boolean)
+      : String(recipientsRaw || "").split(/[;,\n]+/).map((value) => value.trim()).filter(Boolean);
+    const blocksRaw = row.custom_blocks;
+    const customBlocks = Array.isArray(blocksRaw)
+      ? blocksRaw.map((value) => String(value) as ReportDeliveryBlock).filter((value) => REPORT_DELIVERY_BLOCK_OPTIONS.some((item) => item.id === value))
+      : ["worker-analysis"] as ReportDeliveryBlock[];
+    return {
+      ...DEFAULT_REPORT_DELIVERY_PROFILE,
+      id: String(row.id || ""),
+      name: String(row.name || "Automatikus riport"),
+      recipients,
+      stationFilter: String(row.station_filter || "all"),
+      workerFilter: String(row.worker_filter || "all"),
+      orderFilter: String(row.order_filter || ""),
+      productTypeFilter: (["all", "Standard", "Plus", "Extra"].includes(String(row.product_type_filter || "all"))
+        ? String(row.product_type_filter || "all")
+        : "all") as ReportDeliveryProductType,
+      reportType: (Object.prototype.hasOwnProperty.call(REPORT_DELIVERY_REPORT_TYPE_LABELS, String(row.report_type || "worker-analysis"))
+        ? String(row.report_type || "worker-analysis")
+        : "worker-analysis") as ReportDeliveryReportType,
+      customBlocks: customBlocks.length ? customBlocks : ["worker-analysis"],
+      frequency: (["daily", "weekly", "monthly"].includes(String(row.frequency || "monthly"))
+        ? String(row.frequency || "monthly")
+        : "monthly") as ReportDeliveryFrequency,
+      periodScope: (String(row.period_scope || "previous") === "current" ? "current" : "previous") as ReportDeliveryPeriodScope,
+      sendTime: String(row.send_time || "06:00").slice(0, 5),
+      weeklyDay: Math.min(7, Math.max(1, Number(row.weekly_day || 1))),
+      monthlyDay: Math.min(28, Math.max(1, Number(row.monthly_day || 1))),
+      active: Boolean(row.active),
+      lastSentMarker: String(row.last_sent_marker || ""),
+      lastSentAt: String(row.last_sent_at || ""),
+      lastSendError: String(row.last_send_error || ""),
+      createdBy: String(row.created_by || ""),
+      updatedAt: String(row.updated_at || ""),
+    };
+  }
+
+  function parseReportDeliveryRecipients(value: string): string[] {
+    return Array.from(new Set(
+      String(value || "")
+        .split(/[;,\n]+/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    ));
+  }
+
+  function parseReportDeliveryOrderFilters(value: string): string[] {
+    return Array.from(new Set(
+      String(value || "")
+        .split(/[;,\n]+/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    ));
+  }
+
+  async function loadReportDeliveryProfiles(selectId = ""): Promise<void> {
+    if (!supabase) return;
+    setReportDeliveryLoading(true);
+    try {
+      const response = await supabase
+        .from(REPORT_DELIVERY_PROFILES_TABLE)
+        .select("*")
+        .order("name", { ascending: true });
+      if (response.error) throw response.error;
+      const rows = ((response.data || []) as Record<string, unknown>[]).map(mapReportDeliveryProfileRow);
+      setReportDeliveryProfiles(rows);
+      setReportDeliveryProfilesLoaded(true);
+      const wantedId = selectId || reportDeliveryDraft.id;
+      const selected = rows.find((row) => row.id === wantedId) || rows[0];
+      if (selected) setReportDeliveryDraft({ ...selected, recipients: [...selected.recipients], customBlocks: [...selected.customBlocks] });
+      else if (!reportDeliveryDraft.id) setReportDeliveryDraft({ ...DEFAULT_REPORT_DELIVERY_PROFILE, customBlocks: [...DEFAULT_REPORT_DELIVERY_PROFILE.customBlocks] });
+    } catch (error) {
+      console.error("Riportküldési profilok betöltési hiba:", error);
+      setMessage({ type: "error", text: `Riportprofilok betöltése sikertelen: ${normalizeError(error)}` });
+    } finally {
+      setReportDeliveryLoading(false);
+    }
+  }
+
+  function createNewReportDeliveryProfile(): void {
+    setReportDeliveryDraft({
+      ...DEFAULT_REPORT_DELIVERY_PROFILE,
+      id: "",
+      name: "Új automatikus riport",
+      recipients: [],
+      customBlocks: ["worker-analysis"],
+      createdBy: activeWorker?.["Teljes nev"] || "",
+      updatedAt: "",
+    });
+  }
+
+  async function saveReportDeliveryProfile(asCopy = false): Promise<void> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const recipients = reportDeliveryDraft.recipients.map((value) => value.trim()).filter(Boolean);
+    if (!reportDeliveryDraft.name.trim()) throw new Error("Adj nevet a riportprofilnak.");
+    if (!recipients.length) throw new Error("Adj meg legalább egy email címet.");
+    const payload = {
+      name: reportDeliveryDraft.name.trim(),
+      recipients,
+      station_filter: reportDeliveryDraft.stationFilter || "all",
+      worker_filter: reportDeliveryDraft.workerFilter || "all",
+      order_filter: reportDeliveryDraft.orderFilter.trim(),
+      product_type_filter: reportDeliveryDraft.productTypeFilter,
+      report_type: reportDeliveryDraft.reportType,
+      custom_blocks: reportDeliveryDraft.customBlocks,
+      frequency: reportDeliveryDraft.frequency,
+      period_scope: reportDeliveryDraft.periodScope,
+      send_time: reportDeliveryDraft.sendTime || "06:00",
+      weekly_day: Math.min(7, Math.max(1, Number(reportDeliveryDraft.weeklyDay || 1))),
+      monthly_day: Math.min(28, Math.max(1, Number(reportDeliveryDraft.monthlyDay || 1))),
+      active: reportDeliveryDraft.active,
+      created_by: reportDeliveryDraft.createdBy || activeWorker?.["Teljes nev"] || "",
+      updated_at: new Date().toISOString(),
+    };
+    setReportDeliverySaving(true);
+    try {
+      let savedId = reportDeliveryDraft.id;
+      if (asCopy || !reportDeliveryDraft.id) {
+        const insertPayload = {
+          ...payload,
+          name: asCopy ? `${payload.name} – másolat` : payload.name,
+          active: asCopy ? false : payload.active,
+          last_sent_marker: "",
+          last_sent_at: null,
+          last_send_error: "",
+        };
+        const response = await supabase
+          .from(REPORT_DELIVERY_PROFILES_TABLE)
+          .insert(insertPayload)
+          .select("*")
+          .single();
+        if (response.error) throw response.error;
+        savedId = String((response.data as Record<string, unknown>)?.id || "");
+      } else {
+        const response = await supabase
+          .from(REPORT_DELIVERY_PROFILES_TABLE)
+          .update(payload)
+          .eq("id", reportDeliveryDraft.id)
+          .select("*")
+          .single();
+        if (response.error) throw response.error;
+      }
+      await loadReportDeliveryProfiles(savedId);
+      setMessage({ type: "success", text: asCopy ? "A riportprofil másolata elmentve." : "A riportprofil elmentve Supabase-ba." });
+    } finally {
+      setReportDeliverySaving(false);
+    }
+  }
+
+  async function deleteReportDeliveryProfile(): Promise<void> {
+    if (!supabase || !reportDeliveryDraft.id) return;
+    if (typeof window !== "undefined" && !window.confirm(`Biztosan törlöd ezt a riportprofilt?\n\n${reportDeliveryDraft.name}`)) return;
+    setReportDeliverySaving(true);
+    try {
+      const response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).delete().eq("id", reportDeliveryDraft.id);
+      if (response.error) throw response.error;
+      setReportDeliveryDraft({ ...DEFAULT_REPORT_DELIVERY_PROFILE, customBlocks: ["worker-analysis"] });
+      await loadReportDeliveryProfiles();
+      setMessage({ type: "success", text: "A riportprofil törölve." });
+    } finally {
+      setReportDeliverySaving(false);
+    }
+  }
+
+  async function toggleReportDeliveryProfile(): Promise<void> {
+    if (!supabase || !reportDeliveryDraft.id) {
+      setReportDeliveryDraft((current) => ({ ...current, active: !current.active }));
+      return;
+    }
+    const nextActive = !reportDeliveryDraft.active;
+    setReportDeliverySaving(true);
+    try {
+      const response = await supabase
+        .from(REPORT_DELIVERY_PROFILES_TABLE)
+        .update({ active: nextActive, updated_at: new Date().toISOString() })
+        .eq("id", reportDeliveryDraft.id);
+      if (response.error) throw response.error;
+      setReportDeliveryDraft((current) => ({ ...current, active: nextActive }));
+      setReportDeliveryProfiles((current) => current.map((profile) => profile.id === reportDeliveryDraft.id ? { ...profile, active: nextActive } : profile));
+    } finally {
+      setReportDeliverySaving(false);
+    }
+  }
+
+  function getReportDeliveryProfileRange(profile: ReportDeliveryProfile, now = new Date()): { startIso: string; endIso: string; label: string } {
+    const base = new Date(now);
+    base.setHours(0, 0, 0, 0);
+    if (profile.frequency === "daily") {
+      if (profile.periodScope === "previous") base.setDate(base.getDate() - 1);
+      return getDashboardDateRange("daily", getLocalDateKey(base));
+    }
+    if (profile.frequency === "weekly") {
+      const monday = getStartOfWeek(base);
+      if (profile.periodScope === "previous") monday.setDate(monday.getDate() - 7);
+      return getDashboardDateRange("weekly", getLocalDateKey(monday));
+    }
+    const month = new Date(base.getFullYear(), base.getMonth(), 1);
+    if (profile.periodScope === "previous") month.setMonth(month.getMonth() - 1, 1);
+    return getDashboardDateRange("monthly", getLocalDateKey(month));
+  }
+
+  function getReportDeliveryScheduleMarker(profile: ReportDeliveryProfile, now = new Date()): string {
+    const dateKey = getLocalDateKey(now);
+    const range = getReportDeliveryProfileRange(profile, now);
+    return `${profile.frequency}|${dateKey}|${profile.sendTime}|${range.startIso.slice(0, 10)}|${range.endIso.slice(0, 10)}`;
+  }
+
+  function isReportDeliveryProfileDue(profile: ReportDeliveryProfile, now = new Date()): boolean {
+    if (!profile.active || !profile.sendTime || !profile.recipients.length) return false;
+    const weekday = now.getDay() === 0 ? 7 : now.getDay();
+    if (profile.frequency === "weekly" && weekday !== profile.weeklyDay) return false;
+    if (profile.frequency === "monthly" && now.getDate() !== profile.monthlyDay) return false;
+    const currentTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    if (currentTime < profile.sendTime.slice(0, 5)) return false;
+    return profile.lastSentMarker !== getReportDeliveryScheduleMarker(profile, now);
+  }
+
+  function filterReportDeliveryLogs(sourceData: DashboardData, profile: ReportDeliveryProfile): WorkLogRow[] {
+    return sourceData.logs.filter((log) => {
+      const station = resolveLogStation(log, workers);
+      const workerName = getDashboardLogWorkerName(log);
+      return (profile.stationFilter === "all" || normalizeLooseText(station) === normalizeLooseText(profile.stationFilter))
+        && (profile.workerFilter === "all" || normalizeLooseText(workerName) === normalizeLooseText(profile.workerFilter));
+    });
+  }
+
+  async function createGenericReportDeliveryPdfBlob(
+    profile: ReportDeliveryProfile,
+    sourceData: DashboardData,
+    range: { startIso: string; endIso: string; label: string }
+  ): Promise<Blob> {
+    const [jspdf, logoDataUrl] = await Promise.all([waitForJsPdf(), loadDashboardPdfCompanyLogo()]);
+    const logoSize = await getPdfImageNaturalSize(logoDataUrl);
+    const doc = new jspdf.jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
+    const pdf = doc as any;
+    registerPdfUnicodeFonts(doc);
+    const pageWidth = 595.28;
+    const pageHeight = 841.89;
+    const marginX = 38;
+    const contentWidth = pageWidth - marginX * 2;
+    const ink = [18, 18, 18] as const;
+    const mid = [92, 92, 92] as const;
+    const pale = [246, 246, 246] as const;
+    const border = [190, 190, 190] as const;
+
+    const drawLogo = () => {
+      const ratio = logoSize.width / Math.max(1, logoSize.height);
+      let width = 66;
+      let height = width / ratio;
+      if (height > 32) { height = 32; width = height * ratio; }
+      const x = pageWidth - marginX - width;
+      const y = 22 + (32 - height) / 2;
+      try { pdf.addImage(logoDataUrl, "PNG", x, y, width, height, undefined, "FAST"); }
+      catch { try { pdf.addImage(logoDataUrl, x, y, width, height); } catch { /* no-op */ } }
+    };
+    const title = REPORT_DELIVERY_REPORT_TYPE_LABELS[profile.reportType];
+    doc.setFillColor(...ink); doc.rect(0, 0, pageWidth, 82, "F");
+    doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(18); doc.setTextColor(255,255,255);
+    doc.text(title, marginX, 31);
+    doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(8); doc.text(range.label, marginX, 50);
+    doc.setFontSize(7); doc.text(`Generálva: ${formatDateTime(new Date())}`, marginX, 66);
+    drawLogo();
+
+    const stationLabel = profile.stationFilter === "all" ? "Összes munkaállomás" : profile.stationFilter;
+    const workerLabel = profile.workerFilter === "all" ? "Összes dolgozó" : profile.workerFilter;
+    doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(11); doc.setTextColor(...ink);
+    doc.text(`Szűrés: ${stationLabel} • ${workerLabel}${profile.orderFilter ? ` • ${profile.orderFilter}` : ""}`, marginX, 111, { maxWidth: contentWidth });
+    let y = 132;
+    const visibleLogs = filterReportDeliveryLogs(sourceData, profile);
+    const completedLogs = visibleLogs.filter((log) => String(log.action || "").toUpperCase() === "END" || Boolean(log.end_time || log.end_timestamp));
+    const planRows = await loadDashboardPdfPlanRows(completedLogs.map((log) => String(log.order_number || "")).filter(Boolean));
+    let analyses = buildDashboardPdfWorkerAnalyses(visibleLogs, planRows, profile.stationFilter, profile.workerFilter, sourceData);
+    if (profile.productTypeFilter !== "all") {
+      analyses = analyses.map((analysis) => {
+        const completedOrders = analysis.completedOrders.filter((row) => row.productType === profile.productTypeFilter);
+        const typeCounts: Record<string, number> = { Standard: 0, Plus: 0, Extra: 0, Egyéb: 0 };
+        completedOrders.forEach((row) => {
+          if (row.productType === "Standard" || row.productType === "Plus" || row.productType === "Extra") typeCounts[row.productType] += 1;
+          else typeCounts.Egyéb += 1;
+        });
+        return { ...analysis, completedOrders, typeCounts };
+      });
+    }
+
+    const addSection = (heading: string, head: string[][], body: Array<Array<string | number>>): void => {
+      if (y > 700) { pdf.addPage("a4", "portrait"); y = 54; }
+      doc.setFillColor(232,232,232); pdf.roundedRect(marginX, y, contentWidth, 24, 4, 4, "F");
+      doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(9.5); doc.setTextColor(...ink);
+      doc.text(heading, marginX + 9, y + 16);
+      y += 32;
+      pdf.autoTable({
+        startY: y,
+        head,
+        body: body.length ? body : [["Nincs adat", ...Array(Math.max(0, head[0].length - 1)).fill("–")]],
+        theme: "grid",
+        margin: { left: marginX, right: marginX, bottom: 42 },
+        styles: { font: PDF_FONT_FAMILY, fontSize: 6.8, cellPadding: 3.8, overflow: "linebreak", textColor: ink },
+        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: ink, textColor: [255,255,255] },
+        alternateRowStyles: { fillColor: pale },
+      });
+      y = Number(pdf.lastAutoTable?.finalY || y + 70) + 18;
+    };
+
+    const addWorkerComparison = (): void => {
+      const ranking = [...analyses].sort((a,b) => (b.performance.efficiencyPct ?? -1) - (a.performance.efficiencyPct ?? -1));
+      doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(10); doc.setTextColor(...ink);
+      doc.text("Termelékenységi rangsor", marginX, y);
+      y += 17;
+      const maxPct = Math.max(100, ...ranking.map((row) => row.performance.efficiencyPct || 0));
+      ranking.slice(0, 12).forEach((row, index) => {
+        const pct = row.performance.efficiencyPct || 0;
+        doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(7); doc.setTextColor(...ink);
+        doc.text(`${index + 1}. ${row.workerName}`, marginX, y + 8, { maxWidth: 125 });
+        doc.setFillColor(225,225,225); pdf.roundedRect(marginX + 132, y, 300, 10, 3, 3, "F");
+        if (pct > 0) { doc.setFillColor(55,55,55); pdf.roundedRect(marginX + 132, y, Math.max(4, Math.min(300, pct / maxPct * 300)), 10, 3, 3, "F"); }
+        doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setTextColor(...mid);
+        doc.text(`${formatDashboardEfficiencyPct(pct)}%`, pageWidth - marginX, y + 8, { align: "right" });
+        y += 20;
+      });
+      y += 8;
+      addSection("Összehasonlító ranglista",
+        [["#", "Dolgozó", "Hatékonyság", "Ledolgozott", "Befejezett", "Standard", "Plus", "Extra"]],
+        ranking.map((row,index) => [
+          index + 1, row.workerName,
+          row.performance.efficiencyPct === null ? "–" : `${formatDashboardEfficiencyPct(row.performance.efficiencyPct)}%`,
+          row.performance.totalDurationLabel,
+          row.completedOrders.length,
+          row.typeCounts.Standard || 0, row.typeCounts.Plus || 0, row.typeCounts.Extra || 0,
+        ])
+      );
+    };
+
+    const addBlock = async (blockId: ReportDeliveryBlock): Promise<void> => {
+      if (blockId === "worker-analysis") {
+        addSection("Dolgozói időszaki összesítő",
+          [["Dolgozó", "Hatékonyság", "Ledolgozott", "Keret", "Rendelés", "Standard", "Plus", "Extra"]],
+          analyses.map((row) => [
+            row.workerName,
+            row.performance.efficiencyPct === null ? "–" : `${formatDashboardEfficiencyPct(row.performance.efficiencyPct)}%`,
+            row.performance.totalDurationLabel,
+            formatReportMinutes(row.performance.accountedMinutes),
+            row.completedOrders.length,
+            row.typeCounts.Standard || 0, row.typeCounts.Plus || 0, row.typeCounts.Extra || 0,
+          ])
+        );
+      } else if (blockId === "worker-comparison") {
+        addWorkerComparison();
+      } else if (blockId === "reproduction") {
+        const rows = completedLogs.filter((log) => Boolean(log.ujragyartas)).map((log) => [
+          log.order_number || "–",
+          resolveLogStation(log, workers),
+          getDashboardLogWorkerName(log),
+          formatDateTime(getDashboardLogEndAt(log) || getDashboardLogEventAt(log)),
+          String(log.ujragyartas_sorszam || "–"),
+        ]);
+        addSection("Újragyártási sorok", [["Rendelés", "Munkaállomás", "Dolgozó", "Befejezés", "Újragyártás #"]], rows);
+      } else if (blockId === "scrap-replacement") {
+        let rows: Array<Array<string | number>> = visibleLogs.filter((log) => Boolean(log.selejt_potlas)).map((log) => [
+          log.order_number || "–", resolveLogStation(log, workers), getDashboardLogWorkerName(log),
+          formatDateTime(getDashboardLogEventAt(log)), getNoteBeforeContext(log.note) || "–",
+        ]);
+        try {
+          if (supabase) {
+            const response = await supabase.from("asztalos_selejt_potlas").select("*")
+              .gte("reported_at", range.startIso).lt("reported_at", range.endIso).order("reported_at", { ascending: false }).limit(2000);
+            if (!response.error && response.data?.length) {
+              rows = (response.data as Record<string, unknown>[]).map((row) => [
+                String(row.sorszam || row.order_number || "–"),
+                String(row.selejt_forras_munkaallomas || row.source_station || "–"),
+                String(row.end_worker_name || row.worker_name || "–"),
+                row.completed_at ? formatDateTime(String(row.completed_at)) : row.reported_at ? formatDateTime(String(row.reported_at)) : "–",
+                String(row.megjegyzes || row.note || "–"),
+              ]);
+            }
+          }
+        } catch { /* fallback to work_logs */ }
+        addSection("Selejtpótlási riport", [["Rendelés", "Forrás", "Dolgozó", "Időpont", "Megjegyzés"]], rows);
+      } else if (blockId === "station-performance" || blockId === "plan-vs-completed") {
+        const stationRows = sourceData.stationEfficiencyRows.filter((row) =>
+          profile.stationFilter === "all" || normalizeLooseText(row.stationName) === normalizeLooseText(profile.stationFilter)
+        );
+        addSection(blockId === "station-performance" ? "Munkaállomás teljesítmény" : "Termelési terv vs. elkészült",
+          [["Munkaállomás", "Tervezett", "Elkészült", "Hátralévő", "Teljesítés"]],
+          stationRows.map((row) => [
+            row.stationName, row.plannedItems, row.completedItems, Math.max(0, row.plannedItems - row.completedItems),
+            row.efficiencyPct === null ? "–" : `${row.efficiencyPct}%`,
+          ])
+        );
+      } else if (blockId === "closed-orders") {
+        const rows = analyses.flatMap((analysis) => analysis.completedOrders.map((row) => [
+          row.orderNumber, row.productType, row.stationName, analysis.workerName,
+          row.completedAt ? formatDateTime(row.completedAt) : "–", row.elapsedLabel,
+        ]));
+        addSection("Lezárt rendelések", [["Rendelés", "Típus", "Munkaállomás", "Dolgozó", "Befejezés", "Eltelt"]], rows);
+      }
+    };
+
+    if (profile.reportType === "custom") {
+      for (const blockId of profile.customBlocks) await addBlock(blockId);
+    } else {
+      await addBlock(profile.reportType as ReportDeliveryBlock);
+    }
+
+    const pageCount = pdf.getNumberOfPages();
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+      pdf.setPage(pageNumber);
+      doc.setDrawColor(...border); doc.line(marginX, pageHeight - 28, pageWidth - marginX, pageHeight - 28);
+      doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(6.5); doc.setTextColor(...mid);
+      doc.text("NÍVÓ • Automatikus termelési riport", marginX, pageHeight - 15);
+      doc.text(`${pageNumber} / ${pageCount}`, pageWidth - marginX, pageHeight - 15, { align: "right" });
+    }
+    return doc.output("blob");
+  }
+
+  async function createReportDeliveryProfilePdfBlob(profile: ReportDeliveryProfile): Promise<Blob> {
+    const range = getReportDeliveryProfileRange(profile);
+    const sourceData = await fetchDashboardData(range, parseReportDeliveryOrderFilters(profile.orderFilter));
+    if (profile.reportType === "worker-analysis") {
+      return await createProfessionalWorkerAnalysisPdfBlob({
+        sourceData,
+        rangeLabel: range.label,
+        stationFilter: profile.stationFilter,
+        workerFilter: profile.workerFilter,
+        orderLabel: profile.orderFilter.trim() || "Összes rendelés",
+        productTypeFilter: profile.productTypeFilter,
+        reportTitle: profile.name.trim() || "Dolgozói időszaki elemzés",
+      });
+    }
+    return await createGenericReportDeliveryPdfBlob(profile, sourceData, range);
+  }
+
+  async function sendReportDeliveryProfile(profile: ReportDeliveryProfile, testOnly = false): Promise<void> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    if (!profile.recipients.length) throw new Error("A riportprofilhoz nincs címzett.");
+    const pdfBlob = await createReportDeliveryProfilePdfBlob(profile);
+    const errors: string[] = [];
+    for (const recipient of profile.recipients) {
+      const formData = new FormData();
+      formData.append("to", recipient);
+      formData.append("subject", `${testOnly ? "[TESZT] " : ""}${profile.name}`);
+      formData.append("html", `<p><strong>${profile.name}</strong></p><p>A csatolt PDF automatikusan generált termelési riport.</p>`);
+      formData.append("text", `${profile.name}\nAutomatikusan generált termelési riport.`);
+      formData.append("requestedFormat", "pdf");
+      formData.append("pdf", pdfBlob, `${profile.name.replace(/[^a-zA-Z0-9_-]+/g, "_") || "riport"}.pdf`);
+      try {
+        const response = await fetch("/api/send-report", { method: "POST", body: formData });
+        if (!response.ok) {
+          const body = await response.text().catch(() => "");
+          errors.push(`${recipient}: ${body || response.statusText || "küldési hiba"}`);
+        }
+      } catch (error) {
+        errors.push(`${recipient}: ${normalizeError(error)}`);
+      }
+    }
+    if (testOnly) {
+      if (errors.length) throw new Error(errors.join(" | "));
+      setMessage({ type: "success", text: `Tesztküldés sikeres: ${profile.recipients.join(", ")}` });
+      return;
+    }
+
+    const marker = getReportDeliveryScheduleMarker(profile);
+    const updatePayload = {
+      last_sent_marker: marker,
+      last_sent_at: new Date().toISOString(),
+      last_send_error: errors.join(" | "),
+      updated_at: new Date().toISOString(),
+    };
+    if (profile.id) {
+      const response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).update(updatePayload).eq("id", profile.id);
+      if (response.error) console.error("Riportküldési státusz mentési hiba:", response.error);
+    }
+    setReportDeliveryProfiles((current) => current.map((item) =>
+      item.id === profile.id
+        ? { ...item, lastSentMarker: marker, lastSentAt: updatePayload.last_sent_at, lastSendError: updatePayload.last_send_error }
+        : item
+    ));
+    if (reportDeliveryDraft.id === profile.id) {
+      setReportDeliveryDraft((current) => ({ ...current, lastSentMarker: marker, lastSentAt: updatePayload.last_sent_at, lastSendError: updatePayload.last_send_error }));
+    }
+    if (errors.length) throw new Error(errors.join(" | "));
+  }
+
+  async function checkAutomaticReportDeliveryProfiles(): Promise<void> {
+    if (!supabase || reportDeliveryAutoCheckBusyRef.current) return;
+    reportDeliveryAutoCheckBusyRef.current = true;
+    try {
+      let profiles = reportDeliveryProfiles;
+      if (!reportDeliveryProfilesLoaded) {
+        const response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).select("*").eq("active", true);
+        if (response.error) throw response.error;
+        profiles = ((response.data || []) as Record<string, unknown>[]).map(mapReportDeliveryProfileRow);
+        setReportDeliveryProfiles(profiles);
+        setReportDeliveryProfilesLoaded(true);
+      }
+      const now = new Date();
+      for (const profile of profiles) {
+        if (!isReportDeliveryProfileDue(profile, now)) continue;
+        try {
+          await sendReportDeliveryProfile(profile, false);
+        } catch (error) {
+          console.error(`Automatikus riportküldés sikertelen (${profile.name}):`, error);
+        }
+      }
+    } finally {
+      reportDeliveryAutoCheckBusyRef.current = false;
+    }
+  }
+
+  function OfficeLabelPrinterAdmin(): React.JSX.Element {
+    const theme = getOfficeTheme("label-printer");
+    return (
+      <div style={{ background: theme.pageBackground, border: `1px solid ${theme.borderColor}`, borderRadius: 18, padding: 18, color: theme.textColor }}>
+        <ManagementNavigation />
+        {renderCarpenterPrinterSettings(true)}
+      </div>
+    );
+  }
+
+  function ReportDeliveryAdmin(): React.JSX.Element {
+    const theme = getOfficeTheme("report-delivery");
+    const control: React.CSSProperties = {
+      ...fieldStyle,
+      background: theme.inputBackground,
+      color: theme.inputText,
+      borderColor: theme.borderColor,
+    };
+    const panel: React.CSSProperties = {
+      background: theme.panelBackground,
+      border: `1px solid ${theme.borderColor}`,
+      borderRadius: 14,
+      padding: 16,
+    };
+    const stationOptions = Array.from(new Set(getOrderedDashboardStations()));
+    const workerOptions = Array.from(new Set(workers.map((worker) => worker["Teljes nev"]).filter(Boolean))).sort((a,b) => a.localeCompare(b, "hu"));
+    return (
+      <div style={{ background: theme.pageBackground, border: `1px solid ${theme.borderColor}`, borderRadius: 18, padding: 18, color: theme.textColor }}>
+        <ManagementNavigation />
+        <div style={{ display: "grid", gap: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "end" }}>
+            <div>
+              <div style={{ color: theme.accentColor, fontWeight: 900, fontSize: 13, letterSpacing: 0.8 }}>AUTOMATIKUS RIPORTKÖZPONT</div>
+              <h2 style={{ margin: "4px 0", color: theme.textColor }}>Riport küldések</h2>
+              <div style={{ color: theme.mutedText, fontSize: 13 }}>Minden profil külön Supabase-beállítás. A mentett szűrés, PDF-típus és ütemezés később változatlanul visszatöltődik.</div>
+            </div>
+            <button type="button" onClick={createNewReportDeliveryProfile} style={buttonPrimary}>+ Új riportprofil</button>
+          </div>
+
+          <div style={{ ...panel, display: "grid", gridTemplateColumns: "minmax(260px, 420px) 1fr", gap: 12, alignItems: "end" }}>
+            <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>
+              Mentett profil
+              <select
+                value={reportDeliveryDraft.id}
+                onChange={(event) => {
+                  const selected = reportDeliveryProfiles.find((profile) => profile.id === event.target.value);
+                  if (selected) setReportDeliveryDraft({ ...selected, recipients: [...selected.recipients], customBlocks: [...selected.customBlocks] });
+                }}
+                style={control}
+              >
+                <option value="">-- új / még nincs mentve --</option>
+                {reportDeliveryProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.active ? "● " : "○ "}{profile.name}</option>)}
+              </select>
+            </label>
+            <div style={{ color: reportDeliveryDraft.active ? "#86efac" : theme.mutedText, fontWeight: 900 }}>
+              {reportDeliveryDraft.active ? "AKTÍV AUTOMATIKUS KÜLDÉS" : "INAKTÍV"}
+            </div>
+          </div>
+
+          <div style={{ ...panel, display: "grid", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Profil neve<input value={reportDeliveryDraft.name} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, name: e.target.value }))} style={control} /></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Címzettek (email, vessző/pontosvessző)<textarea key={`recipients-${reportDeliveryDraft.id || "new"}-${reportDeliveryDraft.updatedAt}`} defaultValue={reportDeliveryDraft.recipients.join("; ")} onBlur={(e) => setReportDeliveryDraft((c) => ({ ...c, recipients: parseReportDeliveryRecipients(e.target.value) }))} style={{ ...control, minHeight: 76, resize: "vertical" }} /></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Riport típusa<select value={reportDeliveryDraft.reportType} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, reportType: e.target.value as ReportDeliveryReportType }))} style={control}>{Object.entries(REPORT_DELIVERY_REPORT_TYPE_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}</select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Munkaállomás<select value={reportDeliveryDraft.stationFilter} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, stationFilter: e.target.value }))} style={control}><option value="all">Összes munkaállomás</option>{stationOptions.map((station) => <option key={station} value={station}>{station}</option>)}</select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Dolgozó<select value={reportDeliveryDraft.workerFilter} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, workerFilter: e.target.value }))} style={control}><option value="all">Összes dolgozó</option>{workerOptions.map((workerName) => <option key={workerName} value={workerName}>{workerName}</option>)}</select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Rendelésszám / gyorskód<input value={reportDeliveryDraft.orderFilter} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, orderFilter: e.target.value }))} placeholder="pl. 07178 vagy R260716178" style={control} /></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Típus<select value={reportDeliveryDraft.productTypeFilter} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, productTypeFilter: e.target.value as ReportDeliveryProductType }))} style={control}><option value="all">Összes típus</option><option value="Standard">Standard</option><option value="Plus">Plus</option><option value="Extra">Extra</option></select></label>
+            </div>
+
+            {reportDeliveryDraft.reportType === "custom" && (
+              <div style={{ padding: 12, borderRadius: 12, background: theme.panelAltBackground, border: `1px solid ${theme.borderColor}` }}>
+                <strong>Egyedi kombinált riport blokkjai</strong>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8, marginTop: 10 }}>
+                  {REPORT_DELIVERY_BLOCK_OPTIONS.map((item) => (
+                    <label key={item.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <input type="checkbox" checked={reportDeliveryDraft.customBlocks.includes(item.id)} onChange={(e) => setReportDeliveryDraft((c) => ({
+                        ...c,
+                        customBlocks: e.target.checked ? Array.from(new Set([...c.customBlocks, item.id])) : c.customBlocks.filter((value) => value !== item.id),
+                      }))} />
+                      {item.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div style={{ ...panel, display: "grid", gap: 12 }}>
+            <strong>Automatikus ütemezés</strong>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12 }}>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Ismétlődés<select value={reportDeliveryDraft.frequency} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, frequency: e.target.value as ReportDeliveryFrequency }))} style={control}><option value="daily">Naponta</option><option value="weekly">Hetente</option><option value="monthly">Havonta</option></select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Riportált időszak<select value={reportDeliveryDraft.periodScope} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, periodScope: e.target.value as ReportDeliveryPeriodScope }))} style={control}><option value="previous">Előző lezárt időszak</option><option value="current">Aktuális időszak</option></select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Küldési idő<input type="time" value={reportDeliveryDraft.sendTime} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, sendTime: e.target.value }))} style={control} /></label>
+              {reportDeliveryDraft.frequency === "weekly" && <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Küldés napja<select value={reportDeliveryDraft.weeklyDay} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, weeklyDay: Number(e.target.value) }))} style={control}>{["Hétfő","Kedd","Szerda","Csütörtök","Péntek","Szombat","Vasárnap"].map((label,index) => <option key={label} value={index+1}>{label}</option>)}</select></label>}
+              {reportDeliveryDraft.frequency === "monthly" && <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Hónap napja<input type="number" min={1} max={28} value={reportDeliveryDraft.monthlyDay} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, monthlyDay: Math.min(28, Math.max(1, Number(e.target.value) || 1)) }))} style={control} /></label>}
+            </div>
+          </div>
+
+          <div style={{ ...panel, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <button type="button" onClick={() => void saveReportDeliveryProfile(false).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={reportDeliverySaving} style={buttonPrimary}>Mentés</button>
+            <button type="button" onClick={() => void saveReportDeliveryProfile(true).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={reportDeliverySaving} style={buttonSecondary}>Másolat készítése</button>
+            <button type="button" onClick={() => void (async () => { try { const blob = await createReportDeliveryProfilePdfBlob(reportDeliveryDraft); downloadBlob(`${reportDeliveryDraft.name.replace(/[^a-zA-Z0-9_-]+/g, "_") || "teszt_riport"}.pdf`, blob, "application/pdf"); } catch (error) { setMessage({ type: "error", text: normalizeError(error) }); } })()} style={buttonSecondary}>Teszt PDF</button>
+            <button type="button" onClick={() => void sendReportDeliveryProfile(reportDeliveryDraft, true).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} style={buttonSecondary}>Teszt küldés</button>
+            <button type="button" onClick={() => void toggleReportDeliveryProfile().catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={reportDeliverySaving} style={{ ...buttonSecondary, borderColor: reportDeliveryDraft.active ? "#f59e0b" : "#22c55e" }}>{reportDeliveryDraft.active ? "Kikapcsolás" : "Aktiválás"}</button>
+            <button type="button" onClick={() => void deleteReportDeliveryProfile().catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={!reportDeliveryDraft.id || reportDeliverySaving} style={{ ...buttonSecondary, borderColor: "#ef4444", color: "#fecaca" }}>Törlés</button>
+          </div>
+
+          <div style={{ ...panel, fontSize: 12, color: theme.mutedText, lineHeight: 1.6 }}>
+            <div><strong>Utolsó automatikus küldés:</strong> {reportDeliveryDraft.lastSentAt ? formatDateTime(reportDeliveryDraft.lastSentAt) : "még nem volt"}</div>
+            {reportDeliveryDraft.lastSendError && <div style={{ color: "#fca5a5", marginTop: 5 }}><strong>Utolsó hiba:</strong> {reportDeliveryDraft.lastSendError}</div>}
+            <div style={{ marginTop: 8 }}>Az automatikus ellenőrzés az irodai felület megnyitása alatt fut. A beállítások és az utolsó küldés állapota Supabase-ban marad meg.</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function ManagementNavigation(): React.JSX.Element {
     const items: Array<{ id: ManagementSection; label: string }> = [
       { id: "dashboard", label: "Vezetői műszerfal" },
@@ -4825,6 +5557,8 @@ export default function Page() {
       { id: "production-monitor", label: "Termelési monitor" },
       { id: "production-card", label: "Termelési kártya" },
       { id: "reproduction-report", label: "Újragyártási sorok" },
+      { id: "label-printer", label: "Címkenyomtató" },
+      { id: "report-delivery", label: "Riport küldések" },
     ];
     const currentTheme = getOfficeTheme(managementSection);
     const currentPreset = officeThemePresetByPage[managementSection];
@@ -4866,13 +5600,21 @@ export default function Page() {
                     void loadProductionCardSettingsForStation(nextStation);
                     void loadProductionCardData(nextStation, productionCardDate);
                   }
-                } else {
+                } else if (item.id === "reproduction-report") {
                   void loadReproductionReport(
                     reproductionReportFilterMode,
                     reproductionReportDate,
                     reproductionReportDateTo,
                     reproductionReportSelectedStation
                   );
+                } else if (item.id === "label-printer") {
+                  const stations = getOrderedDashboardStations();
+                  const preferred = stations.find((station) => normalizeLooseText(station) === normalizeLooseText("Asztalos")) || officeLabelPrinterStation || stations[0] || "Asztalos";
+                  setOfficeLabelPrinterStation(preferred);
+                  setCarpenterPrinterTab("printer");
+                  void loadCarpenterPrinterSettings(preferred);
+                } else if (item.id === "report-delivery") {
+                  void loadReportDeliveryProfiles();
                 }
               }}
               style={{
@@ -8520,6 +9262,8 @@ export default function Page() {
     if (managementSection === "production-monitor") return ProductionPlanMonitor({});
     if (managementSection === "production-card") return ProductionCardAdmin();
     if (managementSection === "reproduction-report") return ReproductionReportAdmin();
+    if (managementSection === "label-printer") return OfficeLabelPrinterAdmin();
+    if (managementSection === "report-delivery") return ReportDeliveryAdmin();
 
     const dashboardRange = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
     const officeTheme = getOfficeTheme("dashboard");
@@ -8713,26 +9457,7 @@ export default function Page() {
               {loadingDashboard ? "Frissítés..." : "Frissítés"}
             </button>
             <button type="button" onClick={exportDashboardAsExcel} style={buttonPrimary}>Excel export</button>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "7px 10px", borderRadius: 12, background: officeTheme.panelBackground, border: `1px solid ${officeTheme.borderColor}` }}>
-              <label style={{ display: "inline-flex", alignItems: "center", gap: 7, color: officeTheme.textColor, fontSize: 12, fontWeight: 800, cursor: "pointer", whiteSpace: "nowrap" }}>
-                <input type="checkbox" checked={dashboardPdfIncludeComparison} onChange={(event) => setDashboardPdfIncludeComparison(event.target.checked)} />
-                Dolgozói összehasonlító oldal
-              </label>
-              <select
-                value={dashboardPdfComparisonStation}
-                onChange={(event) => setDashboardPdfComparisonStation(event.target.value)}
-                disabled={!dashboardPdfIncludeComparison}
-                style={{ ...dashboardFilterFieldStyle, width: 235, height: 38, opacity: dashboardPdfIncludeComparison ? 1 : 0.55 }}
-                aria-label="PDF összehasonlítás munkaállomása"
-              >
-                <option value="__dashboard__">Dashboard munkaállomás-szűrése</option>
-                <option value="all">Összes munkaállomás</option>
-                {availableStationRows.map((row) => (
-                  <option key={`pdf-${row.stationName}`} value={row.stationName}>{row.stationName}</option>
-                ))}
-              </select>
-            </div>
-            <button type="button" onClick={() => void exportDashboardAsPdf()} style={buttonPrimary}>Profi A4 PDF</button>
+            <button type="button" onClick={() => void exportDashboardAsPdf()} style={buttonPrimary}>Dolgozói A4 PDF</button>
             <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
           </div>
         </div>
@@ -9405,6 +10130,28 @@ export default function Page() {
     }, 30 * 1000);
     return () => window.clearInterval(intervalId);
   }, [activeWorker, step, reportSettings]);
+
+  useEffect(() => {
+    if (!supabase || !activeWorker || !isManagementDashboardWorker(activeWorker)) return;
+    if (terminalView !== "management" || flowStage !== "dashboard") return;
+
+    if (!reportDeliveryProfilesLoaded) {
+      void loadReportDeliveryProfiles();
+    }
+    void checkAutomaticReportDeliveryProfiles();
+    const intervalId = window.setInterval(() => {
+      void checkAutomaticReportDeliveryProfiles();
+    }, 30 * 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [
+    supabase,
+    activeWorker?.id,
+    terminalView,
+    flowStage,
+    reportDeliveryProfilesLoaded,
+    reportDeliveryProfiles,
+  ]);
 
   useEffect(() => {
     if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
@@ -12629,10 +13376,14 @@ export default function Page() {
     })[0] || null;
   }
 
-  function getDashboardPdfPerformanceRows(stationName: string, workerName: string): DashboardWorkerPerformanceRow[] {
+  function getDashboardPdfPerformanceRows(
+    stationName: string,
+    workerName: string,
+    sourceData: DashboardData = dashboardData
+  ): DashboardWorkerPerformanceRow[] {
     const sourceRows = stationName === "all"
-      ? dashboardData.workerRows
-      : dashboardData.stationWorkerPerformance.find(
+      ? sourceData.workerRows
+      : sourceData.stationWorkerPerformance.find(
           (row) => normalizeLooseText(row.stationName) === normalizeLooseText(stationName)
         )?.workerRows || [];
     if (workerName === "all") return sourceRows;
@@ -12643,7 +13394,8 @@ export default function Page() {
     visibleLogs: WorkLogRow[],
     planRows: DashboardPdfPlanRow[],
     stationFilter: string,
-    workerFilter: string
+    workerFilter: string,
+    sourceData: DashboardData = dashboardData
   ): DashboardPdfWorkerAnalysis[] {
     const endLogs = visibleLogs.filter((log) => {
       const isEnd = String(log.action || "").toUpperCase() === "END" || Boolean(log.end_time || log.end_timestamp);
@@ -12681,7 +13433,7 @@ export default function Page() {
       });
     });
 
-    const performanceRows = getDashboardPdfPerformanceRows(stationFilter, workerFilter);
+    const performanceRows = getDashboardPdfPerformanceRows(stationFilter, workerFilter, sourceData);
     const workerNames = Array.from(new Set([
       ...performanceRows.map((row) => row.workerName),
       ...completedRows.map((row) => row.workerName),
@@ -12716,301 +13468,358 @@ export default function Page() {
     });
   }
 
+  async function getPdfImageNaturalSize(dataUrl: string): Promise<{ width: number; height: number }> {
+    return await new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => resolve({
+        width: Math.max(1, Number(image.naturalWidth || image.width || 1)),
+        height: Math.max(1, Number(image.naturalHeight || image.height || 1)),
+      });
+      image.onerror = () => resolve({ width: 1, height: 1 });
+      image.src = dataUrl;
+    });
+  }
+
+  function formatReportMinutes(minutes: number): string {
+    const safeMinutes = Math.max(0, Math.round(Number(minutes || 0)));
+    const hours = Math.floor(safeMinutes / 60);
+    const rest = safeMinutes % 60;
+    if (hours <= 0) return `${rest} perc`;
+    if (rest <= 0) return `${hours} óra`;
+    return `${hours} óra ${rest} perc`;
+  }
+
+  async function createProfessionalWorkerAnalysisPdfBlob(options: {
+    sourceData: DashboardData;
+    rangeLabel: string;
+    stationFilter: string;
+    workerFilter: string;
+    orderLabel: string;
+    productTypeFilter?: ReportDeliveryProductType;
+    reportTitle?: string;
+  }): Promise<Blob> {
+    const [jspdf, logoDataUrl] = await Promise.all([waitForJsPdf(), loadDashboardPdfCompanyLogo()]);
+    const logoSize = await getPdfImageNaturalSize(logoDataUrl);
+    const doc = new jspdf.jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
+    const pdf = doc as any;
+    registerPdfUnicodeFonts(doc);
+
+    const pageWidth = 595.28;
+    const pageHeight = 841.89;
+    const marginX = 38;
+    const contentWidth = pageWidth - marginX * 2;
+    const bottomMargin = 42;
+    const ink = [17, 24, 39] as const;
+    const darkGray = [55, 65, 81] as const;
+    const middleGray = [107, 114, 128] as const;
+    const borderGray = [188, 193, 201] as const;
+    const paleGray = [245, 246, 247] as const;
+    const generatedAt = formatDateTime(new Date());
+    const reportTitle = options.reportTitle || "Dolgozói időszaki elemzés";
+
+    const completedLogs = options.sourceData.logs.filter((log) =>
+      String(log.action || "").toUpperCase() === "END" || Boolean(log.end_time || log.end_timestamp)
+    );
+    const planRows = await loadDashboardPdfPlanRows(
+      completedLogs.map((log) => String(log.order_number || "").trim()).filter(Boolean)
+    );
+    let workerAnalyses = buildDashboardPdfWorkerAnalyses(
+      options.sourceData.logs,
+      planRows,
+      options.stationFilter,
+      options.workerFilter,
+      options.sourceData
+    );
+
+    if (options.productTypeFilter && options.productTypeFilter !== "all") {
+      workerAnalyses = workerAnalyses.map((analysis) => {
+        const completedOrders = analysis.completedOrders.filter(
+          (row) => row.productType === options.productTypeFilter
+        );
+        const typeCounts: Record<string, number> = { Standard: 0, Plus: 0, Extra: 0, Egyéb: 0 };
+        completedOrders.forEach((row) => {
+          if (row.productType === "Standard" || row.productType === "Plus" || row.productType === "Extra") {
+            typeCounts[row.productType] += 1;
+          } else {
+            typeCounts.Egyéb += 1;
+          }
+        });
+        return { ...analysis, completedOrders, typeCounts };
+      }).filter((analysis) => analysis.completedOrders.length > 0 || analysis.performance.totalMinutes > 0);
+    }
+
+    if (!workerAnalyses.length) {
+      workerAnalyses = [{
+        workerName: options.workerFilter === "all" ? "Nincs megjeleníthető dolgozói adat" : options.workerFilter,
+        performance: {
+          workerName: options.workerFilter === "all" ? "-" : options.workerFilter,
+          totalMinutes: 0,
+          totalDurationLabel: "0 perc",
+          closedSegments: 0,
+          activeDayCount: 0,
+          accountedMinutes: 0,
+          efficiencyPct: null,
+        },
+        completedOrders: [],
+        typeCounts: { Standard: 0, Plus: 0, Extra: 0, Egyéb: 0 },
+      }];
+    }
+
+    const fitLogo = (maxWidth: number, maxHeight: number): { width: number; height: number } => {
+      const ratio = logoSize.width / Math.max(1, logoSize.height);
+      let width = maxWidth;
+      let height = width / ratio;
+      if (height > maxHeight) {
+        height = maxHeight;
+        width = height * ratio;
+      }
+      return { width, height };
+    };
+
+    const drawLogo = (rightX: number, topY: number): void => {
+      const fitted = fitLogo(70, 34);
+      const x = rightX - fitted.width;
+      const y = topY + Math.max(0, (34 - fitted.height) / 2);
+      try {
+        pdf.addImage(logoDataUrl, "PNG", x, y, fitted.width, fitted.height, undefined, "FAST");
+      } catch {
+        try { pdf.addImage(logoDataUrl, x, y, fitted.width, fitted.height); } catch { /* no-op */ }
+      }
+    };
+
+    const drawWorkerHeader = (workerName: string, stationLabel: string): number => {
+      doc.setFillColor(...ink);
+      doc.rect(0, 0, pageWidth, 82, "F");
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(18);
+      doc.setTextColor(255, 255, 255);
+      doc.text(reportTitle, marginX, 31);
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(8.2);
+      doc.text(`${options.rangeLabel} • ${stationLabel} • ${options.orderLabel}`, marginX, 50, { maxWidth: 415 });
+      doc.setFontSize(7.4);
+      doc.text(`Generálva: ${generatedAt}`, marginX, 67);
+      drawLogo(pageWidth - marginX, 22);
+
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(22);
+      doc.setTextColor(...ink);
+      doc.text(workerName, marginX, 118, { maxWidth: contentWidth });
+      return 137;
+    };
+
+    const calculateUnifiedKpiFontSize = (values: string[], maxWidth: number): number => {
+      for (let fontSize = 17; fontSize >= 10; fontSize -= 0.5) {
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(fontSize);
+        if (values.every((value) => Number((doc as any).getTextWidth(value)) <= maxWidth)) return fontSize;
+      }
+      return 10;
+    };
+
+    const drawKpiCards = (
+      y: number,
+      analysis: DashboardPdfWorkerAnalysis
+    ): number => {
+      const worker = workers.find((row) => normalizeLooseText(row["Teljes nev"]) === normalizeLooseText(analysis.workerName));
+      const baseDailyMinutes = getDashboardWorkerBaseAccountedMinutes(worker);
+      const basePeriodMinutes = baseDailyMinutes * Math.max(0, analysis.performance.activeDayCount);
+      const overtimeMinutes = Math.max(0, analysis.performance.accountedMinutes - basePeriodMinutes);
+      const values = [
+        analysis.performance.efficiencyPct === null ? "–" : `${formatDashboardEfficiencyPct(analysis.performance.efficiencyPct)}%`,
+        analysis.performance.totalDurationLabel || formatReportMinutes(analysis.performance.totalMinutes),
+        formatReportMinutes(analysis.performance.accountedMinutes),
+        String(analysis.completedOrders.length),
+        String(analysis.performance.activeDayCount),
+      ];
+      const labels = ["TERMELÉKENYSÉG", "LEDOLGOZOTT", "ELSZÁMOLT KERET", "BEFEJEZETT", "AKTÍV NAP"];
+      const helpers = [
+        "tényleges / elszámolt",
+        `${analysis.performance.closedSegments} lezárt log`,
+        overtimeMinutes > 0 ? `ebből túlóra: ${formatReportMinutes(overtimeMinutes)}` : "műszak szerinti keret",
+        "rendelés",
+        "munkával érintett nap",
+      ];
+      const gap = 7;
+      const cardWidth = (contentWidth - gap * 4) / 5;
+      const cardHeight = 76;
+      const unifiedFontSize = calculateUnifiedKpiFontSize(values, cardWidth - 18);
+
+      values.forEach((value, index) => {
+        const x = marginX + index * (cardWidth + gap);
+        doc.setFillColor(...paleGray);
+        doc.setDrawColor(...borderGray);
+        pdf.roundedRect(x, y, cardWidth, cardHeight, 6, 6, "FD");
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(6.7);
+        doc.setTextColor(...darkGray);
+        doc.text(labels[index], x + 9, y + 17, { maxWidth: cardWidth - 18 });
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(unifiedFontSize);
+        doc.setTextColor(...ink);
+        doc.text(value, x + 9, y + 43, { maxWidth: cardWidth - 18 });
+        doc.setFont(PDF_FONT_FAMILY, "normal");
+        doc.setFontSize(5.8);
+        doc.setTextColor(...middleGray);
+        const helperLines = doc.splitTextToSize(helpers[index], cardWidth - 18).slice(0, 2);
+        doc.text(helperLines, x + 9, y + 60);
+      });
+      return y + cardHeight;
+    };
+
+    const drawTypeDistribution = (y: number, analysis: DashboardPdfWorkerAnalysis): number => {
+      doc.setFillColor(232, 234, 237);
+      pdf.roundedRect(marginX, y, contentWidth, 25, 5, 5, "F");
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(10);
+      doc.setTextColor(...ink);
+      doc.text("Standard / Plus / Extra rendelésmegoszlás", marginX + 10, y + 17);
+      y += 42;
+
+      const items: Array<{ key: "Standard" | "Plus" | "Extra" | "Egyéb"; shade: number }> = [
+        { key: "Standard", shade: 45 },
+        { key: "Plus", shade: 95 },
+        { key: "Extra", shade: 145 },
+        { key: "Egyéb", shade: 195 },
+      ];
+      const total = items.reduce((sum, item) => sum + (analysis.typeCounts[item.key] || 0), 0);
+      const max = Math.max(1, ...items.map((item) => analysis.typeCounts[item.key] || 0));
+      const barX = marginX + 72;
+      const barWidth = contentWidth - 118;
+      items.forEach((item) => {
+        const count = analysis.typeCounts[item.key] || 0;
+        const pct = total > 0 ? (count / total) * 100 : 0;
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(7.5);
+        doc.setTextColor(...ink);
+        doc.text(item.key, marginX, y + 9);
+        doc.setFillColor(232, 234, 237);
+        pdf.roundedRect(barX, y, barWidth, 11, 3, 3, "F");
+        if (count > 0) {
+          doc.setFillColor(item.shade, item.shade, item.shade);
+          pdf.roundedRect(barX, y, Math.max(5, (count / max) * barWidth), 11, 3, 3, "F");
+        }
+        doc.setFont(PDF_FONT_FAMILY, "normal");
+        doc.setFontSize(7);
+        doc.setTextColor(...darkGray);
+        doc.text(`${count} db • ${pct.toFixed(1).replace(".", ",")}%`, pageWidth - marginX, y + 9, { align: "right" });
+        y += 22;
+      });
+      return y;
+    };
+
+    const drawTypeTable = (y: number, analysis: DashboardPdfWorkerAnalysis): number => {
+      const total = analysis.completedOrders.length;
+      pdf.autoTable({
+        startY: y,
+        head: [["Típus", "Darabszám", "Arány"]],
+        body: ["Standard", "Plus", "Extra", "Egyéb"].map((type) => {
+          const count = analysis.typeCounts[type] || 0;
+          return [type, count, total > 0 ? `${((count / total) * 100).toFixed(1).replace(".", ",")}%` : "0,0%"];
+        }),
+        theme: "grid",
+        margin: { left: marginX, right: marginX, bottom: bottomMargin },
+        styles: { font: PDF_FONT_FAMILY, fontSize: 7.5, cellPadding: 4.5, textColor: ink },
+        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: ink, textColor: [255, 255, 255] },
+        alternateRowStyles: { fillColor: paleGray },
+      });
+      return Number(pdf.lastAutoTable?.finalY || y + 80);
+    };
+
+    workerAnalyses.forEach((analysis, workerIndex) => {
+      if (workerIndex > 0) pdf.addPage("a4", "portrait");
+      const stations = Array.from(new Set(analysis.completedOrders.map((row) => row.stationName).filter(Boolean)));
+      const stationLabel = options.stationFilter !== "all"
+        ? options.stationFilter
+        : stations.length
+          ? stations.join(", ")
+          : "Összes munkaállomás";
+      let cursorY = drawWorkerHeader(analysis.workerName, stationLabel);
+
+      cursorY = drawKpiCards(cursorY, analysis) + 19;
+      cursorY = drawTypeDistribution(cursorY, analysis) + 7;
+      cursorY = drawTypeTable(cursorY, analysis) + 18;
+
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(10);
+      doc.setTextColor(...ink);
+      doc.text("Elkészült rendelések részletei", marginX, cursorY);
+      cursorY += 10;
+
+      const details = analysis.completedOrders.map((row) => [
+        row.orderNumber,
+        row.productType,
+        row.stationName || "–",
+        row.planDate || "–",
+        row.completedAt ? formatDateTime(row.completedAt) : "–",
+        row.elapsedLabel || "–",
+      ]);
+      pdf.autoTable({
+        startY: cursorY,
+        head: [["Rendelés", "Típus", "Munkaállomás", "Terv dátuma", "Befejezés", "Eltelt idő"]],
+        body: details.length ? details : [["Nincs befejezett rendelés", "–", "–", "–", "–", "–"]],
+        theme: "grid",
+        margin: { left: marginX, right: marginX, top: 44, bottom: bottomMargin },
+        styles: { font: PDF_FONT_FAMILY, fontSize: 6.6, cellPadding: 3.4, overflow: "linebreak", textColor: ink },
+        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: ink, textColor: [255, 255, 255] },
+        alternateRowStyles: { fillColor: paleGray },
+        columnStyles: {
+          0: { cellWidth: 82 },
+          1: { cellWidth: 55 },
+          2: { cellWidth: 78 },
+          3: { cellWidth: 62 },
+          4: { cellWidth: 107 },
+          5: { cellWidth: 68 },
+        },
+        didDrawPage: (data: any) => {
+          if (Number(data?.pageNumber || 1) <= 1) return;
+          doc.setFillColor(...ink);
+          doc.rect(0, 0, pageWidth, 38, "F");
+          doc.setFont(PDF_FONT_FAMILY, "bold");
+          doc.setFontSize(7.5);
+          doc.setTextColor(255, 255, 255);
+          doc.text(`${reportTitle} • ${analysis.workerName}`, marginX, 22, { maxWidth: 390 });
+          drawLogo(pageWidth - marginX, 0);
+        },
+      });
+    });
+
+    const pageCount = pdf.getNumberOfPages();
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+      pdf.setPage(pageNumber);
+      doc.setDrawColor(...borderGray);
+      doc.setLineWidth(0.6);
+      doc.line(marginX, pageHeight - 28, pageWidth - marginX, pageHeight - 28);
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(6.5);
+      doc.setTextColor(...middleGray);
+      doc.text("NÍVÓ • Dolgozói időszaki elemzés", marginX, pageHeight - 15);
+      doc.text(`${pageNumber} / ${pageCount}`, pageWidth - marginX, pageHeight - 15, { align: "right" });
+    }
+
+    return doc.output("blob");
+  }
+
   async function exportDashboardAsPdf(): Promise<void> {
     try {
-      setMessage({ type: "success", text: "A professzionális A4 vezetői riport készül..." });
-      const [jspdf, logoDataUrl] = await Promise.all([waitForJsPdf(), loadDashboardPdfCompanyLogo()]);
-      const doc = new jspdf.jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
-      const pdf = doc as any;
-      registerPdfUnicodeFonts(doc);
-
-      const pageWidth = 595.28;
-      const pageHeight = 841.89;
-      const marginX = 34;
-      const contentWidth = pageWidth - marginX * 2;
-      const navy = [15, 23, 42] as const;
-      const blue = [37, 99, 235] as const;
-      const lightBlue = [239, 246, 255] as const;
-      const slate = [71, 85, 105] as const;
-      const lightSlate = [241, 245, 249] as const;
-      const border = [203, 213, 225] as const;
-      const green = [5, 150, 105] as const;
-      const orange = [234, 88, 12] as const;
-      const purple = [124, 58, 237] as const;
-      const gray = [100, 116, 139] as const;
-      const generatedAt = formatDateTime(new Date());
-      const brandedPageNumbers = new Set<number>();
+      setMessage({ type: "success", text: "A dolgozói A4 PDF készül..." });
       const range = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
       const filteredWorkerStats = getFilteredDashboardWorkerStats();
       const selectedStation = filteredWorkerStats.selectedStationValue;
       const selectedWorker = filteredWorkerStats.selectedWorkerValue;
-      const selectedStationLabel = selectedStation === "all" ? "Összes munkaállomás" : selectedStation;
-      const selectedWorkerLabel = selectedWorker === "all" ? "Összes dolgozó" : selectedWorker;
-      const selectedOrderLabel = dashboardOrderFiltersRef.current.length ? dashboardOrderFiltersRef.current.join(", ") : "Összes rendelés";
-      const filterSummary = `${range.label} • ${selectedStationLabel} • ${selectedWorkerLabel} • ${selectedOrderLabel}`;
-
-      const completedVisibleLogs = dashboardData.logs.filter((log) => String(log.action || "").toUpperCase() === "END" || Boolean(log.end_time || log.end_timestamp));
-      const planRows = await loadDashboardPdfPlanRows(completedVisibleLogs.map((log) => String(log.order_number || "").trim()).filter(Boolean));
-      const workerAnalyses = buildDashboardPdfWorkerAnalyses(dashboardData.logs, planRows, selectedStation, selectedWorker);
-      const comparisonStation = dashboardPdfComparisonStation === "__dashboard__" ? selectedStation : dashboardPdfComparisonStation;
-      const comparisonAnalyses = buildDashboardPdfWorkerAnalyses(dashboardData.logs, planRows, comparisonStation, selectedWorker);
-
-      const typeTotals = workerAnalyses.reduce((acc, worker) => {
-        acc.Standard += worker.typeCounts.Standard || 0;
-        acc.Plus += worker.typeCounts.Plus || 0;
-        acc.Extra += worker.typeCounts.Extra || 0;
-        acc.Egyéb += worker.typeCounts.Egyéb || 0;
-        return acc;
-      }, { Standard: 0, Plus: 0, Extra: 0, Egyéb: 0 });
-      const completedOrderCount = workerAnalyses.reduce((sum, worker) => sum + worker.completedOrders.length, 0);
-      const accountedMinutes = workerAnalyses.reduce((sum, worker) => sum + worker.performance.accountedMinutes, 0);
-      const workedMinutes = workerAnalyses.reduce((sum, worker) => sum + worker.performance.totalMinutes, 0);
-      const overallEfficiency = accountedMinutes > 0 ? roundDashboardEfficiencyPct((workedMinutes / accountedMinutes) * 100) : null;
-
-      const drawLogo = (x: number, y: number, width: number, height: number) => {
-        try { pdf.addImage(logoDataUrl, "PNG", x, y, width, height, undefined, "FAST"); } catch (error) { console.warn("PDF logo render hiba:", error); }
-      };
-      const drawHeader = (title: string, subtitle = "") => {
-        const currentPageNumber = Number(pdf.getCurrentPageInfo?.()?.pageNumber || pdf.getNumberOfPages());
-        brandedPageNumbers.add(currentPageNumber);
-        doc.setFillColor(...navy); doc.rect(0, 0, pageWidth, 76, "F");
-        doc.setFillColor(...blue); doc.rect(0, 76, pageWidth, 4, "F");
-        drawLogo(pageWidth - 106, 18, 68, 36);
-        doc.setTextColor(255, 255, 255); doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(17); doc.text(title, marginX, 31);
-        doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(8.5); doc.text(subtitle || filterSummary, marginX, 48, { maxWidth: pageWidth - 160 });
-        doc.setFontSize(7.5); doc.text(`Generálva: ${generatedAt}`, marginX, 63);
-      };
-      const drawFooter = (pageNumber: number, pageCount: number) => {
-        doc.setDrawColor(...border); doc.line(marginX, pageHeight - 30, pageWidth - marginX, pageHeight - 30);
-        doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(7.5); doc.setTextColor(...slate);
-        doc.text("NÍVÓ • Vezetői termelési riport", marginX, pageHeight - 17);
-        doc.text(`${pageNumber} / ${pageCount}`, pageWidth - marginX, pageHeight - 17, { align: "right" });
-      };
-      const drawKpi = (x: number, y: number, width: number, label: string, value: string, helper = "") => {
-        doc.setFillColor(248, 250, 252); doc.setDrawColor(...border); pdf.roundedRect(x, y, width, 72, 8, 8, "FD");
-        doc.setTextColor(...slate); doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(7.5); doc.text(label.toUpperCase(), x + 11, y + 17);
-        doc.setTextColor(...navy); doc.setFontSize(19); doc.text(value, x + 11, y + 43, { maxWidth: width - 22 });
-        doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(7); doc.setTextColor(...slate); if (helper) doc.text(helper, x + 11, y + 59, { maxWidth: width - 22 });
-      };
-      const drawSectionTitle = (title: string, y: number) => {
-        doc.setFillColor(...lightBlue); pdf.roundedRect(marginX, y, contentWidth, 25, 6, 6, "F");
-        doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(10.5); doc.setTextColor(...navy); doc.text(title, marginX + 10, y + 16.5);
-      };
-      const drawTypeBars = (analysis: DashboardPdfWorkerAnalysis, y: number) => {
-        const types: Array<{ key: string; color: readonly [number, number, number] }> = [
-          { key: "Standard", color: blue }, { key: "Plus", color: green }, { key: "Extra", color: purple }, { key: "Egyéb", color: gray },
-        ];
-        const maxCount = Math.max(1, ...types.map((item) => analysis.typeCounts[item.key] || 0));
-        types.forEach((item, index) => {
-          const lineY = y + index * 24;
-          const count = analysis.typeCounts[item.key] || 0;
-          doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(8); doc.setTextColor(...navy); doc.text(item.key, marginX, lineY + 10);
-          doc.setFillColor(226, 232, 240); pdf.roundedRect(marginX + 72, lineY, 330, 13, 4, 4, "F");
-          if (count > 0) { doc.setFillColor(...item.color); pdf.roundedRect(marginX + 72, lineY, Math.max(8, (count / maxCount) * 330), 13, 4, 4, "F"); }
-          doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(8); doc.setTextColor(...slate); doc.text(String(count), marginX + 420, lineY + 10);
-        });
-      };
-
-      // 1. oldal – vezetői összefoglaló
-      drawHeader("Vezetői műszerfal • A4 riport", filterSummary);
-      doc.setTextColor(...navy); doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(22); doc.text(dashboardFilterMode === "monthly" ? "Havi termelési összefoglaló" : "Időszaki termelési összefoglaló", marginX, 112);
-      doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(9); doc.setTextColor(...slate); doc.text("A riport minden adata a vezetői műszerfal pillanatnyilag aktív szűréseiből készül.", marginX, 130);
-      const kpiGap = 8; const kpiWidth = (contentWidth - kpiGap * 3) / 4;
-      drawKpi(marginX, 151, kpiWidth, "Dolgozók", String(workerAnalyses.length), "szűrt időszak");
-      drawKpi(marginX + (kpiWidth + kpiGap), 151, kpiWidth, "Ledolgozott idő", formatDuration(workedMinutes), `${formatDuration(accountedMinutes)} elszámolt keret`);
-      drawKpi(marginX + (kpiWidth + kpiGap) * 2, 151, kpiWidth, "Befejezett rendelések", String(completedOrderCount), "dolgozó × állomás × tervnap");
-      drawKpi(marginX + (kpiWidth + kpiGap) * 3, 151, kpiWidth, "Termelékenység", overallEfficiency === null ? "–" : `${formatDashboardEfficiencyPct(overallEfficiency)}%`, "tényleges / elszámolt idő");
-
-      drawSectionTitle("Rendeléstípusok összesítése", 242);
-      const summaryTypes = [
-        ["Standard", typeTotals.Standard, blue], ["Plus", typeTotals.Plus, green], ["Extra", typeTotals.Extra, purple], ["Egyéb / nincs adat", typeTotals.Egyéb, gray],
-      ] as const;
-      summaryTypes.forEach((item, index) => {
-        const x = marginX + index * (contentWidth / 4);
-        doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(18); doc.setTextColor(...item[2]); doc.text(String(item[1]), x + 8, 292);
-        doc.setFontSize(8); doc.setTextColor(...slate); doc.text(item[0], x + 8, 307);
+      const selectedOrderLabel = dashboardOrderFiltersRef.current.length
+        ? dashboardOrderFiltersRef.current.join(", ")
+        : "Összes rendelés";
+      const blob = await createProfessionalWorkerAnalysisPdfBlob({
+        sourceData: dashboardData,
+        rangeLabel: range.label,
+        stationFilter: selectedStation,
+        workerFilter: selectedWorker,
+        orderLabel: selectedOrderLabel,
       });
-
-      drawSectionTitle("Munkaállomási tervteljesítés", 333);
-      const visibleStationRows = selectedStation === "all"
-        ? dashboardData.stationEfficiencyRows
-        : dashboardData.stationEfficiencyRows.filter((row) => normalizeLooseText(row.stationName) === normalizeLooseText(selectedStation));
-      pdf.autoTable({
-        startY: 365,
-        head: [["Munkaállomás", "Terv", "Kész", "Hátralévő", "Tervhatékonyság"]],
-        body: visibleStationRows.length ? visibleStationRows.map((row) => [row.stationName, row.plannedItems, row.completedItems, Math.max(0, row.plannedItems - row.completedItems), row.efficiencyPct === null ? "–" : `${row.efficiencyPct}%`]) : [["Nincs adat", "–", "–", "–", "–"]],
-        theme: "grid",
-        margin: { left: marginX, right: marginX, top: 90, bottom: 42 },
-        styles: { font: PDF_FONT_FAMILY, fontSize: 8.5, cellPadding: 6, textColor: navy },
-        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: navy, textColor: [255, 255, 255] },
-        alternateRowStyles: { fillColor: [248, 250, 252] },
-      });
-
-      // Dolgozónként külön havi/időszaki elemzés
-      for (const analysis of workerAnalyses) {
-        pdf.addPage("a4", "portrait");
-        drawHeader(dashboardFilterMode === "monthly" ? "Havi dolgozói elemzés" : "Dolgozói időszaki elemzés", filterSummary);
-        doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(21); doc.setTextColor(...navy); doc.text(analysis.workerName, marginX, 116);
-        const workerStations = Array.from(new Set(analysis.completedOrders.map((row) => row.stationName).filter(Boolean))).join(", ") || selectedStationLabel;
-        doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(8.5); doc.setTextColor(...slate); doc.text(`Munkaállomás(ok): ${workerStations}`, marginX, 134, { maxWidth: contentWidth });
-
-        const workerKpiWidth = (contentWidth - 8 * 4) / 5;
-        drawKpi(marginX, 153, workerKpiWidth, "Termelékenység", analysis.performance.efficiencyPct === null ? "–" : `${formatDashboardEfficiencyPct(analysis.performance.efficiencyPct)}%`, "tényleges / elszámolt");
-        drawKpi(marginX + (workerKpiWidth + 8), 153, workerKpiWidth, "Ledolgozott", analysis.performance.totalDurationLabel, `${analysis.performance.totalMinutes} perc`);
-        drawKpi(marginX + (workerKpiWidth + 8) * 2, 153, workerKpiWidth, "Elszámolt keret", formatDuration(analysis.performance.accountedMinutes), "műszak + túlóra");
-        drawKpi(marginX + (workerKpiWidth + 8) * 3, 153, workerKpiWidth, "Befejezett", String(analysis.completedOrders.length), "rendelés");
-        drawKpi(marginX + (workerKpiWidth + 8) * 4, 153, workerKpiWidth, "Aktív nap", String(analysis.performance.activeDayCount), `${analysis.performance.closedSegments} lezárt log`);
-
-        drawSectionTitle("Standard / Plus / Extra rendelésmegoszlás", 242);
-        drawTypeBars(analysis, 279);
-
-        drawSectionTitle("Típusösszesítő", 383);
-        pdf.autoTable({
-          startY: 413,
-          head: [["Típus", "Elkészült rendelések", "Arány"]],
-          body: ["Standard", "Plus", "Extra", "Egyéb"].map((type) => {
-            const count = analysis.typeCounts[type] || 0;
-            const ratio = analysis.completedOrders.length ? Math.round((count / analysis.completedOrders.length) * 1000) / 10 : 0;
-            return [type, count, `${ratio}%`];
-          }),
-          theme: "grid",
-          margin: { left: marginX, right: marginX, top: 90, bottom: 42 },
-          styles: { font: PDF_FONT_FAMILY, fontSize: 8, cellPadding: 5 },
-          headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: blue, textColor: [255, 255, 255] },
-        });
-        const detailStartY = Math.max(540, Number(pdf.lastAutoTable?.finalY || 500) + 28);
-        if (detailStartY > 690) pdf.addPage("a4", "portrait");
-        const actualDetailY = detailStartY > 690 ? 102 : detailStartY;
-        drawSectionTitle("Részletes befejezett rendelések", actualDetailY);
-        pdf.autoTable({
-          startY: actualDetailY + 31,
-          head: [["Rendelés", "Típus", "Munkaállomás", "Tervnap", "Befejezve", "Eltelt idő"]],
-          body: analysis.completedOrders.length ? analysis.completedOrders.map((row) => [
-            row.orderNumber,
-            row.productType,
-            row.stationName || "–",
-            row.planDate || "–",
-            formatDateTime(row.completedAt),
-            row.elapsedLabel,
-          ]) : [["Nincs befejezett rendelés", "–", "–", "–", "–", "–"]],
-          theme: "grid",
-          margin: { left: marginX, right: marginX, top: 90, bottom: 42 },
-          styles: { font: PDF_FONT_FAMILY, fontSize: 7.3, cellPadding: 4, overflow: "linebreak" },
-          headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: navy, textColor: [255, 255, 255] },
-          alternateRowStyles: { fillColor: [248, 250, 252] },
-        });
-      }
-
-      // Opcionális összehasonlító oldal
-      if (dashboardPdfIncludeComparison) {
-        pdf.addPage("a4", "portrait");
-        const comparisonStationLabel = comparisonStation === "all" ? "Összes munkaállomás" : comparisonStation;
-        drawHeader("Dolgozói összehasonlítás", `${range.label} • ${comparisonStationLabel} • ${selectedWorkerLabel} • ${selectedOrderLabel}`);
-        doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(19); doc.setTextColor(...navy); doc.text("Termelékenységi rangsor", marginX, 114);
-        doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(8.5); doc.setTextColor(...slate); doc.text(`Munkaállomás: ${comparisonStationLabel}`, marginX, 132);
-
-        const maxEfficiency = Math.max(100, ...comparisonAnalyses.map((row) => row.performance.efficiencyPct || 0));
-        const chartRows = comparisonAnalyses.slice(0, 12);
-        let chartY = 160;
-        chartRows.forEach((row, index) => {
-          const pct = row.performance.efficiencyPct || 0;
-          const rank = index + 1;
-          doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(7.8); doc.setTextColor(...navy);
-          doc.text(`${rank}. ${row.workerName}`, marginX, chartY + 9, { maxWidth: 130 });
-          doc.setFillColor(226, 232, 240); pdf.roundedRect(marginX + 142, chartY, 310, 12, 4, 4, "F");
-          if (pct > 0) {
-            const barColor = rank === 1 ? green : rank === 2 ? blue : rank === 3 ? purple : gray;
-            doc.setFillColor(...barColor); pdf.roundedRect(marginX + 142, chartY, Math.max(6, Math.min(310, (pct / maxEfficiency) * 310)), 12, 4, 4, "F");
-          }
-          doc.setTextColor(...slate); doc.text(`${formatDashboardEfficiencyPct(pct)}%`, marginX + 462, chartY + 9, { align: "right" });
-          chartY += 24;
-        });
-
-        const rankingY = Math.max(460, chartY + 18);
-        drawSectionTitle("Összehasonlító ranglista", rankingY);
-        pdf.autoTable({
-          startY: rankingY + 30,
-          head: [["#", "Dolgozó", "Termelékenység", "Ledolgozott", "Befejezett", "Standard", "Plus", "Extra"]],
-          body: comparisonAnalyses.length ? comparisonAnalyses.map((row, index) => [
-            index + 1,
-            row.workerName,
-            row.performance.efficiencyPct === null ? "–" : `${formatDashboardEfficiencyPct(row.performance.efficiencyPct)}%`,
-            row.performance.totalDurationLabel,
-            row.completedOrders.length,
-            row.typeCounts.Standard || 0,
-            row.typeCounts.Plus || 0,
-            row.typeCounts.Extra || 0,
-          ]) : [["–", "Nincs összehasonlítható adat", "–", "–", "–", "–", "–", "–"]],
-          theme: "grid",
-          margin: { left: marginX, right: marginX, top: 90, bottom: 42 },
-          styles: { font: PDF_FONT_FAMILY, fontSize: 7, cellPadding: 4 },
-          headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: navy, textColor: [255, 255, 255] },
-          alternateRowStyles: { fillColor: [248, 250, 252] },
-        });
-      }
-
-      // Melléklet – folyamatban lévő munkák és eseménynapló
-      const filteredActivity = getFilteredDashboardActivity();
-      pdf.addPage("a4", "portrait");
-      drawHeader("Melléklet • Folyamatban lévő munkák", filterSummary);
-      pdf.autoTable({
-        startY: 102,
-        head: [["Rendelés", "Munkaállomás", "Dolgozó", "Kezdés", "Megjegyzés"]],
-        body: filteredActivity.openRows.length ? filteredActivity.openRows.map((row) => [row.orderNumber, row.station || row.role || "–", row.workerName, formatDateTime(row.startedAt), row.lastNote || "–"]) : [["Nincs folyamatban lévő munka", "–", "–", "–", "–"]],
-        theme: "grid",
-        margin: { left: marginX, right: marginX, top: 90, bottom: 42 },
-        styles: { font: PDF_FONT_FAMILY, fontSize: 7.5, cellPadding: 5, overflow: "linebreak" },
-        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: navy, textColor: [255, 255, 255] },
-      });
-
-      pdf.addPage("a4", "portrait");
-      drawHeader("Melléklet • Eseménynapló", filterSummary);
-      pdf.autoTable({
-        startY: 102,
-        head: [["Időpont", "START", "END", "Eltelt", "Dolgozó", "Rendelés", "Esemény", "Állomás", "Megjegyzés"]],
-        body: filteredActivity.logs.length ? filteredActivity.logs.slice(0, 750).map((log) => {
-          const action = String(log.action || "").toUpperCase();
-          const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
-          const startAt = getDashboardLogStartAt(log);
-          const endAt = getDashboardLogEndAt(log);
-          return [
-            formatDateTime(getDashboardLogEventAt(log)),
-            startAt ? formatDateTime(startAt) : "–",
-            endAt ? formatDateTime(endAt) : "–",
-            getDashboardLogElapsedLabel(log),
-            getDashboardLogWorkerName(log),
-            log.order_number || "–",
-            isEnd ? "END" : action || "START",
-            resolveLogStation(log, workers),
-            getNoteBeforeContext(log.note) || "–",
-          ];
-        }) : [["Nincs esemény", "–", "–", "–", "–", "–", "–", "–", "–"]],
-        theme: "grid",
-        margin: { left: 22, right: 22, top: 90, bottom: 42 },
-        styles: { font: PDF_FONT_FAMILY, fontSize: 5.7, cellPadding: 2.6, overflow: "linebreak" },
-        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: navy, textColor: [255, 255, 255], fontSize: 5.8 },
-        alternateRowStyles: { fillColor: [248, 250, 252] },
-      });
-
-      // Minden automatikusan létrejött autoTable oldalon is legyen egységes fejléc/lábléc.
-      const pageCount = pdf.getNumberOfPages();
-      for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
-        pdf.setPage(pageNumber);
-        // Ha az autoTable egy új oldalt hozott létre, ott még nem volt fejléc.
-        if (!brandedPageNumbers.has(pageNumber)) {
-          // Az autoTable által létrehozott folytató oldalak kapjanak külön márkasávot és logót.
-          doc.setFillColor(...navy); doc.rect(0, 0, pageWidth, 24, "F");
-          drawLogo(pageWidth - 84, 4, 46, 15);
-          doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(7.5); doc.setTextColor(255, 255, 255);
-          doc.text("NÍVÓ • Vezetői termelési riport", marginX, 16);
-        }
-        drawFooter(pageNumber, pageCount);
-      }
-
-      const blob = doc.output("blob");
       const safePeriod = dashboardFilterMode === "monthly" ? dashboardDate.slice(0, 7) : dashboardDate;
-      downloadBlob(`vezetoi_riport_${safePeriod}.pdf`, blob, "application/pdf");
-      setMessage({ type: "success", text: `A profi A4 PDF elkészült (${pageCount} oldal).` });
+      downloadBlob(`dolgozoi_idoszaki_elemzes_${safePeriod}.pdf`, blob, "application/pdf");
+      setMessage({ type: "success", text: "A dolgozói időszaki A4 PDF elkészült." });
     } catch (error) {
       console.error("PDF export hiba:", error);
       setMessage({ type: "error", text: normalizeError(error) });
@@ -15441,13 +16250,20 @@ body {
     };
   }
 
-  async function loadCarpenterPrinterSettings(): Promise<void> {
+  function getLabelSettingsStation(): string {
+    if (terminalView === "management" && managementSection === "label-printer" && officeLabelPrinterStation.trim()) {
+      return officeLabelPrinterStation.trim();
+    }
+    return getCurrentMachineIdForInsert();
+  }
+
+  async function loadCarpenterPrinterSettings(stationOverride?: string): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
       return;
     }
     setCarpenterPrinterSettingsLoaded(false);
-    const station = getCurrentMachineIdForInsert();
+    const station = String(stationOverride || getLabelSettingsStation()).trim() || "Asztalos";
     try {
       let availablePrinters: string[] = [];
       try {
@@ -15627,7 +16443,7 @@ body {
     setUploadingCarpenterLabelImage(true);
     try {
       const prepared = await convertLabelImageToPng(file);
-      const station = normalizePlanColumnName(getCurrentMachineIdForInsert()) || "munkaallomas";
+      const station = normalizePlanColumnName(getLabelSettingsStation()) || "munkaallomas";
       const safeName = normalizePlanColumnName(file.name.replace(/\.[^.]+$/, "")) || "logo";
       const storagePath = `${station}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}.png`;
       const { error: uploadError } = await supabase.storage.from(LABEL_ASSETS_BUCKET).upload(storagePath, prepared.blob, { contentType: "image/png", cacheControl: "3600", upsert: false });
@@ -15636,7 +16452,7 @@ body {
       const imageUrl = String(data?.publicUrl || "").trim();
       if (!imageUrl) throw new Error("A feltöltött kép publikus URL-je nem hozható létre.");
       const assetInsert = await supabase.from(LABEL_ASSETS_TABLE).insert({
-        machine_name: getCurrentMachineIdForInsert(),
+        machine_name: getLabelSettingsStation(),
         storage_path: storagePath,
         public_url: imageUrl,
         original_name: file.name,
@@ -15862,7 +16678,7 @@ body {
 
   async function savePrinterConfigurationOnly(): Promise<void> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
-    const station = getCurrentMachineIdForInsert();
+    const station = getLabelSettingsStation();
     if (!selectedWindowsPrinter.trim()) throw new Error("Válassz ki egy Windowsban telepített nyomtatót.");
     const nowIso = new Date().toISOString();
     const response = await supabase.from(PRINTER_SETTINGS_TABLE).upsert({
@@ -15880,7 +16696,7 @@ body {
 
   async function persistCurrentCarpenterLabelTemplate(type: LabelTemplateType, asCopy = false): Promise<LabelTemplateRecord> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
-    const station = getCurrentMachineIdForInsert();
+    const station = getLabelSettingsStation();
     const existingRecords = carpenterLabelTemplateVersions[type];
     const selectedId = selectedCarpenterLabelTemplateIds[type];
     const selectedRecord = existingRecords.find((row) => row.id === selectedId);
@@ -15943,7 +16759,7 @@ body {
     setSavingCarpenterPrinterSettings(true);
     try {
       const record = await persistCurrentCarpenterLabelTemplate(type, false);
-      const station = getCurrentMachineIdForInsert();
+      const station = getLabelSettingsStation();
       const offResponse = await supabase.from(LABEL_TEMPLATES_TABLE).update({ active: false }).eq("machine_name", station).eq("template_type", type);
       if (offResponse.error) throw offResponse.error;
       const onResponse = await supabase.from(LABEL_TEMPLATES_TABLE).update({ active: true, updated_at: new Date().toISOString() }).eq("id", record.id);
@@ -16011,15 +16827,15 @@ body {
     });
   }
 
-  async function saveCarpenterPrinterSettings(): Promise<void> {
+  async function saveCarpenterPrinterSettings(officeMode = false): Promise<void> {
     setSavingCarpenterPrinterSettings(true);
     try {
       await savePrinterConfigurationOnly();
       await persistCurrentCarpenterLabelTemplate("VAGAS_KULSO", false);
       await persistCurrentCarpenterLabelTemplate("VAGAS_BELSO", false);
       await persistCurrentCarpenterLabelTemplate("UJRAGYARTAS", false);
-      setMessage({ type: "success", text: `A(z) ${getCurrentMachineIdForInsert()} nyomtató- és sablonbeállításai elmentve.` });
-      setFlowStage("batch-selection");
+      setMessage({ type: "success", text: `A(z) ${getLabelSettingsStation()} nyomtató- és sablonbeállításai elmentve.` });
+      if (!officeMode) setFlowStage("batch-selection");
     } catch (error) {
       setMessage({ type: "error", text: normalizeError(error) });
     } finally {
@@ -19061,7 +19877,7 @@ body {
     );
   }
 
-  function renderCarpenterPrinterSettings(): React.JSX.Element {
+  function renderCarpenterPrinterSettings(officeMode = false): React.JSX.Element {
     const type = activeCarpenterLabelTemplateType;
     const template = carpenterLabelTemplates[type];
     const versions = carpenterLabelTemplateVersions[type];
@@ -19073,12 +19889,36 @@ body {
       <div style={{ display: "grid", gap: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <div>
-            <div style={{ color: "#38bdf8", fontWeight: 900, fontSize: 13, letterSpacing: 0.8 }}>ASZTALOS SZABÁSZ · PROFESSZIONÁLIS CÍMKERENDSZER</div>
+            <div style={{ color: "#38bdf8", fontWeight: 900, fontSize: 13, letterSpacing: 0.8 }}>{officeMode ? "IRODA · PROFESSZIONÁLIS CÍMKERENDSZER" : "ASZTALOS SZABÁSZ · PROFESSZIONÁLIS CÍMKERENDSZER"}</div>
             <h2 style={{ margin: "4px 0", color: "#f8fafc" }}>Nyomtató és címkesablon beállításai</h2>
-            <div style={{ color: "#94a3b8", fontSize: 13 }}>Munkaállomás: {getCurrentMachineIdForInsert()} · A nyomtató, kalibráció, verziózott sablonok és aktív sablon Supabase-ban mentődik.</div>
+            <div style={{ color: "#94a3b8", fontSize: 13 }}>Munkaállomás: {getLabelSettingsStation()} · A nyomtató, kalibráció, verziózott sablonok és aktív sablon Supabase-ban mentődik.</div>
           </div>
-          <button type="button" onClick={() => setFlowStage("batch-selection")} style={buttonSecondary}>Vissza</button>
+          {!officeMode && <button type="button" onClick={() => setFlowStage("batch-selection")} style={buttonSecondary}>Vissza</button>}
         </div>
+
+        {officeMode && (
+          <div style={{ ...panelStyle, display: "grid", gridTemplateColumns: "minmax(260px, 420px) 1fr", gap: 12, alignItems: "end" }}>
+            <label style={{ display: "grid", gap: 7, color: "#cbd5e1", fontWeight: 800 }}>
+              Munkaállomás
+              <select
+                value={officeLabelPrinterStation}
+                onChange={(event) => {
+                  const nextStation = event.target.value;
+                  setOfficeLabelPrinterStation(nextStation);
+                  void loadCarpenterPrinterSettings(nextStation);
+                }}
+                style={controlStyle}
+              >
+                {Array.from(new Set(["Asztalos", ...getOrderedDashboardStations()])).map((station) => (
+                  <option key={station} value={station}>{station}</option>
+                ))}
+              </select>
+            </label>
+            <div style={{ color: "#94a3b8", fontSize: 12, lineHeight: 1.6 }}>
+              Az irodában elmentett aktív sablon ugyanazt a Supabase-beállítást módosítja, amelyet a műhelyi automatikus címkenyomtatás használ.
+            </div>
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <button type="button" onClick={() => setCarpenterPrinterTab("printer")} style={carpenterPrinterTab === "printer" ? buttonPrimary : buttonSecondary}>Nyomtató hozzáadása</button>
@@ -19209,8 +20049,10 @@ body {
         )}
 
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <button type="button" onClick={() => void saveCarpenterPrinterSettings()} disabled={savingCarpenterPrinterSettings} style={buttonPrimary}>{savingCarpenterPrinterSettings ? "Mentés..." : "Minden mentése és vissza"}</button>
-          <button type="button" onClick={() => setFlowStage("batch-selection")} style={buttonSecondary}>Mégse</button>
+          <button type="button" onClick={() => void saveCarpenterPrinterSettings(officeMode)} disabled={savingCarpenterPrinterSettings} style={buttonPrimary}>
+            {savingCarpenterPrinterSettings ? "Mentés..." : officeMode ? "Minden mentése" : "Minden mentése és vissza"}
+          </button>
+          {!officeMode && <button type="button" onClick={() => setFlowStage("batch-selection")} style={buttonSecondary}>Mégse</button>}
         </div>
       </div>
     );
@@ -19441,7 +20283,11 @@ body {
 
         <div
           style={{
-            display: step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId) ? "grid" : "block",
+            display: terminalView === "management"
+              ? "none"
+              : step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId)
+                ? "grid"
+                : "block",
             gridTemplateColumns: step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId)
               ? "minmax(520px, 0.82fr) minmax(680px, 1.18fr)"
               : undefined,
