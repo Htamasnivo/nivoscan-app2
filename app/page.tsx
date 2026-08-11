@@ -286,6 +286,7 @@ type DashboardProductTypeRow = {
 
 type DashboardData = {
   logs: WorkLogRow[];
+  availableOrderNumbers: string[];
   orderRows: OrderStatsRow[];
   openRows: DashboardOpenWorkRow[];
   workerRows: DashboardWorkerPerformanceRow[];
@@ -302,6 +303,115 @@ type DashboardData = {
 
 type DashboardFilterMode = "daily" | "weekly" | "monthly" | "custom";
 type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "reproduction-report";
+type OfficePageKey = ManagementSection;
+type OfficeThemePresetId = "industrial-night" | "graphite" | "steel-blue" | "light-office" | "contrast-monitor" | "custom";
+type OfficeThemeConfig = {
+  pageBackground: string;
+  panelBackground: string;
+  panelAltBackground: string;
+  textColor: string;
+  mutedText: string;
+  borderColor: string;
+  accentColor: string;
+  inputBackground: string;
+  inputText: string;
+  navBackground: string;
+  navActiveBackground: string;
+  navText: string;
+};
+
+const OFFICE_THEME_PRESETS: Record<Exclude<OfficeThemePresetId, "custom">, { name: string; description: string; theme: OfficeThemeConfig }> = {
+  "industrial-night": {
+    name: "Éjszakai ipari",
+    description: "Sötét szürkés-kék, műhelyi és irodai használatra.",
+    theme: {
+      pageBackground: "#020617", panelBackground: "#0f172a", panelAltBackground: "#111c31",
+      textColor: "#f8fafc", mutedText: "#94a3b8", borderColor: "#334155", accentColor: "#38bdf8",
+      inputBackground: "#0b1220", inputText: "#f8fafc", navBackground: "#0f172a", navActiveBackground: "#0c4a6e", navText: "#cbd5e1",
+    },
+  },
+  graphite: {
+    name: "Grafit",
+    description: "Prémium grafit, visszafogott hidegkék kiemelésekkel.",
+    theme: {
+      pageBackground: "#111315", panelBackground: "#1a1d21", panelAltBackground: "#23272d",
+      textColor: "#f5f7fa", mutedText: "#a8b0bb", borderColor: "#3a424c", accentColor: "#60a5fa",
+      inputBackground: "#15191e", inputText: "#f5f7fa", navBackground: "#181b20", navActiveBackground: "#244b73", navText: "#d7dde5",
+    },
+  },
+  "steel-blue": {
+    name: "Acélkék",
+    description: "Világosabb kékesszürke panelek, modern ipari megjelenés.",
+    theme: {
+      pageBackground: "#dce6ef", panelBackground: "#edf4f9", panelAltBackground: "#d3e1ec",
+      textColor: "#172a3d", mutedText: "#60758a", borderColor: "#8ea6ba", accentColor: "#0369a1",
+      inputBackground: "#f8fbfd", inputText: "#172a3d", navBackground: "#29445f", navActiveBackground: "#0c6b9a", navText: "#eef7ff",
+    },
+  },
+  "light-office": {
+    name: "Világos iroda",
+    description: "Fehér és világosszürke felület, erős olvashatósággal.",
+    theme: {
+      pageBackground: "#f1f5f9", panelBackground: "#ffffff", panelAltBackground: "#f8fafc",
+      textColor: "#172033", mutedText: "#64748b", borderColor: "#cbd5e1", accentColor: "#2563eb",
+      inputBackground: "#ffffff", inputText: "#0f172a", navBackground: "#ffffff", navActiveBackground: "#dbeafe", navText: "#334155",
+    },
+  },
+  "contrast-monitor": {
+    name: "Kontrasztos monitor",
+    description: "Mély sötét háttér és erősebb kiemelések nagy kijelzőkhöz.",
+    theme: {
+      pageBackground: "#030507", panelBackground: "#080c11", panelAltBackground: "#111923",
+      textColor: "#ffffff", mutedText: "#b8c5d4", borderColor: "#40546b", accentColor: "#00d9ff",
+      inputBackground: "#070b10", inputText: "#ffffff", navBackground: "#080c11", navActiveBackground: "#005a72", navText: "#edfaff",
+    },
+  },
+};
+
+function cloneOfficeTheme(theme: OfficeThemeConfig): OfficeThemeConfig {
+  return { ...theme };
+}
+function createDefaultOfficeThemeMap(): Record<OfficePageKey, OfficeThemeConfig> {
+  const base = OFFICE_THEME_PRESETS["industrial-night"].theme;
+  return {
+    dashboard: cloneOfficeTheme(base),
+    "production-plan": cloneOfficeTheme(base),
+    "production-monitor": cloneOfficeTheme(base),
+    "production-card": cloneOfficeTheme(base),
+    "reproduction-report": cloneOfficeTheme(base),
+  };
+}
+function createDefaultOfficeThemePresetMap(): Record<OfficePageKey, OfficeThemePresetId> {
+  return {
+    dashboard: "industrial-night",
+    "production-plan": "industrial-night",
+    "production-monitor": "industrial-night",
+    "production-card": "industrial-night",
+    "reproduction-report": "industrial-night",
+  };
+}
+
+function normalizeDashboardOrderSearch(value: string): string {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+function getDashboardQuickOrderCode(orderNumber: string): string {
+  const normalized = normalizeDashboardOrderSearch(orderNumber);
+  if (normalized.startsWith("R26") && normalized.length >= 8) {
+    return `${normalized.slice(3, 5)}${normalized.slice(-3)}`;
+  }
+  return "";
+}
+function matchesDashboardOrderFilters(orderNumber: string | null | undefined, filters: string[]): boolean {
+  if (!filters.length) return true;
+  const normalizedOrder = normalizeDashboardOrderSearch(String(orderNumber || ""));
+  if (!normalizedOrder) return false;
+  const quickCode = getDashboardQuickOrderCode(normalizedOrder);
+  return filters.some((rawFilter) => {
+    const filter = normalizeDashboardOrderSearch(rawFilter);
+    if (!filter) return true;
+    return normalizedOrder.includes(filter) || Boolean(quickCode && quickCode.includes(filter));
+  });
+}
 type ProductionMonitorStatus = "waiting" | "in-progress" | "done" | "not-required";
 
 type ProductionPlanRow = {
@@ -1692,9 +1802,17 @@ function isCarpenterProductionCardStation(stationName: string | null | undefined
 function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, stationName = ""): readonly string[] {
   if (table.dataSource === "scrap-replacement") return PRODUCTION_CARD_SCRAP_FIELD_IDS;
   if (table.dataSource === "backlog") return PRODUCTION_CARD_BACKLOG_FIELD_IDS;
-  const extraFields = getStationPlanExtraFieldDefinitions(stationName)
-    .map((field) => `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${field.key}`);
-  return [...PRODUCTION_CARD_FIELD_IDS, ...extraFields];
+
+  const planFieldIds = getStationPlanFieldDefinitions(stationName).map((field) => {
+    if (field.key === "sorszam") return PRODUCTION_CARD_ORDER_FIELD_ID;
+    if (field.key === "megnevezes") return PRODUCTION_CARD_PRODUCT_FIELD_ID;
+    if (field.key === "mennyiseg") return PRODUCTION_CARD_QUANTITY_FIELD_ID;
+    if (field.key === "elkeszules_datum") return PRODUCTION_CARD_DATE_FIELD_ID;
+    if (field.key === "tipus") return PRODUCTION_CARD_TYPE_FIELD_ID;
+    return `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${field.key}`;
+  });
+
+  return Array.from(new Set([...planFieldIds, ...PRODUCTION_CARD_FIELD_IDS]));
 }
 
 function getProductionCardFieldLabel(fieldId: string): string {
@@ -4052,6 +4170,7 @@ function buildDashboardData(
 
   return {
     logs,
+    availableOrderNumbers: Array.from(new Set(logs.map((log) => String(log.order_number || "").trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, "hu")),
     orderRows,
     openRows,
     workerRows,
@@ -4320,8 +4439,15 @@ export default function Page() {
   const [dashboardDateTo, setDashboardDateTo] = useState(getLocalDateKey(new Date()));
   const [dashboardSelectedStation, setDashboardSelectedStation] = useState("all");
   const [dashboardSelectedWorker, setDashboardSelectedWorker] = useState("all");
+  const [dashboardOrderFilters, setDashboardOrderFilters] = useState<string[]>([]);
+  const [dashboardOrderInput, setDashboardOrderInput] = useState("");
+  const [officeThemePresetByPage, setOfficeThemePresetByPage] = useState<Record<OfficePageKey, OfficeThemePresetId>>(createDefaultOfficeThemePresetMap());
+  const [officeThemeByPage, setOfficeThemeByPage] = useState<Record<OfficePageKey, OfficeThemeConfig>>(createDefaultOfficeThemeMap());
+  const [officeThemeEditorOpen, setOfficeThemeEditorOpen] = useState(false);
+  const [officeThemeSaving, setOfficeThemeSaving] = useState(false);
   const [dashboardData, setDashboardData] = useState<DashboardData>({
     logs: [],
+    availableOrderNumbers: [],
     orderRows: [],
     openRows: [],
     workerRows: [],
@@ -4556,6 +4682,111 @@ export default function Page() {
     });
   }, [rawWorkLogs, statsDateFrom, statsDateTo]);
 
+  function getOfficeTheme(pageKey: OfficePageKey = managementSection): OfficeThemeConfig {
+    return officeThemeByPage[pageKey] || cloneOfficeTheme(OFFICE_THEME_PRESETS["industrial-night"].theme);
+  }
+
+  function applyOfficeThemePreset(pageKey: OfficePageKey, presetId: Exclude<OfficeThemePresetId, "custom">): void {
+    const theme = cloneOfficeTheme(OFFICE_THEME_PRESETS[presetId].theme);
+    setOfficeThemePresetByPage((current) => ({ ...current, [pageKey]: presetId }));
+    setOfficeThemeByPage((current) => ({ ...current, [pageKey]: theme }));
+  }
+
+  function updateOfficeTheme(pageKey: OfficePageKey, patch: Partial<OfficeThemeConfig>): void {
+    setOfficeThemePresetByPage((current) => ({ ...current, [pageKey]: "custom" }));
+    setOfficeThemeByPage((current) => ({
+      ...current,
+      [pageKey]: {
+        ...(current[pageKey] || cloneOfficeTheme(OFFICE_THEME_PRESETS["industrial-night"].theme)),
+        ...patch,
+      },
+    }));
+  }
+
+  async function loadOfficeUiPreferences(): Promise<void> {
+    if (!supabase || !activeWorker || !isManagementDashboardWorker(activeWorker)) return;
+    const workerName = String(activeWorker["Teljes nev"] || "").trim();
+    if (!workerName) return;
+    try {
+      const response = await supabase
+        .from("user_ui_preferences")
+        .select("page_key, theme_preset, theme_json")
+        .eq("worker_name", workerName);
+      if (response.error) {
+        console.warn("A user_ui_preferences tábla még nem olvasható:", response.error);
+        return;
+      }
+      const nextThemes = createDefaultOfficeThemeMap();
+      const nextPresets = createDefaultOfficeThemePresetMap();
+      ((response.data || []) as Array<{ page_key?: string | null; theme_preset?: string | null; theme_json?: Record<string, unknown> | null }>).forEach((row) => {
+        const pageKey = String(row.page_key || "") as OfficePageKey;
+        if (!["dashboard", "production-plan", "production-monitor", "production-card", "reproduction-report"].includes(pageKey)) return;
+        const presetRaw = String(row.theme_preset || "industrial-night") as OfficeThemePresetId;
+        const validPreset: OfficeThemePresetId = ["industrial-night", "graphite", "steel-blue", "light-office", "contrast-monitor", "custom"].includes(presetRaw)
+          ? presetRaw
+          : "industrial-night";
+        const fallback = validPreset === "custom"
+          ? OFFICE_THEME_PRESETS["industrial-night"].theme
+          : OFFICE_THEME_PRESETS[validPreset as Exclude<OfficeThemePresetId, "custom">].theme;
+        nextPresets[pageKey] = validPreset;
+        nextThemes[pageKey] = { ...fallback, ...((row.theme_json || {}) as Partial<OfficeThemeConfig>) };
+      });
+      setOfficeThemePresetByPage(nextPresets);
+      setOfficeThemeByPage(nextThemes);
+    } catch (error) {
+      console.warn("UI beállítások betöltési hiba:", error);
+    }
+  }
+
+  async function saveOfficeUiPreference(pageKey: OfficePageKey = managementSection): Promise<void> {
+    if (!supabase || !activeWorker || !isManagementDashboardWorker(activeWorker)) return;
+    const workerName = String(activeWorker["Teljes nev"] || "").trim();
+    if (!workerName) return;
+    setOfficeThemeSaving(true);
+    try {
+      const response = await supabase.from("user_ui_preferences").upsert({
+        worker_name: workerName,
+        worker_id: activeWorker.id,
+        page_key: pageKey,
+        theme_preset: officeThemePresetByPage[pageKey],
+        theme_json: getOfficeTheme(pageKey),
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "worker_name,page_key" });
+      if (response.error) throw response.error;
+      setMessage({ type: "success", text: `A ${pageKey} megjelenési beállításai elmentve ${workerName} felhasználóhoz.` });
+    } catch (error) {
+      setMessage({ type: "error", text: `A megjelenési beállítás mentése sikertelen: ${normalizeError(error)}` });
+    } finally {
+      setOfficeThemeSaving(false);
+    }
+  }
+
+  function addDashboardOrderFilter(rawValue = dashboardOrderInput): void {
+    const value = String(rawValue || "").trim();
+    if (!value) return;
+    const normalized = normalizeDashboardOrderSearch(value);
+    if (!normalized) return;
+    const next = Array.from(new Map([...dashboardOrderFilters, value].map((item) => [normalizeDashboardOrderSearch(item), item])).values());
+    setDashboardOrderFilters(next);
+    setDashboardOrderInput("");
+    void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, next);
+  }
+
+  function removeDashboardOrderFilter(value: string): void {
+    const normalized = normalizeDashboardOrderSearch(value);
+    const next = dashboardOrderFilters.filter((item) => normalizeDashboardOrderSearch(item) !== normalized);
+    setDashboardOrderFilters(next);
+    void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, next);
+  }
+
+  function clearDashboardSecondaryFilters(): void {
+    setDashboardSelectedStation("all");
+    setDashboardSelectedWorker("all");
+    setDashboardOrderFilters([]);
+    setDashboardOrderInput("");
+    void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, []);
+  }
+
   function ManagementNavigation(): React.JSX.Element {
     const items: Array<{ id: ManagementSection; label: string }> = [
       { id: "dashboard", label: "Vezetői műszerfal" },
@@ -4564,22 +4795,22 @@ export default function Page() {
       { id: "production-card", label: "Termelési kártya" },
       { id: "reproduction-report", label: "Újragyártási sorok" },
     ];
+    const currentTheme = getOfficeTheme(managementSection);
+    const currentPreset = officeThemePresetByPage[managementSection];
 
     return (
+      <div style={{ position: "sticky", top: 0, zIndex: 1000, marginBottom: 18 }}>
       <div
         style={{
           display: "flex",
           gap: 8,
           flexWrap: "wrap",
-          marginBottom: 18,
           padding: 6,
           borderRadius: 14,
-          background: "#0f172a",
-          border: "1px solid #334155",
-          position: "sticky",
-          top: 0,
-          zIndex: 1000,
+          background: currentTheme.navBackground,
+          border: `1px solid ${currentTheme.borderColor}`,
           boxShadow: "0 10px 28px rgba(0,0,0,0.32)",
+          alignItems: "center",
         }}
       >
         {items.map((item) => {
@@ -4614,9 +4845,9 @@ export default function Page() {
                 }
               }}
               style={{
-                border: active ? "1px solid #38bdf8" : "1px solid transparent",
-                background: active ? "#0c4a6e" : "transparent",
-                color: active ? "#e0f2fe" : "#cbd5e1",
+                border: active ? `1px solid ${currentTheme.accentColor}` : "1px solid transparent",
+                background: active ? currentTheme.navActiveBackground : "transparent",
+                color: active ? currentTheme.textColor : currentTheme.navText,
                 borderRadius: 10,
                 padding: "10px 14px",
                 fontWeight: 800,
@@ -4627,14 +4858,77 @@ export default function Page() {
             </button>
           );
         })}
+        <button
+          type="button"
+          onClick={() => setOfficeThemeEditorOpen((value) => !value)}
+          style={{
+            marginLeft: "auto",
+            border: `1px solid ${currentTheme.borderColor}`,
+            background: officeThemeEditorOpen ? currentTheme.navActiveBackground : currentTheme.panelAltBackground,
+            color: currentTheme.textColor,
+            borderRadius: 10,
+            padding: "10px 14px",
+            fontWeight: 800,
+            cursor: "pointer",
+          }}
+        >
+          🎨 Megjelenés
+        </button>
+      </div>
+      {officeThemeEditorOpen && (
+        <div style={{ marginTop: 8, padding: 14, borderRadius: 14, background: currentTheme.panelBackground, border: `1px solid ${currentTheme.borderColor}`, boxShadow: "0 12px 30px rgba(0,0,0,0.28)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+            <div>
+              <strong style={{ color: currentTheme.textColor }}>Oldal megjelenése</strong>
+              <div style={{ color: currentTheme.mutedText, fontSize: 12, marginTop: 3 }}>A beállítás oldalanként és a belépett irodai felhasználóhoz kötve mentődik.</div>
+            </div>
+            <button type="button" onClick={() => void saveOfficeUiPreference(managementSection)} disabled={officeThemeSaving} style={{ ...buttonPrimary, background: currentTheme.accentColor }}>
+              {officeThemeSaving ? "Mentés..." : "Megjelenés mentése"}
+            </button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, marginBottom: 12 }}>
+            {(Object.entries(OFFICE_THEME_PRESETS) as Array<[Exclude<OfficeThemePresetId, "custom">, { name: string; description: string; theme: OfficeThemeConfig }]>).map(([presetId, preset]) => (
+              <button key={presetId} type="button" onClick={() => applyOfficeThemePreset(managementSection, presetId)} style={{ textAlign: "left", padding: 10, borderRadius: 10, border: currentPreset === presetId ? `2px solid ${preset.theme.accentColor}` : `1px solid ${preset.theme.borderColor}`, background: preset.theme.panelBackground, color: preset.theme.textColor, cursor: "pointer" }}>
+                <strong>{preset.name}</strong>
+                <div style={{ color: preset.theme.mutedText, fontSize: 11, marginTop: 3 }}>{preset.description}</div>
+              </button>
+            ))}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+            {([
+              ["Oldal háttere", "pageBackground"],
+              ["Panel háttere", "panelBackground"],
+              ["Másodlagos panel", "panelAltBackground"],
+              ["Fő szöveg", "textColor"],
+              ["Halvány szöveg", "mutedText"],
+              ["Szegély", "borderColor"],
+              ["Kiemelő szín", "accentColor"],
+              ["Beviteli mező háttere", "inputBackground"],
+              ["Beviteli mező szövege", "inputText"],
+              ["Menüsor háttere", "navBackground"],
+              ["Aktív menüpont", "navActiveBackground"],
+              ["Menüsor szövege", "navText"],
+            ] as Array<[string, keyof OfficeThemeConfig]>).map(([label, key]) => (
+              <label key={key} style={{ display: "grid", gap: 5, color: currentTheme.textColor, fontSize: 12, fontWeight: 800 }}>
+                <span>{label}</span>
+                <span style={{ display: "grid", gridTemplateColumns: "42px 1fr", gap: 6 }}>
+                  <input type="color" value={currentTheme[key]} onChange={(event) => updateOfficeTheme(managementSection, { [key]: event.target.value } as Partial<OfficeThemeConfig>)} style={{ width: 42, height: 36, padding: 2, borderRadius: 7, border: `1px solid ${currentTheme.borderColor}` }} />
+                  <input value={currentTheme[key]} onChange={(event) => updateOfficeTheme(managementSection, { [key]: event.target.value } as Partial<OfficeThemeConfig>)} style={{ ...fieldStyle, background: currentTheme.inputBackground, color: currentTheme.inputText, borderColor: currentTheme.borderColor }} />
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
       </div>
     );
   }
 
   function ProductionPlanAdmin(): React.JSX.Element {
+    const officeTheme = getOfficeTheme("production-plan");
     const sectionCardStyle: React.CSSProperties = {
-      background: "#0f172a",
-      border: "1px solid #334155",
+      background: officeTheme.panelBackground,
+      border: `1px solid ${officeTheme.borderColor}`,
       borderRadius: 16,
       padding: 18,
       boxShadow: "0 10px 28px rgba(0,0,0,0.16)",
@@ -4651,9 +4945,9 @@ export default function Page() {
       width: 32,
       height: 32,
       borderRadius: 10,
-      background: "#0c4a6e",
-      border: "1px solid #38bdf8",
-      color: "#e0f2fe",
+      background: officeTheme.navActiveBackground,
+      border: `1px solid ${officeTheme.accentColor}`,
+      color: officeTheme.textColor,
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
@@ -4668,14 +4962,14 @@ export default function Page() {
     );
 
     return (
-      <div style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 20, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 0 }}>
+      <div style={{ background: officeTheme.pageBackground, border: `1px solid ${officeTheme.borderColor}`, borderRadius: 18, padding: 20, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 0, color: officeTheme.textColor }}>
         <ManagementNavigation />
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
           <div>
-            <div style={{ fontSize: 13, color: "#38bdf8", fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Irodai modul</div>
-            <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: "#f8fafc" }}>Termelés tervezése</h2>
-            <div style={{ color: "#94a3b8", maxWidth: 900, lineHeight: 1.5 }}>
+            <div style={{ fontSize: 13, color: officeTheme.accentColor, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Irodai modul</div>
+            <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: officeTheme.textColor }}>Termelés tervezése</h2>
+            <div style={{ color: officeTheme.mutedText, maxWidth: 900, lineHeight: 1.5 }}>
               A szerveren tárolt közös XLSX minden munkaállomási munkafüle egyetlen frissítéssel betölthető, miközben a kézi tervkiegészítés továbbra is használható.
             </div>
           </div>
@@ -4687,23 +4981,23 @@ export default function Page() {
             <div style={sectionHeaderStyle}>
               <div style={sectionNumberStyle}>1</div>
               <div>
-                <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Közös XLSX termelési terv</h3>
-                <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13, lineHeight: 1.45 }}>
+                <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Közös XLSX termelési terv</h3>
+                <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13, lineHeight: 1.45 }}>
                   Egyetlen szerveres Excel-fájl minden munkafüle egyszerre kerül beolvasásra. A munkafülek neve egyezzen a machine_id tábla name értékeivel; minden sor a megfelelő <code style={{ color: "#7dd3fc" }}>_terv</code> táblába kerül.
                 </div>
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) auto auto auto", gap: 12, alignItems: "end", padding: 16, borderRadius: 13, background: "#020617", border: "1px solid #334155" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) auto auto auto", gap: 12, alignItems: "end", padding: 16, borderRadius: 13, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}` }}>
               <div>
-                <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 800 }}>Szerveren tárolt XLSX elérési útja</label>
+                <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 800 }}>Szerveren tárolt XLSX elérési útja</label>
                 <input
                   value={productionPlanServerPath}
                   onChange={(event) => setProductionPlanServerPath(event.target.value.slice(0, 1000))}
                   placeholder={DEFAULT_PRODUCTION_PLAN_SERVER_PATH}
                   style={{ ...fieldStyle, width: "100%", boxSizing: "border-box" }}
                 />
-                <div style={{ marginTop: 7, color: "#64748b", fontSize: 12, lineHeight: 1.45 }}>
+                <div style={{ marginTop: 7, color: officeTheme.mutedText, fontSize: 12, lineHeight: 1.45 }}>
                   Alapértelmezett: <code style={{ color: "#7dd3fc" }}>{DEFAULT_PRODUCTION_PLAN_SERVER_PATH}</code>. A Next.js szervert futtató Windows-felhasználónak hozzá kell férnie ehhez a meghajtóhoz.
                 </div>
               </div>
@@ -4736,20 +5030,20 @@ export default function Page() {
             </div>
 
             <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
-              <div style={{ padding: 12, borderRadius: 11, background: "#020617", border: "1px solid #334155" }}>
-                <div style={{ color: "#94a3b8", fontSize: 12 }}>Kötelező mezők minden munkafülön</div>
-                <div style={{ color: "#e2e8f0", fontWeight: 800, marginTop: 4 }}>sorszam · megnevezes · mennyiseg · elkeszules_datum · tipus</div>
+              <div style={{ padding: 12, borderRadius: 11, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}` }}>
+                <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Kötelező mezők minden munkafülön</div>
+                <div style={{ color: officeTheme.textColor, fontWeight: 800, marginTop: 4 }}>sorszam · megnevezes · mennyiseg · elkeszules_datum · tipus</div>
               </div>
-              <div style={{ padding: 12, borderRadius: 11, background: "#020617", border: "1px solid #334155" }}>
-                <div style={{ color: "#94a3b8", fontSize: 12 }}>Utolsó sikeres szerveres frissítés</div>
+              <div style={{ padding: 12, borderRadius: 11, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}` }}>
+                <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Utolsó sikeres szerveres frissítés</div>
                 <div style={{ color: productionPlanLastServerImportAt ? "#4ade80" : "#cbd5e1", fontWeight: 800, marginTop: 4 }}>
                   {productionPlanLastServerImportAt ? formatDateTime(productionPlanLastServerImportAt) : "Még nem történt frissítés"}
                 </div>
-                {productionPlanLastFileModifiedAt && <div style={{ color: "#64748b", fontSize: 11, marginTop: 3 }}>Excel módosítva: {formatDateTime(productionPlanLastFileModifiedAt)}</div>}
+                {productionPlanLastFileModifiedAt && <div style={{ color: officeTheme.mutedText, fontSize: 11, marginTop: 3 }}>Excel módosítva: {formatDateTime(productionPlanLastFileModifiedAt)}</div>}
               </div>
-              <div style={{ padding: 12, borderRadius: 11, background: "#020617", border: "1px solid #334155" }}>
-                <div style={{ color: "#94a3b8", fontSize: 12 }}>Egyező sorszám és dátum esetén</div>
-                <div style={{ color: "#e2e8f0", fontWeight: 800, marginTop: 4 }}>Új sor · mennyiség hozzáadása · frissítés · kihagyás</div>
+              <div style={{ padding: 12, borderRadius: 11, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}` }}>
+                <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Egyező sorszám és dátum esetén</div>
+                <div style={{ color: officeTheme.textColor, fontWeight: 800, marginTop: 4 }}>Új sor · mennyiség hozzáadása · frissítés · kihagyás</div>
               </div>
             </div>
           </section>
@@ -4757,8 +5051,8 @@ export default function Page() {
             <div style={sectionHeaderStyle}>
               <div style={sectionNumberStyle}>2</div>
               <div>
-                <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Terv alapadatai</h3>
-                <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13, lineHeight: 1.45 }}>
+                <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Terv alapadatai</h3>
+                <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13, lineHeight: 1.45 }}>
                   Válaszd ki, melyik napra készüljön a terv, majd adj neki könnyen felismerhető nevet.
                 </div>
               </div>
@@ -4766,7 +5060,7 @@ export default function Page() {
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
               <div>
-                <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Gyártás tervezett dátuma</label>
+                <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 700 }}>Gyártás tervezett dátuma</label>
                 <input
                   type="date"
                   value={productionPlanDate}
@@ -4779,7 +5073,7 @@ export default function Page() {
                 />
               </div>
               <div>
-                <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Terv neve</label>
+                <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 700 }}>Terv neve</label>
                 <input
                   type="text"
                   value={productionPlanName}
@@ -4788,7 +5082,7 @@ export default function Page() {
                   autoComplete="off"
                   style={fieldStyle}
                 />
-                <div style={{ marginTop: 6, color: "#64748b", fontSize: 12, textAlign: "right" }}>{productionPlanName.length}/250 karakter</div>
+                <div style={{ marginTop: 6, color: officeTheme.mutedText, fontSize: 12, textAlign: "right" }}>{productionPlanName.length}/250 karakter</div>
               </div>
             </div>
           </section>
@@ -4797,20 +5091,20 @@ export default function Page() {
             <div style={sectionHeaderStyle}>
               <div style={sectionNumberStyle}>3</div>
               <div>
-                <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Termelési kártya</h3>
-                <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13, lineHeight: 1.45 }}>
+                <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Termelési kártya</h3>
+                <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13, lineHeight: 1.45 }}>
                   Add meg a gyártandó termék adatait, majd pipáld ki a machine_id tábla alapján azokat a munkaállomásokat, amelyeken a terméknek végig kell haladnia.
                 </div>
               </div>
             </div>
 
-            <div style={{ marginBottom: 12, color: "#e2e8f0", fontSize: 15, fontWeight: 850 }}>
+            <div style={{ marginBottom: 12, color: officeTheme.textColor, fontSize: 15, fontWeight: 850 }}>
               Gyártandó termék hozzáadása egyesével
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 1.15fr) minmax(180px, 0.65fr) minmax(300px, 1.5fr)", gap: 14, alignItems: "start" }}>
               <div>
-                <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Sorszám</label>
+                <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 700 }}>Sorszám</label>
                 <input
                   type="text"
                   value={manualProductionOrderNumber}
@@ -4821,11 +5115,11 @@ export default function Page() {
                   placeholder="Például: R260722217"
                   style={fieldStyle}
                 />
-                <div style={{ marginTop: 6, color: "#64748b", fontSize: 12, textAlign: "right" }}>{manualProductionOrderNumber.length}/250 karakter</div>
+                <div style={{ marginTop: 6, color: officeTheme.mutedText, fontSize: 12, textAlign: "right" }}>{manualProductionOrderNumber.length}/250 karakter</div>
               </div>
 
               <div>
-                <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Tervezett darab</label>
+                <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 700 }}>Tervezett darab</label>
                 <input
                   type="text"
                   inputMode="numeric"
@@ -4838,11 +5132,11 @@ export default function Page() {
                   placeholder="Darab"
                   style={fieldStyle}
                 />
-                <div style={{ marginTop: 6, color: "#64748b", fontSize: 12 }}>Csak egész szám adható meg.</div>
+                <div style={{ marginTop: 6, color: officeTheme.mutedText, fontSize: 12 }}>Csak egész szám adható meg.</div>
               </div>
 
               <div>
-                <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 700 }}>Megnevezés</label>
+                <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 700 }}>Megnevezés</label>
                 <input
                   type="text"
                   value={manualProductionProductName}
@@ -4853,15 +5147,15 @@ export default function Page() {
                   placeholder="Gyártandó termék megnevezése"
                   style={fieldStyle}
                 />
-                <div style={{ marginTop: 6, color: "#64748b", fontSize: 12, textAlign: "right" }}>{manualProductionProductName.length}/250 karakter</div>
+                <div style={{ marginTop: 6, color: officeTheme.mutedText, fontSize: 12, textAlign: "right" }}>{manualProductionProductName.length}/250 karakter</div>
               </div>
             </div>
 
-            <div style={{ marginTop: 18, padding: 16, borderRadius: 14, background: "#020617", border: "1px solid #334155" }}>
+            <div style={{ marginTop: 18, padding: 16, borderRadius: 14, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}` }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
                 <div>
-                  <div style={{ color: "#f8fafc", fontWeight: 850 }}>Munkaállomások kiválasztása</div>
-                  <div style={{ marginTop: 3, color: "#94a3b8", fontSize: 12 }}>
+                  <div style={{ color: officeTheme.textColor, fontWeight: 850 }}>Munkaállomások kiválasztása</div>
+                  <div style={{ marginTop: 3, color: officeTheme.mutedText, fontSize: 12 }}>
                     A lista közvetlenül a Supabase machine_id tábla name oszlopából töltődik be.
                   </div>
                 </div>
@@ -4886,7 +5180,7 @@ export default function Page() {
               </div>
 
               {availableProductionStations.length === 0 ? (
-                <div style={{ padding: 14, borderRadius: 10, background: "#111827", border: "1px dashed #475569", color: "#fca5a5" }}>
+                <div style={{ padding: 14, borderRadius: 10, background: officeTheme.panelAltBackground, border: `1px dashed ${officeTheme.borderColor}`, color: "#fca5a5" }}>
                   Nem található választható munkaállomás. Ellenőrizd a Supabase machine_id tábla name oszlopát.
                 </div>
               ) : (
@@ -4952,14 +5246,14 @@ export default function Page() {
               <div style={sectionHeaderStyle}>
                 <div style={sectionNumberStyle}>4</div>
                 <div>
-                  <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Összeállított termelési terv</h3>
-                  <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13, lineHeight: 1.45 }}>
+                  <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Összeállított termelési terv</h3>
+                  <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13, lineHeight: 1.45 }}>
                     Mentés előtt ellenőrizheted, javíthatod vagy törölheted az egyes sorokat.
                   </div>
                 </div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ padding: "9px 12px", borderRadius: 10, background: "#020617", border: "1px solid #334155", color: "#cbd5e1", fontWeight: 800 }}>
+                <div style={{ padding: "9px 12px", borderRadius: 10, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}`, color: officeTheme.mutedText, fontWeight: 800 }}>
                   Tételek: {productionPlanPreview.length}
                 </div>
                 <button type="button" onClick={() => void saveProductionPlan()} disabled={savingProductionPlan || productionPlanPreview.length === 0} style={buttonPrimary}>
@@ -4969,26 +5263,26 @@ export default function Page() {
             </div>
 
             {productionPlanPreview.length === 0 ? (
-              <div style={{ padding: "24px 16px", borderRadius: 12, background: "#020617", border: "1px dashed #475569", color: "#94a3b8", textAlign: "center" }}>
+              <div style={{ padding: "24px 16px", borderRadius: 12, background: officeTheme.panelAltBackground, border: `1px dashed ${officeTheme.borderColor}`, color: officeTheme.mutedText, textAlign: "center" }}>
                 Még nincs hozzáadott termék. Rögzíts egy tételt kézzel, vagy tölts fel egy Excel / CSV fájlt.
               </div>
             ) : (
-              <div style={{ overflowX: "auto", maxHeight: 430, overflowY: "auto", borderRadius: 12, border: "1px solid #334155", background: "#020617" }}>
+              <div style={{ overflowX: "auto", maxHeight: 430, overflowY: "auto", borderRadius: 12, border: `1px solid ${officeTheme.borderColor}`, background: officeTheme.panelAltBackground }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
-                  <thead style={{ position: "sticky", top: 0, zIndex: 2, background: "#111827" }}>
-                    <tr style={{ color: "#94a3b8", textAlign: "left" }}>
-                      <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }}>Sorrend</th>
-                      <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }}>Sorszám</th>
-                      <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }}>Tervezett db</th>
-                      <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }}>Megnevezés</th>
-                      <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }}>Munkaállomások</th>
-                      <th style={{ padding: "12px 10px", borderBottom: "1px solid #334155" }} />
+                  <thead style={{ position: "sticky", top: 0, zIndex: 2, background: officeTheme.panelAltBackground }}>
+                    <tr style={{ color: officeTheme.mutedText, textAlign: "left" }}>
+                      <th style={{ padding: "12px 10px", borderBottom: `1px solid ${officeTheme.borderColor}` }}>Sorrend</th>
+                      <th style={{ padding: "12px 10px", borderBottom: `1px solid ${officeTheme.borderColor}` }}>Sorszám</th>
+                      <th style={{ padding: "12px 10px", borderBottom: `1px solid ${officeTheme.borderColor}` }}>Tervezett db</th>
+                      <th style={{ padding: "12px 10px", borderBottom: `1px solid ${officeTheme.borderColor}` }}>Megnevezés</th>
+                      <th style={{ padding: "12px 10px", borderBottom: `1px solid ${officeTheme.borderColor}` }}>Munkaállomások</th>
+                      <th style={{ padding: "12px 10px", borderBottom: `1px solid ${officeTheme.borderColor}` }} />
                     </tr>
                   </thead>
                   <tbody>
                     {productionPlanPreview.map((row, index) => (
                       <tr key={`${row.orderNumber}-${index}`}>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b", width: 110 }}>
+                        <td style={{ padding: 8, borderBottom: `1px solid ${officeTheme.borderColor}`, width: 110 }}>
                           <input
                             type="text"
                             inputMode="numeric"
@@ -5001,7 +5295,7 @@ export default function Page() {
                             style={{ ...fieldStyle, minWidth: 80, padding: "8px 10px" }}
                           />
                         </td>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
+                        <td style={{ padding: 8, borderBottom: `1px solid ${officeTheme.borderColor}` }}>
                           <input
                             type="text"
                             value={row.orderNumber}
@@ -5011,7 +5305,7 @@ export default function Page() {
                             style={{ ...fieldStyle, minWidth: 190, padding: "8px 10px" }}
                           />
                         </td>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b", width: 150 }}>
+                        <td style={{ padding: 8, borderBottom: `1px solid ${officeTheme.borderColor}`, width: 150 }}>
                           <input
                             type="text"
                             inputMode="numeric"
@@ -5026,7 +5320,7 @@ export default function Page() {
                             style={{ ...fieldStyle, minWidth: 110, padding: "8px 10px" }}
                           />
                         </td>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
+                        <td style={{ padding: 8, borderBottom: `1px solid ${officeTheme.borderColor}` }}>
                           <input
                             type="text"
                             value={row.productName}
@@ -5036,7 +5330,7 @@ export default function Page() {
                             style={{ ...fieldStyle, minWidth: 230, padding: "8px 10px" }}
                           />
                         </td>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b", minWidth: 240 }}>
+                        <td style={{ padding: 8, borderBottom: `1px solid ${officeTheme.borderColor}`, minWidth: 240 }}>
                           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                             {row.requiredStations.length > 0 ? row.requiredStations.map((station) => (
                               <span key={`${row.orderNumber}-${station}`} style={{ padding: "5px 8px", borderRadius: 999, background: "#0c4a6e", border: "1px solid #0284c7", color: "#e0f2fe", fontSize: 11, fontWeight: 750 }}>
@@ -5047,7 +5341,7 @@ export default function Page() {
                             )}
                           </div>
                         </td>
-                        <td style={{ padding: 8, borderBottom: "1px solid #1e293b", width: 90 }}>
+                        <td style={{ padding: 8, borderBottom: `1px solid ${officeTheme.borderColor}`, width: 90 }}>
                           <button type="button" onClick={() => setProductionPlanPreview((previous) => previous.filter((_, rowIndex) => rowIndex !== index))} style={{ ...buttonSecondary, padding: "8px 10px" }}>Törlés</button>
                         </td>
                       </tr>
@@ -5063,24 +5357,24 @@ export default function Page() {
               <div style={sectionHeaderStyle}>
                 <div style={sectionNumberStyle}>5</div>
                 <div>
-                  <h3 style={{ margin: 0, color: "#f8fafc", fontSize: 19 }}>Napi termelési terv – {productionPlanDate}</h3>
-                  <div style={{ marginTop: 4, color: "#94a3b8", fontSize: 13 }}>Dátumonként pontosan egy termelési terv van; az új mentések ehhez adódnak hozzá.</div>
+                  <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Napi termelési terv – {productionPlanDate}</h3>
+                  <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13 }}>Dátumonként pontosan egy termelési terv van; az új mentések ehhez adódnak hozzá.</div>
                 </div>
               </div>
               <button type="button" onClick={() => void loadProductionPlans(productionPlanDate)} disabled={loadingProductionPlan} style={buttonSecondary}>Frissítés</button>
             </div>
 
             {productionPlans.length === 0 ? (
-              <div style={{ color: "#94a3b8", padding: "18px 14px", borderRadius: 12, background: "#020617", border: "1px dashed #475569" }}>
+              <div style={{ color: officeTheme.mutedText, padding: "18px 14px", borderRadius: 12, background: officeTheme.panelAltBackground, border: `1px dashed ${officeTheme.borderColor}` }}>
                 Erre a napra még nincs feltöltött termelési terv.
               </div>
             ) : (
               <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
                 {productionPlans.map((plan) => (
                   <div key={String(plan.id)} style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap", padding: 14, borderRadius: 12, border: plan.is_active ? "1px solid #22c55e" : "1px solid #334155", background: plan.is_active ? "#052e16" : "#020617" }}>
-                    <button type="button" onClick={() => void loadProductionPlanItems(plan)} style={{ border: 0, background: "transparent", color: "#f8fafc", textAlign: "left", cursor: "pointer", padding: 0 }}>
+                    <button type="button" onClick={() => void loadProductionPlanItems(plan)} style={{ border: 0, background: "transparent", color: officeTheme.textColor, textAlign: "left", cursor: "pointer", padding: 0 }}>
                       <div style={{ fontWeight: 900 }}>{plan.name}</div>
-                      <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 3 }}>{plan.created_at ? formatDateTime(plan.created_at) : "-"} {plan.is_active ? "· AKTÍV" : ""}</div>
+                      <div style={{ color: officeTheme.mutedText, fontSize: 12, marginTop: 3 }}>{plan.created_at ? formatDateTime(plan.created_at) : "-"} {plan.is_active ? "· AKTÍV" : ""}</div>
                     </button>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       {!plan.is_active && <button type="button" onClick={() => void activateProductionPlan(plan)} style={buttonPrimary}>Aktiválás</button>}
@@ -5092,25 +5386,25 @@ export default function Page() {
             )}
 
             {productionPlanItems.length > 0 && (
-              <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto", borderRadius: 12, border: "1px solid #334155", background: "#020617" }}>
+              <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto", borderRadius: 12, border: `1px solid ${officeTheme.borderColor}`, background: officeTheme.panelAltBackground }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 650 }}>
-                  <thead style={{ position: "sticky", top: 0, zIndex: 1, background: "#111827" }}>
-                    <tr style={{ color: "#94a3b8", textAlign: "left" }}>
-                      <th style={{ padding: 10, borderBottom: "1px solid #334155" }}>Sorrend</th>
-                      <th style={{ padding: 10, borderBottom: "1px solid #334155" }}>Sorszám</th>
-                      <th style={{ padding: 10, borderBottom: "1px solid #334155" }}>Tervezett db</th>
-                      <th style={{ padding: 10, borderBottom: "1px solid #334155" }}>Megnevezés</th>
-                      <th style={{ padding: 10, borderBottom: "1px solid #334155" }}>Munkaállomások</th>
+                  <thead style={{ position: "sticky", top: 0, zIndex: 1, background: officeTheme.panelAltBackground }}>
+                    <tr style={{ color: officeTheme.mutedText, textAlign: "left" }}>
+                      <th style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>Sorrend</th>
+                      <th style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>Sorszám</th>
+                      <th style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>Tervezett db</th>
+                      <th style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>Megnevezés</th>
+                      <th style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>Munkaállomások</th>
                     </tr>
                   </thead>
                   <tbody>
                     {productionPlanItems.map((item) => (
                       <tr key={String(item.id || `${item.plan_id}-${item.order_number}`)}>
-                        <td style={{ padding: 10, borderBottom: "1px solid #1e293b" }}>{item.sequence_number}</td>
-                        <td style={{ padding: 10, borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{item.order_number}</td>
-                        <td style={{ padding: 10, borderBottom: "1px solid #1e293b" }}>{item.planned_quantity ?? "-"}</td>
-                        <td style={{ padding: 10, borderBottom: "1px solid #1e293b" }}>{item.product_name || "-"}</td>
-                        <td style={{ padding: 10, borderBottom: "1px solid #1e293b" }}>
+                        <td style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>{item.sequence_number}</td>
+                        <td style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}`, fontWeight: 800 }}>{item.order_number}</td>
+                        <td style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>{item.planned_quantity ?? "-"}</td>
+                        <td style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>{item.product_name || "-"}</td>
+                        <td style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>
                           {Array.isArray(item.required_stations) && item.required_stations.length > 0
                             ? item.required_stations.join(", ")
                             : "Minden munkaállomás"}
@@ -6914,6 +7208,7 @@ export default function Page() {
   }
 
   function ProductionCardAdmin(): React.JSX.Element {
+    const officeTheme = getOfficeTheme("production-card");
     const stations = getOrderedDashboardStations();
     const allFieldIds = [...getProductionCardFieldIdsForTable(activeProductionCardTable, productionCardAdminStation)];
     const selectedFieldId = (allFieldIds as readonly string[]).includes(selectedProductionCardStyleFieldId)
@@ -6937,7 +7232,7 @@ export default function Page() {
     );
 
     return (
-      <div style={{ minHeight: "100vh", background: profileTheme.pageBackground, borderRadius: profileTheme.panelRadius + 4, padding: 18, color: profileTheme.headerPanelText, boxSizing: "border-box" }}>
+      <div style={{ minHeight: "100vh", background: officeTheme.pageBackground, borderRadius: profileTheme.panelRadius + 4, padding: 18, color: profileTheme.headerPanelText, boxSizing: "border-box" }}>
         <div style={{ width: "100%", maxWidth: "none", margin: 0 }}>
           <ManagementNavigation />
 
@@ -6964,7 +7259,7 @@ export default function Page() {
           {productionCardEditMode && (
             <div style={{ background: profileTheme.editorBackground, color: "#1f2937", border: `2px solid ${profileTheme.accentColor}`, borderRadius: profileTheme.panelRadius, padding: 16, marginBottom: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-                <div><strong style={{ fontSize: 20 }}>Profi termelésikártya-szerkesztő</strong><div style={{ color: "#64748b", fontSize: 12, marginTop: 3 }}>A beállítás automatikusan az aktuális munkaállomáshoz mentődik a Supabase-ba.</div></div>
+                <div><strong style={{ fontSize: 20 }}>Profi termelésikártya-szerkesztő</strong><div style={{ color: "#64748b", fontSize: 12, marginTop: 3 }}>Az adott munkaállomás összes _terv mezője és minden rendszermező kihelyezhető, elrejthető és sorrendezhető. A kártyabeállítás az aktuális munkaállomáshoz mentődik.</div></div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <button type="button" onClick={() => void saveProductionCardSettings(true)} style={buttonPrimary}>Mentés</button>
                   <button type="button" onClick={resetProductionCardLayout} style={buttonSecondary}>Alapállapot visszaállítása</button>
@@ -7011,6 +7306,9 @@ export default function Page() {
 
               {productionCardEditorTab === "layout" && (
                 <div style={{ display: "grid", gap: 10 }}>
+                  <div style={{ padding: "10px 12px", borderRadius: 10, background: "#e0f2fe", border: "1px solid #7dd3fc", color: "#0c4a6e", fontSize: 12 }}>
+                    <strong>Elérhető mezők: {allFieldIds.length}</strong> · Minden mező visszatehető a „Megjelenítés” gombbal; drag & drop-pal vagy a nyilakkal tetszőlegesen rendezhető.
+                  </div>
                   {allFieldIds.map((fieldId, index) => {
                     const hidden = activeProductionCardTable.hiddenFieldIds.includes(fieldId);
                     return (
@@ -7090,6 +7388,7 @@ export default function Page() {
   }
 
   function ProductionPlanMonitor({ standalone = false }: { standalone?: boolean }): React.JSX.Element {
+    const officeTheme = getOfficeTheme("production-monitor");
     const completed = productionMonitorData.rows.filter((row) => row.overallStatus === "done").length;
     const inProgress = productionMonitorData.rows.filter((row) => row.overallStatus === "in-progress").length;
     const waiting = productionMonitorData.rows.filter((row) => row.overallStatus === "waiting").length;
@@ -7427,9 +7726,9 @@ export default function Page() {
       <div
         style={{
           minHeight: standalone ? "100vh" : undefined,
-          background: profileTheme.pageBackground,
+          background: standalone ? profileTheme.pageBackground : officeTheme.pageBackground,
           color: profileTheme.headerPanelText,
-          border: standalone ? "none" : `1px solid ${profileTheme.borderColor}`,
+          border: standalone ? "none" : `1px solid ${officeTheme.borderColor}`,
           borderRadius: standalone ? 0 : profileTheme.panelRadius + 4,
           padding: 18,
           boxShadow: standalone ? "none" : "0 18px 45px rgba(0,0,0,0.28)",
@@ -7908,6 +8207,7 @@ export default function Page() {
 
 
   function ReproductionReportAdmin(): React.JSX.Element {
+    const officeTheme = getOfficeTheme("reproduction-report");
     const range = getReproductionReportDateRange(
       reproductionReportFilterMode,
       reproductionReportDate,
@@ -7933,7 +8233,7 @@ export default function Page() {
       padding: "11px 10px",
       borderBottom: "1px solid #23324a",
       verticalAlign: "top",
-      color: "#e2e8f0",
+      color: officeTheme.textColor,
     };
 
     return (
@@ -7943,11 +8243,11 @@ export default function Page() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
           <div>
             <div style={{ color: "#38bdf8", fontWeight: 900, letterSpacing: 1.2, fontSize: 13 }}>ÚJRAGYÁRTÁSI MINŐSÉGJELENTÉS</div>
-            <h2 style={{ margin: "6px 0 4px", color: "#f8fafc", fontSize: 30 }}>Újragyártási sorok</h2>
-            <div style={{ color: "#94a3b8", lineHeight: 1.5 }}>
+            <h2 style={{ margin: "6px 0 4px", color: officeTheme.textColor, fontSize: 30 }}>Újragyártási sorok</h2>
+            <div style={{ color: officeTheme.mutedText, lineHeight: 1.5 }}>
               Újragyártások és selejtpótlások részletes nyomon követése: rögzítés, státusz, START–END idő, dolgozói időráfordítás és időszakos összehasonlítás.
             </div>
-            <div style={{ color: "#64748b", fontSize: 12, marginTop: 6 }}>
+            <div style={{ color: officeTheme.mutedText, fontSize: 12, marginTop: 6 }}>
               Aktuális: {range.currentLabel} · Összehasonlítás: {range.previousLabel} · Utolsó frissítés: {reproductionReportData.lastUpdatedAt ? formatDateTime(reproductionReportData.lastUpdatedAt) : "–"}
             </div>
           </div>
@@ -7956,7 +8256,7 @@ export default function Page() {
 
         <div style={{ ...cardStyle, display: "grid", gap: 12, marginBottom: 14 }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, alignItems: "end" }}>
-            <label style={{ display: "grid", gap: 6, color: "#cbd5e1", fontWeight: 800 }}>
+            <label style={{ display: "grid", gap: 6, color: officeTheme.mutedText, fontWeight: 800 }}>
               Időszak
               <select
                 value={reproductionReportFilterMode}
@@ -7970,17 +8270,17 @@ export default function Page() {
                 <option value="custom">Egyedi időszak</option>
               </select>
             </label>
-            <label style={{ display: "grid", gap: 6, color: "#cbd5e1", fontWeight: 800 }}>
+            <label style={{ display: "grid", gap: 6, color: officeTheme.mutedText, fontWeight: 800 }}>
               Dátum
               <input type="date" value={reproductionReportDate} onChange={(event) => setReproductionReportDate(event.target.value)} style={fieldStyle} />
             </label>
             {reproductionReportFilterMode === "custom" && (
-              <label style={{ display: "grid", gap: 6, color: "#cbd5e1", fontWeight: 800 }}>
+              <label style={{ display: "grid", gap: 6, color: officeTheme.mutedText, fontWeight: 800 }}>
                 Dátumig
                 <input type="date" value={reproductionReportDateTo} onChange={(event) => setReproductionReportDateTo(event.target.value)} style={fieldStyle} />
               </label>
             )}
-            <label style={{ display: "grid", gap: 6, color: "#cbd5e1", fontWeight: 800 }}>
+            <label style={{ display: "grid", gap: 6, color: officeTheme.mutedText, fontWeight: 800 }}>
               Munkaállomás
               <select value={reproductionReportSelectedStation} onChange={(event) => setReproductionReportSelectedStation(event.target.value)} style={fieldStyle}>
                 <option value="all">Összes munkaállomás</option>
@@ -8005,18 +8305,18 @@ export default function Page() {
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(150px, 1fr))", gap: 10, marginBottom: 14 }}>
-          <div style={cardStyle}><div style={{ color: "#94a3b8", fontSize: 12 }}>Aktuális újragyártások</div><div style={{ color: "#f8fafc", fontSize: 30, fontWeight: 900 }}>{currentTotal}</div><div style={{ color: "#64748b", fontSize: 12 }}>{range.currentLabel}</div></div>
-          <div style={cardStyle}><div style={{ color: "#94a3b8", fontSize: 12 }}>Előző időszak</div><div style={{ color: "#f8fafc", fontSize: 30, fontWeight: 900 }}>{previousTotal}</div><div style={{ color: "#64748b", fontSize: 12 }}>{range.previousLabel}</div></div>
-          <div style={cardStyle}><div style={{ color: "#94a3b8", fontSize: 12 }}>Előzőhöz viszonyítva</div><div style={{ color: ratioColor, fontSize: 30, fontWeight: 900 }}>{overallRatioPct === null ? (currentTotal > 0 ? "Új" : "–") : `${overallRatioPct}%`}</div><div style={{ color: overallChangePct !== null && overallChangePct <= 0 ? "#4ade80" : "#f87171", fontSize: 12 }}>{overallChangePct === null ? "Nincs összehasonlítható előzmény" : `${overallChangePct > 0 ? "+" : ""}${overallChangePct}% változás`}</div></div>
-          <div style={cardStyle}><div style={{ color: "#94a3b8", fontSize: 12 }}>Átlagos újragyártási idő</div><div style={{ color: "#f8fafc", fontSize: 25, fontWeight: 900 }}>{formatDuration(reproductionReportData.averageDurationMinutes)}</div><div style={{ color: "#64748b", fontSize: 12 }}>Csak lezárt újragyártásokból</div></div>
-          <div style={cardStyle}><div style={{ color: "#94a3b8", fontSize: 12 }}>Állapot</div><div style={{ color: "#4ade80", fontSize: 21, fontWeight: 900 }}>{reproductionReportData.completedTotal} lezárt</div><div style={{ color: reproductionReportData.openTotal > 0 ? "#fbbf24" : "#64748b", fontSize: 13 }}>{reproductionReportData.openTotal} folyamatban</div></div>
+          <div style={cardStyle}><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Aktuális újragyártások</div><div style={{ color: officeTheme.textColor, fontSize: 30, fontWeight: 900 }}>{currentTotal}</div><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>{range.currentLabel}</div></div>
+          <div style={cardStyle}><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Előző időszak</div><div style={{ color: officeTheme.textColor, fontSize: 30, fontWeight: 900 }}>{previousTotal}</div><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>{range.previousLabel}</div></div>
+          <div style={cardStyle}><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Előzőhöz viszonyítva</div><div style={{ color: ratioColor, fontSize: 30, fontWeight: 900 }}>{overallRatioPct === null ? (currentTotal > 0 ? "Új" : "–") : `${overallRatioPct}%`}</div><div style={{ color: overallChangePct !== null && overallChangePct <= 0 ? "#4ade80" : "#f87171", fontSize: 12 }}>{overallChangePct === null ? "Nincs összehasonlítható előzmény" : `${overallChangePct > 0 ? "+" : ""}${overallChangePct}% változás`}</div></div>
+          <div style={cardStyle}><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Átlagos újragyártási idő</div><div style={{ color: officeTheme.textColor, fontSize: 25, fontWeight: 900 }}>{formatDuration(reproductionReportData.averageDurationMinutes)}</div><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Csak lezárt újragyártásokból</div></div>
+          <div style={cardStyle}><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Állapot</div><div style={{ color: "#4ade80", fontSize: 21, fontWeight: 900 }}>{reproductionReportData.completedTotal} lezárt</div><div style={{ color: reproductionReportData.openTotal > 0 ? "#fbbf24" : "#64748b", fontSize: 13 }}>{reproductionReportData.openTotal} folyamatban</div></div>
         </div>
 
         <section style={{ ...cardStyle, marginBottom: 14, borderColor: "#92400e", background: "linear-gradient(145deg, #1c1917 0%, #111827 100%)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
             <div>
-              <h3 style={{ margin: "0 0 4px", color: "#f8fafc", fontSize: 22 }}>Selejtpótlási statisztika</h3>
-              <div style={{ color: "#cbd5e1", fontSize: 12 }}>
+              <h3 style={{ margin: "0 0 4px", color: officeTheme.textColor, fontSize: 22 }}>Selejtpótlási statisztika</h3>
+              <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>
                 A részletes lista a kiválasztott időszakban rögzített selejteket mutatja. A dolgozói idő a kiválasztott időszakban END-del lezárt selejtpótlási START–END szakaszokból számolódik, és az END-et végző dolgozóhoz kerül. Kötegnél a teljes kötegidő csak egyszer számít.
               </div>
             </div>
@@ -8030,22 +8330,22 @@ export default function Page() {
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14, marginBottom: 14 }}>
             <div style={{ border: "1px solid #334155", borderRadius: 12, padding: 14, background: "#071022" }}>
-              <h4 style={{ margin: "0 0 4px", color: "#f8fafc", fontSize: 17 }}>Dolgozónként selejtpótlással töltött idő</h4>
-              <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 12 }}>Az idő annak a dolgozónak a statisztikájába kerül, aki END-del lezárta a pótlási munkaszakaszt.</div>
+              <h4 style={{ margin: "0 0 4px", color: officeTheme.textColor, fontSize: 17 }}>Dolgozónként selejtpótlással töltött idő</h4>
+              <div style={{ color: officeTheme.mutedText, fontSize: 12, marginBottom: 12 }}>Az idő annak a dolgozónak a statisztikájába kerül, aki END-del lezárta a pótlási munkaszakaszt.</div>
               {reproductionReportData.scrapWorkerRows.length === 0 ? (
-                <div style={{ color: "#94a3b8", padding: 18, textAlign: "center" }}>Ebben az időszakban nincs lezárt selejtpótlási munkaidő.</div>
+                <div style={{ color: officeTheme.mutedText, padding: 18, textAlign: "center" }}>Ebben az időszakban nincs lezárt selejtpótlási munkaidő.</div>
               ) : (
                 <div style={{ display: "grid", gap: 12 }}>
                   {reproductionReportData.scrapWorkerRows.map((row) => (
                     <div key={row.workerName}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
-                        <strong style={{ color: "#f8fafc" }}>{row.workerName}</strong>
+                        <strong style={{ color: officeTheme.textColor }}>{row.workerName}</strong>
                         <span style={{ color: "#fde68a", fontWeight: 900 }}>{formatDuration(row.totalMinutes)}</span>
                       </div>
                       <div style={{ height: 12, background: "#1e293b", borderRadius: 999, overflow: "hidden", margin: "6px 0" }}>
                         <div style={{ width: `${Math.max(2, Math.round((row.totalMinutes / maxScrapWorkerMinutes) * 100))}%`, height: "100%", background: "linear-gradient(90deg, #f59e0b, #fbbf24)", borderRadius: 999 }} />
                       </div>
-                      <div style={{ color: "#94a3b8", fontSize: 12 }}>{row.closedSegments} lezárt munkaszakasz · átlag {formatDuration(row.averageMinutes)} · az összes pótlási idő {row.sharePct}%-a</div>
+                      <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>{row.closedSegments} lezárt munkaszakasz · átlag {formatDuration(row.averageMinutes)} · az összes pótlási idő {row.sharePct}%-a</div>
                     </div>
                   ))}
                 </div>
@@ -8053,22 +8353,22 @@ export default function Page() {
             </div>
 
             <div style={{ border: "1px solid #334155", borderRadius: 12, padding: 14, background: "#071022" }}>
-              <h4 style={{ margin: "0 0 4px", color: "#f8fafc", fontSize: 17 }}>Selejtpótlások forrás munkaállomásonként</h4>
-              <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 12 }}>A kiválasztott időszakban rögzített selejtek száma a selejtet jelentő munkaállomás szerint.</div>
+              <h4 style={{ margin: "0 0 4px", color: officeTheme.textColor, fontSize: 17 }}>Selejtpótlások forrás munkaállomásonként</h4>
+              <div style={{ color: officeTheme.mutedText, fontSize: 12, marginBottom: 12 }}>A kiválasztott időszakban rögzített selejtek száma a selejtet jelentő munkaállomás szerint.</div>
               {reproductionReportData.scrapStationRows.length === 0 ? (
-                <div style={{ color: "#94a3b8", padding: 18, textAlign: "center" }}>Ebben az időszakban nincs rögzített selejtpótlás.</div>
+                <div style={{ color: officeTheme.mutedText, padding: 18, textAlign: "center" }}>Ebben az időszakban nincs rögzített selejtpótlás.</div>
               ) : (
                 <div style={{ display: "grid", gap: 12 }}>
                   {reproductionReportData.scrapStationRows.map((row) => (
                     <div key={row.stationName}>
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
-                        <strong style={{ color: "#f8fafc" }}>{row.stationName}</strong>
-                        <span style={{ color: "#f8fafc", fontWeight: 900 }}>{row.count} db</span>
+                        <strong style={{ color: officeTheme.textColor }}>{row.stationName}</strong>
+                        <span style={{ color: officeTheme.textColor, fontWeight: 900 }}>{row.count} db</span>
                       </div>
                       <div style={{ height: 12, background: "#1e293b", borderRadius: 999, overflow: "hidden", margin: "6px 0" }}>
                         <div style={{ width: `${Math.max(2, Math.round((row.count / maxScrapStationCount) * 100))}%`, height: "100%", background: "linear-gradient(90deg, #0ea5e9, #38bdf8)", borderRadius: 999 }} />
                       </div>
-                      <div style={{ color: "#94a3b8", fontSize: 12 }}>{row.completedCount} lezárt · {row.openCount} nyitott · részesedés {row.sharePct}%</div>
+                      <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>{row.completedCount} lezárt · {row.openCount} nyitott · részesedés {row.sharePct}%</div>
                     </div>
                   ))}
                 </div>
@@ -8076,20 +8376,20 @@ export default function Page() {
             </div>
           </div>
 
-          <h4 style={{ margin: "0 0 4px", color: "#f8fafc", fontSize: 18 }}>Részletes selejtpótlási napló</h4>
-          <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 10 }}>Látható, mikor rögzítették a selejtet, mikor indult és zárult a pótlás, mennyi tényleges START–END munkaidő tartozik hozzá, valamint kik dolgoztak rajta.</div>
+          <h4 style={{ margin: "0 0 4px", color: officeTheme.textColor, fontSize: 18 }}>Részletes selejtpótlási napló</h4>
+          <div style={{ color: officeTheme.mutedText, fontSize: 12, marginBottom: 10 }}>Látható, mikor rögzítették a selejtet, mikor indult és zárult a pótlás, mennyi tényleges START–END munkaidő tartozik hozzá, valamint kik dolgoztak rajta.</div>
           <div style={{ overflow: "auto", maxHeight: 520, border: "1px solid #334155", borderRadius: 12 }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1500 }}>
               <thead style={{ position: "sticky", top: 0, background: "#111c31", zIndex: 1 }}>
                 <tr>
                   {["Selejt rögzítve", "Sorszám", "Hiba", "Forrás munkaállomás", "START", "END", "Eltelt idő", "Indító dolgozó", "Befejező dolgozó", "Állapot", "Megjegyzés"].map((label) => (
-                    <th key={label} style={{ ...tableCellStyle, color: "#94a3b8", textAlign: "left", fontSize: 12, whiteSpace: "nowrap" }}>{label}</th>
+                    <th key={label} style={{ ...tableCellStyle, color: officeTheme.mutedText, textAlign: "left", fontSize: 12, whiteSpace: "nowrap" }}>{label}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {reproductionReportData.scrapCurrentRows.length === 0 ? (
-                  <tr><td colSpan={11} style={{ ...tableCellStyle, color: "#94a3b8", textAlign: "center", padding: 24 }}>A kiválasztott időszakban nincs rögzített selejtpótlási sor.</td></tr>
+                  <tr><td colSpan={11} style={{ ...tableCellStyle, color: officeTheme.mutedText, textAlign: "center", padding: 24 }}>A kiválasztott időszakban nincs rögzített selejtpótlási sor.</td></tr>
                 ) : reproductionReportData.scrapCurrentRows.map((row) => (
                   <tr key={row.key}>
                     <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{formatDateTime(row.reportedAt)}</td>
@@ -8116,29 +8416,29 @@ export default function Page() {
 
         <div style={{ display: "grid", gridTemplateColumns: "minmax(340px, 0.9fr) minmax(600px, 1.6fr)", gap: 14, alignItems: "start" }}>
           <section style={cardStyle}>
-            <h3 style={{ margin: "0 0 4px", color: "#f8fafc", fontSize: 20 }}>Munkaállomási rangsor</h3>
-            <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 14 }}>Minél alacsonyabb az előző időszakhoz viszonyított százalék, annál kedvezőbb a változás. Példa: 5 az előző 10-hez képest 50%.</div>
+            <h3 style={{ margin: "0 0 4px", color: officeTheme.textColor, fontSize: 20 }}>Munkaállomási rangsor</h3>
+            <div style={{ color: officeTheme.mutedText, fontSize: 12, marginBottom: 14 }}>Minél alacsonyabb az előző időszakhoz viszonyított százalék, annál kedvezőbb a változás. Példa: 5 az előző 10-hez képest 50%.</div>
             <div style={{ display: "grid", gap: 12 }}>
               {reproductionReportData.stationRows.length === 0 ? (
-                <div style={{ color: "#94a3b8", padding: 18, textAlign: "center" }}>A kiválasztott időszakban nincs újragyártási adat.</div>
+                <div style={{ color: officeTheme.mutedText, padding: 18, textAlign: "center" }}>A kiválasztott időszakban nincs újragyártási adat.</div>
               ) : reproductionReportData.stationRows.map((row, index) => {
                 const ratioGood = row.comparisonRatioPct !== null && row.comparisonRatioPct <= 100;
                 return (
                   <div key={row.stationName} style={{ border: "1px solid #334155", borderRadius: 12, padding: 12, background: "#071022" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
-                      <strong style={{ color: "#f8fafc" }}>{index + 1}. {row.stationName}</strong>
-                      <span style={{ color: "#f8fafc", fontSize: 20, fontWeight: 900 }}>{row.currentCount}</span>
+                      <strong style={{ color: officeTheme.textColor }}>{index + 1}. {row.stationName}</strong>
+                      <span style={{ color: officeTheme.textColor, fontSize: 20, fontWeight: 900 }}>{row.currentCount}</span>
                     </div>
                     <div style={{ height: 9, borderRadius: 999, background: "#1e293b", overflow: "hidden", margin: "9px 0" }}>
                       <div style={{ width: `${Math.max(2, Math.round((row.currentCount / maxStationCount) * 100))}%`, height: "100%", background: "linear-gradient(90deg, #0ea5e9, #38bdf8)", borderRadius: 999 }} />
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, fontSize: 12 }}>
-                      <div><span style={{ color: "#64748b" }}>Előző:</span> <strong style={{ color: "#e2e8f0" }}>{row.previousCount}</strong></div>
-                      <div><span style={{ color: "#64748b" }}>Arány:</span> <strong style={{ color: row.comparisonRatioPct === null ? "#cbd5e1" : ratioGood ? "#4ade80" : "#f87171" }}>{row.comparisonRatioPct === null ? (row.currentCount > 0 ? "Új" : "–") : `${row.comparisonRatioPct}%`}</strong></div>
-                      <div><span style={{ color: "#64748b" }}>Részesedés:</span> <strong style={{ color: "#e2e8f0" }}>{row.sharePct}%</strong></div>
-                      <div><span style={{ color: "#64748b" }}>Változás:</span> <strong style={{ color: row.changePct !== null && row.changePct <= 0 ? "#4ade80" : "#f87171" }}>{row.changePct === null ? "–" : `${row.changePct > 0 ? "+" : ""}${row.changePct}%`}</strong></div>
-                      <div><span style={{ color: "#64748b" }}>Lezárt:</span> <strong style={{ color: "#e2e8f0" }}>{row.completedCount}</strong></div>
-                      <div><span style={{ color: "#64748b" }}>Átlagidő:</span> <strong style={{ color: "#e2e8f0" }}>{formatDuration(row.averageDurationMinutes)}</strong></div>
+                      <div><span style={{ color: officeTheme.mutedText }}>Előző:</span> <strong style={{ color: officeTheme.textColor }}>{row.previousCount}</strong></div>
+                      <div><span style={{ color: officeTheme.mutedText }}>Arány:</span> <strong style={{ color: row.comparisonRatioPct === null ? "#cbd5e1" : ratioGood ? "#4ade80" : "#f87171" }}>{row.comparisonRatioPct === null ? (row.currentCount > 0 ? "Új" : "–") : `${row.comparisonRatioPct}%`}</strong></div>
+                      <div><span style={{ color: officeTheme.mutedText }}>Részesedés:</span> <strong style={{ color: officeTheme.textColor }}>{row.sharePct}%</strong></div>
+                      <div><span style={{ color: officeTheme.mutedText }}>Változás:</span> <strong style={{ color: row.changePct !== null && row.changePct <= 0 ? "#4ade80" : "#f87171" }}>{row.changePct === null ? "–" : `${row.changePct > 0 ? "+" : ""}${row.changePct}%`}</strong></div>
+                      <div><span style={{ color: officeTheme.mutedText }}>Lezárt:</span> <strong style={{ color: officeTheme.textColor }}>{row.completedCount}</strong></div>
+                      <div><span style={{ color: officeTheme.mutedText }}>Átlagidő:</span> <strong style={{ color: officeTheme.textColor }}>{formatDuration(row.averageDurationMinutes)}</strong></div>
                     </div>
                   </div>
                 );
@@ -8147,20 +8447,20 @@ export default function Page() {
           </section>
 
           <section style={{ ...cardStyle, minWidth: 0 }}>
-            <h3 style={{ margin: "0 0 4px", color: "#f8fafc", fontSize: 20 }}>Részletes újragyártási napló</h3>
-            <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 12 }}>Egy sor = azonos sorszám + azonos munkaállomás + azonos újragyártási sorszám.</div>
+            <h3 style={{ margin: "0 0 4px", color: officeTheme.textColor, fontSize: 20 }}>Részletes újragyártási napló</h3>
+            <div style={{ color: officeTheme.mutedText, fontSize: 12, marginBottom: 12 }}>Egy sor = azonos sorszám + azonos munkaállomás + azonos újragyártási sorszám.</div>
             <div style={{ overflow: "auto", maxHeight: 620, border: "1px solid #334155", borderRadius: 12 }}>
               <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1180 }}>
                 <thead style={{ position: "sticky", top: 0, background: "#111c31", zIndex: 1 }}>
                   <tr>
                     {["START", "END", "Időtartam", "Sorszám", "Munkaállomás", "Újragyártás", "Indító dolgozó", "Befejező dolgozó", "Állapot", "Megjegyzés"].map((label) => (
-                      <th key={label} style={{ ...tableCellStyle, color: "#94a3b8", textAlign: "left", fontSize: 12, whiteSpace: "nowrap" }}>{label}</th>
+                      <th key={label} style={{ ...tableCellStyle, color: officeTheme.mutedText, textAlign: "left", fontSize: 12, whiteSpace: "nowrap" }}>{label}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {reproductionReportData.currentRows.length === 0 ? (
-                    <tr><td colSpan={10} style={{ ...tableCellStyle, color: "#94a3b8", textAlign: "center", padding: 24 }}>Nincs megjeleníthető újragyártási sor.</td></tr>
+                    <tr><td colSpan={10} style={{ ...tableCellStyle, color: officeTheme.mutedText, textAlign: "center", padding: 24 }}>Nincs megjeleníthető újragyártási sor.</td></tr>
                   ) : reproductionReportData.currentRows.map((row) => (
                     <tr key={row.key}>
                       <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{formatDateTime(row.startAt)}</td>
@@ -8191,6 +8491,7 @@ export default function Page() {
     if (managementSection === "reproduction-report") return ReproductionReportAdmin();
 
     const dashboardRange = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
+    const officeTheme = getOfficeTheme("dashboard");
     const availableStationRows = dashboardData.stationEfficiencyRows;
     const filteredWorkerStats = getFilteredDashboardWorkerStats();
     const selectedStationValue = filteredWorkerStats.selectedStationValue;
@@ -8212,6 +8513,9 @@ export default function Page() {
     const selectedStationLabel = selectedStationValue === "all" ? "Összes munkaállomás" : selectedStationValue;
     const selectedWorkerLabel = selectedWorkerValue === "all" ? "Összes dolgozó" : selectedWorkerValue;
     const activeWorkerCount = visibleWorkerRows.filter((row) => row.totalMinutes > 0).length;
+    const orderFilterSuggestions = dashboardData.availableOrderNumbers
+      .filter((orderNumber) => !dashboardOrderInput.trim() || matchesDashboardOrderFilters(orderNumber, [dashboardOrderInput]))
+      .slice(0, 50);
 
     const dashboardCards: Array<{ label: string; value: string | number; helper: string }> = [
       {
@@ -8237,16 +8541,16 @@ export default function Page() {
     ];
 
     const cardStyle: React.CSSProperties = {
-      background: "linear-gradient(145deg, #0f172a 0%, #111c31 100%)",
-      border: "1px solid #334155",
+      background: `linear-gradient(145deg, ${officeTheme.panelBackground} 0%, ${officeTheme.panelAltBackground} 100%)`,
+      border: `1px solid ${officeTheme.borderColor}`,
       borderRadius: 16,
       padding: 16,
       boxShadow: "0 10px 28px rgba(0,0,0,0.16)",
     };
     const tableHeaderStyle: React.CSSProperties = {
       padding: "11px 10px",
-      borderBottom: "1px solid #334155",
-      color: "#94a3b8",
+      borderBottom: `1px solid ${officeTheme.borderColor}`,
+      color: officeTheme.mutedText,
       fontSize: 12,
       textTransform: "uppercase",
       letterSpacing: 0.4,
@@ -8254,16 +8558,22 @@ export default function Page() {
     };
     const tableCellStyle: React.CSSProperties = {
       padding: "11px 10px",
-      borderBottom: "1px solid #1e293b",
-      color: "#e2e8f0",
+      borderBottom: `1px solid ${officeTheme.borderColor}`,
+      color: officeTheme.textColor,
+    };
+    const dashboardFilterFieldStyle: React.CSSProperties = {
+      ...fieldStyle,
+      background: officeTheme.inputBackground,
+      color: officeTheme.inputText,
+      borderColor: officeTheme.borderColor,
     };
 
     return (
       <div
         className="bg-slate-900 text-slate-100"
         style={{
-          background: "#020617",
-          border: "1px solid #334155",
+          background: officeTheme.pageBackground,
+          border: `1px solid ${officeTheme.borderColor}`,
           borderRadius: 18,
           padding: 18,
           boxShadow: "0 18px 45px rgba(0,0,0,0.28)",
@@ -8274,11 +8584,11 @@ export default function Page() {
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
           <div>
-            <div style={{ fontSize: 13, color: "#38bdf8", fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Management Dashboard</div>
-            <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: "#f8fafc" }}>Vezetői műszerfal</h2>
-            <div style={{ color: "#94a3b8" }}>Termelési terv, munkaállomási teljesítés és dolgozói munkaidő egyetlen nézetben.</div>
-            <div style={{ color: "#64748b", fontSize: 13, marginTop: 6 }}>Aktuális időszak: {dashboardRange.label}</div>
-            <div style={{ color: "#64748b", fontSize: 13, marginTop: 4 }}>Utolsó frissítés: {dashboardData.lastUpdatedAt ? formatDateTime(dashboardData.lastUpdatedAt) : "-"}</div>
+            <div style={{ fontSize: 13, color: officeTheme.accentColor, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Management Dashboard</div>
+            <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: officeTheme.textColor }}>Vezetői műszerfal</h2>
+            <div style={{ color: officeTheme.mutedText }}>Termelési terv, munkaállomási teljesítés és dolgozói munkaidő egyetlen nézetben.</div>
+            <div style={{ color: officeTheme.mutedText, fontSize: 13, marginTop: 6 }}>Aktuális időszak: {dashboardRange.label}</div>
+            <div style={{ color: officeTheme.mutedText, fontSize: 13, marginTop: 4 }}>Utolsó frissítés: {dashboardData.lastUpdatedAt ? formatDateTime(dashboardData.lastUpdatedAt) : "-"}</div>
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", maxWidth: 980 }}>
@@ -8289,7 +8599,7 @@ export default function Page() {
                 setDashboardFilterMode(nextMode);
                 void loadManagementDashboardView(nextMode, dashboardDate, dashboardDateTo);
               }}
-              style={{ ...fieldStyle, width: 185 }}
+              style={{ ...dashboardFilterFieldStyle, width: 185 }}
               aria-label="Időszak típusa"
             >
               <option value="daily">Napi nézet</option>
@@ -8305,7 +8615,7 @@ export default function Page() {
                 setDashboardDate(event.target.value);
                 void loadManagementDashboardView(dashboardFilterMode, event.target.value, dashboardDateTo);
               }}
-              style={{ ...fieldStyle, width: 175 }}
+              style={{ ...dashboardFilterFieldStyle, width: 175 }}
             />
             {dashboardFilterMode === "custom" && (
               <input
@@ -8315,7 +8625,7 @@ export default function Page() {
                   setDashboardDateTo(event.target.value);
                   void loadManagementDashboardView("custom", dashboardDate, event.target.value);
                 }}
-                style={{ ...fieldStyle, width: 175 }}
+                style={{ ...dashboardFilterFieldStyle, width: 175 }}
               />
             )}
             <button type="button" onClick={() => shiftDashboardPeriod(1)} style={{ ...buttonSecondary, minWidth: 44 }} title="Következő időszak">→</button>
@@ -8326,7 +8636,7 @@ export default function Page() {
                 setDashboardSelectedStation(event.target.value);
                 setDashboardSelectedWorker("all");
               }}
-              style={{ ...fieldStyle, width: 240 }}
+              style={{ ...dashboardFilterFieldStyle, width: 240 }}
               aria-label="Munkaállomás szűrése"
             >
               <option value="all">Összes munkaállomás</option>
@@ -8337,7 +8647,7 @@ export default function Page() {
             <select
               value={selectedWorkerValue}
               onChange={(event) => setDashboardSelectedWorker(event.target.value)}
-              style={{ ...fieldStyle, width: 220 }}
+              style={{ ...dashboardFilterFieldStyle, width: 220 }}
               aria-label="Dolgozó szűrése"
             >
               <option value="all">Összes dolgozó</option>
@@ -8345,6 +8655,29 @@ export default function Page() {
                 <option key={workerName} value={workerName}>{workerName}</option>
               ))}
             </select>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", minWidth: 310 }}>
+              <input
+                list="dashboard-order-filter-options"
+                value={dashboardOrderInput}
+                onChange={(event) => setDashboardOrderInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    addDashboardOrderFilter();
+                  }
+                }}
+                placeholder="Rendelésszám / gyors kód pl. 07178"
+                style={{ ...fieldStyle, width: 245, background: officeTheme.inputBackground, color: officeTheme.inputText, borderColor: officeTheme.borderColor }}
+                aria-label="Rendelésszám szűrése"
+              />
+              <datalist id="dashboard-order-filter-options">
+                {orderFilterSuggestions.map((orderNumber) => (
+                  <option key={orderNumber} value={orderNumber}>{getDashboardQuickOrderCode(orderNumber) || orderNumber}</option>
+                ))}
+              </datalist>
+              <button type="button" onClick={() => addDashboardOrderFilter()} style={{ ...buttonSecondary, minWidth: 48 }}>+</button>
+            </div>
+            <button type="button" onClick={clearDashboardSecondaryFilters} style={buttonSecondary}>Szűrők törlése</button>
             <button type="button" onClick={() => void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo)} disabled={loadingDashboard} style={buttonSecondary}>
               {loadingDashboard ? "Frissítés..." : "Frissítés"}
             </button>
@@ -8354,12 +8687,24 @@ export default function Page() {
           </div>
         </div>
 
+        {dashboardOrderFilters.length > 0 && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", margin: "-6px 0 16px", padding: "10px 12px", borderRadius: 12, background: officeTheme.panelBackground, border: `1px solid ${officeTheme.borderColor}` }}>
+            <strong style={{ color: officeTheme.textColor, fontSize: 12 }}>Rendelésszám szűrés:</strong>
+            {dashboardOrderFilters.map((filter) => (
+              <button key={filter} type="button" onClick={() => removeDashboardOrderFilter(filter)} title="Szűrő eltávolítása" style={{ border: `1px solid ${officeTheme.accentColor}`, background: officeTheme.navActiveBackground, color: officeTheme.textColor, borderRadius: 999, padding: "6px 10px", fontWeight: 800, cursor: "pointer" }}>
+                {filter} ×
+              </button>
+            ))}
+            <span style={{ color: officeTheme.mutedText, fontSize: 11 }}>Gyorskód: R260716178 → 07178. A részleges keresés is működik.</span>
+          </div>
+        )}
+
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 18 }}>
           {dashboardCards.map((card) => (
             <div key={card.label} style={cardStyle}>
-              <div style={{ color: "#94a3b8", fontSize: 13 }}>{card.label}</div>
-              <div style={{ color: "#f8fafc", fontSize: 32, fontWeight: 900, marginTop: 6 }}>{card.value}</div>
-              <div style={{ color: "#64748b", fontSize: 12, marginTop: 6 }}>{card.helper}</div>
+              <div style={{ color: officeTheme.mutedText, fontSize: 13 }}>{card.label}</div>
+              <div style={{ color: officeTheme.textColor, fontSize: 32, fontWeight: 900, marginTop: 6 }}>{card.value}</div>
+              <div style={{ color: officeTheme.mutedText, fontSize: 12, marginTop: 6 }}>{card.helper}</div>
             </div>
           ))}
         </div>
@@ -8368,8 +8713,8 @@ export default function Page() {
           <div style={cardStyle}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}>
               <div>
-                <h3 style={{ margin: 0, color: "#f8fafc" }}>Dolgozói teljesítmény</h3>
-                <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>
+                <h3 style={{ margin: 0, color: officeTheme.textColor }}>Dolgozói teljesítmény</h3>
+                <div style={{ color: officeTheme.mutedText, fontSize: 12, marginTop: 4 }}>
                   A tényleges munkaidő kizárólag a lezárt work_logs sorok start_time és end_time mezőinek különbségéből számolódik. Az END nélküli munkák nem növelik a ledolgozott időt, az átfedések dolgozónként csak egyszer, a kötegek teljes ideje pedig kötegenként csak egyszer számít. A hatékonyság nevezője dolgozónként a workers.elszamolt_munkaido értéke; a munka_vege utáni tényleges START/END mozgások óránként 60 perccel növelik a napi elszámolási keretet. Éjfélen átnyúló nyitott munka éjszakai ideje nem számít, a következő napi számolás a dolgozó munka_kezdese időpontjától folytatódik.
                 </div>
               </div>
@@ -8404,14 +8749,14 @@ export default function Page() {
                         <td style={{ ...tableCellStyle, color: efficiencyColor, fontWeight: 900 }}>
                           {row.efficiencyPct === null ? "–" : `${formatDashboardEfficiencyPct(row.efficiencyPct)}%`}
                           {row.activeDayCount > 1 && (
-                            <div style={{ color: "#64748b", fontSize: 11, fontWeight: 600, marginTop: 3 }}>{row.activeDayCount} munkával érintett nap</div>
+                            <div style={{ color: officeTheme.mutedText, fontSize: 11, fontWeight: 600, marginTop: 3 }}>{row.activeDayCount} munkával érintett nap</div>
                           )}
                         </td>
                       </tr>
                     );
                   })}
                   {visibleWorkerRows.length === 0 && (
-                    <tr><td colSpan={4} style={{ padding: 14, color: "#94a3b8" }}>A kiválasztott időszakban, munkaállomáson és dolgozónál nincs lezárt, mérhető munkaidő.</td></tr>
+                    <tr><td colSpan={4} style={{ padding: 14, color: officeTheme.mutedText }}>A kiválasztott időszakban, munkaállomáson és dolgozónál nincs lezárt, mérhető munkaidő.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -8421,8 +8766,8 @@ export default function Page() {
           <div style={cardStyle}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}>
               <div>
-                <h3 style={{ margin: 0, color: "#f8fafc" }}>Terv szerinti hatékonyság munkaállomásonként</h3>
-                <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>
+                <h3 style={{ margin: 0, color: officeTheme.textColor }}>Terv szerinti hatékonyság munkaállomásonként</h3>
+                <div style={{ color: officeTheme.mutedText, fontSize: 12, marginTop: 4 }}>
                   A napi tervben szereplő sorszámok közül azt tekinti késznek, amelyhez az adott munkaállomáson lezárt work_logs sor tartozik.
                 </div>
               </div>
@@ -8463,7 +8808,7 @@ export default function Page() {
                     );
                   })}
                   {visibleStationRows.length === 0 && (
-                    <tr><td colSpan={5} style={{ padding: 14, color: "#94a3b8" }}>Nem található munkaállomási terv az időszakban.</td></tr>
+                    <tr><td colSpan={5} style={{ padding: 14, color: officeTheme.mutedText }}>Nem található munkaállomási terv az időszakban.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -8472,7 +8817,7 @@ export default function Page() {
         </div>
 
         <div style={{ ...cardStyle, marginBottom: 18 }}>
-          <h3 style={{ margin: "0 0 12px", color: "#f8fafc" }}>Folyamatban lévő munkák</h3>
+          <h3 style={{ margin: "0 0 12px", color: officeTheme.textColor }}>Folyamatban lévő munkák</h3>
           <div style={{ overflowX: "auto", maxHeight: 340, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
               <thead>
@@ -8491,11 +8836,11 @@ export default function Page() {
                     <td style={tableCellStyle}>{row.station || row.role || "-"}</td>
                     <td style={tableCellStyle}>{row.workerName}</td>
                     <td style={tableCellStyle}>{formatDateTime(row.startedAt)}</td>
-                    <td style={{ ...tableCellStyle, color: "#cbd5e1" }}>{row.lastNote || "-"}</td>
+                    <td style={{ ...tableCellStyle, color: officeTheme.mutedText }}>{row.lastNote || "-"}</td>
                   </tr>
                 ))}
                 {visibleOpenRows.length === 0 && (
-                  <tr><td colSpan={5} style={{ padding: 14, color: "#94a3b8" }}>A kiválasztott időszakban, munkaállomáson és dolgozónál nincs folyamatban lévő munka.</td></tr>
+                  <tr><td colSpan={5} style={{ padding: 14, color: officeTheme.mutedText }}>A kiválasztott időszakban, munkaállomáson és dolgozónál nincs folyamatban lévő munka.</td></tr>
                 )}
               </tbody>
             </table>
@@ -8503,7 +8848,7 @@ export default function Page() {
         </div>
 
         <div style={cardStyle}>
-          <h3 style={{ margin: "0 0 12px", color: "#f8fafc" }}>Eseménynapló</h3>
+          <h3 style={{ margin: "0 0 12px", color: officeTheme.textColor }}>Eseménynapló</h3>
           <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1280 }}>
               <thead>
@@ -8539,12 +8884,12 @@ export default function Page() {
                           {isEnd ? "END" : action || "START"}
                         </span>
                       </td>
-                      <td style={{ ...tableCellStyle, color: "#cbd5e1" }}>{getNoteBeforeContext(log.note) || "-"}</td>
+                      <td style={{ ...tableCellStyle, color: officeTheme.mutedText }}>{getNoteBeforeContext(log.note) || "-"}</td>
                     </tr>
                   );
                 })}
                 {visibleEventLogs.length === 0 && (
-                  <tr><td colSpan={8} style={{ padding: 14, color: "#94a3b8" }}>A kiválasztott időszakban, munkaállomáson és dolgozónál nincs esemény.</td></tr>
+                  <tr><td colSpan={8} style={{ padding: 14, color: officeTheme.mutedText }}>A kiválasztott időszakban, munkaállomáson és dolgozónál nincs esemény.</td></tr>
                 )}
               </tbody>
             </table>
@@ -8865,6 +9210,11 @@ export default function Page() {
       document.removeEventListener("focusout", handleGlobalFocusOut);
     };
   }, [step, terminalView, authResolved, authError, flowStage, workflowMode, pendingAction, activeWorker]);
+
+  useEffect(() => {
+    if (!supabase || !activeWorker || !isManagementDashboardWorker(activeWorker)) return;
+    void loadOfficeUiPreferences();
+  }, [supabase, activeWorker?.id]);
 
   useEffect(() => {
     if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
@@ -10792,14 +11142,63 @@ export default function Page() {
         definitions.map((definition) => definition.label),
         definitions.map((definition) => sampleByKey[definition.key] ?? ""),
       ];
-      XLSX.utils.book_append_sheet(
-        workbook,
-        XLSX.utils.aoa_to_sheet(rows),
-        stationName
-      );
+      const worksheet = XLSX.utils.aoa_to_sheet(rows) as Record<string, any>;
+      const lastColumnIndex = Math.max(0, definitions.length - 1);
+      const toExcelColumn = (columnIndex: number): string => {
+        let value = columnIndex + 1;
+        let result = "";
+        while (value > 0) {
+          const remainder = (value - 1) % 26;
+          result = String.fromCharCode(65 + remainder) + result;
+          value = Math.floor((value - 1) / 26);
+        }
+        return result;
+      };
+      const lastColumn = toExcelColumn(lastColumnIndex);
+      worksheet["!autofilter"] = { ref: `A1:${lastColumn}2` };
+      worksheet["!freeze"] = { xSplit: 0, ySplit: 1, topLeftCell: "A2", activePane: "bottomLeft", state: "frozen" };
+      worksheet["!cols"] = definitions.map((definition) => ({
+        wch: definition.key === "sorszam" ? 18 :
+             definition.key === "megnevezes" ? 30 :
+             definition.key.includes("datum") ? 16 :
+             definition.key === "mennyiseg" ? 12 : 20,
+      }));
+      worksheet["!rows"] = [{ hpt: 26 }, { hpt: 22 }];
+
+      definitions.forEach((definition, columnIndex) => {
+        const cellAddress = `${toExcelColumn(columnIndex)}1`;
+        if (!worksheet[cellAddress]) return;
+        worksheet[cellAddress].s = {
+          font: { bold: true, color: { rgb: "FFFFFF" }, sz: 11 },
+          fill: { patternType: "solid", fgColor: { rgb: "0F4C5C" } },
+          alignment: { horizontal: "center", vertical: "center", wrapText: true },
+          border: {
+            top: { style: "thin", color: { rgb: "8EA6BA" } },
+            bottom: { style: "thin", color: { rgb: "8EA6BA" } },
+            left: { style: "thin", color: { rgb: "8EA6BA" } },
+            right: { style: "thin", color: { rgb: "8EA6BA" } },
+          },
+        };
+        const sampleAddress = `${toExcelColumn(columnIndex)}2`;
+        if (worksheet[sampleAddress]) {
+          worksheet[sampleAddress].s = {
+            fill: { patternType: "solid", fgColor: { rgb: "F1F5F9" } },
+            alignment: { vertical: "center", wrapText: true },
+            border: {
+              bottom: { style: "thin", color: { rgb: "CBD5E1" } },
+              left: { style: "thin", color: { rgb: "E2E8F0" } },
+              right: { style: "thin", color: { rgb: "E2E8F0" } },
+            },
+          };
+          if (definition.dataType === "date") worksheet[sampleAddress].z = "yyyy-mm-dd";
+          if (definition.dataType === "integer") worksheet[sampleAddress].z = "0";
+        }
+      });
+
+      XLSX.utils.book_append_sheet(workbook, worksheet, stationName);
     });
 
-    const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    const output = (XLSX.write as any)(workbook, { bookType: "xlsx", type: "array", cellStyles: true });
     downloadBlob(
       "Napi_termelesi_terv_minta.xlsx",
       new Blob([output]),
@@ -10807,7 +11206,7 @@ export default function Page() {
     );
     setMessage({
       type: "success",
-      text: `A minta Excel elkészült ${uniqueStationNames.length} munkaállomási munkafüllel. Az iroda munkafül szándékosan kimaradt.`,
+      text: `A professzionális minta Excel elkészült ${uniqueStationNames.length} munkaállomási munkafüllel, minden rendelkezésre álló mezővel. Az iroda munkafül szándékosan kimaradt.`,
     });
   }
 
@@ -11547,7 +11946,8 @@ export default function Page() {
   }
 
   async function fetchDashboardPlanEfficiency(
-    range: { startIso: string; endIso: string }
+    range: { startIso: string; endIso: string },
+    orderFilters: string[] = dashboardOrderFilters
   ): Promise<DashboardStationEfficiencyRow[]> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
@@ -11576,7 +11976,7 @@ export default function Page() {
       const target = planOrdersByStation.get(station)!;
       ((response.data || []) as Array<{ sorszam?: string | null }>).forEach((row) => {
         const orderNumber = String(row.sorszam || "").trim();
-        if (orderNumber) target.add(orderNumber);
+        if (orderNumber && matchesDashboardOrderFilters(orderNumber, orderFilters)) target.add(orderNumber);
       });
       stationTablePlanCount += target.size;
     }
@@ -11613,7 +12013,7 @@ export default function Page() {
 
           ((itemResponse.data || []) as Array<{ order_number?: string | null; required_stations?: string[] | null }>).forEach((item) => {
             const orderNumber = String(item.order_number || "").trim();
-            if (!orderNumber) return;
+            if (!orderNumber || !matchesDashboardOrderFilters(orderNumber, orderFilters)) return;
             const requiredStations = Array.isArray(item.required_stations) && item.required_stations.length > 0
               ? item.required_stations
               : stations;
@@ -11723,7 +12123,10 @@ export default function Page() {
     void loadManagementDashboardView(dashboardFilterMode, today, today);
   }
 
-  async function fetchDashboardData(range: { startIso: string; endIso: string }): Promise<DashboardData> {
+  async function fetchDashboardData(
+    range: { startIso: string; endIso: string },
+    orderFilters: string[] = dashboardOrderFilters
+  ): Promise<DashboardData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
     const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
@@ -11759,31 +12162,44 @@ export default function Page() {
         worker_name: row.worker_name || workers.find((worker) => Number(worker.id) === Number(row.worker_id))?.["Teljes nev"] || null,
       }));
 
+    const availableOrderNumbers = Array.from(new Set(
+      allFetchedLogs.map((log) => String(log.order_number || "").trim()).filter(Boolean)
+    )).sort((a, b) => a.localeCompare(b, "hu"));
+    const orderFilteredLogs = allFetchedLogs.filter((log) =>
+      matchesDashboardOrderFilters(log.order_number, orderFilters)
+    );
+
     const rangeStartMs = new Date(range.startIso).getTime();
     const rangeEndMs = new Date(range.endIso).getTime();
-    const visibleLogs = allFetchedLogs.filter((log) => {
+    const visibleLogs = orderFilteredLogs.filter((log) => {
       const eventMs = new Date(getDashboardLogEventAt(log)).getTime();
       return Number.isFinite(eventMs) && eventMs >= rangeStartMs && eventMs < rangeEndMs;
     });
 
-    const calculationLogs = [...allFetchedLogs].sort(
+    const calculationLogs = [...orderFilteredLogs].sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
     const [built, stationEfficiencyRows] = await Promise.all([
       Promise.resolve(buildDashboardData(calculationLogs, workers, range)),
-      fetchDashboardPlanEfficiency(range),
+      fetchDashboardPlanEfficiency(range, orderFilters),
     ]);
 
     return {
       ...built,
       logs: visibleLogs,
+      availableOrderNumbers,
       stationEfficiencyRows,
       totalScrap: visibleLogs.reduce((sum, row) => sum + (Number(row.scrap_qty || 0) || 0), 0),
       lastUpdatedAt: new Date().toISOString(),
     };
   }
 
-  async function loadManagementDashboardView(filterMode: DashboardFilterMode = dashboardFilterMode, dateKey = dashboardDate, dateToKey = dashboardDateTo): Promise<void> {
+  async function loadManagementDashboardView(
+    filterMode: DashboardFilterMode = dashboardFilterMode,
+    dateKey = dashboardDate,
+    dateToKey = dashboardDateTo,
+    orderFilters: string[] = dashboardOrderFilters
+  ): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
       return;
@@ -11791,7 +12207,7 @@ export default function Page() {
     setLoadingDashboard(true);
     try {
       const range = getDashboardDateRange(filterMode, dateKey, dateToKey);
-      const nextDashboardData = await fetchDashboardData(range);
+      const nextDashboardData = await fetchDashboardData(range, orderFilters);
       setDashboardData(nextDashboardData);
       setTerminalView("management");
       setWorkflowMode(null);
@@ -12073,7 +12489,8 @@ export default function Page() {
       const selectedStationLabel = filteredWorkerStats.selectedStationValue === "all" ? "Összes munkaállomás" : filteredWorkerStats.selectedStationValue;
       const selectedWorkerLabel = filteredWorkerStats.selectedWorkerValue === "all" ? "Összes dolgozó" : filteredWorkerStats.selectedWorkerValue;
       doc.text(`Időszak: ${range.label}`, 40, 60);
-      doc.text(`Szűrés: ${selectedStationLabel} | ${selectedWorkerLabel}`, 40, 74);
+      const selectedOrderLabel = dashboardOrderFilters.length > 0 ? dashboardOrderFilters.join(", ") : "Összes rendelés";
+      doc.text(`Szűrés: ${selectedStationLabel} | ${selectedWorkerLabel} | ${selectedOrderLabel}`, 40, 74);
 
       let y = 102;
       doc.setFont(PDF_FONT_FAMILY, "bold");
