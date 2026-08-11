@@ -284,6 +284,31 @@ type DashboardProductTypeRow = {
   closedOrders: number;
 };
 
+type DashboardPdfPlanRow = {
+  machine_name?: string | null;
+  sorszam?: string | null;
+  elkeszules_datum?: string | null;
+  adat?: Record<string, unknown> | null;
+};
+
+type DashboardPdfCompletedOrderRow = {
+  orderNumber: string;
+  stationName: string;
+  workerName: string;
+  completedAt: string;
+  elapsedLabel: string;
+  productType: string;
+  rawProductType: string;
+  planDate: string;
+};
+
+type DashboardPdfWorkerAnalysis = {
+  workerName: string;
+  performance: DashboardWorkerPerformanceRow;
+  completedOrders: DashboardPdfCompletedOrderRow[];
+  typeCounts: Record<string, number>;
+};
+
 type DashboardData = {
   logs: WorkLogRow[];
   availableOrderNumbers: string[];
@@ -4441,6 +4466,9 @@ export default function Page() {
   const [dashboardSelectedWorker, setDashboardSelectedWorker] = useState("all");
   const [dashboardOrderFilters, setDashboardOrderFilters] = useState<string[]>([]);
   const [dashboardOrderInput, setDashboardOrderInput] = useState("");
+  const [dashboardPdfIncludeComparison, setDashboardPdfIncludeComparison] = useState(true);
+  const [dashboardPdfComparisonStation, setDashboardPdfComparisonStation] = useState("__dashboard__");
+  const dashboardOrderFiltersRef = useRef<string[]>([]);
   const [officeThemePresetByPage, setOfficeThemePresetByPage] = useState<Record<OfficePageKey, OfficeThemePresetId>>(createDefaultOfficeThemePresetMap());
   const [officeThemeByPage, setOfficeThemeByPage] = useState<Record<OfficePageKey, OfficeThemeConfig>>(createDefaultOfficeThemeMap());
   const [officeThemeEditorOpen, setOfficeThemeEditorOpen] = useState(false);
@@ -4767,6 +4795,7 @@ export default function Page() {
     const normalized = normalizeDashboardOrderSearch(value);
     if (!normalized) return;
     const next = Array.from(new Map([...dashboardOrderFilters, value].map((item) => [normalizeDashboardOrderSearch(item), item])).values());
+    dashboardOrderFiltersRef.current = [...next];
     setDashboardOrderFilters(next);
     setDashboardOrderInput("");
     void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, next);
@@ -4775,6 +4804,7 @@ export default function Page() {
   function removeDashboardOrderFilter(value: string): void {
     const normalized = normalizeDashboardOrderSearch(value);
     const next = dashboardOrderFilters.filter((item) => normalizeDashboardOrderSearch(item) !== normalized);
+    dashboardOrderFiltersRef.current = [...next];
     setDashboardOrderFilters(next);
     void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, next);
   }
@@ -4782,6 +4812,7 @@ export default function Page() {
   function clearDashboardSecondaryFilters(): void {
     setDashboardSelectedStation("all");
     setDashboardSelectedWorker("all");
+    dashboardOrderFiltersRef.current = [];
     setDashboardOrderFilters([]);
     setDashboardOrderInput("");
     void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, []);
@@ -4822,7 +4853,7 @@ export default function Page() {
               onClick={() => {
                 setManagementSection(item.id);
                 if (item.id === "dashboard") {
-                  void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo);
+                  void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
                 } else if (item.id === "production-plan") {
                   void loadProductionPlans(productionPlanDate);
                 } else if (item.id === "production-monitor") {
@@ -8682,7 +8713,26 @@ export default function Page() {
               {loadingDashboard ? "Frissítés..." : "Frissítés"}
             </button>
             <button type="button" onClick={exportDashboardAsExcel} style={buttonPrimary}>Excel export</button>
-            <button type="button" onClick={() => void exportDashboardAsPdf()} style={buttonPrimary}>PDF export</button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "7px 10px", borderRadius: 12, background: officeTheme.panelBackground, border: `1px solid ${officeTheme.borderColor}` }}>
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 7, color: officeTheme.textColor, fontSize: 12, fontWeight: 800, cursor: "pointer", whiteSpace: "nowrap" }}>
+                <input type="checkbox" checked={dashboardPdfIncludeComparison} onChange={(event) => setDashboardPdfIncludeComparison(event.target.checked)} />
+                Dolgozói összehasonlító oldal
+              </label>
+              <select
+                value={dashboardPdfComparisonStation}
+                onChange={(event) => setDashboardPdfComparisonStation(event.target.value)}
+                disabled={!dashboardPdfIncludeComparison}
+                style={{ ...dashboardFilterFieldStyle, width: 235, height: 38, opacity: dashboardPdfIncludeComparison ? 1 : 0.55 }}
+                aria-label="PDF összehasonlítás munkaállomása"
+              >
+                <option value="__dashboard__">Dashboard munkaállomás-szűrése</option>
+                <option value="all">Összes munkaállomás</option>
+                {availableStationRows.map((row) => (
+                  <option key={`pdf-${row.stationName}`} value={row.stationName}>{row.stationName}</option>
+                ))}
+              </select>
+            </div>
+            <button type="button" onClick={() => void exportDashboardAsPdf()} style={buttonPrimary}>Profi A4 PDF</button>
             <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
           </div>
         </div>
@@ -9212,6 +9262,10 @@ export default function Page() {
   }, [step, terminalView, authResolved, authError, flowStage, workflowMode, pendingAction, activeWorker]);
 
   useEffect(() => {
+    dashboardOrderFiltersRef.current = [...dashboardOrderFilters];
+  }, [dashboardOrderFilters]);
+
+  useEffect(() => {
     if (!supabase || !activeWorker || !isManagementDashboardWorker(activeWorker)) return;
     void loadOfficeUiPreferences();
   }, [supabase, activeWorker?.id]);
@@ -9356,13 +9410,14 @@ export default function Page() {
     if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
     if (terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "dashboard") return;
 
-    void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo);
+    void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
     const intervalId = window.setInterval(() => {
-      void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo);
+      // A háttérfrissítés SOHA nem írhatja felül a felhasználó aktív rendelésszűrését.
+      void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
     }, 30 * 1000);
 
     return () => window.clearInterval(intervalId);
-  }, [activeWorker?.id, terminalView, flowStage, managementSection, dashboardFilterMode, dashboardDate, dashboardDateTo]);
+  }, [activeWorker?.id, terminalView, flowStage, managementSection, dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFilters]);
 
   useEffect(() => {
     if (!productionMonitorSettingsOwner || !supabase) return;
@@ -11947,7 +12002,7 @@ export default function Page() {
 
   async function fetchDashboardPlanEfficiency(
     range: { startIso: string; endIso: string },
-    orderFilters: string[] = dashboardOrderFilters
+    orderFilters: string[] = dashboardOrderFiltersRef.current
   ): Promise<DashboardStationEfficiencyRow[]> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
@@ -12125,7 +12180,7 @@ export default function Page() {
 
   async function fetchDashboardData(
     range: { startIso: string; endIso: string },
-    orderFilters: string[] = dashboardOrderFilters
+    orderFilters: string[] = dashboardOrderFiltersRef.current
   ): Promise<DashboardData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
@@ -12198,7 +12253,7 @@ export default function Page() {
     filterMode: DashboardFilterMode = dashboardFilterMode,
     dateKey = dashboardDate,
     dateToKey = dashboardDateTo,
-    orderFilters: string[] = dashboardOrderFilters
+    orderFilters: string[] = dashboardOrderFiltersRef.current
   ): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
@@ -12473,103 +12528,491 @@ export default function Page() {
     downloadBlob(`vezetoi_dashboard_${dashboardDate}.xlsx`, new Blob([output]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   }
 
+  function normalizeDashboardPdfProductType(rawValue: string): string {
+    const raw = String(rawValue || "").trim();
+    const normalized = normalizeLooseText(raw).replace(/\s+/g, "");
+    if (!normalized) return "Nincs tervadat";
+    if (normalized.includes("standard") || normalized.includes("standerd")) return "Standard";
+    if (normalized.includes("plus")) return "Plus";
+    if (normalized.includes("extra")) return "Extra";
+    return raw;
+  }
+
+  function getDashboardPdfProductTypeFromPlanRow(row: DashboardPdfPlanRow | null | undefined): string {
+    const adat = (row?.adat && typeof row.adat === "object") ? row.adat : {};
+    return valueAsText(readRecordValue(adat, ["tipus", "típus", "termek_tipus", "terméktípus", "product_type", "product type"]));
+  }
+
+  async function loadDashboardPdfCompanyLogo(): Promise<string> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    let response = await supabase
+      .from(LABEL_ASSETS_TABLE)
+      .select("storage_path, public_url, original_name, created_at")
+      .ilike("original_name", "%logo%")
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (response.error || !response.data?.length) {
+      response = await supabase
+        .from(LABEL_ASSETS_TABLE)
+        .select("storage_path, public_url, original_name, created_at")
+        .order("created_at", { ascending: false })
+        .limit(1);
+    }
+    if (response.error) throw response.error;
+
+    const asset = (response.data || [])[0] as { storage_path?: string | null; public_url?: string | null } | undefined;
+    if (!asset?.storage_path && !asset?.public_url) {
+      throw new Error("A PDF-hez nincs feltöltött céglogó. Tölts fel egy logót a Címkenyomtató beállításainál a Kép / logó funkcióval, majd próbáld újra.");
+    }
+
+    let blob: Blob | null = null;
+    if (asset.storage_path) {
+      const download = await supabase.storage.from(LABEL_ASSETS_BUCKET).download(asset.storage_path);
+      if (!download.error && download.data) blob = download.data;
+    }
+    if (!blob && asset.public_url) {
+      const fetchResponse = await fetch(asset.public_url);
+      if (fetchResponse.ok) blob = await fetchResponse.blob();
+    }
+    if (!blob) throw new Error("A céglogó fájlja nem olvasható a Supabase Storage-ból.");
+
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("A céglogó PDF-be ágyazása sikertelen."));
+      reader.readAsDataURL(blob as Blob);
+    });
+  }
+
+  async function loadDashboardPdfPlanRows(orderNumbers: string[]): Promise<DashboardPdfPlanRow[]> {
+    if (!supabase || orderNumbers.length === 0) return [];
+    const unique = Array.from(new Set(orderNumbers.map((value) => String(value || "").trim()).filter(Boolean)));
+    const rows: DashboardPdfPlanRow[] = [];
+    const chunkSize = 150;
+    for (let index = 0; index < unique.length; index += chunkSize) {
+      const chunk = unique.slice(index, index + chunkSize);
+      const response = await supabase
+        .from(DYNAMIC_PRODUCTION_PLAN_TABLE)
+        .select("machine_name, sorszam, elkeszules_datum, adat")
+        .in("sorszam", chunk)
+        .limit(5000);
+      if (response.error) {
+        console.warn("A termelesi_terv nem olvasható a PDF típusbontáshoz:", response.error);
+        continue;
+      }
+      rows.push(...(((response.data as DashboardPdfPlanRow[]) || [])));
+    }
+    return rows;
+  }
+
+  function selectDashboardPdfPlanRow(
+    planRows: DashboardPdfPlanRow[],
+    orderNumber: string,
+    stationName: string,
+    completedAt: string
+  ): DashboardPdfPlanRow | null {
+    const orderKey = normalizeLooseText(orderNumber);
+    const stationKey = normalizeLooseText(stationName);
+    const candidates = planRows.filter((row) => normalizeLooseText(String(row.sorszam || "")) === orderKey);
+    if (!candidates.length) return null;
+    const stationCandidates = candidates.filter((row) => normalizeLooseText(String(row.machine_name || "")) === stationKey);
+    const pool = stationCandidates.length ? stationCandidates : candidates;
+    const eventMs = new Date(completedAt).getTime();
+    return [...pool].sort((left, right) => {
+      const leftMs = new Date(`${String(left.elkeszules_datum || "")}T12:00:00`).getTime();
+      const rightMs = new Date(`${String(right.elkeszules_datum || "")}T12:00:00`).getTime();
+      const leftDistance = Number.isFinite(leftMs) && Number.isFinite(eventMs) ? Math.abs(leftMs - eventMs) : Number.MAX_SAFE_INTEGER;
+      const rightDistance = Number.isFinite(rightMs) && Number.isFinite(eventMs) ? Math.abs(rightMs - eventMs) : Number.MAX_SAFE_INTEGER;
+      return leftDistance - rightDistance;
+    })[0] || null;
+  }
+
+  function getDashboardPdfPerformanceRows(stationName: string, workerName: string): DashboardWorkerPerformanceRow[] {
+    const sourceRows = stationName === "all"
+      ? dashboardData.workerRows
+      : dashboardData.stationWorkerPerformance.find(
+          (row) => normalizeLooseText(row.stationName) === normalizeLooseText(stationName)
+        )?.workerRows || [];
+    if (workerName === "all") return sourceRows;
+    return sourceRows.filter((row) => normalizeLooseText(row.workerName) === normalizeLooseText(workerName));
+  }
+
+  function buildDashboardPdfWorkerAnalyses(
+    visibleLogs: WorkLogRow[],
+    planRows: DashboardPdfPlanRow[],
+    stationFilter: string,
+    workerFilter: string
+  ): DashboardPdfWorkerAnalysis[] {
+    const endLogs = visibleLogs.filter((log) => {
+      const isEnd = String(log.action || "").toUpperCase() === "END" || Boolean(log.end_time || log.end_timestamp);
+      if (!isEnd) return false;
+      const stationName = resolveLogStation(log, workers);
+      const workerName = getDashboardLogWorkerName(log);
+      return (stationFilter === "all" || normalizeLooseText(stationName) === normalizeLooseText(stationFilter)) &&
+        (workerFilter === "all" || normalizeLooseText(workerName) === normalizeLooseText(workerFilter));
+    });
+
+    const completedRows: DashboardPdfCompletedOrderRow[] = [];
+    const dedupe = new Set<string>();
+    endLogs.forEach((log) => {
+      const orderNumber = String(log.order_number || "").trim();
+      const stationName = resolveLogStation(log, workers);
+      const workerName = getDashboardLogWorkerName(log);
+      const completedAt = getDashboardLogEndAt(log) || getDashboardLogEventAt(log);
+      if (!orderNumber || !workerName || workerName === "-") return;
+      const planRow = selectDashboardPdfPlanRow(planRows, orderNumber, stationName, completedAt);
+      const rawProductType = getDashboardPdfProductTypeFromPlanRow(planRow);
+      const productType = normalizeDashboardPdfProductType(rawProductType);
+      const planDate = String(planRow?.elkeszules_datum || "").trim();
+      const key = [normalizeLooseText(workerName), normalizeLooseText(stationName), normalizeLooseText(orderNumber), planDate || getLocalDateKey(new Date(completedAt))].join("|");
+      if (dedupe.has(key)) return;
+      dedupe.add(key);
+      completedRows.push({
+        orderNumber,
+        stationName,
+        workerName,
+        completedAt,
+        elapsedLabel: getDashboardLogElapsedLabel(log),
+        productType,
+        rawProductType: rawProductType || "Nincs tervadat",
+        planDate,
+      });
+    });
+
+    const performanceRows = getDashboardPdfPerformanceRows(stationFilter, workerFilter);
+    const workerNames = Array.from(new Set([
+      ...performanceRows.map((row) => row.workerName),
+      ...completedRows.map((row) => row.workerName),
+    ])).filter(Boolean);
+
+    return workerNames.map((workerName) => {
+      const performance = performanceRows.find((row) => normalizeLooseText(row.workerName) === normalizeLooseText(workerName)) || {
+        workerName,
+        totalMinutes: 0,
+        totalDurationLabel: "0 perc",
+        closedSegments: 0,
+        activeDayCount: 0,
+        accountedMinutes: 0,
+        efficiencyPct: null,
+      };
+      const workerOrders = completedRows
+        .filter((row) => normalizeLooseText(row.workerName) === normalizeLooseText(workerName))
+        .sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
+      const typeCounts: Record<string, number> = { Standard: 0, Plus: 0, Extra: 0, Egyéb: 0 };
+      workerOrders.forEach((row) => {
+        if (row.productType === "Standard" || row.productType === "Plus" || row.productType === "Extra") {
+          typeCounts[row.productType] = (typeCounts[row.productType] || 0) + 1;
+        } else {
+          typeCounts.Egyéb = (typeCounts.Egyéb || 0) + 1;
+        }
+      });
+      return { workerName, performance, completedOrders: workerOrders, typeCounts };
+    }).sort((left, right) => {
+      const leftPct = left.performance.efficiencyPct ?? -1;
+      const rightPct = right.performance.efficiencyPct ?? -1;
+      return rightPct - leftPct || right.completedOrders.length - left.completedOrders.length || left.workerName.localeCompare(right.workerName, "hu");
+    });
+  }
+
   async function exportDashboardAsPdf(): Promise<void> {
     try {
-      const jspdf = await waitForJsPdf();
-      const doc = new jspdf.jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+      setMessage({ type: "success", text: "A professzionális A4 vezetői riport készül..." });
+      const [jspdf, logoDataUrl] = await Promise.all([waitForJsPdf(), loadDashboardPdfCompanyLogo()]);
+      const doc = new jspdf.jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
+      const pdf = doc as any;
       registerPdfUnicodeFonts(doc);
-      doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.setFontSize(16);
-      doc.text("Vezetői műszerfal", 40, 40);
-      doc.setFont(PDF_FONT_FAMILY, "normal");
-      doc.setFontSize(10);
+
+      const pageWidth = 595.28;
+      const pageHeight = 841.89;
+      const marginX = 34;
+      const contentWidth = pageWidth - marginX * 2;
+      const navy = [15, 23, 42] as const;
+      const blue = [37, 99, 235] as const;
+      const lightBlue = [239, 246, 255] as const;
+      const slate = [71, 85, 105] as const;
+      const lightSlate = [241, 245, 249] as const;
+      const border = [203, 213, 225] as const;
+      const green = [5, 150, 105] as const;
+      const orange = [234, 88, 12] as const;
+      const purple = [124, 58, 237] as const;
+      const gray = [100, 116, 139] as const;
+      const generatedAt = formatDateTime(new Date());
+      const brandedPageNumbers = new Set<number>();
       const range = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
       const filteredWorkerStats = getFilteredDashboardWorkerStats();
-      const filteredActivity = getFilteredDashboardActivity();
-      const selectedStationLabel = filteredWorkerStats.selectedStationValue === "all" ? "Összes munkaállomás" : filteredWorkerStats.selectedStationValue;
-      const selectedWorkerLabel = filteredWorkerStats.selectedWorkerValue === "all" ? "Összes dolgozó" : filteredWorkerStats.selectedWorkerValue;
-      doc.text(`Időszak: ${range.label}`, 40, 60);
-      const selectedOrderLabel = dashboardOrderFilters.length > 0 ? dashboardOrderFilters.join(", ") : "Összes rendelés";
-      doc.text(`Szűrés: ${selectedStationLabel} | ${selectedWorkerLabel} | ${selectedOrderLabel}`, 40, 74);
+      const selectedStation = filteredWorkerStats.selectedStationValue;
+      const selectedWorker = filteredWorkerStats.selectedWorkerValue;
+      const selectedStationLabel = selectedStation === "all" ? "Összes munkaállomás" : selectedStation;
+      const selectedWorkerLabel = selectedWorker === "all" ? "Összes dolgozó" : selectedWorker;
+      const selectedOrderLabel = dashboardOrderFiltersRef.current.length ? dashboardOrderFiltersRef.current.join(", ") : "Összes rendelés";
+      const filterSummary = `${range.label} • ${selectedStationLabel} • ${selectedWorkerLabel} • ${selectedOrderLabel}`;
 
-      let y = 102;
-      doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.text("Dolgozói teljesítmény", 40, y);
-      y += 18;
-      doc.setFont(PDF_FONT_FAMILY, "normal");
-      doc.text("Dolgozó | Ledolgozott idő | Lezárt tételek | Hatékonyság", 40, y);
-      y += 16;
-      filteredWorkerStats.workerRows.slice(0, 18).forEach((row) => {
-        doc.text(`${row.workerName} | ${row.totalDurationLabel} | ${row.closedSegments} | ${row.efficiencyPct === null ? "-" : `${formatDashboardEfficiencyPct(row.efficiencyPct)}%`}`, 40, y);
-        y += 15;
+      const completedVisibleLogs = dashboardData.logs.filter((log) => String(log.action || "").toUpperCase() === "END" || Boolean(log.end_time || log.end_timestamp));
+      const planRows = await loadDashboardPdfPlanRows(completedVisibleLogs.map((log) => String(log.order_number || "").trim()).filter(Boolean));
+      const workerAnalyses = buildDashboardPdfWorkerAnalyses(dashboardData.logs, planRows, selectedStation, selectedWorker);
+      const comparisonStation = dashboardPdfComparisonStation === "__dashboard__" ? selectedStation : dashboardPdfComparisonStation;
+      const comparisonAnalyses = buildDashboardPdfWorkerAnalyses(dashboardData.logs, planRows, comparisonStation, selectedWorker);
+
+      const typeTotals = workerAnalyses.reduce((acc, worker) => {
+        acc.Standard += worker.typeCounts.Standard || 0;
+        acc.Plus += worker.typeCounts.Plus || 0;
+        acc.Extra += worker.typeCounts.Extra || 0;
+        acc.Egyéb += worker.typeCounts.Egyéb || 0;
+        return acc;
+      }, { Standard: 0, Plus: 0, Extra: 0, Egyéb: 0 });
+      const completedOrderCount = workerAnalyses.reduce((sum, worker) => sum + worker.completedOrders.length, 0);
+      const accountedMinutes = workerAnalyses.reduce((sum, worker) => sum + worker.performance.accountedMinutes, 0);
+      const workedMinutes = workerAnalyses.reduce((sum, worker) => sum + worker.performance.totalMinutes, 0);
+      const overallEfficiency = accountedMinutes > 0 ? roundDashboardEfficiencyPct((workedMinutes / accountedMinutes) * 100) : null;
+
+      const drawLogo = (x: number, y: number, width: number, height: number) => {
+        try { pdf.addImage(logoDataUrl, "PNG", x, y, width, height, undefined, "FAST"); } catch (error) { console.warn("PDF logo render hiba:", error); }
+      };
+      const drawHeader = (title: string, subtitle = "") => {
+        const currentPageNumber = Number(pdf.getCurrentPageInfo?.()?.pageNumber || pdf.getNumberOfPages());
+        brandedPageNumbers.add(currentPageNumber);
+        doc.setFillColor(...navy); doc.rect(0, 0, pageWidth, 76, "F");
+        doc.setFillColor(...blue); doc.rect(0, 76, pageWidth, 4, "F");
+        drawLogo(pageWidth - 106, 18, 68, 36);
+        doc.setTextColor(255, 255, 255); doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(17); doc.text(title, marginX, 31);
+        doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(8.5); doc.text(subtitle || filterSummary, marginX, 48, { maxWidth: pageWidth - 160 });
+        doc.setFontSize(7.5); doc.text(`Generálva: ${generatedAt}`, marginX, 63);
+      };
+      const drawFooter = (pageNumber: number, pageCount: number) => {
+        doc.setDrawColor(...border); doc.line(marginX, pageHeight - 30, pageWidth - marginX, pageHeight - 30);
+        doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(7.5); doc.setTextColor(...slate);
+        doc.text("NÍVÓ • Vezetői termelési riport", marginX, pageHeight - 17);
+        doc.text(`${pageNumber} / ${pageCount}`, pageWidth - marginX, pageHeight - 17, { align: "right" });
+      };
+      const drawKpi = (x: number, y: number, width: number, label: string, value: string, helper = "") => {
+        doc.setFillColor(248, 250, 252); doc.setDrawColor(...border); pdf.roundedRect(x, y, width, 72, 8, 8, "FD");
+        doc.setTextColor(...slate); doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(7.5); doc.text(label.toUpperCase(), x + 11, y + 17);
+        doc.setTextColor(...navy); doc.setFontSize(19); doc.text(value, x + 11, y + 43, { maxWidth: width - 22 });
+        doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(7); doc.setTextColor(...slate); if (helper) doc.text(helper, x + 11, y + 59, { maxWidth: width - 22 });
+      };
+      const drawSectionTitle = (title: string, y: number) => {
+        doc.setFillColor(...lightBlue); pdf.roundedRect(marginX, y, contentWidth, 25, 6, 6, "F");
+        doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(10.5); doc.setTextColor(...navy); doc.text(title, marginX + 10, y + 16.5);
+      };
+      const drawTypeBars = (analysis: DashboardPdfWorkerAnalysis, y: number) => {
+        const types: Array<{ key: string; color: readonly [number, number, number] }> = [
+          { key: "Standard", color: blue }, { key: "Plus", color: green }, { key: "Extra", color: purple }, { key: "Egyéb", color: gray },
+        ];
+        const maxCount = Math.max(1, ...types.map((item) => analysis.typeCounts[item.key] || 0));
+        types.forEach((item, index) => {
+          const lineY = y + index * 24;
+          const count = analysis.typeCounts[item.key] || 0;
+          doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(8); doc.setTextColor(...navy); doc.text(item.key, marginX, lineY + 10);
+          doc.setFillColor(226, 232, 240); pdf.roundedRect(marginX + 72, lineY, 330, 13, 4, 4, "F");
+          if (count > 0) { doc.setFillColor(...item.color); pdf.roundedRect(marginX + 72, lineY, Math.max(8, (count / maxCount) * 330), 13, 4, 4, "F"); }
+          doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(8); doc.setTextColor(...slate); doc.text(String(count), marginX + 420, lineY + 10);
+        });
+      };
+
+      // 1. oldal – vezetői összefoglaló
+      drawHeader("Vezetői műszerfal • A4 riport", filterSummary);
+      doc.setTextColor(...navy); doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(22); doc.text(dashboardFilterMode === "monthly" ? "Havi termelési összefoglaló" : "Időszaki termelési összefoglaló", marginX, 112);
+      doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(9); doc.setTextColor(...slate); doc.text("A riport minden adata a vezetői műszerfal pillanatnyilag aktív szűréseiből készül.", marginX, 130);
+      const kpiGap = 8; const kpiWidth = (contentWidth - kpiGap * 3) / 4;
+      drawKpi(marginX, 151, kpiWidth, "Dolgozók", String(workerAnalyses.length), "szűrt időszak");
+      drawKpi(marginX + (kpiWidth + kpiGap), 151, kpiWidth, "Ledolgozott idő", formatDuration(workedMinutes), `${formatDuration(accountedMinutes)} elszámolt keret`);
+      drawKpi(marginX + (kpiWidth + kpiGap) * 2, 151, kpiWidth, "Befejezett rendelések", String(completedOrderCount), "dolgozó × állomás × tervnap");
+      drawKpi(marginX + (kpiWidth + kpiGap) * 3, 151, kpiWidth, "Termelékenység", overallEfficiency === null ? "–" : `${formatDashboardEfficiencyPct(overallEfficiency)}%`, "tényleges / elszámolt idő");
+
+      drawSectionTitle("Rendeléstípusok összesítése", 242);
+      const summaryTypes = [
+        ["Standard", typeTotals.Standard, blue], ["Plus", typeTotals.Plus, green], ["Extra", typeTotals.Extra, purple], ["Egyéb / nincs adat", typeTotals.Egyéb, gray],
+      ] as const;
+      summaryTypes.forEach((item, index) => {
+        const x = marginX + index * (contentWidth / 4);
+        doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(18); doc.setTextColor(...item[2]); doc.text(String(item[1]), x + 8, 292);
+        doc.setFontSize(8); doc.setTextColor(...slate); doc.text(item[0], x + 8, 307);
       });
 
-      y += 14;
-      doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.text("Terv szerinti hatékonyság munkaállomásonként", 40, y);
-      y += 18;
-      doc.setFont(PDF_FONT_FAMILY, "normal");
-      doc.text("Munkaállomás | Terv | Kész | Hátralévő | Hatékonyság", 40, y);
-      y += 16;
-      const visibleStationRows = filteredWorkerStats.selectedStationValue === "all"
+      drawSectionTitle("Munkaállomási tervteljesítés", 333);
+      const visibleStationRows = selectedStation === "all"
         ? dashboardData.stationEfficiencyRows
-        : dashboardData.stationEfficiencyRows.filter(
-            (row) => normalizeLooseText(row.stationName) === normalizeLooseText(filteredWorkerStats.selectedStationValue)
-          );
-      visibleStationRows.slice(0, 18).forEach((row) => {
-        doc.text(`${row.stationName} | ${row.plannedItems} | ${row.completedItems} | ${Math.max(0, row.plannedItems - row.completedItems)} | ${row.efficiencyPct === null ? "-" : `${row.efficiencyPct}%`}`, 40, y);
-        y += 15;
+        : dashboardData.stationEfficiencyRows.filter((row) => normalizeLooseText(row.stationName) === normalizeLooseText(selectedStation));
+      pdf.autoTable({
+        startY: 365,
+        head: [["Munkaállomás", "Terv", "Kész", "Hátralévő", "Tervhatékonyság"]],
+        body: visibleStationRows.length ? visibleStationRows.map((row) => [row.stationName, row.plannedItems, row.completedItems, Math.max(0, row.plannedItems - row.completedItems), row.efficiencyPct === null ? "–" : `${row.efficiencyPct}%`]) : [["Nincs adat", "–", "–", "–", "–"]],
+        theme: "grid",
+        margin: { left: marginX, right: marginX, top: 90, bottom: 42 },
+        styles: { font: PDF_FONT_FAMILY, fontSize: 8.5, cellPadding: 6, textColor: navy },
+        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: navy, textColor: [255, 255, 255] },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
       });
 
-      (doc as any).addPage();
-      doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.setFontSize(14);
-      doc.text("Folyamatban lévő munkák", 40, 40);
-      (doc as any).autoTable({
-        startY: 54,
-        head: [["Rendelésszám", "Munkaállomás", "Dolgozó", "Kezdés", "Megjegyzés"]],
-        body: filteredActivity.openRows.length
-          ? filteredActivity.openRows.map((row) => [row.orderNumber, row.station || row.role || "-", row.workerName, formatDateTime(row.startedAt), row.lastNote || "-"])
-          : [["Nincs adat", "-", "-", "-", "-"]],
+      // Dolgozónként külön havi/időszaki elemzés
+      for (const analysis of workerAnalyses) {
+        pdf.addPage("a4", "portrait");
+        drawHeader(dashboardFilterMode === "monthly" ? "Havi dolgozói elemzés" : "Dolgozói időszaki elemzés", filterSummary);
+        doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(21); doc.setTextColor(...navy); doc.text(analysis.workerName, marginX, 116);
+        const workerStations = Array.from(new Set(analysis.completedOrders.map((row) => row.stationName).filter(Boolean))).join(", ") || selectedStationLabel;
+        doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(8.5); doc.setTextColor(...slate); doc.text(`Munkaállomás(ok): ${workerStations}`, marginX, 134, { maxWidth: contentWidth });
+
+        const workerKpiWidth = (contentWidth - 8 * 4) / 5;
+        drawKpi(marginX, 153, workerKpiWidth, "Termelékenység", analysis.performance.efficiencyPct === null ? "–" : `${formatDashboardEfficiencyPct(analysis.performance.efficiencyPct)}%`, "tényleges / elszámolt");
+        drawKpi(marginX + (workerKpiWidth + 8), 153, workerKpiWidth, "Ledolgozott", analysis.performance.totalDurationLabel, `${analysis.performance.totalMinutes} perc`);
+        drawKpi(marginX + (workerKpiWidth + 8) * 2, 153, workerKpiWidth, "Elszámolt keret", formatDuration(analysis.performance.accountedMinutes), "műszak + túlóra");
+        drawKpi(marginX + (workerKpiWidth + 8) * 3, 153, workerKpiWidth, "Befejezett", String(analysis.completedOrders.length), "rendelés");
+        drawKpi(marginX + (workerKpiWidth + 8) * 4, 153, workerKpiWidth, "Aktív nap", String(analysis.performance.activeDayCount), `${analysis.performance.closedSegments} lezárt log`);
+
+        drawSectionTitle("Standard / Plus / Extra rendelésmegoszlás", 242);
+        drawTypeBars(analysis, 279);
+
+        drawSectionTitle("Típusösszesítő", 383);
+        pdf.autoTable({
+          startY: 413,
+          head: [["Típus", "Elkészült rendelések", "Arány"]],
+          body: ["Standard", "Plus", "Extra", "Egyéb"].map((type) => {
+            const count = analysis.typeCounts[type] || 0;
+            const ratio = analysis.completedOrders.length ? Math.round((count / analysis.completedOrders.length) * 1000) / 10 : 0;
+            return [type, count, `${ratio}%`];
+          }),
+          theme: "grid",
+          margin: { left: marginX, right: marginX, top: 90, bottom: 42 },
+          styles: { font: PDF_FONT_FAMILY, fontSize: 8, cellPadding: 5 },
+          headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: blue, textColor: [255, 255, 255] },
+        });
+        const detailStartY = Math.max(540, Number(pdf.lastAutoTable?.finalY || 500) + 28);
+        if (detailStartY > 690) pdf.addPage("a4", "portrait");
+        const actualDetailY = detailStartY > 690 ? 102 : detailStartY;
+        drawSectionTitle("Részletes befejezett rendelések", actualDetailY);
+        pdf.autoTable({
+          startY: actualDetailY + 31,
+          head: [["Rendelés", "Típus", "Munkaállomás", "Tervnap", "Befejezve", "Eltelt idő"]],
+          body: analysis.completedOrders.length ? analysis.completedOrders.map((row) => [
+            row.orderNumber,
+            row.productType,
+            row.stationName || "–",
+            row.planDate || "–",
+            formatDateTime(row.completedAt),
+            row.elapsedLabel,
+          ]) : [["Nincs befejezett rendelés", "–", "–", "–", "–", "–"]],
+          theme: "grid",
+          margin: { left: marginX, right: marginX, top: 90, bottom: 42 },
+          styles: { font: PDF_FONT_FAMILY, fontSize: 7.3, cellPadding: 4, overflow: "linebreak" },
+          headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: navy, textColor: [255, 255, 255] },
+          alternateRowStyles: { fillColor: [248, 250, 252] },
+        });
+      }
+
+      // Opcionális összehasonlító oldal
+      if (dashboardPdfIncludeComparison) {
+        pdf.addPage("a4", "portrait");
+        const comparisonStationLabel = comparisonStation === "all" ? "Összes munkaállomás" : comparisonStation;
+        drawHeader("Dolgozói összehasonlítás", `${range.label} • ${comparisonStationLabel} • ${selectedWorkerLabel} • ${selectedOrderLabel}`);
+        doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(19); doc.setTextColor(...navy); doc.text("Termelékenységi rangsor", marginX, 114);
+        doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(8.5); doc.setTextColor(...slate); doc.text(`Munkaállomás: ${comparisonStationLabel}`, marginX, 132);
+
+        const maxEfficiency = Math.max(100, ...comparisonAnalyses.map((row) => row.performance.efficiencyPct || 0));
+        const chartRows = comparisonAnalyses.slice(0, 12);
+        let chartY = 160;
+        chartRows.forEach((row, index) => {
+          const pct = row.performance.efficiencyPct || 0;
+          const rank = index + 1;
+          doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(7.8); doc.setTextColor(...navy);
+          doc.text(`${rank}. ${row.workerName}`, marginX, chartY + 9, { maxWidth: 130 });
+          doc.setFillColor(226, 232, 240); pdf.roundedRect(marginX + 142, chartY, 310, 12, 4, 4, "F");
+          if (pct > 0) {
+            const barColor = rank === 1 ? green : rank === 2 ? blue : rank === 3 ? purple : gray;
+            doc.setFillColor(...barColor); pdf.roundedRect(marginX + 142, chartY, Math.max(6, Math.min(310, (pct / maxEfficiency) * 310)), 12, 4, 4, "F");
+          }
+          doc.setTextColor(...slate); doc.text(`${formatDashboardEfficiencyPct(pct)}%`, marginX + 462, chartY + 9, { align: "right" });
+          chartY += 24;
+        });
+
+        const rankingY = Math.max(460, chartY + 18);
+        drawSectionTitle("Összehasonlító ranglista", rankingY);
+        pdf.autoTable({
+          startY: rankingY + 30,
+          head: [["#", "Dolgozó", "Termelékenység", "Ledolgozott", "Befejezett", "Standard", "Plus", "Extra"]],
+          body: comparisonAnalyses.length ? comparisonAnalyses.map((row, index) => [
+            index + 1,
+            row.workerName,
+            row.performance.efficiencyPct === null ? "–" : `${formatDashboardEfficiencyPct(row.performance.efficiencyPct)}%`,
+            row.performance.totalDurationLabel,
+            row.completedOrders.length,
+            row.typeCounts.Standard || 0,
+            row.typeCounts.Plus || 0,
+            row.typeCounts.Extra || 0,
+          ]) : [["–", "Nincs összehasonlítható adat", "–", "–", "–", "–", "–", "–"]],
+          theme: "grid",
+          margin: { left: marginX, right: marginX, top: 90, bottom: 42 },
+          styles: { font: PDF_FONT_FAMILY, fontSize: 7, cellPadding: 4 },
+          headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: navy, textColor: [255, 255, 255] },
+          alternateRowStyles: { fillColor: [248, 250, 252] },
+        });
+      }
+
+      // Melléklet – folyamatban lévő munkák és eseménynapló
+      const filteredActivity = getFilteredDashboardActivity();
+      pdf.addPage("a4", "portrait");
+      drawHeader("Melléklet • Folyamatban lévő munkák", filterSummary);
+      pdf.autoTable({
+        startY: 102,
+        head: [["Rendelés", "Munkaállomás", "Dolgozó", "Kezdés", "Megjegyzés"]],
+        body: filteredActivity.openRows.length ? filteredActivity.openRows.map((row) => [row.orderNumber, row.station || row.role || "–", row.workerName, formatDateTime(row.startedAt), row.lastNote || "–"]) : [["Nincs folyamatban lévő munka", "–", "–", "–", "–"]],
         theme: "grid",
-        styles: { font: PDF_FONT_FAMILY, fontSize: 8, cellPadding: 5, overflow: "linebreak" },
-        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold" },
+        margin: { left: marginX, right: marginX, top: 90, bottom: 42 },
+        styles: { font: PDF_FONT_FAMILY, fontSize: 7.5, cellPadding: 5, overflow: "linebreak" },
+        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: navy, textColor: [255, 255, 255] },
       });
 
-      const activityTableEndY = Number((doc as any).lastAutoTable?.finalY || 90);
-      doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.setFontSize(14);
-      doc.text("Eseménynapló", 40, activityTableEndY + 28);
-      (doc as any).autoTable({
-        startY: activityTableEndY + 40,
-        head: [["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"]],
-        body: filteredActivity.logs.length
-          ? filteredActivity.logs.slice(0, 250).map((log) => {
-              const action = String(log.action || "").toUpperCase();
-              const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
-              const startAt = getDashboardLogStartAt(log);
-              const endAt = getDashboardLogEndAt(log);
-              return [
-                formatDateTime(getDashboardLogEventAt(log)),
-                startAt ? formatDateTime(startAt) : "-",
-                endAt ? formatDateTime(endAt) : "-",
-                getDashboardLogElapsedLabel(log),
-                getDashboardLogWorkerName(log),
-                log.order_number || "-",
-                isEnd ? "END" : action || "START",
-                resolveLogStation(log, workers),
-                getNoteBeforeContext(log.note) || "-",
-              ];
-            })
-          : [["Nincs adat", "-", "-", "-", "-", "-", "-", "-", "-"]],
+      pdf.addPage("a4", "portrait");
+      drawHeader("Melléklet • Eseménynapló", filterSummary);
+      pdf.autoTable({
+        startY: 102,
+        head: [["Időpont", "START", "END", "Eltelt", "Dolgozó", "Rendelés", "Esemény", "Állomás", "Megjegyzés"]],
+        body: filteredActivity.logs.length ? filteredActivity.logs.slice(0, 750).map((log) => {
+          const action = String(log.action || "").toUpperCase();
+          const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
+          const startAt = getDashboardLogStartAt(log);
+          const endAt = getDashboardLogEndAt(log);
+          return [
+            formatDateTime(getDashboardLogEventAt(log)),
+            startAt ? formatDateTime(startAt) : "–",
+            endAt ? formatDateTime(endAt) : "–",
+            getDashboardLogElapsedLabel(log),
+            getDashboardLogWorkerName(log),
+            log.order_number || "–",
+            isEnd ? "END" : action || "START",
+            resolveLogStation(log, workers),
+            getNoteBeforeContext(log.note) || "–",
+          ];
+        }) : [["Nincs esemény", "–", "–", "–", "–", "–", "–", "–", "–"]],
         theme: "grid",
-        styles: { font: PDF_FONT_FAMILY, fontSize: 6.5, cellPadding: 3, overflow: "linebreak" },
-        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold" },
+        margin: { left: 22, right: 22, top: 90, bottom: 42 },
+        styles: { font: PDF_FONT_FAMILY, fontSize: 5.7, cellPadding: 2.6, overflow: "linebreak" },
+        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: navy, textColor: [255, 255, 255], fontSize: 5.8 },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
       });
+
+      // Minden automatikusan létrejött autoTable oldalon is legyen egységes fejléc/lábléc.
+      const pageCount = pdf.getNumberOfPages();
+      for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+        pdf.setPage(pageNumber);
+        // Ha az autoTable egy új oldalt hozott létre, ott még nem volt fejléc.
+        if (!brandedPageNumbers.has(pageNumber)) {
+          // Az autoTable által létrehozott folytató oldalak kapjanak külön márkasávot és logót.
+          doc.setFillColor(...navy); doc.rect(0, 0, pageWidth, 24, "F");
+          drawLogo(pageWidth - 84, 4, 46, 15);
+          doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(7.5); doc.setTextColor(255, 255, 255);
+          doc.text("NÍVÓ • Vezetői termelési riport", marginX, 16);
+        }
+        drawFooter(pageNumber, pageCount);
+      }
 
       const blob = doc.output("blob");
-      downloadBlob(`vezetoi_dashboard_${dashboardDate}.pdf`, blob, "application/pdf");
+      const safePeriod = dashboardFilterMode === "monthly" ? dashboardDate.slice(0, 7) : dashboardDate;
+      downloadBlob(`vezetoi_riport_${safePeriod}.pdf`, blob, "application/pdf");
+      setMessage({ type: "success", text: `A profi A4 PDF elkészült (${pageCount} oldal).` });
     } catch (error) {
+      console.error("PDF export hiba:", error);
       setMessage({ type: "error", text: normalizeError(error) });
     }
   }
