@@ -5358,8 +5358,32 @@ export default function Page() {
   async function sendReportDeliveryProfile(profile: ReportDeliveryProfile, testOnly = false): Promise<void> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     if (!profile.recipients.length) throw new Error("A riportprofilhoz nincs címzett.");
+
     const pdfBlob = await createReportDeliveryProfilePdfBlob(profile);
     const errors: string[] = [];
+
+    const readSendReportError = async (response: Response): Promise<string> => {
+      const contentType = response.headers.get("content-type") || "";
+      if (response.status === 404) {
+        return "A /api/send-report végpont nem található. Tedd az app/api/send-report/route.ts fájlt a projektbe és deployold újra.";
+      }
+      if (contentType.includes("application/json")) {
+        const data = await response.json().catch(() => null) as { error?: unknown; message?: unknown } | null;
+        const message = String(data?.error || data?.message || "").trim();
+        if (message) return message;
+      }
+      const raw = await response.text().catch(() => "");
+      const clean = raw
+        .replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, "&")
+        .replace(/\s+/g, " ")
+        .trim();
+      return clean.slice(0, 500) || response.statusText || `HTTP ${response.status}`;
+    };
+
     for (const recipient of profile.recipients) {
       const formData = new FormData();
       formData.append("to", recipient);
@@ -5368,16 +5392,17 @@ export default function Page() {
       formData.append("text", `${profile.name}\nAutomatikusan generált termelési riport.`);
       formData.append("requestedFormat", "pdf");
       formData.append("pdf", pdfBlob, `${profile.name.replace(/[^a-zA-Z0-9_-]+/g, "_") || "riport"}.pdf`);
+
       try {
         const response = await fetch("/api/send-report", { method: "POST", body: formData });
         if (!response.ok) {
-          const body = await response.text().catch(() => "");
-          errors.push(`${recipient}: ${body || response.statusText || "küldési hiba"}`);
+          errors.push(`${recipient}: ${await readSendReportError(response)}`);
         }
       } catch (error) {
         errors.push(`${recipient}: ${normalizeError(error)}`);
       }
     }
+
     if (testOnly) {
       if (errors.length) throw new Error(errors.join(" | "));
       setMessage({ type: "success", text: `Tesztküldés sikeres: ${profile.recipients.join(", ")}` });
@@ -5385,24 +5410,50 @@ export default function Page() {
     }
 
     const marker = getReportDeliveryScheduleMarker(profile);
-    const updatePayload = {
-      last_sent_marker: marker,
-      last_sent_at: new Date().toISOString(),
-      last_send_error: errors.join(" | "),
-      updated_at: new Date().toISOString(),
-    };
+    const nowIso = new Date().toISOString();
+    const lastSendError = errors.join(" | ");
+
+    // A marker sikertelen próbálkozásnál is mentődik, hogy ugyanabban az ütemezési
+    // ciklusban ne próbálkozzon 30 másodpercenként újra. A last_sent_at viszont
+    // kizárólag ténylegesen sikeres küldésnél frissül.
+    const updatePayload = errors.length
+      ? {
+          last_sent_marker: marker,
+          last_send_error: lastSendError,
+          updated_at: nowIso,
+        }
+      : {
+          last_sent_marker: marker,
+          last_sent_at: nowIso,
+          last_send_error: "",
+          updated_at: nowIso,
+        };
+
     if (profile.id) {
       const response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).update(updatePayload).eq("id", profile.id);
       if (response.error) console.error("Riportküldési státusz mentési hiba:", response.error);
     }
+
     setReportDeliveryProfiles((current) => current.map((item) =>
       item.id === profile.id
-        ? { ...item, lastSentMarker: marker, lastSentAt: updatePayload.last_sent_at, lastSendError: updatePayload.last_send_error }
+        ? {
+            ...item,
+            lastSentMarker: marker,
+            lastSentAt: errors.length ? item.lastSentAt : nowIso,
+            lastSendError,
+          }
         : item
     ));
+
     if (reportDeliveryDraft.id === profile.id) {
-      setReportDeliveryDraft((current) => ({ ...current, lastSentMarker: marker, lastSentAt: updatePayload.last_sent_at, lastSendError: updatePayload.last_send_error }));
+      setReportDeliveryDraft((current) => ({
+        ...current,
+        lastSentMarker: marker,
+        lastSentAt: errors.length ? current.lastSentAt : nowIso,
+        lastSendError,
+      }));
     }
+
     if (errors.length) throw new Error(errors.join(" | "));
   }
 
