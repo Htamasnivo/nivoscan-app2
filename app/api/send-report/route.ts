@@ -1,151 +1,113 @@
 import { NextRequest, NextResponse } from "next/server";
+import nodemailer from "nodemailer";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
-const MAX_RAW_ATTACHMENT_BYTES = 29 * 1024 * 1024;
+const GMAIL_USER = process.env.GMAIL_USER;
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
 
-function splitRecipients(value: string): string[] {
-  return Array.from(
-    new Set(
-      value
-        .split(/[;,\n]+/)
-        .map((item) => item.trim())
-        .filter(Boolean)
-    )
-  );
+function cleanText(value: FormDataEntryValue | null): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
-function isEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+function normalizeRecipients(value: string): string[] {
+  return value.split(/[;,\n]+/).map((item) => item.trim()).filter(Boolean);
 }
 
-function safeFileName(value: string, fallback: string): string {
-  const cleaned = value.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, "_").trim();
-  return cleaned || fallback;
-}
-
-async function fileToAttachment(value: FormDataEntryValue | null, fallbackName: string) {
-  if (!(value instanceof File) || value.size <= 0) return null;
-  if (value.size > MAX_RAW_ATTACHMENT_BYTES) {
-    throw new Error(`A(z) ${value.name || fallbackName} csatolmány túl nagy.`);
-  }
-
-  const bytes = Buffer.from(await value.arrayBuffer());
+async function fileToAttachment(entry: FormDataEntryValue | null, fallbackName: string, fallbackContentType: string) {
+  if (!(entry instanceof File) || entry.size === 0) return null;
+  const arrayBuffer = await entry.arrayBuffer();
   return {
-    filename: safeFileName(value.name || fallbackName, fallbackName),
-    content: bytes.toString("base64"),
+    filename: entry.name || fallbackName,
+    content: Buffer.from(arrayBuffer),
+    contentType: entry.type || fallbackContentType,
   };
 }
 
-export async function POST(request: NextRequest): Promise<NextResponse> {
+export async function POST(request: NextRequest) {
   try {
-    const apiKey = process.env.RESEND_API_KEY?.trim();
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: "Hiányzik a RESEND_API_KEY környezeti változó a Vercel projektből." },
-        { status: 500 }
-      );
+    if (!GMAIL_USER || !GMAIL_APP_PASSWORD) {
+      return NextResponse.json({ ok: false, error: "Hiányzik a GMAIL_USER vagy GMAIL_APP_PASSWORD Vercel környezeti változó." }, { status: 500 });
     }
-
-    const from = (
-      process.env.REPORT_FROM_EMAIL ||
-      process.env.RESEND_FROM_EMAIL ||
-      process.env.EMAIL_FROM ||
-      "NÍVÓ Riport <onboarding@resend.dev>"
-    ).trim();
 
     const formData = await request.formData();
-    const toRaw = String(formData.get("to") || "").trim();
-    const recipients = splitRecipients(toRaw);
-    const invalidRecipients = recipients.filter((item) => !isEmail(item));
+    const toRaw = cleanText(formData.get("to"));
+    const subject = cleanText(formData.get("subject")) || "NÍVÓ automatikus riport";
+    const html = cleanText(formData.get("html"));
+    const text = cleanText(formData.get("text"));
+    const requestedFormat = cleanText(formData.get("requestedFormat")).toLowerCase();
+    const recipients = normalizeRecipients(toRaw);
 
-    if (!recipients.length) {
-      return NextResponse.json({ error: "Nincs megadva email címzett." }, { status: 400 });
+    if (recipients.length === 0) {
+      return NextResponse.json({ ok: false, error: "Nincs megadva címzett email-cím." }, { status: 400 });
     }
-    if (invalidRecipients.length) {
-      return NextResponse.json(
-        { error: `Hibás email cím: ${invalidRecipients.join(", ")}` },
-        { status: 400 }
+
+    const attachments: Array<{ filename: string; content: Buffer; contentType: string }> = [];
+
+    if (requestedFormat === "pdf" || requestedFormat === "both") {
+      const pdfAttachment = await fileToAttachment(formData.get("pdf"), "nivo_riport.pdf", "application/pdf");
+      if (!pdfAttachment) {
+        return NextResponse.json({ ok: false, error: "PDF küldés lett kérve, de a PDF melléklet hiányzik." }, { status: 400 });
+      }
+      attachments.push(pdfAttachment);
+    }
+
+    if (requestedFormat === "excel" || requestedFormat === "both") {
+      const excelAttachment = await fileToAttachment(
+        formData.get("excel"),
+        "nivo_riport.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       );
+      if (!excelAttachment) {
+        return NextResponse.json({ ok: false, error: "Excel küldés lett kérve, de az Excel melléklet hiányzik." }, { status: 400 });
+      }
+      attachments.push(excelAttachment);
     }
 
-    const subject = String(formData.get("subject") || "NÍVÓ termelési riport").trim() || "NÍVÓ termelési riport";
-    const html = String(formData.get("html") || "").trim();
-    const text = String(formData.get("text") || "").trim();
-
-    const attachments = [] as Array<{ filename: string; content: string }>;
-    const pdfAttachment = await fileToAttachment(formData.get("pdf"), "nivo_riport.pdf");
-    const excelAttachment = await fileToAttachment(formData.get("excel"), "nivo_riport.xlsx");
-    if (pdfAttachment) attachments.push(pdfAttachment);
-    if (excelAttachment) attachments.push(excelAttachment);
-
-    const rawBytes = [formData.get("pdf"), formData.get("excel")].reduce((sum, item) => {
-      return sum + (item instanceof File ? item.size : 0);
-    }, 0);
-    if (rawBytes > MAX_RAW_ATTACHMENT_BYTES) {
-      return NextResponse.json(
-        { error: "A csatolmányok összmérete túl nagy az email küldéshez." },
-        { status: 413 }
-      );
+    const totalAttachmentBytes = attachments.reduce((sum, attachment) => sum + attachment.content.length, 0);
+    if (totalAttachmentBytes > 18 * 1024 * 1024) {
+      return NextResponse.json({ ok: false, error: "A mellékletek összmérete túl nagy az emailes küldéshez." }, { status: 413 });
     }
 
-    const payload: Record<string, unknown> = {
-      from,
-      to: recipients,
-      subject,
-      ...(html ? { html } : {}),
-      ...(text ? { text } : {}),
-      ...(attachments.length ? { attachments } : {}),
-    };
-
-    if (!html && !text) {
-      payload.text = "Automatikusan generált NÍVÓ termelési riport.";
-    }
-
-    const resendResponse = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: GMAIL_USER,
+        pass: GMAIL_APP_PASSWORD.replace(/\s+/g, ""),
       },
-      body: JSON.stringify(payload),
-      cache: "no-store",
     });
 
-    const responseText = await resendResponse.text();
-    let responseData: any = null;
-    try {
-      responseData = responseText ? JSON.parse(responseText) : null;
-    } catch {
-      responseData = null;
-    }
+    await transporter.verify();
 
-    if (!resendResponse.ok) {
-      const resendMessage = String(
-        responseData?.message || responseData?.error?.message || responseData?.error || responseText || "Resend küldési hiba"
-      ).trim();
-      return NextResponse.json(
-        {
-          error: resendMessage,
-          provider: "resend",
-          status: resendResponse.status,
-        },
-        { status: resendResponse.status >= 400 && resendResponse.status < 600 ? resendResponse.status : 502 }
-      );
-    }
+    const info = await transporter.sendMail({
+      from: `"NÍVÓ Automatikus Riport" <${GMAIL_USER}>`,
+      to: recipients.join(", "),
+      subject,
+      text: text || "A csatolt fájl automatikusan generált NÍVÓ riport.",
+      html: html || "<p>A csatolt fájl automatikusan generált <strong>NÍVÓ riport</strong>.</p>",
+      attachments,
+    });
 
     return NextResponse.json({
       ok: true,
-      id: responseData?.id || null,
+      message: "Email sikeresen elküldve.",
+      messageId: info.messageId,
+      accepted: info.accepted,
+      rejected: info.rejected,
       recipients,
-      attachmentCount: attachments.length,
     });
   } catch (error: any) {
-    console.error("/api/send-report hiba:", error);
-    return NextResponse.json(
-      { error: error?.message || "Ismeretlen szerveroldali email küldési hiba." },
-      { status: 500 }
-    );
+    console.error("/api/send-report Gmail hiba:", error);
+    const errorMessage = error?.response || error?.message || "Ismeretlen hiba történt az email küldése közben.";
+    return NextResponse.json({ ok: false, error: String(errorMessage) }, { status: 500 });
   }
+}
+
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    service: "NÍVÓ Gmail report sender",
+    gmailConfigured: Boolean(GMAIL_USER && GMAIL_APP_PASSWORD),
+  });
 }
