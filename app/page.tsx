@@ -5160,38 +5160,145 @@ export default function Page() {
     const doc = new jspdf.jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
     const pdf = doc as any;
     registerPdfUnicodeFonts(doc);
+
     const pageWidth = 595.28;
     const pageHeight = 841.89;
-    const marginX = 38;
+    const marginX = 22;
     const contentWidth = pageWidth - marginX * 2;
-    const ink = [18, 18, 18] as const;
-    const mid = [92, 92, 92] as const;
-    const pale = [246, 246, 246] as const;
-    const border = [190, 190, 190] as const;
-
-    const drawLogo = () => {
-      const ratio = logoSize.width / Math.max(1, logoSize.height);
-      let width = 66;
-      let height = width / ratio;
-      if (height > 32) { height = 32; width = height * ratio; }
-      const x = pageWidth - marginX - width;
-      const y = 22 + (32 - height) / 2;
-      try { pdf.addImage(logoDataUrl, "PNG", x, y, width, height, undefined, "FAST"); }
-      catch { try { pdf.addImage(logoDataUrl, x, y, width, height); } catch { /* no-op */ } }
-    };
+    const footerY = pageHeight - 25;
+    const ink = [39, 42, 47] as const;
+    const charcoal = [57, 61, 67] as const;
+    const mid = [98, 103, 110] as const;
+    const pale = [247, 247, 247] as const;
+    const light = [235, 236, 238] as const;
+    const border = [195, 198, 202] as const;
+    const generatedAt = formatDateTime(new Date());
     const title = REPORT_DELIVERY_REPORT_TYPE_LABELS[profile.reportType];
-    doc.setFillColor(...ink); doc.rect(0, 0, pageWidth, 82, "F");
-    doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(18); doc.setTextColor(255,255,255);
-    doc.text(title, marginX, 31);
-    doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(8); doc.text(range.label, marginX, 50);
-    doc.setFontSize(7); doc.text(`Generálva: ${formatDateTime(new Date())}`, marginX, 66);
-    drawLogo();
-
     const stationLabel = profile.stationFilter === "all" ? "Összes munkaállomás" : profile.stationFilter;
     const workerLabel = profile.workerFilter === "all" ? "Összes dolgozó" : profile.workerFilter;
-    doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(11); doc.setTextColor(...ink);
-    doc.text(`Szűrés: ${stationLabel} • ${workerLabel}${profile.orderFilter ? ` • ${profile.orderFilter}` : ""}`, marginX, 111, { maxWidth: contentWidth });
-    let y = 132;
+    const orderLabel = profile.orderFilter.trim() || "Összes rendelés";
+
+    const fitLogo = (maxWidth: number, maxHeight: number): { width: number; height: number } => {
+      const ratio = logoSize.width / Math.max(1, logoSize.height);
+      let width = maxWidth;
+      let height = width / ratio;
+      if (height > maxHeight) {
+        height = maxHeight;
+        width = height * ratio;
+      }
+      return { width, height };
+    };
+
+    const drawLogoAt = (x: number, y: number, maxWidth = 112, maxHeight = 50): void => {
+      const fitted = fitLogo(maxWidth, maxHeight);
+      const drawY = y + Math.max(0, (maxHeight - fitted.height) / 2);
+      try {
+        pdf.addImage(logoDataUrl, "PNG", x, drawY, fitted.width, fitted.height, undefined, "FAST");
+      } catch {
+        try { pdf.addImage(logoDataUrl, x, drawY, fitted.width, fitted.height); } catch { /* no-op */ }
+      }
+    };
+
+    const drawMetaIcon = (type: "calendar" | "filter" | "clock", x: number, y: number): void => {
+      doc.setDrawColor(...charcoal);
+      doc.setLineWidth(1);
+      if (type === "calendar") {
+        pdf.roundedRect(x, y, 12, 11, 1.5, 1.5, "S");
+        doc.line(x + 2, y + 3.5, x + 10, y + 3.5);
+        doc.line(x + 3, y - 1, x + 3, y + 2);
+        doc.line(x + 9, y - 1, x + 9, y + 2);
+      } else if (type === "clock") {
+        pdf.circle(x + 6, y + 5.5, 5.5, "S");
+        doc.line(x + 6, y + 5.5, x + 6, y + 2);
+        doc.line(x + 6, y + 5.5, x + 9, y + 7);
+      } else {
+        doc.line(x, y, x + 12, y);
+        doc.line(x, y, x + 4.5, y + 5);
+        doc.line(x + 12, y, x + 7.5, y + 5);
+        doc.line(x + 4.5, y + 5, x + 4.5, y + 10);
+        doc.line(x + 7.5, y + 5, x + 7.5, y + 10);
+        doc.line(x + 4.5, y + 10, x + 7.5, y + 8.5);
+      }
+    };
+
+    const drawHeader = (compact = false): number => {
+      if (compact) {
+        doc.setFillColor(255, 255, 255);
+        doc.rect(0, 0, pageWidth, 78, "F");
+        drawLogoAt(marginX, 13, 80, 34);
+        doc.setDrawColor(...border);
+        doc.line(118, 13, 118, 57);
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(10.5);
+        doc.setTextColor(...ink);
+        doc.text(title.toUpperCase(), 132, 31, { maxWidth: 280 });
+        doc.setFont(PDF_FONT_FAMILY, "normal");
+        doc.setFontSize(6.5);
+        doc.setTextColor(...mid);
+        doc.text(range.label, 132, 46, { maxWidth: 280 });
+        doc.setFillColor(...charcoal);
+        doc.rect(marginX, 62, contentWidth, 20, "F");
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(7.2);
+        doc.setTextColor(255, 255, 255);
+        doc.text("RÉSZLETES RIPORT", marginX + 10, 75);
+        return 96;
+      }
+
+      doc.setFillColor(255, 255, 255);
+      doc.rect(0, 0, pageWidth, 153, "F");
+      drawLogoAt(marginX + 2, 24, 118, 54);
+      doc.setDrawColor(...border);
+      doc.setLineWidth(0.7);
+      doc.line(160, 18, 160, 104);
+      doc.line(430, 18, 430, 104);
+
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(15.5);
+      doc.setTextColor(...ink);
+      const titleLines = doc.splitTextToSize(title.toUpperCase(), 246).slice(0, 2);
+      doc.text(titleLines, 178, 37);
+      const titleBottom = 37 + Math.max(0, titleLines.length - 1) * 17;
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(8.2);
+      doc.setTextColor(...mid);
+      doc.text(profile.name.trim() || "Automatikus termelési riport", 178, titleBottom + 18, { maxWidth: 242 });
+
+      const metaX = 446;
+      const metaTextX = 466;
+      const drawMetaRow = (icon: "calendar" | "filter" | "clock", label: string, value: string, top: number, maxLines = 2): void => {
+        drawMetaIcon(icon, metaX, top + 2);
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(6.3);
+        doc.setTextColor(...ink);
+        doc.text(label.toUpperCase(), metaTextX, top + 6);
+        doc.setFont(PDF_FONT_FAMILY, "normal");
+        doc.setFontSize(6.1);
+        doc.setTextColor(...ink);
+        const lines = doc.splitTextToSize(value, 103).slice(0, maxLines);
+        doc.text(lines, metaTextX, top + 16);
+        doc.setDrawColor(218, 219, 221);
+        doc.line(metaX, top + 29, pageWidth - marginX, top + 29);
+      };
+      drawMetaRow("calendar", "Időszak", range.label, 21, 2);
+      drawMetaRow("filter", "Szűrés", `${stationLabel} • ${workerLabel} • ${orderLabel}`, 51, 3);
+      drawMetaRow("clock", "Generálva", generatedAt, 83, 2);
+
+      doc.setFillColor(...charcoal);
+      doc.rect(marginX, 119, contentWidth, 28, "F");
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(9.5);
+      doc.setTextColor(255, 255, 255);
+      doc.text("ÁTTEKINTÉS", marginX + 11, 137);
+      doc.setDrawColor(210, 210, 210);
+      doc.line(marginX + 94, 126, marginX + 94, 141);
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(6.7);
+      doc.text("A mentett profil szűrése alapján automatikusan generált termelési riport.", marginX + 108, 137, { maxWidth: contentWidth - 120 });
+      return 166;
+    };
+
+    let y = drawHeader(false);
     const visibleLogs = filterReportDeliveryLogs(sourceData, profile);
     const completedLogs = visibleLogs.filter((log) => String(log.action || "").toUpperCase() === "END" || Boolean(log.end_time || log.end_timestamp));
     const planRows = await loadDashboardPdfPlanRows(completedLogs.map((log) => String(log.order_number || "")).filter(Boolean));
@@ -5208,82 +5315,131 @@ export default function Page() {
       });
     }
 
+    const ensureSpace = (needed = 100): void => {
+      if (y + needed <= footerY - 10) return;
+      pdf.addPage("a4", "portrait");
+      y = drawHeader(true);
+    };
+
+    const drawSectionBand = (heading: string): void => {
+      ensureSpace(42);
+      doc.setFillColor(...charcoal);
+      doc.rect(marginX, y, contentWidth, 25, "F");
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(8.5);
+      doc.setTextColor(255, 255, 255);
+      doc.text(heading.toUpperCase(), marginX + 10, y + 16);
+      y += 34;
+    };
+
     const addSection = (heading: string, head: string[][], body: Array<Array<string | number>>): void => {
-      if (y > 700) { pdf.addPage("a4", "portrait"); y = 54; }
-      doc.setFillColor(232,232,232); pdf.roundedRect(marginX, y, contentWidth, 24, 4, 4, "F");
-      doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(9.5); doc.setTextColor(...ink);
-      doc.text(heading, marginX + 9, y + 16);
-      y += 32;
+      ensureSpace(115);
+      drawSectionBand(heading);
       pdf.autoTable({
         startY: y,
         head,
-        body: body.length ? body : [["Nincs adat", ...Array(Math.max(0, head[0].length - 1)).fill("–")]],
+        body: body.length ? body : [["Nincs adat", ...Array(Math.max(0, head[0].length - 1)).fill("-")]],
         theme: "grid",
-        margin: { left: marginX, right: marginX, bottom: 42 },
-        styles: { font: PDF_FONT_FAMILY, fontSize: 6.8, cellPadding: 3.8, overflow: "linebreak", textColor: ink },
-        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: ink, textColor: [255,255,255] },
+        margin: { left: marginX, right: marginX, top: 96, bottom: 45 },
+        styles: {
+          font: PDF_FONT_FAMILY,
+          fontSize: 6.9,
+          cellPadding: 4.2,
+          overflow: "linebreak",
+          textColor: ink,
+          lineColor: border,
+          lineWidth: 0.35,
+        },
+        headStyles: {
+          font: PDF_FONT_FAMILY,
+          fontStyle: "bold",
+          fillColor: [76, 79, 84],
+          textColor: [255, 255, 255],
+          lineColor: [160, 163, 168],
+          lineWidth: 0.35,
+        },
         alternateRowStyles: { fillColor: pale },
+        didDrawPage: (data: any) => {
+          if (Number(data?.pageNumber || 1) <= 1) return;
+          drawHeader(true);
+        },
       });
       y = Number(pdf.lastAutoTable?.finalY || y + 70) + 18;
     };
 
     const addWorkerComparison = (): void => {
-      const ranking = [...analyses].sort((a,b) => (b.performance.efficiencyPct ?? -1) - (a.performance.efficiencyPct ?? -1));
-      doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(10); doc.setTextColor(...ink);
-      doc.text("Termelékenységi rangsor", marginX, y);
-      y += 17;
+      const ranking = [...analyses].sort((a, b) => (b.performance.efficiencyPct ?? -1) - (a.performance.efficiencyPct ?? -1));
+      ensureSpace(160);
+      drawSectionBand("Termelékenységi rangsor");
       const maxPct = Math.max(100, ...ranking.map((row) => row.performance.efficiencyPct || 0));
       ranking.slice(0, 12).forEach((row, index) => {
+        ensureSpace(24);
         const pct = row.performance.efficiencyPct || 0;
-        doc.setFont(PDF_FONT_FAMILY, "bold"); doc.setFontSize(7); doc.setTextColor(...ink);
-        doc.text(`${index + 1}. ${row.workerName}`, marginX, y + 8, { maxWidth: 125 });
-        doc.setFillColor(225,225,225); pdf.roundedRect(marginX + 132, y, 300, 10, 3, 3, "F");
-        if (pct > 0) { doc.setFillColor(55,55,55); pdf.roundedRect(marginX + 132, y, Math.max(4, Math.min(300, pct / maxPct * 300)), 10, 3, 3, "F"); }
-        doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setTextColor(...mid);
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(6.8);
+        doc.setTextColor(...ink);
+        doc.text(`${index + 1}. ${row.workerName}`, marginX, y + 8, { maxWidth: 130 });
+        doc.setFillColor(232, 233, 235);
+        pdf.roundedRect(marginX + 138, y, 320, 10, 3, 3, "F");
+        if (pct > 0) {
+          const shade = index === 0 ? 54 : index < 3 ? 90 : 125;
+          doc.setFillColor(shade, shade, shade);
+          pdf.roundedRect(marginX + 138, y, Math.max(4, Math.min(320, pct / maxPct * 320)), 10, 3, 3, "F");
+        }
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(6.8);
+        doc.setTextColor(...ink);
         doc.text(`${formatDashboardEfficiencyPct(pct)}%`, pageWidth - marginX, y + 8, { align: "right" });
         y += 20;
       });
       y += 8;
-      addSection("Összehasonlító ranglista",
+      addSection(
+        "Összehasonlító ranglista",
         [["#", "Dolgozó", "Hatékonyság", "Ledolgozott", "Befejezett", "Standard", "Plus", "Extra"]],
-        ranking.map((row,index) => [
-          index + 1, row.workerName,
-          row.performance.efficiencyPct === null ? "–" : `${formatDashboardEfficiencyPct(row.performance.efficiencyPct)}%`,
+        ranking.map((row, index) => [
+          index + 1,
+          row.workerName,
+          row.performance.efficiencyPct === null ? "-" : `${formatDashboardEfficiencyPct(row.performance.efficiencyPct)}%`,
           row.performance.totalDurationLabel,
           row.completedOrders.length,
-          row.typeCounts.Standard || 0, row.typeCounts.Plus || 0, row.typeCounts.Extra || 0,
+          row.typeCounts.Standard || 0,
+          row.typeCounts.Plus || 0,
+          row.typeCounts.Extra || 0,
         ])
       );
     };
 
     const addBlock = async (blockId: ReportDeliveryBlock): Promise<void> => {
       if (blockId === "worker-analysis") {
-        addSection("Dolgozói időszaki összesítő",
+        addSection(
+          "Dolgozói időszaki összesítő",
           [["Dolgozó", "Hatékonyság", "Ledolgozott", "Keret", "Rendelés", "Standard", "Plus", "Extra"]],
           analyses.map((row) => [
             row.workerName,
-            row.performance.efficiencyPct === null ? "–" : `${formatDashboardEfficiencyPct(row.performance.efficiencyPct)}%`,
+            row.performance.efficiencyPct === null ? "-" : `${formatDashboardEfficiencyPct(row.performance.efficiencyPct)}%`,
             row.performance.totalDurationLabel,
             formatReportMinutes(row.performance.accountedMinutes),
             row.completedOrders.length,
-            row.typeCounts.Standard || 0, row.typeCounts.Plus || 0, row.typeCounts.Extra || 0,
+            row.typeCounts.Standard || 0,
+            row.typeCounts.Plus || 0,
+            row.typeCounts.Extra || 0,
           ])
         );
       } else if (blockId === "worker-comparison") {
         addWorkerComparison();
       } else if (blockId === "reproduction") {
         const rows = completedLogs.filter((log) => Boolean(log.ujragyartas)).map((log) => [
-          log.order_number || "–",
+          log.order_number || "-",
           resolveLogStation(log, workers),
           getDashboardLogWorkerName(log),
           formatDateTime(getDashboardLogEndAt(log) || getDashboardLogEventAt(log)),
-          String(log.ujragyartas_sorszam || "–"),
+          String(log.ujragyartas_sorszam || "-"),
         ]);
         addSection("Újragyártási sorok", [["Rendelés", "Munkaállomás", "Dolgozó", "Befejezés", "Újragyártás #"]], rows);
       } else if (blockId === "scrap-replacement") {
         let rows: Array<Array<string | number>> = visibleLogs.filter((log) => Boolean(log.selejt_potlas)).map((log) => [
-          log.order_number || "–", resolveLogStation(log, workers), getDashboardLogWorkerName(log),
-          formatDateTime(getDashboardLogEventAt(log)), getNoteBeforeContext(log.note) || "–",
+          log.order_number || "-", resolveLogStation(log, workers), getDashboardLogWorkerName(log),
+          formatDateTime(getDashboardLogEventAt(log)), getNoteBeforeContext(log.note) || "-",
         ]);
         try {
           if (supabase) {
@@ -5291,11 +5447,11 @@ export default function Page() {
               .gte("reported_at", range.startIso).lt("reported_at", range.endIso).order("reported_at", { ascending: false }).limit(2000);
             if (!response.error && response.data?.length) {
               rows = (response.data as Record<string, unknown>[]).map((row) => [
-                String(row.sorszam || row.order_number || "–"),
-                String(row.selejt_forras_munkaallomas || row.source_station || "–"),
-                String(row.end_worker_name || row.worker_name || "–"),
-                row.completed_at ? formatDateTime(String(row.completed_at)) : row.reported_at ? formatDateTime(String(row.reported_at)) : "–",
-                String(row.megjegyzes || row.note || "–"),
+                String(row.sorszam || row.order_number || "-"),
+                String(row.selejt_forras_munkaallomas || row.source_station || "-"),
+                String(row.end_worker_name || row.worker_name || "-"),
+                row.completed_at ? formatDateTime(String(row.completed_at)) : row.reported_at ? formatDateTime(String(row.reported_at)) : "-",
+                String(row.megjegyzes || row.note || "-"),
               ]);
             }
           }
@@ -5305,17 +5461,25 @@ export default function Page() {
         const stationRows = sourceData.stationEfficiencyRows.filter((row) =>
           profile.stationFilter === "all" || normalizeLooseText(row.stationName) === normalizeLooseText(profile.stationFilter)
         );
-        addSection(blockId === "station-performance" ? "Munkaállomás teljesítmény" : "Termelési terv vs. elkészült",
+        addSection(
+          blockId === "station-performance" ? "Munkaállomás teljesítmény" : "Termelési terv vs. elkészült",
           [["Munkaállomás", "Tervezett", "Elkészült", "Hátralévő", "Teljesítés"]],
           stationRows.map((row) => [
-            row.stationName, row.plannedItems, row.completedItems, Math.max(0, row.plannedItems - row.completedItems),
-            row.efficiencyPct === null ? "–" : `${row.efficiencyPct}%`,
+            row.stationName,
+            row.plannedItems,
+            row.completedItems,
+            Math.max(0, row.plannedItems - row.completedItems),
+            row.efficiencyPct === null ? "-" : `${row.efficiencyPct}%`,
           ])
         );
       } else if (blockId === "closed-orders") {
         const rows = analyses.flatMap((analysis) => analysis.completedOrders.map((row) => [
-          row.orderNumber, row.productType, row.stationName, analysis.workerName,
-          row.completedAt ? formatDateTime(row.completedAt) : "–", row.elapsedLabel,
+          row.orderNumber,
+          row.productType,
+          row.stationName,
+          analysis.workerName,
+          row.completedAt ? formatDateTime(row.completedAt) : "-",
+          row.elapsedLabel,
         ]));
         addSection("Lezárt rendelések", [["Rendelés", "Típus", "Munkaállomás", "Dolgozó", "Befejezés", "Eltelt"]], rows);
       }
@@ -5330,13 +5494,20 @@ export default function Page() {
     const pageCount = pdf.getNumberOfPages();
     for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
       pdf.setPage(pageNumber);
-      doc.setDrawColor(...border); doc.line(marginX, pageHeight - 28, pageWidth - marginX, pageHeight - 28);
-      doc.setFont(PDF_FONT_FAMILY, "normal"); doc.setFontSize(6.5); doc.setTextColor(...mid);
-      doc.text("NÍVÓ • Automatikus termelési riport", marginX, pageHeight - 15);
-      doc.text(`${pageNumber} / ${pageCount}`, pageWidth - marginX, pageHeight - 15, { align: "right" });
+      doc.setDrawColor(...border);
+      doc.setLineWidth(0.6);
+      doc.line(marginX, footerY - 6, pageWidth - marginX, footerY - 6);
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(6.3);
+      doc.setTextColor(...mid);
+      doc.text("NÍVÓ • Automatikus termelési riport", marginX, footerY + 7);
+      doc.text(`Generálva: ${generatedAt}`, pageWidth / 2, footerY + 7, { align: "center" });
+      doc.text(`Oldal ${pageNumber} / ${pageCount}`, pageWidth - marginX, footerY + 7, { align: "right" });
     }
+
     return doc.output("blob");
   }
+
 
   async function createReportDeliveryProfilePdfBlob(profile: ReportDeliveryProfile): Promise<Blob> {
     const range = getReportDeliveryProfileRange(profile);
@@ -5349,7 +5520,8 @@ export default function Page() {
         workerFilter: profile.workerFilter,
         orderLabel: profile.orderFilter.trim() || "Összes rendelés",
         productTypeFilter: profile.productTypeFilter,
-        reportTitle: profile.name.trim() || "Dolgozói időszaki elemzés",
+        reportTitle: "Dolgozói időszaki elemzés",
+        profileName: profile.name.trim(),
       });
     }
     return await createGenericReportDeliveryPdfBlob(profile, sourceData, range);
@@ -13548,6 +13720,7 @@ export default function Page() {
     orderLabel: string;
     productTypeFilter?: ReportDeliveryProductType;
     reportTitle?: string;
+    profileName?: string;
   }): Promise<Blob> {
     const [jspdf, logoDataUrl] = await Promise.all([waitForJsPdf(), loadDashboardPdfCompanyLogo()]);
     const logoSize = await getPdfImageNaturalSize(logoDataUrl);
@@ -13557,16 +13730,21 @@ export default function Page() {
 
     const pageWidth = 595.28;
     const pageHeight = 841.89;
-    const marginX = 38;
+    const marginX = 22;
     const contentWidth = pageWidth - marginX * 2;
-    const bottomMargin = 42;
-    const ink = [17, 24, 39] as const;
-    const darkGray = [55, 65, 81] as const;
-    const middleGray = [107, 114, 128] as const;
-    const borderGray = [188, 193, 201] as const;
-    const paleGray = [245, 246, 247] as const;
+    const footerLineY = pageHeight - 31;
+    const footerTextY = pageHeight - 17;
+    const ink = [38, 41, 46] as const;
+    const charcoal = [57, 61, 67] as const;
+    const darkGray = [69, 73, 79] as const;
+    const middleGray = [104, 109, 116] as const;
+    const borderGray = [199, 202, 206] as const;
+    const lightGray = [233, 234, 236] as const;
+    const paleGray = [248, 248, 248] as const;
+    const trackGray = [240, 241, 242] as const;
     const generatedAt = formatDateTime(new Date());
-    const reportTitle = options.reportTitle || "Dolgozói időszaki elemzés";
+    const documentTitle = "Dolgozói időszaki elemzés";
+    const profileLabel = String(options.profileName || (options.reportTitle && options.reportTitle !== documentTitle ? options.reportTitle : "") || "").trim();
 
     const completedLogs = options.sourceData.logs.filter((log) =>
       String(log.action || "").toUpperCase() === "END" || Boolean(log.end_time || log.end_timestamp)
@@ -13584,16 +13762,11 @@ export default function Page() {
 
     if (options.productTypeFilter && options.productTypeFilter !== "all") {
       workerAnalyses = workerAnalyses.map((analysis) => {
-        const completedOrders = analysis.completedOrders.filter(
-          (row) => row.productType === options.productTypeFilter
-        );
+        const completedOrders = analysis.completedOrders.filter((row) => row.productType === options.productTypeFilter);
         const typeCounts: Record<string, number> = { Standard: 0, Plus: 0, Extra: 0, Egyéb: 0 };
         completedOrders.forEach((row) => {
-          if (row.productType === "Standard" || row.productType === "Plus" || row.productType === "Extra") {
-            typeCounts[row.productType] += 1;
-          } else {
-            typeCounts.Egyéb += 1;
-          }
+          if (row.productType === "Standard" || row.productType === "Plus" || row.productType === "Extra") typeCounts[row.productType] += 1;
+          else typeCounts.Egyéb += 1;
         });
         return { ...analysis, completedOrders, typeCounts };
       }).filter((analysis) => analysis.completedOrders.length > 0 || analysis.performance.totalMinutes > 0);
@@ -13627,154 +13800,435 @@ export default function Page() {
       return { width, height };
     };
 
-    const drawLogo = (rightX: number, topY: number): void => {
-      const fitted = fitLogo(70, 34);
-      const x = rightX - fitted.width;
-      const y = topY + Math.max(0, (34 - fitted.height) / 2);
+    const drawLogoAt = (x: number, y: number, maxWidth = 118, maxHeight = 54): void => {
+      const fitted = fitLogo(maxWidth, maxHeight);
+      const drawY = y + Math.max(0, (maxHeight - fitted.height) / 2);
       try {
-        pdf.addImage(logoDataUrl, "PNG", x, y, fitted.width, fitted.height, undefined, "FAST");
+        pdf.addImage(logoDataUrl, "PNG", x, drawY, fitted.width, fitted.height, undefined, "FAST");
       } catch {
-        try { pdf.addImage(logoDataUrl, x, y, fitted.width, fitted.height); } catch { /* no-op */ }
+        try { pdf.addImage(logoDataUrl, x, drawY, fitted.width, fitted.height); } catch { /* no-op */ }
       }
     };
 
-    const drawWorkerHeader = (workerName: string, stationLabel: string): number => {
-      doc.setFillColor(...ink);
-      doc.rect(0, 0, pageWidth, 82, "F");
-      doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.setFontSize(18);
-      doc.setTextColor(255, 255, 255);
-      doc.text(reportTitle, marginX, 31);
-      doc.setFont(PDF_FONT_FAMILY, "normal");
-      doc.setFontSize(8.2);
-      doc.text(`${options.rangeLabel} • ${stationLabel} • ${options.orderLabel}`, marginX, 50, { maxWidth: 415 });
-      doc.setFontSize(7.4);
-      doc.text(`Generálva: ${generatedAt}`, marginX, 67);
-      drawLogo(pageWidth - marginX, 22);
-
-      doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.setFontSize(22);
-      doc.setTextColor(...ink);
-      doc.text(workerName, marginX, 118, { maxWidth: contentWidth });
-      return 137;
+    const drawMetaIcon = (type: "calendar" | "filter" | "clock", x: number, y: number): void => {
+      doc.setDrawColor(...charcoal);
+      doc.setLineWidth(1);
+      if (type === "calendar") {
+        pdf.roundedRect(x, y, 12, 11, 1.5, 1.5, "S");
+        doc.line(x + 2, y + 3.5, x + 10, y + 3.5);
+        doc.line(x + 3, y - 1, x + 3, y + 2);
+        doc.line(x + 9, y - 1, x + 9, y + 2);
+      } else if (type === "clock") {
+        pdf.circle(x + 6, y + 5.5, 5.5, "S");
+        doc.line(x + 6, y + 5.5, x + 6, y + 2);
+        doc.line(x + 6, y + 5.5, x + 9, y + 7);
+      } else {
+        doc.line(x, y, x + 12, y);
+        doc.line(x, y, x + 4.5, y + 5);
+        doc.line(x + 12, y, x + 7.5, y + 5);
+        doc.line(x + 4.5, y + 5, x + 4.5, y + 10);
+        doc.line(x + 7.5, y + 5, x + 7.5, y + 10);
+        doc.line(x + 4.5, y + 10, x + 7.5, y + 8.5);
+      }
     };
 
-    const calculateUnifiedKpiFontSize = (values: string[], maxWidth: number): number => {
-      for (let fontSize = 17; fontSize >= 10; fontSize -= 0.5) {
+    const drawKpiIcon = (index: number, centerX: number, topY: number): void => {
+      doc.setDrawColor(...charcoal);
+      doc.setLineWidth(1.25);
+      if (index === 0) {
+        doc.line(centerX - 10, topY + 13, centerX - 5, topY + 8);
+        doc.line(centerX - 5, topY + 8, centerX, topY + 11);
+        doc.line(centerX, topY + 11, centerX + 8, topY + 3);
+        doc.line(centerX + 4, topY + 3, centerX + 8, topY + 3);
+        doc.line(centerX + 8, topY + 3, centerX + 8, topY + 7);
+        doc.line(centerX - 9, topY + 17, centerX - 9, topY + 22);
+        doc.line(centerX - 3, topY + 14, centerX - 3, topY + 22);
+        doc.line(centerX + 3, topY + 11, centerX + 3, topY + 22);
+        doc.line(centerX + 9, topY + 7, centerX + 9, topY + 22);
+      } else if (index === 1) {
+        pdf.circle(centerX, topY + 12, 9, "S");
+        doc.line(centerX, topY + 12, centerX, topY + 6);
+        doc.line(centerX, topY + 12, centerX + 5, topY + 15);
+      } else if (index === 2 || index === 3) {
+        pdf.roundedRect(centerX - 9, topY + 3, 18, 18, 2, 2, "S");
+        doc.line(centerX - 5, topY + 1, centerX - 5, topY + 6);
+        doc.line(centerX + 5, topY + 1, centerX + 5, topY + 6);
+        doc.line(centerX - 7, topY + 8, centerX + 7, topY + 8);
+        doc.line(centerX - 4, topY + 14, centerX - 1, topY + 17);
+        doc.line(centerX - 1, topY + 17, centerX + 5, topY + 11);
+      } else {
+        pdf.circle(centerX, topY + 8, 5, "S");
+        pdf.ellipse(centerX, topY + 20, 9, 6, "S");
+      }
+    };
+
+    const drawPanelIcon = (type: "summary" | "metrics" | "notes", x: number, y: number): void => {
+      doc.setFillColor(...charcoal);
+      pdf.circle(x, y, 9, "F");
+      doc.setDrawColor(255, 255, 255);
+      doc.setLineWidth(1);
+      if (type === "summary") {
+        pdf.rect(x - 4, y - 5, 8, 10, "S");
+        doc.line(x - 2, y - 2, x + 2, y - 2);
+        doc.line(x - 2, y + 1, x + 2, y + 1);
+      } else if (type === "metrics") {
+        doc.line(x - 5, y + 4, x - 5, y - 1);
+        doc.line(x, y + 4, x, y - 5);
+        doc.line(x + 5, y + 4, x + 5, y - 8);
+      } else {
+        pdf.circle(x, y - 1, 5.5, "S");
+        doc.line(x - 2, y + 4, x - 5, y + 8);
+      }
+    };
+
+    const drawCenteredSectionTitle = (title: string, y: number): void => {
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(9.2);
+      doc.setTextColor(...ink);
+      const titleWidth = Number((doc as any).getTextWidth(title));
+      const centerX = pageWidth / 2;
+      const lineGap = 14;
+      doc.setDrawColor(...borderGray);
+      doc.setLineWidth(0.7);
+      doc.line(marginX, y - 3, centerX - titleWidth / 2 - lineGap, y - 3);
+      doc.line(centerX + titleWidth / 2 + lineGap, y - 3, pageWidth - marginX, y - 3);
+      doc.text(title, centerX, y, { align: "center" });
+    };
+
+    const splitDurationValue = (value: string): string[] => {
+      const normalized = String(value || "").trim();
+      const match = normalized.match(/^(\d+\s+óra)\s+(\d+\s+perc)$/i);
+      if (match) return [match[1], match[2]];
+      return [normalized || "0 perc"];
+    };
+
+    const calculateUnifiedKpiFontSize = (valueLines: string[][], maxWidth: number): number => {
+      for (let fontSize = 18; fontSize >= 11; fontSize -= 0.5) {
         doc.setFont(PDF_FONT_FAMILY, "bold");
         doc.setFontSize(fontSize);
-        if (values.every((value) => Number((doc as any).getTextWidth(value)) <= maxWidth)) return fontSize;
+        const fits = valueLines.every((lines) => lines.every((line) => Number((doc as any).getTextWidth(line)) <= maxWidth));
+        if (fits) return fontSize;
       }
-      return 10;
+      return 11;
     };
 
-    const drawKpiCards = (
-      y: number,
-      analysis: DashboardPdfWorkerAnalysis
-    ): number => {
+    const drawFirstPageHeader = (workerName: string, stationLabel: string): number => {
+      doc.setFillColor(255, 255, 255);
+      doc.rect(0, 0, pageWidth, 152, "F");
+      drawLogoAt(marginX + 2, 25, 118, 55);
+      doc.setDrawColor(...borderGray);
+      doc.setLineWidth(0.7);
+      doc.line(160, 18, 160, 106);
+      doc.line(430, 18, 430, 106);
+
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(15.2);
+      doc.setTextColor(...ink);
+      doc.text(documentTitle.toUpperCase(), 178, 37, { maxWidth: 240 });
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(8.5);
+      doc.setTextColor(...mid);
+      doc.text("Egyéni teljesítmény riport", 178, 55);
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(11.2);
+      doc.setTextColor(...ink);
+      doc.text(workerName, 178, 75, { maxWidth: 238 });
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(8.2);
+      doc.setTextColor(...mid);
+      doc.text(`Munkaállomás(ok): ${stationLabel}`, 178, 94, { maxWidth: 238 });
+      if (profileLabel) {
+        doc.setFontSize(5.8);
+        doc.text(`Riportprofil: ${profileLabel}`, 178, 105, { maxWidth: 238 });
+      }
+
+      const metaX = 446;
+      const metaTextX = 466;
+      const drawMetaRow = (icon: "calendar" | "filter" | "clock", label: string, value: string, top: number, maxLines = 2): void => {
+        drawMetaIcon(icon, metaX, top + 2);
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(6.2);
+        doc.setTextColor(...ink);
+        doc.text(label.toUpperCase(), metaTextX, top + 6);
+        doc.setFont(PDF_FONT_FAMILY, "normal");
+        doc.setFontSize(6.0);
+        doc.setTextColor(...ink);
+        const lines = doc.splitTextToSize(value, 104).slice(0, maxLines);
+        doc.text(lines, metaTextX, top + 16);
+        doc.setDrawColor(220, 221, 223);
+        doc.line(metaX, top + 29, pageWidth - marginX, top + 29);
+      };
+      drawMetaRow("calendar", "Időszak", options.rangeLabel, 21, 2);
+      const filterText = `${options.stationFilter === "all" ? "Összes munkaállomás" : options.stationFilter} • ${options.workerFilter === "all" ? workerName : options.workerFilter} • ${options.orderLabel}`;
+      drawMetaRow("filter", "Szűrés", filterText, 51, 3);
+      drawMetaRow("clock", "Generálva", generatedAt, 83, 2);
+
+      doc.setFillColor(...charcoal);
+      doc.rect(marginX, 119, contentWidth, 28, "F");
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(9.4);
+      doc.setTextColor(255, 255, 255);
+      doc.text("ÁTTEKINTÉS", marginX + 11, 137);
+      doc.setDrawColor(210, 210, 210);
+      doc.line(marginX + 94, 126, marginX + 94, 141);
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(6.7);
+      doc.text("A kiválasztott időszak fő teljesítménymutatói és tevékenységi áttekintése.", marginX + 108, 137, { maxWidth: contentWidth - 120 });
+      return 170;
+    };
+
+    const drawKpiCards = (y: number, analysis: DashboardPdfWorkerAnalysis): number => {
       const worker = workers.find((row) => normalizeLooseText(row["Teljes nev"]) === normalizeLooseText(analysis.workerName));
       const baseDailyMinutes = getDashboardWorkerBaseAccountedMinutes(worker);
       const basePeriodMinutes = baseDailyMinutes * Math.max(0, analysis.performance.activeDayCount);
       const overtimeMinutes = Math.max(0, analysis.performance.accountedMinutes - basePeriodMinutes);
-      const values = [
-        analysis.performance.efficiencyPct === null ? "–" : `${formatDashboardEfficiencyPct(analysis.performance.efficiencyPct)}%`,
-        analysis.performance.totalDurationLabel || formatReportMinutes(analysis.performance.totalMinutes),
-        formatReportMinutes(analysis.performance.accountedMinutes),
-        String(analysis.completedOrders.length),
-        String(analysis.performance.activeDayCount),
+      const efficiencyValue = analysis.performance.efficiencyPct === null ? "-" : `${formatDashboardEfficiencyPct(analysis.performance.efficiencyPct)}%`;
+      const durationValue = analysis.performance.totalDurationLabel || formatReportMinutes(analysis.performance.totalMinutes);
+      const accountedValue = formatReportMinutes(analysis.performance.accountedMinutes);
+      const values = [efficiencyValue, durationValue, accountedValue, String(analysis.completedOrders.length), String(analysis.performance.activeDayCount)];
+      const valueLines = [
+        [values[0]],
+        splitDurationValue(values[1]),
+        splitDurationValue(values[2]),
+        [values[3]],
+        [values[4]],
       ];
       const labels = ["TERMELÉKENYSÉG", "LEDOLGOZOTT", "ELSZÁMOLT KERET", "BEFEJEZETT", "AKTÍV NAP"];
       const helpers = [
         "tényleges / elszámolt",
-        `${analysis.performance.closedSegments} lezárt log`,
-        overtimeMinutes > 0 ? `ebből túlóra: ${formatReportMinutes(overtimeMinutes)}` : "műszak szerinti keret",
+        "tényleges idő",
+        overtimeMinutes > 0 ? `műszak + túlóra (${formatReportMinutes(overtimeMinutes)})` : "műszak szerinti keret",
         "rendelés",
-        "munkával érintett nap",
+        `${analysis.performance.closedSegments} lezárt log`,
       ];
-      const gap = 7;
+      const gap = 8;
       const cardWidth = (contentWidth - gap * 4) / 5;
-      const cardHeight = 76;
-      const unifiedFontSize = calculateUnifiedKpiFontSize(values, cardWidth - 18);
+      const cardHeight = 108;
+      const commonFontSize = calculateUnifiedKpiFontSize(valueLines, cardWidth - 18);
 
-      values.forEach((value, index) => {
+      drawCenteredSectionTitle("ÖSSZESÍTŐ MUTATÓK", y);
+      const cardY = y + 15;
+      valueLines.forEach((lines, index) => {
         const x = marginX + index * (cardWidth + gap);
-        doc.setFillColor(...paleGray);
+        doc.setFillColor(253, 253, 253);
         doc.setDrawColor(...borderGray);
-        pdf.roundedRect(x, y, cardWidth, cardHeight, 6, 6, "FD");
+        doc.setLineWidth(0.65);
+        pdf.roundedRect(x, cardY, cardWidth, cardHeight, 5, 5, "FD");
+        drawKpiIcon(index, x + cardWidth / 2, cardY + 10);
+
         doc.setFont(PDF_FONT_FAMILY, "bold");
         doc.setFontSize(6.7);
         doc.setTextColor(...darkGray);
-        doc.text(labels[index], x + 9, y + 17, { maxWidth: cardWidth - 18 });
+        doc.text(labels[index], x + cardWidth / 2, cardY + 44, { align: "center", maxWidth: cardWidth - 14 });
+
         doc.setFont(PDF_FONT_FAMILY, "bold");
-        doc.setFontSize(unifiedFontSize);
+        doc.setFontSize(commonFontSize);
         doc.setTextColor(...ink);
-        doc.text(value, x + 9, y + 43, { maxWidth: cardWidth - 18 });
+        const lineHeight = commonFontSize * 1.08;
+        const valueStartY = lines.length > 1 ? cardY + 70 : cardY + 78;
+        lines.forEach((line, lineIndex) => {
+          doc.text(line, x + cardWidth / 2, valueStartY + lineIndex * lineHeight, { align: "center", maxWidth: cardWidth - 16 });
+        });
+
         doc.setFont(PDF_FONT_FAMILY, "normal");
-        doc.setFontSize(5.8);
+        doc.setFontSize(5.6);
         doc.setTextColor(...middleGray);
-        const helperLines = doc.splitTextToSize(helpers[index], cardWidth - 18).slice(0, 2);
-        doc.text(helperLines, x + 9, y + 60);
+        const helperLines = doc.splitTextToSize(helpers[index], cardWidth - 14).slice(0, 2);
+        doc.text(helperLines, x + cardWidth / 2, cardY + 100, { align: "center" });
       });
-      return y + cardHeight;
+      return cardY + cardHeight;
     };
 
     const drawTypeDistribution = (y: number, analysis: DashboardPdfWorkerAnalysis): number => {
-      doc.setFillColor(232, 234, 237);
-      pdf.roundedRect(marginX, y, contentWidth, 25, 5, 5, "F");
-      doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.setFontSize(10);
-      doc.setTextColor(...ink);
-      doc.text("Standard / Plus / Extra rendelésmegoszlás", marginX + 10, y + 17);
-      y += 42;
-
+      drawCenteredSectionTitle("STANDARD / PLUS / EXTRA RENDELÉSMEGOSZLÁS", y);
       const items: Array<{ key: "Standard" | "Plus" | "Extra" | "Egyéb"; shade: number }> = [
-        { key: "Standard", shade: 45 },
-        { key: "Plus", shade: 95 },
-        { key: "Extra", shade: 145 },
+        { key: "Standard", shade: 72 },
+        { key: "Plus", shade: 116 },
+        { key: "Extra", shade: 158 },
         { key: "Egyéb", shade: 195 },
       ];
-      const total = items.reduce((sum, item) => sum + (analysis.typeCounts[item.key] || 0), 0);
-      const max = Math.max(1, ...items.map((item) => analysis.typeCounts[item.key] || 0));
-      const barX = marginX + 72;
-      const barWidth = contentWidth - 118;
-      items.forEach((item) => {
+      const visibleItems = items.filter((item) => item.key !== "Egyéb" || (analysis.typeCounts.Egyéb || 0) > 0);
+      const total = visibleItems.reduce((sum, item) => sum + (analysis.typeCounts[item.key] || 0), 0);
+      const panelY = y + 14;
+      const rowHeight = 27;
+      const panelHeight = 47 + visibleItems.length * rowHeight + 25;
+      doc.setFillColor(255, 255, 255);
+      doc.setDrawColor(...borderGray);
+      doc.setLineWidth(0.65);
+      pdf.roundedRect(marginX, panelY, contentWidth, panelHeight, 5, 5, "FD");
+
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(6.7);
+      doc.setTextColor(...darkGray);
+      doc.text("KATEGÓRIA", marginX + 12, panelY + 20);
+      doc.text("MEGOSZLÁS", marginX + 255, panelY + 20, { align: "center" });
+      doc.text("DARABSZÁM", pageWidth - marginX - 14, panelY + 20, { align: "right" });
+
+      const barX = marginX + 110;
+      const barWidth = contentWidth - 182;
+      let rowY = panelY + 36;
+      visibleItems.forEach((item) => {
         const count = analysis.typeCounts[item.key] || 0;
         const pct = total > 0 ? (count / total) * 100 : 0;
-        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFont(PDF_FONT_FAMILY, "normal");
         doc.setFontSize(7.5);
         doc.setTextColor(...ink);
-        doc.text(item.key, marginX, y + 9);
-        doc.setFillColor(232, 234, 237);
-        pdf.roundedRect(barX, y, barWidth, 11, 3, 3, "F");
-        if (count > 0) {
+        doc.text(item.key, marginX + 12, rowY + 8);
+        doc.setFillColor(...trackGray);
+        pdf.roundedRect(barX, rowY, barWidth, 11, 3, 3, "F");
+        if (pct > 0) {
           doc.setFillColor(item.shade, item.shade, item.shade);
-          pdf.roundedRect(barX, y, Math.max(5, (count / max) * barWidth), 11, 3, 3, "F");
+          pdf.roundedRect(barX, rowY, Math.max(4, (pct / 100) * barWidth), 11, 3, 3, "F");
         }
-        doc.setFont(PDF_FONT_FAMILY, "normal");
-        doc.setFontSize(7);
-        doc.setTextColor(...darkGray);
-        doc.text(`${count} db • ${pct.toFixed(1).replace(".", ",")}%`, pageWidth - marginX, y + 9, { align: "right" });
-        y += 22;
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(7.2);
+        doc.setTextColor(...ink);
+        doc.text(`${count} (${pct.toFixed(1).replace(".", ",")}%)`, pageWidth - marginX - 14, rowY + 8, { align: "right" });
+        rowY += rowHeight;
       });
-      return y;
+
+      doc.setDrawColor(215, 216, 219);
+      pdf.setLineDashPattern([2, 2], 0);
+      doc.line(marginX + 12, rowY + 1, pageWidth - marginX - 12, rowY + 1);
+      pdf.setLineDashPattern([], 0);
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(7.5);
+      doc.setTextColor(...ink);
+      doc.text("ÖSSZESEN:", pageWidth / 2, rowY + 18, { align: "center" });
+      doc.setFontSize(10.5);
+      doc.text(String(total), pageWidth - marginX - 16, rowY + 18, { align: "right" });
+      return panelY + panelHeight;
     };
 
-    const drawTypeTable = (y: number, analysis: DashboardPdfWorkerAnalysis): number => {
-      const total = analysis.completedOrders.length;
-      pdf.autoTable({
-        startY: y,
-        head: [["Típus", "Darabszám", "Arány"]],
-        body: ["Standard", "Plus", "Extra", "Egyéb"].map((type) => {
-          const count = analysis.typeCounts[type] || 0;
-          return [type, count, total > 0 ? `${((count / total) * 100).toFixed(1).replace(".", ",")}%` : "0,0%"];
-        }),
-        theme: "grid",
-        margin: { left: marginX, right: marginX, bottom: bottomMargin },
-        styles: { font: PDF_FONT_FAMILY, fontSize: 7.5, cellPadding: 4.5, textColor: ink },
-        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: ink, textColor: [255, 255, 255] },
-        alternateRowStyles: { fillColor: paleGray },
+    const drawBottomPanels = (y: number, analysis: DashboardPdfWorkerAnalysis): number => {
+      const worker = workers.find((row) => normalizeLooseText(row["Teljes nev"]) === normalizeLooseText(analysis.workerName));
+      const baseDailyMinutes = getDashboardWorkerBaseAccountedMinutes(worker);
+      const basePeriodMinutes = baseDailyMinutes * Math.max(0, analysis.performance.activeDayCount);
+      const overtimeMinutes = Math.max(0, analysis.performance.accountedMinutes - basePeriodMinutes);
+      const efficiencyText = analysis.performance.efficiencyPct === null ? "-" : `${formatDashboardEfficiencyPct(analysis.performance.efficiencyPct)}%`;
+      const gap = 9;
+      const panelWidth = (contentWidth - gap * 2) / 3;
+      const panelHeight = 151;
+      const headers = [
+        { title: "ÖSSZEFOGLALÓ", icon: "summary" as const },
+        { title: "FŐ MUTATÓK", icon: "metrics" as const },
+        { title: "MEGJEGYZÉSEK", icon: "notes" as const },
+      ];
+
+      headers.forEach((header, index) => {
+        const x = marginX + index * (panelWidth + gap);
+        doc.setFillColor(255, 255, 255);
+        doc.setDrawColor(...borderGray);
+        doc.setLineWidth(0.65);
+        pdf.roundedRect(x, y, panelWidth, panelHeight, 5, 5, "FD");
+        doc.setFillColor(...lightGray);
+        pdf.roundedRect(x, y, panelWidth, 29, 5, 5, "F");
+        doc.rect(x, y + 24, panelWidth, 5, "F");
+        drawPanelIcon(header.icon, x + 17, y + 14.5);
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(7.6);
+        doc.setTextColor(...ink);
+        doc.text(header.title, x + 34, y + 18);
       });
-      return Number(pdf.lastAutoTable?.finalY || y + 80);
+
+      const leftX = marginX;
+      const summaryTexts = [
+        `A tényleges ledolgozott idő az elszámolt keret ${efficiencyText}-a.`,
+        `Összesen ${analysis.performance.totalDurationLabel || formatReportMinutes(analysis.performance.totalMinutes)} tényleges munkaidő került rögzítésre.`,
+        `Összesen ${analysis.completedOrders.length} rendelés került befejezésre.`,
+        `${analysis.performance.activeDayCount} aktív nap, ${analysis.performance.closedSegments} lezárt log alapján.`,
+      ];
+      let summaryY = y + 43;
+      summaryTexts.forEach((value) => {
+        doc.setFillColor(...charcoal);
+        pdf.circle(leftX + 14, summaryY + 2, 3.6, "F");
+        doc.setDrawColor(255, 255, 255);
+        doc.setLineWidth(0.7);
+        doc.line(leftX + 12, summaryY + 2, leftX + 13.5, summaryY + 3.5);
+        doc.line(leftX + 13.5, summaryY + 3.5, leftX + 16.5, summaryY);
+        doc.setFont(PDF_FONT_FAMILY, "normal");
+        doc.setFontSize(5.9);
+        doc.setTextColor(...ink);
+        const lines = doc.splitTextToSize(value, panelWidth - 38).slice(0, 3);
+        doc.text(lines, leftX + 25, summaryY + 4);
+        summaryY += Math.max(25, lines.length * 7 + 10);
+      });
+
+      const middleX = marginX + panelWidth + gap;
+      const metricRows: Array<[string, string]> = [
+        ["Termelékenység", efficiencyText],
+        ["Ledolgozott idő", analysis.performance.totalDurationLabel || formatReportMinutes(analysis.performance.totalMinutes)],
+        ["Elszámolt keret", formatReportMinutes(analysis.performance.accountedMinutes)],
+        ["Befejezett rendelések", `${analysis.completedOrders.length} db`],
+        ["Aktív nap", `${analysis.performance.activeDayCount} nap`],
+        ["Lezárt logok", `${analysis.performance.closedSegments} db`],
+      ];
+      let metricY = y + 42;
+      metricRows.forEach(([label, value], index) => {
+        if (index > 0) {
+          doc.setDrawColor(220, 221, 223);
+          doc.line(middleX + 10, metricY - 4, middleX + panelWidth - 10, metricY - 4);
+        }
+        doc.setDrawColor(...middleGray);
+        pdf.circle(middleX + 14, metricY + 2, 4.5, "S");
+        doc.setFont(PDF_FONT_FAMILY, "normal");
+        doc.setFontSize(5.9);
+        doc.setTextColor(...ink);
+        doc.text(label, middleX + 25, metricY + 4, { maxWidth: panelWidth - 78 });
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(5.9);
+        doc.text(value, middleX + panelWidth - 10, metricY + 4, { align: "right", maxWidth: 65 });
+        metricY += 18;
+      });
+
+      const rightX = marginX + (panelWidth + gap) * 2;
+      const noteParts = [
+        "A riport a kiválasztott időszak lezárt munkaidejét és befejezett rendeléseit összesíti.",
+        "A Standard / Plus / Extra bontás a termelési terv típusadata alapján készült.",
+      ];
+      if (overtimeMinutes > 0) noteParts.push(`Elszámolt túlóra: ${formatReportMinutes(overtimeMinutes)}.`);
+      let noteY = y + 43;
+      noteParts.forEach((note) => {
+        doc.setFont(PDF_FONT_FAMILY, "normal");
+        doc.setFontSize(6.0);
+        doc.setTextColor(...ink);
+        const lines = doc.splitTextToSize(note, panelWidth - 24).slice(0, 4);
+        doc.text(lines, rightX + 12, noteY);
+        noteY += lines.length * 7 + 13;
+      });
+      doc.setDrawColor(220, 221, 223);
+      pdf.setLineDashPattern([1.5, 1.5], 0);
+      while (noteY < y + panelHeight - 13) {
+        doc.line(rightX + 12, noteY, rightX + panelWidth - 12, noteY);
+        noteY += 14;
+      }
+      pdf.setLineDashPattern([], 0);
+      return y + panelHeight;
+    };
+
+    const drawDetailHeader = (workerName: string, stationLabel: string): number => {
+      doc.setFillColor(255, 255, 255);
+      doc.rect(0, 0, pageWidth, 103, "F");
+      drawLogoAt(marginX + 2, 16, 84, 38);
+      doc.setDrawColor(...borderGray);
+      doc.line(122, 15, 122, 62);
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(11.3);
+      doc.setTextColor(...ink);
+      doc.text(documentTitle.toUpperCase(), 137, 31, { maxWidth: 270 });
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(6.8);
+      doc.setTextColor(...mid);
+      doc.text(`${workerName} • ${stationLabel} • ${options.rangeLabel}`, 137, 48, { maxWidth: 270 });
+      doc.setFontSize(6.0);
+      doc.text(`Generálva: ${generatedAt}`, 137, 59);
+      doc.setFillColor(...charcoal);
+      doc.rect(marginX, 72, contentWidth, 25, "F");
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(8.4);
+      doc.setTextColor(255, 255, 255);
+      doc.text("ELKÉSZÜLT RENDELÉSEK RÉSZLETEI", marginX + 10, 88);
+      return 110;
     };
 
     workerAnalyses.forEach((analysis, workerIndex) => {
@@ -13785,54 +14239,62 @@ export default function Page() {
         : stations.length
           ? stations.join(", ")
           : "Összes munkaállomás";
-      let cursorY = drawWorkerHeader(analysis.workerName, stationLabel);
 
-      cursorY = drawKpiCards(cursorY, analysis) + 19;
-      cursorY = drawTypeDistribution(cursorY, analysis) + 7;
-      cursorY = drawTypeTable(cursorY, analysis) + 18;
+      let cursorY = drawFirstPageHeader(analysis.workerName, stationLabel);
+      cursorY = drawKpiCards(cursorY, analysis) + 28;
+      cursorY = drawTypeDistribution(cursorY, analysis) + 18;
+      cursorY = drawBottomPanels(cursorY, analysis);
 
-      doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.setFontSize(10);
-      doc.setTextColor(...ink);
-      doc.text("Elkészült rendelések részletei", marginX, cursorY);
-      cursorY += 10;
-
-      const details = analysis.completedOrders.map((row) => [
-        row.orderNumber,
-        row.productType,
-        row.stationName || "–",
-        row.planDate || "–",
-        row.completedAt ? formatDateTime(row.completedAt) : "–",
-        row.elapsedLabel || "–",
-      ]);
-      pdf.autoTable({
-        startY: cursorY,
-        head: [["Rendelés", "Típus", "Munkaállomás", "Terv dátuma", "Befejezés", "Eltelt idő"]],
-        body: details.length ? details : [["Nincs befejezett rendelés", "–", "–", "–", "–", "–"]],
-        theme: "grid",
-        margin: { left: marginX, right: marginX, top: 44, bottom: bottomMargin },
-        styles: { font: PDF_FONT_FAMILY, fontSize: 6.6, cellPadding: 3.4, overflow: "linebreak", textColor: ink },
-        headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: ink, textColor: [255, 255, 255] },
-        alternateRowStyles: { fillColor: paleGray },
-        columnStyles: {
-          0: { cellWidth: 82 },
-          1: { cellWidth: 55 },
-          2: { cellWidth: 78 },
-          3: { cellWidth: 62 },
-          4: { cellWidth: 107 },
-          5: { cellWidth: 68 },
-        },
-        didDrawPage: (data: any) => {
-          if (Number(data?.pageNumber || 1) <= 1) return;
-          doc.setFillColor(...ink);
-          doc.rect(0, 0, pageWidth, 38, "F");
-          doc.setFont(PDF_FONT_FAMILY, "bold");
-          doc.setFontSize(7.5);
-          doc.setTextColor(255, 255, 255);
-          doc.text(`${reportTitle} • ${analysis.workerName}`, marginX, 22, { maxWidth: 390 });
-          drawLogo(pageWidth - marginX, 0);
-        },
-      });
+      if (analysis.completedOrders.length > 0) {
+        pdf.addPage("a4", "portrait");
+        const details = analysis.completedOrders.map((row) => [
+          row.orderNumber,
+          row.productType,
+          row.stationName || "-",
+          row.planDate || "-",
+          row.completedAt ? formatDateTime(row.completedAt) : "-",
+          row.elapsedLabel || "-",
+        ]);
+        const detailStartY = drawDetailHeader(analysis.workerName, stationLabel);
+        pdf.autoTable({
+          startY: detailStartY,
+          head: [["Rendelés", "Típus", "Munkaállomás", "Terv dátuma", "Befejezés", "Eltelt idő"]],
+          body: details,
+          theme: "grid",
+          margin: { left: marginX, right: marginX, top: 110, bottom: 45 },
+          styles: {
+            font: PDF_FONT_FAMILY,
+            fontSize: 7.0,
+            cellPadding: 4.2,
+            overflow: "linebreak",
+            textColor: ink,
+            lineColor: borderGray,
+            lineWidth: 0.35,
+            valign: "middle",
+          },
+          headStyles: {
+            font: PDF_FONT_FAMILY,
+            fontStyle: "bold",
+            fillColor: [76, 79, 84],
+            textColor: [255, 255, 255],
+            lineColor: [155, 158, 163],
+            lineWidth: 0.35,
+          },
+          alternateRowStyles: { fillColor: paleGray },
+          columnStyles: {
+            0: { cellWidth: 92 },
+            1: { cellWidth: 57 },
+            2: { cellWidth: 83 },
+            3: { cellWidth: 66 },
+            4: { cellWidth: 125 },
+            5: { cellWidth: 78 },
+          },
+          didDrawPage: (data: any) => {
+            if (Number(data?.pageNumber || 1) <= 1) return;
+            drawDetailHeader(analysis.workerName, stationLabel);
+          },
+        });
+      }
     });
 
     const pageCount = pdf.getNumberOfPages();
@@ -13840,16 +14302,18 @@ export default function Page() {
       pdf.setPage(pageNumber);
       doc.setDrawColor(...borderGray);
       doc.setLineWidth(0.6);
-      doc.line(marginX, pageHeight - 28, pageWidth - marginX, pageHeight - 28);
+      doc.line(marginX, footerLineY, pageWidth - marginX, footerLineY);
       doc.setFont(PDF_FONT_FAMILY, "normal");
-      doc.setFontSize(6.5);
+      doc.setFontSize(6.2);
       doc.setTextColor(...middleGray);
-      doc.text("NÍVÓ • Dolgozói időszaki elemzés", marginX, pageHeight - 15);
-      doc.text(`${pageNumber} / ${pageCount}`, pageWidth - marginX, pageHeight - 15, { align: "right" });
+      doc.text("NÍVÓ • Dolgozói időszaki elemzés", marginX, footerTextY);
+      doc.text(`Generálva: ${generatedAt}`, pageWidth / 2, footerTextY, { align: "center" });
+      doc.text(`Oldal ${pageNumber} / ${pageCount}`, pageWidth - marginX, footerTextY, { align: "right" });
     }
 
     return doc.output("blob");
   }
+
 
   async function exportDashboardAsPdf(): Promise<void> {
     try {
