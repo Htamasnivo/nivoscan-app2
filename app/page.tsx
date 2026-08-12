@@ -13915,6 +13915,25 @@ export default function Page() {
       return 11;
     };
 
+    // Egy sorban tartja a fejléc szövegeit, és csak annyira csökkenti a
+    // betűméretet, amennyire az adott rendelkezésre álló szélesség miatt szükséges.
+    // Így a cím/alalcím, illetve a részletes oldal fejlécének sorai nem tudnak egymásra csúszni.
+    const fitSingleLineFontSize = (
+      value: string,
+      maxWidth: number,
+      startSize: number,
+      minSize: number,
+      fontStyle: "normal" | "bold" = "normal"
+    ): number => {
+      const safeValue = String(value || "");
+      doc.setFont(PDF_FONT_FAMILY, fontStyle);
+      for (let fontSize = startSize; fontSize >= minSize; fontSize -= 0.2) {
+        doc.setFontSize(fontSize);
+        if (Number((doc as any).getTextWidth(safeValue)) <= maxWidth) return fontSize;
+      }
+      return minSize;
+    };
+
     const drawFirstPageHeader = (workerName: string, stationLabel: string): number => {
       doc.setFillColor(255, 255, 255);
       doc.rect(0, 0, pageWidth, 152, "F");
@@ -13924,25 +13943,33 @@ export default function Page() {
       doc.line(160, 18, 160, 106);
       doc.line(430, 18, 430, 106);
 
+      const headerTextWidth = 238;
+      const titleText = documentTitle.toUpperCase();
       doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.setFontSize(15.2);
+      doc.setFontSize(fitSingleLineFontSize(titleText, headerTextWidth, 15.2, 10.8, "bold"));
       doc.setTextColor(...ink);
-      doc.text(documentTitle.toUpperCase(), 178, 37, { maxWidth: 240 });
-      doc.setFont(PDF_FONT_FAMILY, "normal");
-      doc.setFontSize(8.5);
-      doc.setTextColor(...mid);
-      doc.text("Egyéni teljesítmény riport", 178, 55);
-      doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.setFontSize(11.2);
-      doc.setTextColor(...ink);
-      doc.text(workerName, 178, 75, { maxWidth: 238 });
+      doc.text(titleText, 178, 36);
+
       doc.setFont(PDF_FONT_FAMILY, "normal");
       doc.setFontSize(8.2);
       doc.setTextColor(...mid);
-      doc.text(`Munkaállomás(ok): ${stationLabel}`, 178, 94, { maxWidth: 238 });
+      doc.text("Egyéni teljesítmény riport", 178, 54);
+
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(fitSingleLineFontSize(workerName, headerTextWidth, 11.2, 8.2, "bold"));
+      doc.setTextColor(...ink);
+      doc.text(workerName, 178, 74);
+
+      const stationText = `Munkaállomás(ok): ${stationLabel}`;
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(fitSingleLineFontSize(stationText, headerTextWidth, 8.2, 6.2, "normal"));
+      doc.setTextColor(...mid);
+      doc.text(stationText, 178, 93);
+
       if (profileLabel) {
-        doc.setFontSize(5.8);
-        doc.text(`Riportprofil: ${profileLabel}`, 178, 105, { maxWidth: 238 });
+        const profileText = `Riportprofil: ${profileLabel}`;
+        doc.setFontSize(fitSingleLineFontSize(profileText, headerTextWidth, 5.8, 4.7, "normal"));
+        doc.text(profileText, 178, 105);
       }
 
       const metaX = 446;
@@ -13954,10 +13981,18 @@ export default function Page() {
         doc.setTextColor(...ink);
         doc.text(label.toUpperCase(), metaTextX, top + 6);
         doc.setFont(PDF_FONT_FAMILY, "normal");
-        doc.setFontSize(6.0);
+        doc.setFontSize(5.4);
         doc.setTextColor(...ink);
-        const lines = doc.splitTextToSize(value, 104).slice(0, maxLines);
-        doc.text(lines, metaTextX, top + 16);
+        const allLines = doc.splitTextToSize(value, 104);
+        const lines = allLines.slice(0, maxLines);
+        if (allLines.length > maxLines && lines.length) {
+          let lastLine = String(lines[lines.length - 1] || "");
+          while (lastLine.length > 3 && Number((doc as any).getTextWidth(`${lastLine}...`)) > 104) {
+            lastLine = lastLine.slice(0, -1);
+          }
+          lines[lines.length - 1] = `${lastLine.trimEnd()}...`;
+        }
+        doc.text(lines, metaTextX, top + 16, { lineHeightFactor: 1.0 });
         doc.setDrawColor(220, 221, 223);
         doc.line(metaX, top + 29, pageWidth - marginX, top + 29);
       };
@@ -14215,16 +14250,19 @@ export default function Page() {
       drawLogoAt(marginX + 2, 16, 84, 38);
       doc.setDrawColor(...borderGray);
       doc.line(122, 15, 122, 62);
+      const detailHeaderWidth = 270;
+      const detailTitle = documentTitle.toUpperCase();
       doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.setFontSize(11.3);
+      doc.setFontSize(fitSingleLineFontSize(detailTitle, detailHeaderWidth, 11.3, 8.6, "bold"));
       doc.setTextColor(...ink);
-      doc.text(documentTitle.toUpperCase(), 137, 31, { maxWidth: 270 });
+      doc.text(detailTitle, 137, 31);
+      const detailSubtitle = `${workerName} • ${stationLabel} • ${options.rangeLabel}`;
       doc.setFont(PDF_FONT_FAMILY, "normal");
-      doc.setFontSize(6.8);
+      doc.setFontSize(fitSingleLineFontSize(detailSubtitle, detailHeaderWidth, 6.8, 5.0, "normal"));
       doc.setTextColor(...mid);
-      doc.text(`${workerName} • ${stationLabel} • ${options.rangeLabel}`, 137, 48, { maxWidth: 270 });
+      doc.text(detailSubtitle, 137, 48);
       doc.setFontSize(6.0);
-      doc.text(`Generálva: ${generatedAt}`, 137, 59);
+      doc.text(`Generálva: ${generatedAt}`, 137, 60);
       doc.setFillColor(...charcoal);
       doc.rect(marginX, 72, contentWidth, 25, "F");
       doc.setFont(PDF_FONT_FAMILY, "bold");
