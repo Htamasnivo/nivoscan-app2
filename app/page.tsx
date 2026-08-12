@@ -13738,6 +13738,9 @@ export default function Page() {
     const charcoal = [57, 61, 67] as const;
     const darkGray = [69, 73, 79] as const;
     const middleGray = [104, 109, 116] as const;
+    // A PDF fejléc több helyen a rövid `mid` nevet használja.
+    // Legyen ugyanaz a középszürke árnyalat, így exportkor nem keletkezik ReferenceError.
+    const mid = middleGray;
     const borderGray = [199, 202, 206] as const;
     const lightGray = [233, 234, 236] as const;
     const paleGray = [248, 248, 248] as const;
