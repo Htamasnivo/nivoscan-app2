@@ -329,7 +329,16 @@ type DashboardData = {
 type DashboardFilterMode = "daily" | "weekly" | "monthly" | "custom";
 type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "reproduction-report" | "label-printer" | "report-delivery";
 type OfficePageKey = ManagementSection;
-type OfficeThemePresetId = "industrial-night" | "graphite" | "steel-blue" | "light-office" | "contrast-monitor" | "custom";
+type OfficeThemePresetGroup = "base" | "neon" | "matte";
+type OfficeThemePresetId =
+  | "industrial-night" | "graphite" | "steel-blue" | "light-office" | "contrast-monitor"
+  | "neon-purple" | "cyber-lime" | "amber-black" | "ice-turquoise" | "magenta-electric"
+  | "neon-cyan" | "neon-blue" | "neon-red" | "neon-yellow" | "neon-green"
+  | "neon-pink" | "neon-violet" | "neon-aqua" | "neon-sunset" | "neon-rainbow"
+  | "matte-black" | "matte-slate" | "matte-olive" | "matte-sand" | "matte-burgundy"
+  | "matte-brown" | "matte-petrol" | "matte-sage" | "matte-bronze" | "matte-anthracite"
+  | "custom";
+
 type OfficeThemeConfig = {
   pageBackground: string;
   panelBackground: string;
@@ -343,82 +352,155 @@ type OfficeThemeConfig = {
   navBackground: string;
   navActiveBackground: string;
   navText: string;
+  headerBackground: string;
+  sectionBackground: string;
+  primaryButtonBackground: string;
+  secondaryButtonBackground: string;
+  buttonText: string;
+  activeColor: string;
+  errorColor: string;
+  fontFamily: string;
+  baseFontSize: number;
+  titleFontSize: number;
+  fontWeight: number;
+  borderWidth: number;
+  borderRadius: number;
+  fieldHeight: number;
+  padding: number;
+  gap: number;
+  shadowBlur: number;
+  shadowOpacity: number;
 };
 
-const OFFICE_THEME_PRESETS: Record<Exclude<OfficeThemePresetId, "custom">, { name: string; description: string; theme: OfficeThemeConfig }> = {
-  "industrial-night": {
-    name: "Éjszakai ipari",
-    description: "Sötét szürkés-kék, műhelyi és irodai használatra.",
-    theme: {
-      pageBackground: "#020617", panelBackground: "#0f172a", panelAltBackground: "#111c31",
-      textColor: "#f8fafc", mutedText: "#94a3b8", borderColor: "#334155", accentColor: "#38bdf8",
-      inputBackground: "#0b1220", inputText: "#f8fafc", navBackground: "#0f172a", navActiveBackground: "#0c4a6e", navText: "#cbd5e1",
-    },
-  },
-  graphite: {
-    name: "Grafit",
-    description: "Prémium grafit, visszafogott hidegkék kiemelésekkel.",
-    theme: {
-      pageBackground: "#111315", panelBackground: "#1a1d21", panelAltBackground: "#23272d",
-      textColor: "#f5f7fa", mutedText: "#a8b0bb", borderColor: "#3a424c", accentColor: "#60a5fa",
-      inputBackground: "#15191e", inputText: "#f5f7fa", navBackground: "#181b20", navActiveBackground: "#244b73", navText: "#d7dde5",
-    },
-  },
-  "steel-blue": {
-    name: "Acélkék",
-    description: "Világosabb kékesszürke panelek, modern ipari megjelenés.",
-    theme: {
-      pageBackground: "#dce6ef", panelBackground: "#edf4f9", panelAltBackground: "#d3e1ec",
-      textColor: "#172a3d", mutedText: "#60758a", borderColor: "#8ea6ba", accentColor: "#0369a1",
-      inputBackground: "#f8fbfd", inputText: "#172a3d", navBackground: "#29445f", navActiveBackground: "#0c6b9a", navText: "#eef7ff",
-    },
-  },
-  "light-office": {
-    name: "Világos iroda",
-    description: "Fehér és világosszürke felület, erős olvashatósággal.",
-    theme: {
-      pageBackground: "#f1f5f9", panelBackground: "#ffffff", panelAltBackground: "#f8fafc",
-      textColor: "#172033", mutedText: "#64748b", borderColor: "#cbd5e1", accentColor: "#2563eb",
-      inputBackground: "#ffffff", inputText: "#0f172a", navBackground: "#ffffff", navActiveBackground: "#dbeafe", navText: "#334155",
-    },
-  },
-  "contrast-monitor": {
-    name: "Kontrasztos monitor",
-    description: "Mély sötét háttér és erősebb kiemelések nagy kijelzőkhöz.",
-    theme: {
-      pageBackground: "#030507", panelBackground: "#080c11", panelAltBackground: "#111923",
-      textColor: "#ffffff", mutedText: "#b8c5d4", borderColor: "#40546b", accentColor: "#00d9ff",
-      inputBackground: "#070b10", inputText: "#ffffff", navBackground: "#080c11", navActiveBackground: "#005a72", navText: "#edfaff",
-    },
-  },
+type OfficeThemePresetDefinition = {
+  name: string;
+  description: string;
+  group: OfficeThemePresetGroup;
+  theme: OfficeThemeConfig;
 };
 
-function cloneOfficeTheme(theme: OfficeThemeConfig): OfficeThemeConfig {
-  return { ...theme };
+type OfficeWindowDefinition = { id: string; label: string };
+const OFFICE_WINDOW_UI_PREFIX = "office-window:";
+
+function buildOfficeTheme(input: {
+  page: string; panel: string; alt: string; text: string; muted: string; border: string; accent: string;
+  input?: string; inputText?: string; nav?: string; navActive?: string; navText?: string;
+  header?: string; section?: string; primary?: string; secondary?: string; buttonText?: string;
+  active?: string; error?: string; font?: string; baseFontSize?: number; titleFontSize?: number; fontWeight?: number;
+  borderWidth?: number; borderRadius?: number; fieldHeight?: number; padding?: number; gap?: number; shadowBlur?: number; shadowOpacity?: number;
+}): OfficeThemeConfig {
+  return {
+    pageBackground: input.page,
+    panelBackground: input.panel,
+    panelAltBackground: input.alt,
+    textColor: input.text,
+    mutedText: input.muted,
+    borderColor: input.border,
+    accentColor: input.accent,
+    inputBackground: input.input || input.alt,
+    inputText: input.inputText || input.text,
+    navBackground: input.nav || input.panel,
+    navActiveBackground: input.navActive || input.accent,
+    navText: input.navText || input.text,
+    headerBackground: input.header || input.alt,
+    sectionBackground: input.section || input.panel,
+    primaryButtonBackground: input.primary || input.accent,
+    secondaryButtonBackground: input.secondary || input.alt,
+    buttonText: input.buttonText || input.text,
+    activeColor: input.active || "#22c55e",
+    errorColor: input.error || "#ef4444",
+    fontFamily: input.font || "Segoe UI, Arial, sans-serif",
+    baseFontSize: input.baseFontSize ?? 14,
+    titleFontSize: input.titleFontSize ?? 22,
+    fontWeight: input.fontWeight ?? 700,
+    borderWidth: input.borderWidth ?? 1,
+    borderRadius: input.borderRadius ?? 14,
+    fieldHeight: input.fieldHeight ?? 40,
+    padding: input.padding ?? 16,
+    gap: input.gap ?? 12,
+    shadowBlur: input.shadowBlur ?? 16,
+    shadowOpacity: input.shadowOpacity ?? 0.20,
+  };
 }
+
+const OFFICE_THEME_PRESETS: Record<Exclude<OfficeThemePresetId, "custom">, OfficeThemePresetDefinition> = {
+  // 5 ALAP
+  "industrial-night": { name: "Ipari éjszaka", description: "Sötét ipari alap, kék kiemeléssel.", group: "base", theme: buildOfficeTheme({ page:"#020617", panel:"#0f172a", alt:"#111c31", text:"#f8fafc", muted:"#94a3b8", border:"#334155", accent:"#38bdf8", input:"#0b1220", nav:"#0f172a", navActive:"#0c4a6e", navText:"#cbd5e1", header:"#111827", section:"#0f172a", primary:"#2563eb", secondary:"#111827", active:"#22c55e", error:"#ef4444", shadowBlur:18, shadowOpacity:0.24 }) },
+  graphite: { name: "Grafit", description: "Prémium grafit, semleges szürke tónusok.", group: "base", theme: buildOfficeTheme({ page:"#111315", panel:"#1a1d21", alt:"#23272d", text:"#f5f7fa", muted:"#a8b0bb", border:"#3a424c", accent:"#60a5fa", input:"#15191e", nav:"#181b20", navActive:"#244b73", navText:"#d7dde5", header:"#27272a", section:"#202024", primary:"#64748b", secondary:"#27272a" }) },
+  "steel-blue": { name: "Acélkék", description: "Modern ipari kékesszürke megjelenés.", group: "base", theme: buildOfficeTheme({ page:"#dce6ef", panel:"#edf4f9", alt:"#d3e1ec", text:"#172a3d", muted:"#60758a", border:"#8ea6ba", accent:"#0369a1", input:"#f8fbfd", nav:"#29445f", navActive:"#0c6b9a", navText:"#eef7ff", header:"#dbe7f0", section:"#edf4f9", primary:"#0369a1", secondary:"#d3e1ec", buttonText:"#172a3d", shadowOpacity:0.13 }) },
+  "light-office": { name: "Világos iroda", description: "Világos, letisztult, nagy olvashatóság.", group: "base", theme: buildOfficeTheme({ page:"#f1f5f9", panel:"#ffffff", alt:"#f8fafc", text:"#172033", muted:"#64748b", border:"#cbd5e1", accent:"#2563eb", input:"#ffffff", nav:"#ffffff", navActive:"#dbeafe", navText:"#334155", header:"#e2e8f0", section:"#ffffff", primary:"#2563eb", secondary:"#e2e8f0", buttonText:"#0f172a", active:"#15803d", error:"#b91c1c", shadowOpacity:0.10 }) },
+  "contrast-monitor": { name: "Kontrasztos monitor", description: "Erős fekete-fehér kontraszt nagy kijelzőkhöz.", group: "base", theme: buildOfficeTheme({ page:"#030507", panel:"#080c11", alt:"#111923", text:"#ffffff", muted:"#d1d5db", border:"#ffffff", accent:"#00d9ff", input:"#070b10", nav:"#080c11", navActive:"#005a72", navText:"#ffffff", header:"#000000", section:"#0a0a0a", primary:"#ffffff", secondary:"#171717", buttonText:"#ffffff", borderWidth:2, borderRadius:8, baseFontSize:15, titleFontSize:24, fontWeight:800, shadowBlur:0, shadowOpacity:0 }) },
+
+  // 15 NEON
+  "neon-purple": { name:"Neon lila", description:"Lila-cián futurisztikus neon.", group:"neon", theme:buildOfficeTheme({ page:"#080312", panel:"#170b2f", alt:"#241044", text:"#f5f3ff", muted:"#d8b4fe", border:"#c026d3", accent:"#22d3ee", input:"#120524", nav:"#25064a", navActive:"#7e22ce", header:"#3b0764", section:"#241044", primary:"#a855f7", secondary:"#312e81", active:"#22d3ee", error:"#fb7185", font:"Trebuchet MS, Arial, sans-serif", borderWidth:2, borderRadius:20, titleFontSize:24, fontWeight:800, shadowBlur:28, shadowOpacity:0.40 }) },
+  "cyber-lime": { name:"Cyber lime", description:"Fekete-lime cyberpunk megjelenés.", group:"neon", theme:buildOfficeTheme({ page:"#010602", panel:"#071108", alt:"#0a1b0c", text:"#ecfccb", muted:"#a3e635", border:"#84cc16", accent:"#bef264", input:"#020a03", nav:"#071108", navActive:"#365314", header:"#102b12", section:"#0a1b0c", primary:"#84cc16", secondary:"#1a2e05", buttonText:"#f7fee7", active:"#bef264", error:"#f87171", font:"Verdana, Arial, sans-serif", borderWidth:2, borderRadius:10, shadowBlur:25, shadowOpacity:0.38 }) },
+  "amber-black": { name:"Neon borostyán", description:"Fekete alapon izzó borostyán.", group:"neon", theme:buildOfficeTheme({ page:"#080500", panel:"#15100a", alt:"#1d1408", text:"#fff7ed", muted:"#fdba74", border:"#f59e0b", accent:"#fbbf24", input:"#0d0905", nav:"#171005", navActive:"#78350f", header:"#2b1b05", section:"#1d1408", primary:"#f59e0b", secondary:"#3a2507", buttonText:"#fff7ed", active:"#facc15", error:"#ef4444", font:"Tahoma, Arial, sans-serif", borderWidth:2, shadowBlur:24, shadowOpacity:0.35 }) },
+  "ice-turquoise": { name:"Neon jeges türkiz", description:"Világító türkiz és hideg fehér.", group:"neon", theme:buildOfficeTheme({ page:"#001014", panel:"#06242b", alt:"#083641", text:"#ecfeff", muted:"#67e8f9", border:"#06b6d4", accent:"#22d3ee", input:"#001a20", nav:"#06242b", navActive:"#0e7490", header:"#0c4a6e", section:"#083641", primary:"#06b6d4", secondary:"#164e63", active:"#5eead4", error:"#fb7185", borderWidth:2, borderRadius:18, shadowBlur:26, shadowOpacity:0.36 }) },
+  "magenta-electric": { name:"Elektromos magenta", description:"Magenta-kék látványos neon kombináció.", group:"neon", theme:buildOfficeTheme({ page:"#0d020f", panel:"#1f0726", alt:"#2b0b35", text:"#fdf4ff", muted:"#f0abfc", border:"#f0abfc", accent:"#f472b6", input:"#17041d", nav:"#27042d", navActive:"#9d174d", header:"#4a044e", section:"#2b0b35", primary:"#db2777", secondary:"#1d4ed8", active:"#38bdf8", error:"#fb7185", font:"Trebuchet MS, Arial, sans-serif", borderWidth:2, borderRadius:22, titleFontSize:24, fontWeight:900, shadowBlur:30, shadowOpacity:0.44 }) },
+  "neon-cyan": { name:"Neon cián", description:"Mélyfekete és élénk cián fények.", group:"neon", theme:buildOfficeTheme({ page:"#000609", panel:"#00131a", alt:"#002431", text:"#ecfeff", muted:"#67e8f9", border:"#22d3ee", accent:"#22d3ee", input:"#000b10", nav:"#00131a", navActive:"#155e75", header:"#003544", section:"#002431", primary:"#0891b2", secondary:"#164e63", active:"#2dd4bf", error:"#fb7185", borderWidth:2, shadowBlur:30, shadowOpacity:0.42 }) },
+  "neon-blue": { name:"Neon kék", description:"Elektromos kék, hideg futurisztikus panelok.", group:"neon", theme:buildOfficeTheme({ page:"#020617", panel:"#07152f", alt:"#0b2352", text:"#eff6ff", muted:"#93c5fd", border:"#3b82f6", accent:"#60a5fa", input:"#030b1b", nav:"#07152f", navActive:"#1d4ed8", header:"#0b1f4d", section:"#0b2352", primary:"#2563eb", secondary:"#1e3a8a", active:"#22d3ee", error:"#f87171", borderWidth:2, shadowBlur:28, shadowOpacity:0.40 }) },
+  "neon-red": { name:"Neon vörös", description:"Fekete-vörös agresszív ipari neon.", group:"neon", theme:buildOfficeTheme({ page:"#090000", panel:"#1b0505", alt:"#2a0707", text:"#fff1f2", muted:"#fda4af", border:"#ef4444", accent:"#fb7185", input:"#100202", nav:"#1b0505", navActive:"#991b1b", header:"#450a0a", section:"#2a0707", primary:"#dc2626", secondary:"#7f1d1d", active:"#facc15", error:"#ff4d4f", borderWidth:2, shadowBlur:28, shadowOpacity:0.42 }) },
+  "neon-yellow": { name:"Neon sárga", description:"Fekete és rikító sárga figyelemközpontú téma.", group:"neon", theme:buildOfficeTheme({ page:"#070700", panel:"#151500", alt:"#252500", text:"#fefce8", muted:"#fde047", border:"#facc15", accent:"#fef08a", input:"#0b0b00", nav:"#151500", navActive:"#854d0e", header:"#3f3f05", section:"#252500", primary:"#eab308", secondary:"#713f12", active:"#a3e635", error:"#fb7185", borderWidth:2, shadowBlur:26, shadowOpacity:0.38 }) },
+  "neon-green": { name:"Neon zöld", description:"Smaragdzöld digitális neon.", group:"neon", theme:buildOfficeTheme({ page:"#001006", panel:"#032016", alt:"#053526", text:"#ecfdf5", muted:"#6ee7b7", border:"#10b981", accent:"#34d399", input:"#00180c", nav:"#032016", navActive:"#047857", header:"#064e3b", section:"#053526", primary:"#059669", secondary:"#065f46", active:"#a7f3d0", error:"#fb7185", borderWidth:2, shadowBlur:26, shadowOpacity:0.38 }) },
+  "neon-pink": { name:"Neon pink", description:"Forró pink és sötétlila háttér.", group:"neon", theme:buildOfficeTheme({ page:"#10010b", panel:"#26051b", alt:"#3a0828", text:"#fdf2f8", muted:"#f9a8d4", border:"#ec4899", accent:"#f472b6", input:"#17020f", nav:"#26051b", navActive:"#9d174d", header:"#500724", section:"#3a0828", primary:"#db2777", secondary:"#831843", active:"#67e8f9", error:"#fb7185", borderWidth:2, borderRadius:20, shadowBlur:30, shadowOpacity:0.44 }) },
+  "neon-violet": { name:"Neon ibolya", description:"Ibolya és kék UV-hangulat.", group:"neon", theme:buildOfficeTheme({ page:"#07030f", panel:"#160a2d", alt:"#241044", text:"#f5f3ff", muted:"#c4b5fd", border:"#8b5cf6", accent:"#a78bfa", input:"#0d051c", nav:"#160a2d", navActive:"#5b21b6", header:"#2e1065", section:"#241044", primary:"#7c3aed", secondary:"#4c1d95", active:"#22d3ee", error:"#fb7185", borderWidth:2, borderRadius:18, shadowBlur:28, shadowOpacity:0.42 }) },
+  "neon-aqua": { name:"Neon aqua", description:"Aqua-zöld és cián kombináció.", group:"neon", theme:buildOfficeTheme({ page:"#00100f", panel:"#032826", alt:"#06403d", text:"#f0fdfa", muted:"#5eead4", border:"#14b8a6", accent:"#2dd4bf", input:"#001917", nav:"#032826", navActive:"#0f766e", header:"#134e4a", section:"#06403d", primary:"#0d9488", secondary:"#115e59", active:"#67e8f9", error:"#fb7185", borderWidth:2, borderRadius:18, shadowBlur:28, shadowOpacity:0.40 }) },
+  "neon-sunset": { name:"Neon naplemente", description:"Narancs-pink-lila naplemente neon.", group:"neon", theme:buildOfficeTheme({ page:"#100306", panel:"#2a0a14", alt:"#3b1020", text:"#fff7ed", muted:"#fdba74", border:"#fb7185", accent:"#fb923c", input:"#180409", nav:"#2a0a14", navActive:"#9f1239", header:"#4c0519", section:"#3b1020", primary:"#f97316", secondary:"#be123c", active:"#facc15", error:"#ff4d4f", borderWidth:2, borderRadius:20, shadowBlur:30, shadowOpacity:0.44 }) },
+  "neon-rainbow": { name:"Neon spektrum", description:"Extrém többszínű hatás cián főszínnel.", group:"neon", theme:buildOfficeTheme({ page:"#03030a", panel:"#101026", alt:"#1b1538", text:"#ffffff", muted:"#c4b5fd", border:"#22d3ee", accent:"#f472b6", input:"#080817", nav:"#101026", navActive:"#7c3aed", header:"#25144a", section:"#1b1538", primary:"#06b6d4", secondary:"#db2777", active:"#a3e635", error:"#fb7185", borderWidth:2, borderRadius:22, shadowBlur:32, shadowOpacity:0.48 }) },
+
+  // 10 MATT
+  "matte-black": { name:"Matt fekete", description:"Puha fekete, minimális tükröződésérzet.", group:"matte", theme:buildOfficeTheme({ page:"#151515", panel:"#202020", alt:"#292929", text:"#ededed", muted:"#a3a3a3", border:"#464646", accent:"#8a8a8a", input:"#191919", nav:"#202020", navActive:"#3a3a3a", header:"#252525", section:"#202020", primary:"#525252", secondary:"#303030", shadowOpacity:0.12 }) },
+  "matte-slate": { name:"Matt pala", description:"Tompított palakék, prémium ipari stílus.", group:"matte", theme:buildOfficeTheme({ page:"#1b232b", panel:"#26313a", alt:"#303d47", text:"#e8edf1", muted:"#aab6c0", border:"#586774", accent:"#7890a4", input:"#202a32", nav:"#26313a", navActive:"#425a6e", header:"#303d47", section:"#26313a", primary:"#526d82", secondary:"#34434f", shadowOpacity:0.14 }) },
+  "matte-olive": { name:"Matt olíva", description:"Tompított olívazöld és grafit.", group:"matte", theme:buildOfficeTheme({ page:"#24261c", panel:"#303326", alt:"#3b3f2e", text:"#f1f2e8", muted:"#b9bea1", border:"#686f50", accent:"#89945f", input:"#292c21", nav:"#303326", navActive:"#59623f", header:"#3b3f2e", section:"#303326", primary:"#6f7a4d", secondary:"#424733", active:"#9aae69", shadowOpacity:0.14 }) },
+  "matte-sand": { name:"Matt homok", description:"Meleg homok és bézs vállalati stílus.", group:"matte", theme:buildOfficeTheme({ page:"#e7e0d4", panel:"#f0e9dd", alt:"#ddd3c4", text:"#3b342d", muted:"#74695f", border:"#b6a997", accent:"#8c7357", input:"#f8f3eb", nav:"#d7cabb", navActive:"#bca68e", navText:"#3b342d", header:"#ddd3c4", section:"#f0e9dd", primary:"#8c7357", secondary:"#d5c8b8", buttonText:"#302a25", active:"#667a50", error:"#9b4d4d", shadowOpacity:0.10 }) },
+  "matte-burgundy": { name:"Matt bordó", description:"Tompított bordó, elegáns sötét tónusok.", group:"matte", theme:buildOfficeTheme({ page:"#24191d", panel:"#332329", alt:"#422d35", text:"#f4eaed", muted:"#c1a8b0", border:"#76505d", accent:"#9a6676", input:"#2a1d22", nav:"#332329", navActive:"#663f4c", header:"#422d35", section:"#332329", primary:"#80515f", secondary:"#49313a", active:"#8fa77b", error:"#c26a6a", shadowOpacity:0.15 }) },
+  "matte-brown": { name:"Matt barna", description:"Földszínű barna, visszafogott prémium stílus.", group:"matte", theme:buildOfficeTheme({ page:"#251f1a", panel:"#342c25", alt:"#43382f", text:"#f3eee9", muted:"#bcae9f", border:"#766454", accent:"#9a8068", input:"#2b241e", nav:"#342c25", navActive:"#604d3d", header:"#43382f", section:"#342c25", primary:"#806750", secondary:"#493d33", active:"#91a271", error:"#c46e65", shadowOpacity:0.14 }) },
+  "matte-petrol": { name:"Matt petrol", description:"Tompított petrolkék-zöld modern irodai téma.", group:"matte", theme:buildOfficeTheme({ page:"#142426", panel:"#1d3336", alt:"#294347", text:"#e9f1f1", muted:"#a1bcbc", border:"#4f7477", accent:"#679396", input:"#182c2e", nav:"#1d3336", navActive:"#3e6568", header:"#294347", section:"#1d3336", primary:"#527d80", secondary:"#304b4e", active:"#79a98e", error:"#c46e6e", shadowOpacity:0.14 }) },
+  "matte-sage": { name:"Matt zsálya", description:"Nyugodt szürkészöld, világos matt felület.", group:"matte", theme:buildOfficeTheme({ page:"#dfe5dc", panel:"#edf1eb", alt:"#d2dacd", text:"#2f3a30", muted:"#667267", border:"#a2ad9e", accent:"#70806f", input:"#f6f8f5", nav:"#c9d3c5", navActive:"#a9b8a5", navText:"#2f3a30", header:"#d2dacd", section:"#edf1eb", primary:"#70806f", secondary:"#c6d0c2", buttonText:"#2f3a30", active:"#527056", error:"#9e5656", shadowOpacity:0.09 }) },
+  "matte-bronze": { name:"Matt bronz", description:"Bronzos ipari színvilág, meleg kontraszttal.", group:"matte", theme:buildOfficeTheme({ page:"#211d18", panel:"#302a22", alt:"#40372b", text:"#f4efe7", muted:"#c1b29e", border:"#74634d", accent:"#a1815c", input:"#29231d", nav:"#302a22", navActive:"#644f38", header:"#40372b", section:"#302a22", primary:"#886b4b", secondary:"#493e32", active:"#879d67", error:"#be6c62", shadowOpacity:0.15 }) },
+  "matte-anthracite": { name:"Matt antracit", description:"Antracit szürke, modern és elegáns.", group:"matte", theme:buildOfficeTheme({ page:"#202326", panel:"#2b2f33", alt:"#353a3f", text:"#eef0f2", muted:"#aeb5bb", border:"#5d656c", accent:"#7d8992", input:"#25292c", nav:"#2b2f33", navActive:"#4b545c", header:"#353a3f", section:"#2b2f33", primary:"#65717a", secondary:"#3b4146", active:"#84a27d", error:"#c16a6a", shadowOpacity:0.14 }) },
+};
+
+function cloneOfficeTheme(theme: OfficeThemeConfig): OfficeThemeConfig { return { ...theme }; }
 function createDefaultOfficeThemeMap(): Record<OfficePageKey, OfficeThemeConfig> {
   const base = OFFICE_THEME_PRESETS["industrial-night"].theme;
   return {
-    dashboard: cloneOfficeTheme(base),
-    "production-plan": cloneOfficeTheme(base),
-    "production-monitor": cloneOfficeTheme(base),
-    "production-card": cloneOfficeTheme(base),
-    "reproduction-report": cloneOfficeTheme(base),
-    "label-printer": cloneOfficeTheme(base),
-    "report-delivery": cloneOfficeTheme(base),
+    dashboard: cloneOfficeTheme(base), "production-plan": cloneOfficeTheme(base), "production-monitor": cloneOfficeTheme(base),
+    "production-card": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base),
   };
 }
 function createDefaultOfficeThemePresetMap(): Record<OfficePageKey, OfficeThemePresetId> {
-  return {
-    dashboard: "industrial-night",
-    "production-plan": "industrial-night",
-    "production-monitor": "industrial-night",
-    "production-card": "industrial-night",
-    "reproduction-report": "industrial-night",
-    "label-printer": "industrial-night",
-    "report-delivery": "industrial-night",
-  };
+  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "reproduction-report":"industrial-night", "label-printer":"industrial-night", "report-delivery":"industrial-night" };
 }
+
+const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]> = {
+  dashboard: [
+    { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Oldal fejléc és szűrők" }, { id:"order-filter", label:"Rendelésszűrő sáv" },
+    { id:"kpis", label:"Összesítő KPI kártyák" }, { id:"worker-performance", label:"Dolgozói teljesítmény" }, { id:"station-efficiency", label:"Munkaállomás hatékonyság" },
+    { id:"open-work", label:"Folyamatban lévő munkák" }, { id:"event-log", label:"Eseménynapló" },
+  ],
+  "production-plan": [
+    { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Oldal fejléc" }, { id:"server-xlsx", label:"Közös XLSX termelési terv" },
+    { id:"plan-basics", label:"Terv alapadatai" }, { id:"product-card", label:"Termelési kártya" }, { id:"plan-preview", label:"Összeállított termelési terv" },
+  ],
+  "production-monitor": [
+    { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Monitor fejléc és vezérlők" }, { id:"editor", label:"Profi monitorszerkesztő" }, { id:"tables", label:"Termelési táblák" },
+  ],
+  "production-card": [
+    { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Kártyaszerkesztő fejléc" }, { id:"editor", label:"Profi termelésikártya-szerkesztő" }, { id:"empty", label:"Üres / betöltési állapot" },
+  ],
+  "reproduction-report": [
+    { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Újragyártási riport fejléc" }, { id:"filters", label:"Riportszűrők" }, { id:"summary", label:"Összesítő mutatók" },
+    { id:"worker-stats", label:"Dolgozói statisztika" }, { id:"station-stats", label:"Munkaállomási statisztika" }, { id:"details", label:"Részletes újragyártási adatok" }, { id:"scrap", label:"Selejtpótlási statisztika" },
+  ],
+  "label-printer": [
+    { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Címkenyomtató fejléc" }, { id:"station", label:"Munkaállomás választó" }, { id:"printer", label:"Nyomtató és kalibráció" },
+    { id:"template", label:"Sablon és verziók" }, { id:"tools", label:"Szerkesztő eszköztár" }, { id:"canvas", label:"Címkevászon" }, { id:"properties", label:"Elem tulajdonságok" }, { id:"preview", label:"Nyomtatási előnézet" },
+  ],
+  "report-delivery": [
+    { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Riportküldési fejléc" }, { id:"active-profiles", label:"Aktív automatikus riportok" }, { id:"footer-info", label:"Alsó információs panel" },
+  ],
+};
 
 function normalizeDashboardOrderSearch(value: string): string {
   return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -1040,18 +1122,7 @@ type ReportDeliverySendLog = {
   createdBy: string;
 };
 
-type ReportDeliveryCardPresetId =
-  | "industrial-night"
-  | "graphite"
-  | "steel-blue"
-  | "light-office"
-  | "contrast-monitor"
-  | "neon-purple"
-  | "cyber-lime"
-  | "amber-black"
-  | "ice-turquoise"
-  | "magenta-electric"
-  | "custom";
+type ReportDeliveryCardPresetId = OfficeThemePresetId;
 
 type ReportDeliveryCardStyle = {
   cardBackground: string;
@@ -1080,63 +1151,45 @@ type ReportDeliveryCardStyle = {
   shadowOpacity: number;
 };
 
-const REPORT_DELIVERY_CARD_PRESETS: Record<Exclude<ReportDeliveryCardPresetId, "custom">, { name: string; description: string; style: ReportDeliveryCardStyle }> = {
-  "industrial-night": {
-    name: "Ipari éjszaka",
-    description: "Sötét műhelyhangulat, kék kiemeléssel.",
-    style: { cardBackground: "#0b1220", headerBackground: "#111827", sectionBackground: "#0f172a", textColor: "#f8fafc", mutedText: "#94a3b8", inputBackground: "#07101f", inputText: "#f8fafc", borderColor: "#334155", primaryButtonBackground: "#2563eb", secondaryButtonBackground: "#111827", buttonText: "#ffffff", activeColor: "#22c55e", errorColor: "#ef4444", fontFamily: "Segoe UI, Arial, sans-serif", baseFontSize: 14, titleFontSize: 22, fontWeight: 700, borderWidth: 1, borderRadius: 16, fieldHeight: 40, padding: 16, gap: 12, shadowBlur: 16, shadowOpacity: 0.22 },
-  },
-  graphite: {
-    name: "Grafit",
-    description: "Semleges grafit, elegáns szürkékkel.",
-    style: { cardBackground: "#18181b", headerBackground: "#27272a", sectionBackground: "#202024", textColor: "#fafafa", mutedText: "#a1a1aa", inputBackground: "#111113", inputText: "#fafafa", borderColor: "#52525b", primaryButtonBackground: "#71717a", secondaryButtonBackground: "#27272a", buttonText: "#ffffff", activeColor: "#86efac", errorColor: "#fca5a5", fontFamily: "Arial, sans-serif", baseFontSize: 14, titleFontSize: 22, fontWeight: 700, borderWidth: 1, borderRadius: 12, fieldHeight: 40, padding: 16, gap: 12, shadowBlur: 12, shadowOpacity: 0.18 },
-  },
-  "steel-blue": {
-    name: "Acélkék",
-    description: "Hideg acélkék, ipari irodai megjelenés.",
-    style: { cardBackground: "#102033", headerBackground: "#17324d", sectionBackground: "#13283e", textColor: "#eff6ff", mutedText: "#a9c2d9", inputBackground: "#0b1a2a", inputText: "#eff6ff", borderColor: "#476985", primaryButtonBackground: "#0ea5e9", secondaryButtonBackground: "#17324d", buttonText: "#ffffff", activeColor: "#34d399", errorColor: "#fb7185", fontFamily: "Segoe UI, Arial, sans-serif", baseFontSize: 14, titleFontSize: 22, fontWeight: 700, borderWidth: 1, borderRadius: 14, fieldHeight: 40, padding: 16, gap: 12, shadowBlur: 14, shadowOpacity: 0.2 },
-  },
-  "light-office": {
-    name: "Világos iroda",
-    description: "Világos, tiszta, nyugodt vállalati stílus.",
-    style: { cardBackground: "#f8fafc", headerBackground: "#e2e8f0", sectionBackground: "#ffffff", textColor: "#0f172a", mutedText: "#64748b", inputBackground: "#ffffff", inputText: "#0f172a", borderColor: "#94a3b8", primaryButtonBackground: "#2563eb", secondaryButtonBackground: "#e2e8f0", buttonText: "#0f172a", activeColor: "#15803d", errorColor: "#b91c1c", fontFamily: "Segoe UI, Arial, sans-serif", baseFontSize: 14, titleFontSize: 22, fontWeight: 700, borderWidth: 1, borderRadius: 14, fieldHeight: 40, padding: 16, gap: 12, shadowBlur: 10, shadowOpacity: 0.12 },
-  },
-  "contrast-monitor": {
-    name: "Kontrasztos monitor",
-    description: "Fekete-fehér, nagy kontrasztú műhelynézet.",
-    style: { cardBackground: "#000000", headerBackground: "#ffffff", sectionBackground: "#0a0a0a", textColor: "#ffffff", mutedText: "#d4d4d4", inputBackground: "#000000", inputText: "#ffffff", borderColor: "#ffffff", primaryButtonBackground: "#ffffff", secondaryButtonBackground: "#171717", buttonText: "#000000", activeColor: "#22c55e", errorColor: "#ff4d4f", fontFamily: "Arial, sans-serif", baseFontSize: 15, titleFontSize: 24, fontWeight: 800, borderWidth: 2, borderRadius: 8, fieldHeight: 42, padding: 16, gap: 12, shadowBlur: 0, shadowOpacity: 0 },
-  },
-  "neon-purple": {
-    name: "Neon lila",
-    description: "Extrém lila-cián futurisztikus kombináció.",
-    style: { cardBackground: "#170b2f", headerBackground: "#3b0764", sectionBackground: "#241044", textColor: "#f5f3ff", mutedText: "#d8b4fe", inputBackground: "#120524", inputText: "#f5f3ff", borderColor: "#c026d3", primaryButtonBackground: "#a855f7", secondaryButtonBackground: "#312e81", buttonText: "#ffffff", activeColor: "#22d3ee", errorColor: "#fb7185", fontFamily: "Trebuchet MS, Arial, sans-serif", baseFontSize: 14, titleFontSize: 23, fontWeight: 800, borderWidth: 2, borderRadius: 20, fieldHeight: 42, padding: 18, gap: 13, shadowBlur: 24, shadowOpacity: 0.34 },
-  },
-  "cyber-lime": {
-    name: "Cyber lime",
-    description: "Fekete és élénk lime, nagyon erős kontraszttal.",
-    style: { cardBackground: "#071108", headerBackground: "#102b12", sectionBackground: "#0a1b0c", textColor: "#ecfccb", mutedText: "#a3e635", inputBackground: "#020a03", inputText: "#f7fee7", borderColor: "#84cc16", primaryButtonBackground: "#84cc16", secondaryButtonBackground: "#1a2e05", buttonText: "#102000", activeColor: "#bef264", errorColor: "#f87171", fontFamily: "Verdana, Arial, sans-serif", baseFontSize: 14, titleFontSize: 23, fontWeight: 800, borderWidth: 2, borderRadius: 10, fieldHeight: 42, padding: 16, gap: 12, shadowBlur: 22, shadowOpacity: 0.3 },
-  },
-  "amber-black": {
-    name: "Borostyán / fekete",
-    description: "Fekete alapon ipari borostyán kiemelések.",
-    style: { cardBackground: "#15100a", headerBackground: "#2b1b05", sectionBackground: "#1d1408", textColor: "#fff7ed", mutedText: "#fdba74", inputBackground: "#0d0905", inputText: "#fff7ed", borderColor: "#f59e0b", primaryButtonBackground: "#f59e0b", secondaryButtonBackground: "#3a2507", buttonText: "#1c1203", activeColor: "#facc15", errorColor: "#ef4444", fontFamily: "Tahoma, Arial, sans-serif", baseFontSize: 14, titleFontSize: 23, fontWeight: 800, borderWidth: 2, borderRadius: 12, fieldHeight: 42, padding: 16, gap: 12, shadowBlur: 18, shadowOpacity: 0.28 },
-  },
-  "ice-turquoise": {
-    name: "Jeges türkiz",
-    description: "Világos türkiz-fehér, modern technikai megjelenés.",
-    style: { cardBackground: "#ecfeff", headerBackground: "#cffafe", sectionBackground: "#ffffff", textColor: "#083344", mutedText: "#0e7490", inputBackground: "#ffffff", inputText: "#083344", borderColor: "#06b6d4", primaryButtonBackground: "#0891b2", secondaryButtonBackground: "#cffafe", buttonText: "#083344", activeColor: "#059669", errorColor: "#dc2626", fontFamily: "Segoe UI, Arial, sans-serif", baseFontSize: 14, titleFontSize: 22, fontWeight: 700, borderWidth: 1, borderRadius: 18, fieldHeight: 40, padding: 17, gap: 12, shadowBlur: 14, shadowOpacity: 0.13 },
-  },
-  "magenta-electric": {
-    name: "Elektromos magenta",
-    description: "Extrém magenta-kék, látványos vezetői nézet.",
-    style: { cardBackground: "#1f0726", headerBackground: "#4a044e", sectionBackground: "#2b0b35", textColor: "#fdf4ff", mutedText: "#f0abfc", inputBackground: "#17041d", inputText: "#ffffff", borderColor: "#f0abfc", primaryButtonBackground: "#db2777", secondaryButtonBackground: "#1d4ed8", buttonText: "#ffffff", activeColor: "#38bdf8", errorColor: "#fb7185", fontFamily: "Trebuchet MS, Arial, sans-serif", baseFontSize: 14, titleFontSize: 24, fontWeight: 900, borderWidth: 2, borderRadius: 22, fieldHeight: 44, padding: 18, gap: 14, shadowBlur: 28, shadowOpacity: 0.4 },
-  },
-};
-
-function cloneReportDeliveryCardStyle(style: ReportDeliveryCardStyle): ReportDeliveryCardStyle {
-  return { ...style };
+function officeThemeToReportDeliveryCardStyle(theme: OfficeThemeConfig): ReportDeliveryCardStyle {
+  return {
+    cardBackground: theme.panelBackground,
+    headerBackground: theme.headerBackground,
+    sectionBackground: theme.sectionBackground,
+    textColor: theme.textColor,
+    mutedText: theme.mutedText,
+    inputBackground: theme.inputBackground,
+    inputText: theme.inputText,
+    borderColor: theme.borderColor,
+    primaryButtonBackground: theme.primaryButtonBackground,
+    secondaryButtonBackground: theme.secondaryButtonBackground,
+    buttonText: theme.buttonText,
+    activeColor: theme.activeColor,
+    errorColor: theme.errorColor,
+    fontFamily: theme.fontFamily,
+    baseFontSize: theme.baseFontSize,
+    titleFontSize: theme.titleFontSize,
+    fontWeight: theme.fontWeight,
+    borderWidth: theme.borderWidth,
+    borderRadius: theme.borderRadius,
+    fieldHeight: theme.fieldHeight,
+    padding: theme.padding,
+    gap: theme.gap,
+    shadowBlur: theme.shadowBlur,
+    shadowOpacity: theme.shadowOpacity,
+  };
 }
 
+const REPORT_DELIVERY_CARD_PRESETS = Object.fromEntries(
+  Object.entries(OFFICE_THEME_PRESETS).map(([id, preset]) => [id, {
+    name: preset.name,
+    description: preset.description,
+    group: preset.group,
+    style: officeThemeToReportDeliveryCardStyle(preset.theme),
+  }])
+) as Record<Exclude<ReportDeliveryCardPresetId, "custom">, { name: string; description: string; group: OfficeThemePresetGroup; style: ReportDeliveryCardStyle }>;
+
+function cloneReportDeliveryCardStyle(style: ReportDeliveryCardStyle): ReportDeliveryCardStyle { return { ...style }; }
 const DEFAULT_REPORT_DELIVERY_CARD_STYLE = cloneReportDeliveryCardStyle(REPORT_DELIVERY_CARD_PRESETS["industrial-night"].style);
 
 const REPORT_DELIVERY_REPORT_TYPE_LABELS: Record<ReportDeliveryReportType, string> = {
@@ -4687,6 +4740,12 @@ export default function Page() {
   const [officeThemeByPage, setOfficeThemeByPage] = useState<Record<OfficePageKey, OfficeThemeConfig>>(createDefaultOfficeThemeMap());
   const [officeThemeEditorOpen, setOfficeThemeEditorOpen] = useState(false);
   const [officeThemeSaving, setOfficeThemeSaving] = useState(false);
+  const [officeThemeScope, setOfficeThemeScope] = useState<string>("__page__");
+  const [officeThemePresetGroup, setOfficeThemePresetGroup] = useState<OfficeThemePresetGroup>("neon");
+  const [officeWindowThemeByKey, setOfficeWindowThemeByKey] = useState<Record<string, OfficeThemeConfig>>({});
+  const [officeWindowPresetByKey, setOfficeWindowPresetByKey] = useState<Record<string, OfficeThemePresetId>>({});
+  const [officeUiAutoSaveState, setOfficeUiAutoSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const officeUiAutoSaveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const [dashboardData, setDashboardData] = useState<DashboardData>({
     logs: [],
     availableOrderNumbers: [],
@@ -4943,21 +5002,211 @@ export default function Page() {
     return officeThemeByPage[pageKey] || cloneOfficeTheme(OFFICE_THEME_PRESETS["industrial-night"].theme);
   }
 
+  function officeWindowStateKey(pageKey: OfficePageKey, windowKey: string): string {
+    return `${pageKey}:${windowKey}`;
+  }
+
+  function officeWindowDbKey(pageKey: OfficePageKey, windowKey: string): string {
+    return `${OFFICE_WINDOW_UI_PREFIX}${pageKey}:${windowKey}`;
+  }
+
+  function getOfficeWindowTheme(pageKey: OfficePageKey, windowKey: string): OfficeThemeConfig {
+    const key = officeWindowStateKey(pageKey, windowKey);
+    return officeWindowThemeByKey[key] || getOfficeTheme(pageKey);
+  }
+
+  function getOfficeWindowPreset(pageKey: OfficePageKey, windowKey: string): OfficeThemePresetId {
+    return officeWindowPresetByKey[officeWindowStateKey(pageKey, windowKey)] || officeThemePresetByPage[pageKey] || "industrial-night";
+  }
+
+  function getOfficeWindowDefinitions(pageKey: OfficePageKey): OfficeWindowDefinition[] {
+    return OFFICE_WINDOW_DEFINITIONS[pageKey] || [];
+  }
+
+  function buildOfficeWindowCss(pageKey: OfficePageKey): string {
+    return getOfficeWindowDefinitions(pageKey).map((windowDef) => {
+      const theme = getOfficeWindowTheme(pageKey, windowDef.id);
+      const selector = `[data-office-window="${pageKey}:${windowDef.id}"]`;
+      const shadowAlpha = Math.max(0, Math.min(1, theme.shadowOpacity));
+      return `
+${selector} {
+  background: ${theme.panelBackground} !important;
+  color: ${theme.textColor} !important;
+  border-color: ${theme.borderColor} !important;
+  border-width: ${theme.borderWidth}px !important;
+  border-style: solid !important;
+  border-radius: ${theme.borderRadius}px !important;
+  font-family: ${theme.fontFamily} !important;
+  font-size: ${theme.baseFontSize}px !important;
+  box-shadow: 0 8px ${theme.shadowBlur}px rgba(0,0,0,${shadowAlpha}) !important;
+}
+${selector} h1, ${selector} h2, ${selector} h3, ${selector} h4, ${selector} strong { color: ${theme.textColor} !important; font-family: ${theme.fontFamily} !important; }
+${selector} h1, ${selector} h2 { font-size: ${theme.titleFontSize}px !important; font-weight: ${theme.fontWeight} !important; }
+${selector} input:not([type="color"]), ${selector} select, ${selector} textarea {
+  background: ${theme.inputBackground} !important;
+  color: ${theme.inputText} !important;
+  border-color: ${theme.borderColor} !important;
+  border-width: ${theme.borderWidth}px !important;
+  border-radius: ${Math.max(4, theme.borderRadius - 5)}px !important;
+  min-height: ${theme.fieldHeight}px !important;
+  font-family: ${theme.fontFamily} !important;
+  font-size: ${theme.baseFontSize}px !important;
+}
+${selector} button {
+  font-family: ${theme.fontFamily} !important;
+  border-radius: ${Math.max(4, theme.borderRadius - 5)}px !important;
+  border-color: ${theme.borderColor} !important;
+  color: ${theme.buttonText} !important;
+}
+${selector} button:not([data-preserve-action-color="true"]) { background: ${theme.secondaryButtonBackground} !important; }
+${selector} button:hover:not(:disabled) { box-shadow: 0 0 ${Math.max(0, Math.round(theme.shadowBlur * .65))}px ${theme.accentColor} !important; }
+${selector} table { color: ${theme.textColor} !important; font-family: ${theme.fontFamily} !important; background: ${theme.sectionBackground} !important; }
+${selector} thead, ${selector} th { background: ${theme.headerBackground} !important; color: ${theme.textColor} !important; border-color: ${theme.borderColor} !important; }
+${selector} tbody, ${selector} td { color: ${theme.textColor} !important; border-color: ${theme.borderColor} !important; }
+${selector} label, ${selector} p, ${selector} span { font-family: ${theme.fontFamily} !important; }
+${selector} > section, ${selector} > article { border-color: ${theme.borderColor} !important; }
+`;
+    }).join("\n");
+  }
+
+  async function persistOfficeUiPreference(dbPageKey: string, preset: OfficeThemePresetId, theme: OfficeThemeConfig, showMessage = false): Promise<void> {
+    if (!supabase || !activeWorker || !isManagementDashboardWorker(activeWorker)) return;
+    const workerName = String(activeWorker["Teljes nev"] || "").trim();
+    if (!workerName) return;
+    setOfficeUiAutoSaveState("saving");
+    try {
+      const existingResponse = await supabase
+        .from("user_ui_preferences")
+        .select("theme_preset, theme_json")
+        .eq("worker_name", workerName)
+        .eq("page_key", dbPageKey)
+        .limit(1);
+      if (existingResponse.error) throw existingResponse.error;
+      const existing = (existingResponse.data || [])[0] as { theme_preset?: string | null; theme_json?: Record<string, unknown> | null } | undefined;
+      const payload: Record<string, unknown> = {
+        worker_name: workerName,
+        worker_id: activeWorker.id,
+        page_key: dbPageKey,
+        theme_preset: preset,
+        theme_json: theme,
+        updated_at: new Date().toISOString(),
+      };
+      if (existing) {
+        payload.previous_theme_preset = String(existing.theme_preset || "industrial-night");
+        payload.previous_theme_json = existing.theme_json || {};
+      }
+      const response = await supabase.from("user_ui_preferences").upsert(payload, { onConflict: "worker_name,page_key" });
+      if (response.error) throw response.error;
+      setOfficeUiAutoSaveState("saved");
+      if (showMessage) setMessage({ type: "success", text: "A megjelenés elmentve a felhasználódhoz." });
+    } catch (error) {
+      setOfficeUiAutoSaveState("error");
+      if (showMessage) setMessage({ type: "error", text: `A megjelenési beállítás mentése sikertelen: ${normalizeError(error)}` });
+      else console.warn("Automatikus UI mentési hiba:", error);
+    }
+  }
+
+  function queueOfficeUiPreferenceSave(dbPageKey: string, preset: OfficeThemePresetId, theme: OfficeThemeConfig): void {
+    const currentTimer = officeUiAutoSaveTimersRef.current[dbPageKey];
+    if (currentTimer) clearTimeout(currentTimer);
+    officeUiAutoSaveTimersRef.current[dbPageKey] = setTimeout(() => {
+      delete officeUiAutoSaveTimersRef.current[dbPageKey];
+      void persistOfficeUiPreference(dbPageKey, preset, theme, false);
+    }, 650);
+  }
+
   function applyOfficeThemePreset(pageKey: OfficePageKey, presetId: Exclude<OfficeThemePresetId, "custom">): void {
     const theme = cloneOfficeTheme(OFFICE_THEME_PRESETS[presetId].theme);
     setOfficeThemePresetByPage((current) => ({ ...current, [pageKey]: presetId }));
     setOfficeThemeByPage((current) => ({ ...current, [pageKey]: theme }));
+    queueOfficeUiPreferenceSave(pageKey, presetId, theme);
   }
 
   function updateOfficeTheme(pageKey: OfficePageKey, patch: Partial<OfficeThemeConfig>): void {
+    const nextTheme = { ...getOfficeTheme(pageKey), ...patch };
     setOfficeThemePresetByPage((current) => ({ ...current, [pageKey]: "custom" }));
-    setOfficeThemeByPage((current) => ({
-      ...current,
-      [pageKey]: {
-        ...(current[pageKey] || cloneOfficeTheme(OFFICE_THEME_PRESETS["industrial-night"].theme)),
-        ...patch,
-      },
-    }));
+    setOfficeThemeByPage((current) => ({ ...current, [pageKey]: nextTheme }));
+    queueOfficeUiPreferenceSave(pageKey, "custom", nextTheme);
+  }
+
+  function applyOfficeWindowPreset(pageKey: OfficePageKey, windowKey: string, presetId: Exclude<OfficeThemePresetId, "custom">): void {
+    const stateKey = officeWindowStateKey(pageKey, windowKey);
+    const theme = cloneOfficeTheme(OFFICE_THEME_PRESETS[presetId].theme);
+    setOfficeWindowPresetByKey((current) => ({ ...current, [stateKey]: presetId }));
+    setOfficeWindowThemeByKey((current) => ({ ...current, [stateKey]: theme }));
+    queueOfficeUiPreferenceSave(officeWindowDbKey(pageKey, windowKey), presetId, theme);
+  }
+
+  function updateOfficeWindowTheme(pageKey: OfficePageKey, windowKey: string, patch: Partial<OfficeThemeConfig>): void {
+    const stateKey = officeWindowStateKey(pageKey, windowKey);
+    const nextTheme = { ...getOfficeWindowTheme(pageKey, windowKey), ...patch };
+    setOfficeWindowPresetByKey((current) => ({ ...current, [stateKey]: "custom" }));
+    setOfficeWindowThemeByKey((current) => ({ ...current, [stateKey]: nextTheme }));
+    queueOfficeUiPreferenceSave(officeWindowDbKey(pageKey, windowKey), "custom", nextTheme);
+  }
+
+  async function restorePreviousOfficeUiPreference(pageKey: OfficePageKey, windowKey?: string): Promise<void> {
+    if (!supabase || !activeWorker) return;
+    const workerName = String(activeWorker["Teljes nev"] || "").trim();
+    if (!workerName) return;
+    const dbPageKey = windowKey ? officeWindowDbKey(pageKey, windowKey) : pageKey;
+    try {
+      const response = await supabase
+        .from("user_ui_preferences")
+        .select("theme_preset, theme_json, previous_theme_preset, previous_theme_json")
+        .eq("worker_name", workerName)
+        .eq("page_key", dbPageKey)
+        .limit(1);
+      if (response.error) throw response.error;
+      const row = (response.data || [])[0] as Record<string, unknown> | undefined;
+      if (!row || !row.previous_theme_json || Object.keys((row.previous_theme_json || {}) as Record<string, unknown>).length === 0) {
+        setMessage({ type:"info", text:"Ehhez a megjelenéshez még nincs korábbi mentett állapot." });
+        return;
+      }
+      const previousPresetRaw = String(row.previous_theme_preset || "custom") as OfficeThemePresetId;
+      const previousPreset: OfficeThemePresetId = previousPresetRaw === "custom" || Object.prototype.hasOwnProperty.call(OFFICE_THEME_PRESETS, previousPresetRaw) ? previousPresetRaw : "custom";
+      const previousTheme = { ...getOfficeTheme(pageKey), ...((row.previous_theme_json || {}) as Partial<OfficeThemeConfig>) };
+      const currentTheme = (row.theme_json || {}) as Record<string, unknown>;
+      const currentPreset = String(row.theme_preset || "custom");
+      const swapResponse = await supabase.from("user_ui_preferences").update({
+        theme_preset: previousPreset,
+        theme_json: previousTheme,
+        previous_theme_preset: currentPreset,
+        previous_theme_json: currentTheme,
+        updated_at: new Date().toISOString(),
+      }).eq("worker_name", workerName).eq("page_key", dbPageKey);
+      if (swapResponse.error) throw swapResponse.error;
+      if (windowKey) {
+        const stateKey = officeWindowStateKey(pageKey, windowKey);
+        setOfficeWindowPresetByKey((current) => ({ ...current, [stateKey]: previousPreset }));
+        setOfficeWindowThemeByKey((current) => ({ ...current, [stateKey]: previousTheme }));
+      } else {
+        setOfficeThemePresetByPage((current) => ({ ...current, [pageKey]: previousPreset }));
+        setOfficeThemeByPage((current) => ({ ...current, [pageKey]: previousTheme }));
+      }
+      setMessage({ type:"success", text:"Az előző megjelenési beállítás visszaállítva." });
+    } catch (error) {
+      setMessage({ type:"error", text:`Az előző megjelenés visszaállítása sikertelen: ${normalizeError(error)}` });
+    }
+  }
+
+  function applyCurrentOfficeStyleToWholePage(pageKey: OfficePageKey, sourceTheme: OfficeThemeConfig, sourcePreset: OfficeThemePresetId): void {
+    setOfficeThemeByPage((current) => ({ ...current, [pageKey]: cloneOfficeTheme(sourceTheme) }));
+    setOfficeThemePresetByPage((current) => ({ ...current, [pageKey]: sourcePreset }));
+    queueOfficeUiPreferenceSave(pageKey, sourcePreset, sourceTheme);
+    const windows = getOfficeWindowDefinitions(pageKey);
+    setOfficeWindowThemeByKey((current) => {
+      const next = { ...current };
+      windows.forEach((item) => { next[officeWindowStateKey(pageKey, item.id)] = cloneOfficeTheme(sourceTheme); });
+      return next;
+    });
+    setOfficeWindowPresetByKey((current) => {
+      const next = { ...current };
+      windows.forEach((item) => { next[officeWindowStateKey(pageKey, item.id)] = sourcePreset; });
+      return next;
+    });
+    windows.forEach((item) => queueOfficeUiPreferenceSave(officeWindowDbKey(pageKey, item.id), sourcePreset, sourceTheme));
+    setMessage({ type:"success", text:"Az aktuális stílus az egész oldalra és minden szerkeszthető ablakra alkalmazva." });
   }
 
   async function loadOfficeUiPreferences(): Promise<void> {
@@ -4965,57 +5214,40 @@ export default function Page() {
     const workerName = String(activeWorker["Teljes nev"] || "").trim();
     if (!workerName) return;
     try {
-      const response = await supabase
-        .from("user_ui_preferences")
-        .select("page_key, theme_preset, theme_json")
-        .eq("worker_name", workerName);
-      if (response.error) {
-        console.warn("A user_ui_preferences tábla még nem olvasható:", response.error);
-        return;
-      }
+      const response = await supabase.from("user_ui_preferences").select("page_key, theme_preset, theme_json").eq("worker_name", workerName);
+      if (response.error) { console.warn("A user_ui_preferences tábla még nem olvasható:", response.error); return; }
       const nextThemes = createDefaultOfficeThemeMap();
       const nextPresets = createDefaultOfficeThemePresetMap();
-      ((response.data || []) as Array<{ page_key?: string | null; theme_preset?: string | null; theme_json?: Record<string, unknown> | null }>).forEach((row) => {
-        const pageKey = String(row.page_key || "") as OfficePageKey;
-        if (!["dashboard", "production-plan", "production-monitor", "production-card", "reproduction-report", "label-printer", "report-delivery"].includes(pageKey)) return;
+      const nextWindowThemes: Record<string, OfficeThemeConfig> = {};
+      const nextWindowPresets: Record<string, OfficeThemePresetId> = {};
+      ((response.data || []) as Array<Record<string, unknown>>).forEach((row) => {
+        const pageKeyRaw = String(row.page_key || "");
         const presetRaw = String(row.theme_preset || "industrial-night") as OfficeThemePresetId;
-        const validPreset: OfficeThemePresetId = ["industrial-night", "graphite", "steel-blue", "light-office", "contrast-monitor", "custom"].includes(presetRaw)
-          ? presetRaw
-          : "industrial-night";
-        const fallback = validPreset === "custom"
-          ? OFFICE_THEME_PRESETS["industrial-night"].theme
-          : OFFICE_THEME_PRESETS[validPreset as Exclude<OfficeThemePresetId, "custom">].theme;
+        const validPreset: OfficeThemePresetId = presetRaw === "custom" || Object.prototype.hasOwnProperty.call(OFFICE_THEME_PRESETS, presetRaw) ? presetRaw : "industrial-night";
+        const baseTheme = validPreset === "custom" ? OFFICE_THEME_PRESETS["industrial-night"].theme : OFFICE_THEME_PRESETS[validPreset as Exclude<OfficeThemePresetId,"custom">].theme;
+        const loadedTheme = { ...cloneOfficeTheme(baseTheme), ...((row.theme_json || {}) as Partial<OfficeThemeConfig>) };
+        if (pageKeyRaw.startsWith(OFFICE_WINDOW_UI_PREFIX)) {
+          const stateKey = pageKeyRaw.slice(OFFICE_WINDOW_UI_PREFIX.length);
+          nextWindowThemes[stateKey] = loadedTheme;
+          nextWindowPresets[stateKey] = validPreset;
+          return;
+        }
+        const pageKey = pageKeyRaw as OfficePageKey;
+        if (!Object.prototype.hasOwnProperty.call(nextThemes, pageKey)) return;
+        nextThemes[pageKey] = loadedTheme;
         nextPresets[pageKey] = validPreset;
-        nextThemes[pageKey] = { ...fallback, ...((row.theme_json || {}) as Partial<OfficeThemeConfig>) };
       });
       setOfficeThemePresetByPage(nextPresets);
       setOfficeThemeByPage(nextThemes);
-    } catch (error) {
-      console.warn("UI beállítások betöltési hiba:", error);
-    }
+      setOfficeWindowThemeByKey(nextWindowThemes);
+      setOfficeWindowPresetByKey(nextWindowPresets);
+    } catch (error) { console.warn("UI beállítások betöltési hiba:", error); }
   }
 
   async function saveOfficeUiPreference(pageKey: OfficePageKey = managementSection): Promise<void> {
-    if (!supabase || !activeWorker || !isManagementDashboardWorker(activeWorker)) return;
-    const workerName = String(activeWorker["Teljes nev"] || "").trim();
-    if (!workerName) return;
     setOfficeThemeSaving(true);
-    try {
-      const response = await supabase.from("user_ui_preferences").upsert({
-        worker_name: workerName,
-        worker_id: activeWorker.id,
-        page_key: pageKey,
-        theme_preset: officeThemePresetByPage[pageKey],
-        theme_json: getOfficeTheme(pageKey),
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "worker_name,page_key" });
-      if (response.error) throw response.error;
-      setMessage({ type: "success", text: `A ${pageKey} megjelenési beállításai elmentve ${workerName} felhasználóhoz.` });
-    } catch (error) {
-      setMessage({ type: "error", text: `A megjelenési beállítás mentése sikertelen: ${normalizeError(error)}` });
-    } finally {
-      setOfficeThemeSaving(false);
-    }
+    try { await persistOfficeUiPreference(pageKey, officeThemePresetByPage[pageKey], getOfficeTheme(pageKey), true); }
+    finally { setOfficeThemeSaving(false); }
   }
 
   function addDashboardOrderFilter(rawValue = dashboardOrderInput): void {
@@ -5162,23 +5394,28 @@ export default function Page() {
     return reportDeliveryCardStyleByProfile[profileId] || cloneReportDeliveryCardStyle(DEFAULT_REPORT_DELIVERY_CARD_STYLE);
   }
 
+  function queueReportDeliveryProfileStyleSave(profileId: string, style: ReportDeliveryCardStyle, preset: ReportDeliveryCardPresetId): void {
+    const key = `report-profile-style:${profileId}`;
+    const currentTimer = officeUiAutoSaveTimersRef.current[key];
+    if (currentTimer) clearTimeout(currentTimer);
+    officeUiAutoSaveTimersRef.current[key] = setTimeout(() => {
+      delete officeUiAutoSaveTimersRef.current[key];
+      void saveReportDeliveryProfileStyle(profileId, style, preset, false).catch((error) => console.warn("Riportprofil stílus automatikus mentési hiba:", error));
+    }, 650);
+  }
+
   function applyReportDeliveryCardPreset(profileId: string, presetId: Exclude<ReportDeliveryCardPresetId, "custom">): void {
+    const style = cloneReportDeliveryCardStyle(REPORT_DELIVERY_CARD_PRESETS[presetId].style);
     setReportDeliveryCardPresetByProfile((current) => ({ ...current, [profileId]: presetId }));
-    setReportDeliveryCardStyleByProfile((current) => ({
-      ...current,
-      [profileId]: cloneReportDeliveryCardStyle(REPORT_DELIVERY_CARD_PRESETS[presetId].style),
-    }));
+    setReportDeliveryCardStyleByProfile((current) => ({ ...current, [profileId]: style }));
+    queueReportDeliveryProfileStyleSave(profileId, style, presetId);
   }
 
   function updateReportDeliveryCardStyle(profileId: string, patch: Partial<ReportDeliveryCardStyle>): void {
+    const nextStyle = { ...getReportDeliveryCardStyle(profileId), ...patch };
     setReportDeliveryCardPresetByProfile((current) => ({ ...current, [profileId]: "custom" }));
-    setReportDeliveryCardStyleByProfile((current) => ({
-      ...current,
-      [profileId]: {
-        ...(current[profileId] || cloneReportDeliveryCardStyle(DEFAULT_REPORT_DELIVERY_CARD_STYLE)),
-        ...patch,
-      },
-    }));
+    setReportDeliveryCardStyleByProfile((current) => ({ ...current, [profileId]: nextStyle }));
+    queueReportDeliveryProfileStyleSave(profileId, nextStyle, "custom");
   }
 
   async function loadReportDeliveryProfileStyles(profileIds: string[]): Promise<void> {
@@ -5226,22 +5463,41 @@ export default function Page() {
     }
   }
 
-  async function saveReportDeliveryProfileStyle(profileId: string, styleOverride?: ReportDeliveryCardStyle, presetOverride?: ReportDeliveryCardPresetId): Promise<void> {
+  async function saveReportDeliveryProfileStyle(profileId: string, styleOverride?: ReportDeliveryCardStyle, presetOverride?: ReportDeliveryCardPresetId, showMessage = true): Promise<void> {
     if (!supabase || !activeWorker || !profileId) return;
     const style = styleOverride || getReportDeliveryCardStyle(profileId);
     const preset = presetOverride || reportDeliveryCardPresetByProfile[profileId] || "industrial-night";
+    const pageKey = `${REPORT_DELIVERY_PROFILE_UI_PREFIX}${profileId}`;
+    const existingResponse = await supabase.from("user_ui_preferences").select("theme_preset, theme_json").eq("worker_name", activeWorker["Teljes nev"]).eq("page_key", pageKey).limit(1);
+    if (existingResponse.error) throw existingResponse.error;
+    const existing = (existingResponse.data || [])[0] as Record<string, unknown> | undefined;
     const response = await supabase.from("user_ui_preferences").upsert({
-      worker_name: activeWorker["Teljes nev"],
-      worker_id: activeWorker.id,
-      page_key: `${REPORT_DELIVERY_PROFILE_UI_PREFIX}${profileId}`,
-      theme_preset: preset,
-      theme_json: style,
-      layout_json: {},
-      visible_fields_json: {},
+      worker_name: activeWorker["Teljes nev"], worker_id: activeWorker.id, page_key: pageKey,
+      theme_preset: preset, theme_json: style, layout_json: {}, visible_fields_json: {},
+      ...(existing ? { previous_theme_preset: String(existing.theme_preset || "industrial-night"), previous_theme_json: existing.theme_json || {} } : {}),
       updated_at: new Date().toISOString(),
     }, { onConflict: "worker_name,page_key" });
     if (response.error) throw response.error;
-    setMessage({ type: "success", text: `A(z) ${profileId}. profil megjelenése elmentve a felhasználódhoz.` });
+    if (showMessage) setMessage({ type:"success", text:`A(z) ${profileId}. profil megjelenése elmentve a felhasználódhoz.` });
+  }
+
+  async function restorePreviousReportDeliveryProfileStyle(profileId: string): Promise<void> {
+    if (!supabase || !activeWorker || !profileId) return;
+    const pageKey = `${REPORT_DELIVERY_PROFILE_UI_PREFIX}${profileId}`;
+    const response = await supabase.from("user_ui_preferences").select("theme_preset, theme_json, previous_theme_preset, previous_theme_json").eq("worker_name", activeWorker["Teljes nev"]).eq("page_key", pageKey).limit(1);
+    if (response.error) throw response.error;
+    const row = (response.data || [])[0] as Record<string, unknown> | undefined;
+    if (!row || !row.previous_theme_json || Object.keys((row.previous_theme_json || {}) as Record<string, unknown>).length === 0) {
+      setMessage({ type:"info", text:"Ehhez a riportprofilhoz még nincs korábbi megjelenés." }); return;
+    }
+    const previousPresetRaw = String(row.previous_theme_preset || "custom") as ReportDeliveryCardPresetId;
+    const previousPreset: ReportDeliveryCardPresetId = previousPresetRaw === "custom" || Object.prototype.hasOwnProperty.call(REPORT_DELIVERY_CARD_PRESETS, previousPresetRaw) ? previousPresetRaw : "custom";
+    const previousStyle = { ...DEFAULT_REPORT_DELIVERY_CARD_STYLE, ...((row.previous_theme_json || {}) as Partial<ReportDeliveryCardStyle>) };
+    const swap = await supabase.from("user_ui_preferences").update({ theme_preset:previousPreset, theme_json:previousStyle, previous_theme_preset:String(row.theme_preset || "custom"), previous_theme_json:row.theme_json || {}, updated_at:new Date().toISOString() }).eq("worker_name", activeWorker["Teljes nev"]).eq("page_key", pageKey);
+    if (swap.error) throw swap.error;
+    setReportDeliveryCardPresetByProfile((current)=>({...current,[profileId]:previousPreset}));
+    setReportDeliveryCardStyleByProfile((current)=>({...current,[profileId]:previousStyle}));
+    setMessage({ type:"success", text:"A riportprofil előző megjelenése visszaállítva." });
   }
 
   async function loadReportDeliverySendLogs(profileId: string): Promise<void> {
@@ -6186,7 +6442,7 @@ export default function Page() {
     return (
       <div style={{ background: theme.pageBackground, border: `1px solid ${theme.borderColor}`, borderRadius: 18, padding: 18, color: theme.textColor }}>
         <ManagementNavigation />
-        {renderCarpenterPrinterSettings(true)}
+        <div>{renderCarpenterPrinterSettings(true)}</div>
       </div>
     );
   }
@@ -6291,7 +6547,7 @@ export default function Page() {
       ];
 
       return (
-        <div key={profile.id} style={card}>
+        <div key={profile.id} data-office-report-profile={profile.id} style={card}>
           <div style={{ background: style.headerBackground, borderRadius: Math.max(6, style.borderRadius - 5), padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", border: `${Math.max(1, style.borderWidth)}px solid ${style.borderColor}` }}>
             <div style={{ minWidth: 240 }}>
               <div style={{ color: style.mutedText, fontSize: Math.max(11, style.baseFontSize - 2), fontWeight: 900, letterSpacing: 0.8 }}>#{index + 1} RIPORTPROFIL</div>
@@ -6378,11 +6634,11 @@ export default function Page() {
                   <div style={{ fontWeight: 900, fontSize: Math.max(17, style.titleFontSize - 3), color: style.textColor }}>Megjelenés szerkesztése – #{index + 1}</div>
                   <div style={{ color: style.mutedText, marginTop: 3 }}>Ez a megjelenés csak a bejelentkezett irodai felhasználóhoz és ehhez a riportprofilhoz mentődik.</div>
                 </div>
-                <button type="button" onClick={() => void saveReportDeliveryProfileStyle(profile.id).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} style={primaryAction}>Megjelenés mentése</button>
+                <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}><span style={{ color:style.activeColor, fontWeight:900, alignSelf:"center" }}>● Automatikus mentés</span><button type="button" onClick={() => void restorePreviousReportDeliveryProfileStyle(profile.id).catch((error)=>setMessage({type:"error",text:normalizeError(error)}))} style={secondaryAction}>↶ Előző beállítás</button></div>
               </div>
 
               <div>
-                <strong>10 kész stílus</strong>
+                <strong>30 kész stílus · 5 alap · 15 neon · 10 matt</strong>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 9, marginTop: 9 }}>
                   {(Object.entries(REPORT_DELIVERY_CARD_PRESETS) as Array<[Exclude<ReportDeliveryCardPresetId, "custom">, { name: string; description: string; style: ReportDeliveryCardStyle }]>).map(([id, preset]) => (
                     <button key={id} type="button" onClick={() => applyReportDeliveryCardPreset(profile.id, id)} style={{ textAlign: "left", padding: 11, borderRadius: 10, cursor: "pointer", border: presetId === id ? `3px solid ${preset.style.primaryButtonBackground}` : `1px solid ${preset.style.borderColor}`, background: preset.style.cardBackground, color: preset.style.textColor, fontFamily: preset.style.fontFamily }}>
@@ -6457,7 +6713,7 @@ export default function Page() {
       <div style={{ background: theme.pageBackground, border: `1px solid ${theme.borderColor}`, borderRadius: 18, padding: 18, color: theme.textColor }}>
         <ManagementNavigation />
         <div style={{ display: "grid", gap: 14 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "end" }}>
+          <div data-office-window="report-delivery:header" style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "end", padding: 12 }}>
             <div>
               <div style={{ color: theme.accentColor, fontWeight: 900, fontSize: 13, letterSpacing: 0.8 }}>AUTOMATIKUS RIPORTKÖZPONT</div>
               <h2 style={{ margin: "4px 0", color: theme.textColor }}>Riport küldések</h2>
@@ -6470,7 +6726,7 @@ export default function Page() {
             </div>
           </div>
 
-          <div style={{ ...pagePanel, borderWidth: activeProfiles.length ? 2 : 1, borderColor: activeProfiles.length ? "#22c55e" : theme.borderColor }}>
+          <div data-office-window="report-delivery:active-profiles" style={{ ...pagePanel, borderWidth: activeProfiles.length ? 2 : 1, borderColor: activeProfiles.length ? "#22c55e" : theme.borderColor }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
               <div>
                 <div style={{ fontWeight: 900, fontSize: 18 }}>Aktív automatikus riportok</div>
@@ -6514,7 +6770,7 @@ export default function Page() {
 
           {reportDeliveryProfiles.map((profile, index) => renderReportDeliveryProfileCard(profile, index))}
 
-          <div style={{ ...pagePanel, fontSize: 12, color: theme.mutedText, lineHeight: 1.6 }}>
+          <div data-office-window="report-delivery:footer-info" style={{ ...pagePanel, fontSize: 12, color: theme.mutedText, lineHeight: 1.6 }}>
             Az automatikus ellenőrzés az irodai felület megnyitása alatt fut. A profilok aktív állapota, az utolsó küldési eredmény és a beállítások Supabase-ban maradnak meg. A profilkártyák megjelenése felhasználónként külön kerül mentésre.
           </div>
         </div>
@@ -6524,147 +6780,97 @@ export default function Page() {
 
   function ManagementNavigation(): React.JSX.Element {
     const items: Array<{ id: ManagementSection; label: string }> = [
-      { id: "dashboard", label: "Vezetői műszerfal" },
-      { id: "production-plan", label: "Termelés tervezése" },
-      { id: "production-monitor", label: "Termelési monitor" },
-      { id: "production-card", label: "Termelési kártya" },
-      { id: "reproduction-report", label: "Újragyártási sorok" },
-      { id: "label-printer", label: "Címkenyomtató" },
-      { id: "report-delivery", label: "Riport küldések" },
+      { id:"dashboard", label:"Vezetői műszerfal" }, { id:"production-plan", label:"Termelés tervezése" }, { id:"production-monitor", label:"Termelési monitor" },
+      { id:"production-card", label:"Termelési kártya" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"report-delivery", label:"Riport küldések" },
     ];
     const currentTheme = getOfficeTheme(managementSection);
-    const currentPreset = officeThemePresetByPage[managementSection];
+    const selectedWindowKey = officeThemeScope === "__page__" ? null : officeThemeScope;
+    const selectedTheme = selectedWindowKey ? getOfficeWindowTheme(managementSection, selectedWindowKey) : currentTheme;
+    const selectedPreset = selectedWindowKey ? getOfficeWindowPreset(managementSection, selectedWindowKey) : officeThemePresetByPage[managementSection];
+    const windowDefs = getOfficeWindowDefinitions(managementSection);
+    const colorFields: Array<[string, keyof OfficeThemeConfig]> = [
+      ["Oldal / ablak háttere", selectedWindowKey ? "panelBackground" : "pageBackground"], ["Panel háttere", "panelBackground"], ["Másodlagos panel", "panelAltBackground"],
+      ["Fejléc háttere", "headerBackground"], ["Szekció háttere", "sectionBackground"], ["Fő szöveg", "textColor"], ["Halvány szöveg", "mutedText"],
+      ["Szegély", "borderColor"], ["Kiemelő szín", "accentColor"], ["Input háttér", "inputBackground"], ["Input szöveg", "inputText"],
+      ["Elsődleges gomb", "primaryButtonBackground"], ["Másodlagos gomb", "secondaryButtonBackground"], ["Gombszöveg", "buttonText"], ["Aktív állapot", "activeColor"], ["Hiba állapot", "errorColor"],
+    ];
+    if (!selectedWindowKey) colorFields.push(["Menüsor háttere", "navBackground"], ["Aktív menüpont", "navActiveBackground"], ["Menüsor szövege", "navText"]);
+    const updateSelected = (patch: Partial<OfficeThemeConfig>) => selectedWindowKey ? updateOfficeWindowTheme(managementSection, selectedWindowKey, patch) : updateOfficeTheme(managementSection, patch);
+    const applyPreset = (presetId: Exclude<OfficeThemePresetId,"custom">) => selectedWindowKey ? applyOfficeWindowPreset(managementSection, selectedWindowKey, presetId) : applyOfficeThemePreset(managementSection, presetId);
 
     return (
-      <div style={{ position: "sticky", top: 0, zIndex: 1000, marginBottom: 18 }}>
-      <div
-        style={{
-          display: "flex",
-          gap: 8,
-          flexWrap: "wrap",
-          padding: 6,
-          borderRadius: 14,
-          background: currentTheme.navBackground,
-          border: `1px solid ${currentTheme.borderColor}`,
-          boxShadow: "0 10px 28px rgba(0,0,0,0.32)",
-          alignItems: "center",
-        }}
-      >
-        {items.map((item) => {
-          const active = managementSection === item.id;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => {
-                setManagementSection(item.id);
-                if (item.id === "dashboard") {
-                  void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
-                } else if (item.id === "production-plan") {
-                  void loadProductionPlans(productionPlanDate);
-                } else if (item.id === "production-monitor") {
-                  void loadProductionMonitor(productionMonitorDate);
-                } else if (item.id === "production-card") {
-                  const stations = getOrderedDashboardStations();
-                  const nextStation = productionCardAdminStation || stations[0] || "";
-                  if (nextStation && nextStation !== productionCardAdminStation) setProductionCardAdminStation(nextStation);
-                  if (nextStation) {
-                    void loadProductionCardSettingsForStation(nextStation);
-                    void loadProductionCardData(nextStation, productionCardDate);
-                  }
-                } else if (item.id === "reproduction-report") {
-                  void loadReproductionReport(
-                    reproductionReportFilterMode,
-                    reproductionReportDate,
-                    reproductionReportDateTo,
-                    reproductionReportSelectedStation
-                  );
-                } else if (item.id === "label-printer") {
-                  const stations = getOrderedDashboardStations();
-                  const preferred = stations.find((station) => normalizeLooseText(station) === normalizeLooseText("Asztalos")) || officeLabelPrinterStation || stations[0] || "Asztalos";
-                  setOfficeLabelPrinterStation(preferred);
-                  setCarpenterPrinterTab("printer");
-                  void loadCarpenterPrinterSettings(preferred);
-                } else if (item.id === "report-delivery") {
-                  void loadReportDeliveryProfiles();
-                }
-              }}
-              style={{
-                border: active ? `1px solid ${currentTheme.accentColor}` : "1px solid transparent",
-                background: active ? currentTheme.navActiveBackground : "transparent",
-                color: active ? currentTheme.textColor : currentTheme.navText,
-                borderRadius: 10,
-                padding: "10px 14px",
-                fontWeight: 800,
-                cursor: "pointer",
-              }}
-            >
-              {item.label}
-            </button>
-          );
-        })}
-        <button
-          type="button"
-          onClick={() => setOfficeThemeEditorOpen((value) => !value)}
-          style={{
-            marginLeft: "auto",
-            border: `1px solid ${currentTheme.borderColor}`,
-            background: officeThemeEditorOpen ? currentTheme.navActiveBackground : currentTheme.panelAltBackground,
-            color: currentTheme.textColor,
-            borderRadius: 10,
-            padding: "10px 14px",
-            fontWeight: 800,
-            cursor: "pointer",
-          }}
-        >
-          🎨 Megjelenés
-        </button>
-      </div>
-      {officeThemeEditorOpen && (
-        <div style={{ marginTop: 8, padding: 14, borderRadius: 14, background: currentTheme.panelBackground, border: `1px solid ${currentTheme.borderColor}`, boxShadow: "0 12px 30px rgba(0,0,0,0.28)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
-            <div>
-              <strong style={{ color: currentTheme.textColor }}>Oldal megjelenése</strong>
-              <div style={{ color: currentTheme.mutedText, fontSize: 12, marginTop: 3 }}>A beállítás oldalanként és a belépett irodai felhasználóhoz kötve mentődik.</div>
-            </div>
-            <button type="button" onClick={() => void saveOfficeUiPreference(managementSection)} disabled={officeThemeSaving} style={{ ...buttonPrimary, background: currentTheme.accentColor }}>
-              {officeThemeSaving ? "Mentés..." : "Megjelenés mentése"}
-            </button>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, marginBottom: 12 }}>
-            {(Object.entries(OFFICE_THEME_PRESETS) as Array<[Exclude<OfficeThemePresetId, "custom">, { name: string; description: string; theme: OfficeThemeConfig }]>).map(([presetId, preset]) => (
-              <button key={presetId} type="button" onClick={() => applyOfficeThemePreset(managementSection, presetId)} style={{ textAlign: "left", padding: 10, borderRadius: 10, border: currentPreset === presetId ? `2px solid ${preset.theme.accentColor}` : `1px solid ${preset.theme.borderColor}`, background: preset.theme.panelBackground, color: preset.theme.textColor, cursor: "pointer" }}>
-                <strong>{preset.name}</strong>
-                <div style={{ color: preset.theme.mutedText, fontSize: 11, marginTop: 3 }}>{preset.description}</div>
-              </button>
-            ))}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
-            {([
-              ["Oldal háttere", "pageBackground"],
-              ["Panel háttere", "panelBackground"],
-              ["Másodlagos panel", "panelAltBackground"],
-              ["Fő szöveg", "textColor"],
-              ["Halvány szöveg", "mutedText"],
-              ["Szegély", "borderColor"],
-              ["Kiemelő szín", "accentColor"],
-              ["Beviteli mező háttere", "inputBackground"],
-              ["Beviteli mező szövege", "inputText"],
-              ["Menüsor háttere", "navBackground"],
-              ["Aktív menüpont", "navActiveBackground"],
-              ["Menüsor szövege", "navText"],
-            ] as Array<[string, keyof OfficeThemeConfig]>).map(([label, key]) => (
-              <label key={key} style={{ display: "grid", gap: 5, color: currentTheme.textColor, fontSize: 12, fontWeight: 800 }}>
-                <span>{label}</span>
-                <span style={{ display: "grid", gridTemplateColumns: "42px 1fr", gap: 6 }}>
-                  <input type="color" value={currentTheme[key]} onChange={(event) => updateOfficeTheme(managementSection, { [key]: event.target.value } as Partial<OfficeThemeConfig>)} style={{ width: 42, height: 36, padding: 2, borderRadius: 7, border: `1px solid ${currentTheme.borderColor}` }} />
-                  <input value={currentTheme[key]} onChange={(event) => updateOfficeTheme(managementSection, { [key]: event.target.value } as Partial<OfficeThemeConfig>)} style={{ ...fieldStyle, background: currentTheme.inputBackground, color: currentTheme.inputText, borderColor: currentTheme.borderColor }} />
-                </span>
-              </label>
-            ))}
-          </div>
+      <div style={{ position:"sticky", top:0, zIndex:1000, marginBottom:18 }}>
+        <style>{buildOfficeWindowCss(managementSection)}</style>
+        <div data-office-window={`${managementSection}:navigation`} style={{ display:"flex", gap:8, flexWrap:"wrap", padding:6, borderRadius:currentTheme.borderRadius, background:currentTheme.navBackground, border:`${currentTheme.borderWidth}px solid ${currentTheme.borderColor}`, boxShadow:`0 10px ${currentTheme.shadowBlur}px rgba(0,0,0,${currentTheme.shadowOpacity})`, alignItems:"center", fontFamily:currentTheme.fontFamily }}>
+          {items.map((item) => {
+            const active = managementSection === item.id;
+            return <button key={item.id} type="button" onClick={() => {
+              setManagementSection(item.id); setOfficeThemeScope("__page__");
+              if (item.id === "dashboard") void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
+              else if (item.id === "production-plan") void loadProductionPlans(productionPlanDate);
+              else if (item.id === "production-monitor") void loadProductionMonitor(productionMonitorDate);
+              else if (item.id === "production-card") { const stations = getOrderedDashboardStations(); const nextStation = productionCardAdminStation || stations[0] || ""; if (nextStation && nextStation !== productionCardAdminStation) setProductionCardAdminStation(nextStation); if (nextStation) { void loadProductionCardSettingsForStation(nextStation); void loadProductionCardData(nextStation, productionCardDate); } }
+              else if (item.id === "reproduction-report") void loadReproductionReport(reproductionReportFilterMode, reproductionReportDate, reproductionReportDateTo, reproductionReportSelectedStation);
+              else if (item.id === "label-printer") { const stations = getOrderedDashboardStations(); const preferred = stations.find((station) => normalizeLooseText(station) === normalizeLooseText("Asztalos")) || officeLabelPrinterStation || stations[0] || "Asztalos"; setOfficeLabelPrinterStation(preferred); setCarpenterPrinterTab("printer"); void loadCarpenterPrinterSettings(preferred); }
+              else if (item.id === "report-delivery") void loadReportDeliveryProfiles();
+            }} style={{ border:active ? `1px solid ${currentTheme.accentColor}` : "1px solid transparent", background:active ? currentTheme.navActiveBackground : "transparent", color:active ? currentTheme.textColor : currentTheme.navText, borderRadius:Math.max(4,currentTheme.borderRadius-5), padding:"10px 14px", fontWeight:800, cursor:"pointer", fontFamily:currentTheme.fontFamily }}>{item.label}</button>;
+          })}
+          <button type="button" onClick={() => setOfficeThemeEditorOpen((value) => !value)} style={{ marginLeft:"auto", border:`1px solid ${currentTheme.borderColor}`, background:officeThemeEditorOpen ? currentTheme.navActiveBackground : currentTheme.panelAltBackground, color:currentTheme.textColor, borderRadius:Math.max(4,currentTheme.borderRadius-5), padding:"10px 14px", fontWeight:800, cursor:"pointer", fontFamily:currentTheme.fontFamily }}>🎨 Megjelenés</button>
         </div>
-      )}
+
+        {officeThemeEditorOpen && (
+          <div style={{ marginTop:8, padding:16, borderRadius:selectedTheme.borderRadius, background:selectedTheme.panelBackground, color:selectedTheme.textColor, border:`${selectedTheme.borderWidth}px solid ${selectedTheme.borderColor}`, boxShadow:`0 12px ${selectedTheme.shadowBlur}px rgba(0,0,0,${selectedTheme.shadowOpacity})`, fontFamily:selectedTheme.fontFamily }}>
+            <div style={{ display:"flex", justifyContent:"space-between", gap:12, flexWrap:"wrap", alignItems:"center", marginBottom:12 }}>
+              <div>
+                <strong style={{ fontSize:Math.max(18,selectedTheme.titleFontSize-2) }}>Teljes irodai megjelenésszerkesztő</strong>
+                <div style={{ color:selectedTheme.mutedText, fontSize:12, marginTop:4 }}>Minden menü és minden felsorolt ablak külön formázható. A módosítások automatikusan Supabase-ba mentődnek a belépett felhasználóhoz.</div>
+              </div>
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
+                <span style={{ color:officeUiAutoSaveState === "error" ? selectedTheme.errorColor : officeUiAutoSaveState === "saved" ? selectedTheme.activeColor : selectedTheme.mutedText, fontWeight:900, fontSize:12 }}>
+                  {officeUiAutoSaveState === "saving" ? "● Automatikus mentés..." : officeUiAutoSaveState === "saved" ? "● Automatikusan mentve" : officeUiAutoSaveState === "error" ? "● Mentési hiba" : "● Automatikus mentés aktív"}
+                </span>
+                <button type="button" onClick={() => void restorePreviousOfficeUiPreference(managementSection, selectedWindowKey || undefined)} style={{ ...buttonSecondary, background:selectedTheme.secondaryButtonBackground, color:selectedTheme.buttonText, borderColor:selectedTheme.borderColor }}>↶ Előző beállítás</button>
+              </div>
+            </div>
+
+            <div style={{ display:"grid", gridTemplateColumns:"minmax(240px, 360px) 1fr", gap:12, marginBottom:14 }}>
+              <label style={{ display:"grid", gap:6, fontWeight:900 }}>
+                Mit szeretnél szerkeszteni?
+                <select value={officeThemeScope} onChange={(event) => setOfficeThemeScope(event.target.value)} style={{ ...fieldStyle, background:selectedTheme.inputBackground, color:selectedTheme.inputText, borderColor:selectedTheme.borderColor, fontFamily:selectedTheme.fontFamily }}>
+                  <option value="__page__">TELJES OLDAL – {items.find((item) => item.id === managementSection)?.label || managementSection}</option>
+                  {windowDefs.map((item) => <option key={item.id} value={item.id}>Ablak – {item.label}</option>)}
+                </select>
+              </label>
+              <div style={{ display:"flex", gap:8, alignItems:"end", flexWrap:"wrap" }}>
+                <button type="button" onClick={() => applyCurrentOfficeStyleToWholePage(managementSection, selectedTheme, selectedPreset)} style={{ ...buttonPrimary, background:selectedTheme.primaryButtonBackground, color:selectedTheme.buttonText }}>Aktuális stílus alkalmazása az egész oldalra</button>
+                <div style={{ color:selectedTheme.mutedText, fontSize:12, paddingBottom:8 }}>Utána bármelyik ablak külön tovább módosítható.</div>
+              </div>
+            </div>
+
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
+              {([['base','5 ALAP'],['neon','15 NEON'],['matte','10 MATT']] as Array<[OfficeThemePresetGroup,string]>).map(([group,label]) => <button key={group} type="button" onClick={() => setOfficeThemePresetGroup(group)} style={{ ...buttonSecondary, background:officeThemePresetGroup===group ? selectedTheme.primaryButtonBackground : selectedTheme.secondaryButtonBackground, color:selectedTheme.buttonText, borderColor:selectedTheme.borderColor }}>{label}</button>)}
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:8, marginBottom:14, maxHeight:330, overflowY:"auto", paddingRight:4 }}>
+              {(Object.entries(OFFICE_THEME_PRESETS) as Array<[Exclude<OfficeThemePresetId,"custom">,OfficeThemePresetDefinition]>).filter(([,preset]) => preset.group === officeThemePresetGroup).map(([presetId,preset]) => (
+                <button key={presetId} type="button" onClick={() => applyPreset(presetId)} style={{ textAlign:"left", padding:11, borderRadius:preset.theme.borderRadius, border:selectedPreset===presetId ? `3px solid ${preset.theme.accentColor}` : `${preset.theme.borderWidth}px solid ${preset.theme.borderColor}`, background:preset.theme.panelBackground, color:preset.theme.textColor, cursor:"pointer", fontFamily:preset.theme.fontFamily, boxShadow:`0 5px ${Math.min(18,preset.theme.shadowBlur)}px rgba(0,0,0,${Math.min(.28,preset.theme.shadowOpacity)})` }}>
+                  <strong>{preset.name}</strong><div style={{ color:preset.theme.mutedText, fontSize:11, marginTop:4 }}>{preset.description}</div>
+                </button>
+              ))}
+            </div>
+
+            <div style={{ fontWeight:900, margin:"4px 0 8px" }}>Színek</div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(210px, 1fr))", gap:10, marginBottom:14 }}>
+              {colorFields.map(([label,key]) => <label key={`${label}-${String(key)}`} style={{ display:"grid", gap:5, color:selectedTheme.textColor, fontSize:12, fontWeight:800 }}><span>{label}</span><span style={{ display:"grid", gridTemplateColumns:"42px 1fr", gap:6 }}><input type="color" value={String(selectedTheme[key])} onChange={(event) => updateSelected({ [key]:event.target.value } as Partial<OfficeThemeConfig>)} style={{ width:42, height:36, padding:2, borderRadius:7, border:`1px solid ${selectedTheme.borderColor}` }} /><input value={String(selectedTheme[key])} onChange={(event) => updateSelected({ [key]:event.target.value } as Partial<OfficeThemeConfig>)} style={{ ...fieldStyle, background:selectedTheme.inputBackground, color:selectedTheme.inputText, borderColor:selectedTheme.borderColor }} /></span></label>)}
+            </div>
+
+            <div style={{ fontWeight:900, margin:"4px 0 8px" }}>Betű, méretek és forma</div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(190px, 1fr))", gap:10 }}>
+              <label style={{ display:"grid", gap:5, fontSize:12, fontWeight:800 }}>Betűtípus<select value={selectedTheme.fontFamily} onChange={(e)=>updateSelected({fontFamily:e.target.value})} style={{ ...fieldStyle, background:selectedTheme.inputBackground, color:selectedTheme.inputText, borderColor:selectedTheme.borderColor }}><option value="Segoe UI, Arial, sans-serif">Segoe UI</option><option value="Arial, sans-serif">Arial</option><option value="Verdana, Arial, sans-serif">Verdana</option><option value="Trebuchet MS, Arial, sans-serif">Trebuchet MS</option><option value="Tahoma, Arial, sans-serif">Tahoma</option><option value="Georgia, serif">Georgia</option><option value="Courier New, monospace">Courier New</option></select></label>
+              {([['Alap betűméret','baseFontSize',10,22],['Cím betűméret','titleFontSize',16,38],['Betűvastagság','fontWeight',400,900],['Keretvastagság','borderWidth',0,5],['Lekerekítés','borderRadius',0,30],['Mezőmagasság','fieldHeight',30,60],['Belső térköz','padding',4,32],['Elemköz','gap',2,28],['Árnyék mérete','shadowBlur',0,50]] as Array<[string,keyof OfficeThemeConfig,number,number]>).map(([label,key,min,max]) => <label key={String(key)} style={{ display:"grid", gap:5, fontSize:12, fontWeight:800 }}>{label}<input type="number" min={min} max={max} value={Number(selectedTheme[key])} onChange={(e)=>updateSelected({[key]:Number(e.target.value)} as Partial<OfficeThemeConfig>)} style={{ ...fieldStyle, background:selectedTheme.inputBackground, color:selectedTheme.inputText, borderColor:selectedTheme.borderColor }} /></label>)}
+              <label style={{ display:"grid", gap:5, fontSize:12, fontWeight:800 }}>Árnyék erősség (0–1)<input type="number" min={0} max={1} step={0.05} value={selectedTheme.shadowOpacity} onChange={(e)=>updateSelected({shadowOpacity:Math.max(0,Math.min(1,Number(e.target.value)))})} style={{ ...fieldStyle, background:selectedTheme.inputBackground, color:selectedTheme.inputText, borderColor:selectedTheme.borderColor }} /></label>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -6710,7 +6916,7 @@ export default function Page() {
       <div style={{ background: officeTheme.pageBackground, border: `1px solid ${officeTheme.borderColor}`, borderRadius: 18, padding: 20, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 0, color: officeTheme.textColor }}>
         <ManagementNavigation />
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
+        <div data-office-window="production-plan:header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18, padding: 14 }}>
           <div>
             <div style={{ fontSize: 13, color: officeTheme.accentColor, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Irodai modul</div>
             <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: officeTheme.textColor }}>Termelés tervezése</h2>
@@ -6722,7 +6928,7 @@ export default function Page() {
         </div>
 
         <div style={{ display: "grid", gap: 18 }}>
-          <section style={sectionCardStyle}>
+          <section data-office-window="production-plan:server-xlsx" style={{ ...sectionCardStyle }}>
             <div style={sectionHeaderStyle}>
               <div style={sectionNumberStyle}>1</div>
               <div>
@@ -6792,7 +6998,7 @@ export default function Page() {
               </div>
             </div>
           </section>
-          <section style={sectionCardStyle}>
+          <section data-office-window="production-plan:plan-basics" style={{ ...sectionCardStyle }}>
             <div style={sectionHeaderStyle}>
               <div style={sectionNumberStyle}>2</div>
               <div>
@@ -6832,7 +7038,7 @@ export default function Page() {
             </div>
           </section>
 
-          <section style={sectionCardStyle}>
+          <section data-office-window="production-plan:product-card" style={{ ...sectionCardStyle }}>
             <div style={sectionHeaderStyle}>
               <div style={sectionNumberStyle}>3</div>
               <div>
@@ -6986,7 +7192,7 @@ export default function Page() {
 
 
 
-          <section style={sectionCardStyle}>
+          <section data-office-window="production-plan:plan-preview" style={{ ...sectionCardStyle }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
               <div style={sectionHeaderStyle}>
                 <div style={sectionNumberStyle}>4</div>
@@ -8981,7 +9187,7 @@ export default function Page() {
         <div style={{ width: "100%", maxWidth: "none", margin: 0 }}>
           <ManagementNavigation />
 
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, flexWrap: "wrap", background: profileTheme.headerPanelBackground, border: `1px solid ${profileTheme.borderColor}`, borderRadius: profileTheme.panelRadius, padding: 16, marginBottom: 16 }}>
+          <div data-office-window="production-card:header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, flexWrap: "wrap", background: profileTheme.headerPanelBackground, border: `1px solid ${profileTheme.borderColor}`, borderRadius: profileTheme.panelRadius, padding: 16, marginBottom: 16 }}>
             <div>
               <div style={{ color: profileTheme.accentColor, fontWeight: 900, letterSpacing: 1, fontSize: 12 }}>TERMELÉSI KÁRTYA SZERKESZTŐ</div>
               <h2 style={{ margin: "5px 0 4px", color: profileTheme.headerPanelText, fontSize: 30 }}>Munkaállomási termelési kártyák</h2>
@@ -9002,7 +9208,7 @@ export default function Page() {
           </div>
 
           {productionCardEditMode && (
-            <div style={{ background: profileTheme.editorBackground, color: "#1f2937", border: `2px solid ${profileTheme.accentColor}`, borderRadius: profileTheme.panelRadius, padding: 16, marginBottom: 14 }}>
+            <div data-office-window="production-card:editor" style={{ background: profileTheme.editorBackground, color: "#1f2937", border: `2px solid ${profileTheme.accentColor}`, borderRadius: profileTheme.panelRadius, padding: 16, marginBottom: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
                 <div><strong style={{ fontSize: 20 }}>Profi termelésikártya-szerkesztő</strong><div style={{ color: "#64748b", fontSize: 12, marginTop: 3 }}>Az adott munkaállomás összes _terv mezője és minden rendszermező kihelyezhető, elrejthető és sorrendezhető. A kártyabeállítás az aktuális munkaállomáshoz mentődik.</div></div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -9114,7 +9320,7 @@ export default function Page() {
           )}
 
           {!productionCardAdminStation ? (
-            <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 16, padding: 30, textAlign: "center", color: "#cbd5e1" }}>Válassz ki egy munkaállomást a termelési kártya szerkesztéséhez.</div>
+            <div data-office-window="production-card:empty" style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 16, padding: 30, textAlign: "center", color: "#cbd5e1" }}>Válassz ki egy munkaállomást a termelési kártya szerkesztéséhez.</div>
           ) : renderProductionCardDisplay(productionCardProfile, productionCardData, { editable: productionCardEditMode })}
         </div>
       </div>
@@ -9295,6 +9501,7 @@ export default function Page() {
       const theme = runtime.theme;
       return (
         <section
+          data-office-window="production-monitor:tables"
           key={table.id}
           onClick={() => productionMonitorEditMode && switchProductionMonitorTable(table.id)}
           style={{
@@ -9486,6 +9693,7 @@ export default function Page() {
           {!standalone && <ManagementNavigation />}
 
           <div
+            data-office-window="production-monitor:header"
             style={{
               display: "flex",
               justifyContent: "space-between",
@@ -9590,6 +9798,7 @@ export default function Page() {
 
           {productionMonitorEditMode && (
             <div
+              data-office-window="production-monitor:editor"
               style={{
                 marginBottom: 14,
                 background: profileTheme.editorBackground,
@@ -9982,10 +10191,10 @@ export default function Page() {
     };
 
     return (
-      <div style={{ background: "#020617", border: "1px solid #334155", borderRadius: 18, padding: 18, boxShadow: "0 18px 45px rgba(0,0,0,0.28)", marginTop: 0 }}>
+      <div style={{ background: officeTheme.pageBackground, color: officeTheme.textColor, border: `1px solid ${officeTheme.borderColor}`, borderRadius: officeTheme.borderRadius + 4, padding: officeTheme.padding, boxShadow: `0 18px ${Math.max(18, officeTheme.shadowBlur)}px rgba(0,0,0,${officeTheme.shadowOpacity})`, marginTop: 0, fontFamily: officeTheme.fontFamily }}>
         <ManagementNavigation />
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
+        <div data-office-window="reproduction-report:header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 16, padding: officeTheme.padding }}>
           <div>
             <div style={{ color: "#38bdf8", fontWeight: 900, letterSpacing: 1.2, fontSize: 13 }}>ÚJRAGYÁRTÁSI MINŐSÉGJELENTÉS</div>
             <h2 style={{ margin: "6px 0 4px", color: officeTheme.textColor, fontSize: 30 }}>Újragyártási sorok</h2>
@@ -9999,7 +10208,7 @@ export default function Page() {
           <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
         </div>
 
-        <div style={{ ...cardStyle, display: "grid", gap: 12, marginBottom: 14 }}>
+        <div data-office-window="reproduction-report:filters" style={{ ...cardStyle, display: "grid", gap: 12, marginBottom: 14 }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, alignItems: "end" }}>
             <label style={{ display: "grid", gap: 6, color: officeTheme.mutedText, fontWeight: 800 }}>
               Időszak
@@ -10049,7 +10258,7 @@ export default function Page() {
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(150px, 1fr))", gap: 10, marginBottom: 14 }}>
+        <div data-office-window="reproduction-report:summary" style={{ display: "grid", gridTemplateColumns: "repeat(5, minmax(150px, 1fr))", gap: 10, marginBottom: 14, padding: officeTheme.padding }}>
           <div style={cardStyle}><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Aktuális újragyártások</div><div style={{ color: officeTheme.textColor, fontSize: 30, fontWeight: 900 }}>{currentTotal}</div><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>{range.currentLabel}</div></div>
           <div style={cardStyle}><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Előző időszak</div><div style={{ color: officeTheme.textColor, fontSize: 30, fontWeight: 900 }}>{previousTotal}</div><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>{range.previousLabel}</div></div>
           <div style={cardStyle}><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Előzőhöz viszonyítva</div><div style={{ color: ratioColor, fontSize: 30, fontWeight: 900 }}>{overallRatioPct === null ? (currentTotal > 0 ? "Új" : "–") : `${overallRatioPct}%`}</div><div style={{ color: overallChangePct !== null && overallChangePct <= 0 ? "#4ade80" : "#f87171", fontSize: 12 }}>{overallChangePct === null ? "Nincs összehasonlítható előzmény" : `${overallChangePct > 0 ? "+" : ""}${overallChangePct}% változás`}</div></div>
@@ -10057,7 +10266,7 @@ export default function Page() {
           <div style={cardStyle}><div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Állapot</div><div style={{ color: "#4ade80", fontSize: 21, fontWeight: 900 }}>{reproductionReportData.completedTotal} lezárt</div><div style={{ color: reproductionReportData.openTotal > 0 ? "#fbbf24" : "#64748b", fontSize: 13 }}>{reproductionReportData.openTotal} folyamatban</div></div>
         </div>
 
-        <section style={{ ...cardStyle, marginBottom: 14, borderColor: "#92400e", background: "linear-gradient(145deg, #1c1917 0%, #111827 100%)" }}>
+        <section data-office-window="reproduction-report:scrap" style={{ ...cardStyle, marginBottom: 14, borderColor: officeTheme.borderColor, background: officeTheme.panelBackground }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
             <div>
               <h3 style={{ margin: "0 0 4px", color: officeTheme.textColor, fontSize: 22 }}>Selejtpótlási statisztika</h3>
@@ -10074,7 +10283,7 @@ export default function Page() {
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: 14, marginBottom: 14 }}>
-            <div style={{ border: "1px solid #334155", borderRadius: 12, padding: 14, background: "#071022" }}>
+            <div data-office-window="reproduction-report:worker-stats" style={{ border: `1px solid ${officeTheme.borderColor}`, borderRadius: 12, padding: 14, background: officeTheme.panelAltBackground }}>
               <h4 style={{ margin: "0 0 4px", color: officeTheme.textColor, fontSize: 17 }}>Dolgozónként selejtpótlással töltött idő</h4>
               <div style={{ color: officeTheme.mutedText, fontSize: 12, marginBottom: 12 }}>Az idő annak a dolgozónak a statisztikájába kerül, aki END-del lezárta a pótlási munkaszakaszt.</div>
               {reproductionReportData.scrapWorkerRows.length === 0 ? (
@@ -10160,7 +10369,7 @@ export default function Page() {
         </section>
 
         <div style={{ display: "grid", gridTemplateColumns: "minmax(340px, 0.9fr) minmax(600px, 1.6fr)", gap: 14, alignItems: "start" }}>
-          <section style={cardStyle}>
+          <section data-office-window="reproduction-report:station-stats" style={cardStyle}>
             <h3 style={{ margin: "0 0 4px", color: officeTheme.textColor, fontSize: 20 }}>Munkaállomási rangsor</h3>
             <div style={{ color: officeTheme.mutedText, fontSize: 12, marginBottom: 14 }}>Minél alacsonyabb az előző időszakhoz viszonyított százalék, annál kedvezőbb a változás. Példa: 5 az előző 10-hez képest 50%.</div>
             <div style={{ display: "grid", gap: 12 }}>
@@ -10191,7 +10400,7 @@ export default function Page() {
             </div>
           </section>
 
-          <section style={{ ...cardStyle, minWidth: 0 }}>
+          <section data-office-window="reproduction-report:details" style={{ ...cardStyle, minWidth: 0 }}>
             <h3 style={{ margin: "0 0 4px", color: officeTheme.textColor, fontSize: 20 }}>Részletes újragyártási napló</h3>
             <div style={{ color: officeTheme.mutedText, fontSize: 12, marginBottom: 12 }}>Egy sor = azonos sorszám + azonos munkaállomás + azonos újragyártási sorszám.</div>
             <div style={{ overflow: "auto", maxHeight: 620, border: "1px solid #334155", borderRadius: 12 }}>
@@ -10329,7 +10538,7 @@ export default function Page() {
       >
         <ManagementNavigation />
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18 }}>
+        <div data-office-window="dashboard:header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap", marginBottom: 18, padding: 14 }}>
           <div>
             <div style={{ fontSize: 13, color: officeTheme.accentColor, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Management Dashboard</div>
             <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: officeTheme.textColor }}>Vezetői műszerfal</h2>
@@ -10435,7 +10644,7 @@ export default function Page() {
         </div>
 
         {dashboardOrderFilters.length > 0 && (
-          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", margin: "-6px 0 16px", padding: "10px 12px", borderRadius: 12, background: officeTheme.panelBackground, border: `1px solid ${officeTheme.borderColor}` }}>
+          <div data-office-window="dashboard:order-filter" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", margin: "-6px 0 16px", padding: "10px 12px", borderRadius: 12, background: officeTheme.panelBackground, border: `1px solid ${officeTheme.borderColor}` }}>
             <strong style={{ color: officeTheme.textColor, fontSize: 12 }}>Rendelésszám szűrés:</strong>
             {dashboardOrderFilters.map((filter) => (
               <button key={filter} type="button" onClick={() => removeDashboardOrderFilter(filter)} title="Szűrő eltávolítása" style={{ border: `1px solid ${officeTheme.accentColor}`, background: officeTheme.navActiveBackground, color: officeTheme.textColor, borderRadius: 999, padding: "6px 10px", fontWeight: 800, cursor: "pointer" }}>
@@ -10446,7 +10655,7 @@ export default function Page() {
           </div>
         )}
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 18 }}>
+        <div data-office-window="dashboard:kpis" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 18, padding: 12 }}>
           {dashboardCards.map((card) => (
             <div key={card.label} style={cardStyle}>
               <div style={{ color: officeTheme.mutedText, fontSize: 13 }}>{card.label}</div>
@@ -10457,7 +10666,7 @@ export default function Page() {
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(440px, 1fr))", gap: 16, marginBottom: 18 }}>
-          <div style={cardStyle}>
+          <div data-office-window="dashboard:worker-performance" style={cardStyle}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}>
               <div>
                 <h3 style={{ margin: 0, color: officeTheme.textColor }}>Dolgozói teljesítmény</h3>
@@ -10510,7 +10719,7 @@ export default function Page() {
             </div>
           </div>
 
-          <div style={cardStyle}>
+          <div data-office-window="dashboard:station-efficiency" style={cardStyle}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 12 }}>
               <div>
                 <h3 style={{ margin: 0, color: officeTheme.textColor }}>Terv szerinti hatékonyság munkaállomásonként</h3>
@@ -10563,7 +10772,7 @@ export default function Page() {
           </div>
         </div>
 
-        <div style={{ ...cardStyle, marginBottom: 18 }}>
+        <div data-office-window="dashboard:open-work" style={{ ...cardStyle, marginBottom: 18 }}>
           <h3 style={{ margin: "0 0 12px", color: officeTheme.textColor }}>Folyamatban lévő munkák</h3>
           <div style={{ overflowX: "auto", maxHeight: 340, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
@@ -10594,7 +10803,7 @@ export default function Page() {
           </div>
         </div>
 
-        <div style={cardStyle}>
+        <div data-office-window="dashboard:event-log" style={cardStyle}>
           <h3 style={{ margin: "0 0 12px", color: officeTheme.textColor }}>Eseménynapló</h3>
           <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1280 }}>
@@ -10966,6 +11175,13 @@ export default function Page() {
     if (!supabase || !activeWorker || !isManagementDashboardWorker(activeWorker)) return;
     void loadOfficeUiPreferences();
   }, [supabase, activeWorker?.id]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(officeUiAutoSaveTimersRef.current).forEach((timer) => clearTimeout(timer));
+      officeUiAutoSaveTimersRef.current = {};
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
@@ -21191,7 +21407,7 @@ body {
     const panelStyle: React.CSSProperties = { background: "#0f172a", border: "1px solid #334155", borderRadius: 14, padding: 16 };
     return (
       <div style={{ display: "grid", gap: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div data-office-window={officeMode ? "label-printer:header" : undefined} style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap", padding: officeMode ? 12 : 0 }}>
           <div>
             <div style={{ color: "#38bdf8", fontWeight: 900, fontSize: 13, letterSpacing: 0.8 }}>{officeMode ? "IRODA · PROFESSZIONÁLIS CÍMKERENDSZER" : "ASZTALOS SZABÁSZ · PROFESSZIONÁLIS CÍMKERENDSZER"}</div>
             <h2 style={{ margin: "4px 0", color: "#f8fafc" }}>Nyomtató és címkesablon beállításai</h2>
@@ -21201,7 +21417,7 @@ body {
         </div>
 
         {officeMode && (
-          <div style={{ ...panelStyle, display: "grid", gridTemplateColumns: "minmax(260px, 420px) 1fr", gap: 12, alignItems: "end" }}>
+          <div data-office-window={officeMode ? "label-printer:station" : undefined} style={{ ...panelStyle, display: "grid", gridTemplateColumns: "minmax(260px, 420px) 1fr", gap: 12, alignItems: "end" }}>
             <label style={{ display: "grid", gap: 7, color: "#cbd5e1", fontWeight: 800 }}>
               Munkaállomás
               <select
@@ -21230,7 +21446,7 @@ body {
         </div>
 
         {carpenterPrinterTab === "printer" ? (
-          <div style={{ ...panelStyle, display: "grid", gap: 16 }}>
+          <div data-office-window={officeMode ? "label-printer:printer" : undefined} style={{ ...panelStyle, display: "grid", gap: 16 }}>
             <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 1fr) auto", gap: 12, alignItems: "end" }}>
               <label style={{ display: "grid", gap: 7, color: "#cbd5e1", fontWeight: 800 }}>
                 Windowsban telepített címkenyomtató
@@ -21253,7 +21469,7 @@ body {
           </div>
         ) : (
           <div style={{ display: "grid", gap: 12 }}>
-            <div style={{ ...panelStyle, display: "grid", gap: 12 }}>
+            <div data-office-window={officeMode ? "label-printer:template" : undefined} style={{ ...panelStyle, display: "grid", gap: 12 }}>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                 <button type="button" onClick={() => switchCarpenterLabelTemplateType(isCuttingLabelTemplateType(type) ? type : "VAGAS_KULSO")} style={isCuttingLabelTemplateType(type) ? buttonPrimary : buttonSecondary}>Vágási címke</button>
                 <button type="button" onClick={() => switchCarpenterLabelTemplateType("UJRAGYARTAS")} style={type === "UJRAGYARTAS" ? buttonPrimary : buttonSecondary}>Újragyártási címke</button>
@@ -21294,7 +21510,7 @@ body {
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "280px minmax(560px, 1fr) 330px", gap: 12, alignItems: "start" }}>
-              <div style={{ ...panelStyle, display: "grid", gap: 12, position: "sticky", top: 82 }}>
+              <div data-office-window={officeMode ? "label-printer:tools" : undefined} style={{ ...panelStyle, display: "grid", gap: 12, position: "sticky", top: 82 }}>
                 <strong>Elemek és címkeméret</strong>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                   <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800 }}>Szélesség mm<input type="number" min={20} max={200} value={template.widthMm} onChange={(e) => updateCarpenterLabelTemplate(type, { widthMm: Math.max(20, Number(e.target.value) || 58) })} style={controlStyle} /></label>
@@ -21334,17 +21550,17 @@ body {
                 </div>
               </div>
 
-              <div style={{ background: "#cbd5e1", borderRadius: 14, padding: 18, minHeight: 520, display: "grid", placeItems: "center", overflow: "auto" }}>
+              <div data-office-window={officeMode ? "label-printer:canvas" : undefined} style={{ background: "#cbd5e1", borderRadius: 14, padding: 18, minHeight: 520, display: "grid", placeItems: "center", overflow: "auto" }}>
                 {renderLabelTemplatePreview(type, true)}
               </div>
 
-              <div style={{ ...panelStyle, display: "grid", gap: 10, position: "sticky", top: 82, maxHeight: "calc(100vh - 100px)", overflowY: "auto" }}>
+              <div data-office-window={officeMode ? "label-printer:properties" : undefined} style={{ ...panelStyle, display: "grid", gap: 10, position: "sticky", top: 82, maxHeight: "calc(100vh - 100px)", overflowY: "auto" }}>
                 <strong>Elem tulajdonságai</strong>
                 {renderCarpenterLabelElementProperties(type)}
               </div>
             </div>
 
-            <div style={{ ...panelStyle, display: "grid", gap: 10 }}>
+            <div data-office-window={officeMode ? "label-printer:preview" : undefined} style={{ ...panelStyle, display: "grid", gap: 10 }}>
               <strong>Nyomtatási előnézet</strong>
               <div style={{ color: "#94a3b8", fontSize: 12, lineHeight: 1.5 }}>{isCuttingLabelTemplateType(type) ? `Ez a ${type === "VAGAS_KULSO" ? "KÜLSŐ" : "BELSŐ"} lap önálló vágási címkéje. Egy rendelés START-jakor először a külső, közvetlenül utána a belső címke nyomtatódik.` : "Az újragyártási minta részletesen tartalmazza a hibát, lapadatokat, színt, marásmintát, méreteket, dátumot, megjegyzést és dolgozót."}</div>
               {renderLabelTemplatePreview(type, false)}
