@@ -1019,10 +1019,125 @@ type ReportDeliveryProfile = {
   active: boolean;
   lastSentMarker: string;
   lastSentAt: string;
+  lastAttemptAt: string;
+  lastSendStatus: "never" | "success" | "error";
   lastSendError: string;
   createdBy: string;
+  createdAt: string;
   updatedAt: string;
 };
+
+type ReportDeliverySendLog = {
+  id: string;
+  profileId: string;
+  profileName: string;
+  recipients: string[];
+  status: string;
+  isTest: boolean;
+  errorMessage: string;
+  attemptedAt: string;
+  completedAt: string;
+  createdBy: string;
+};
+
+type ReportDeliveryCardPresetId =
+  | "industrial-night"
+  | "graphite"
+  | "steel-blue"
+  | "light-office"
+  | "contrast-monitor"
+  | "neon-purple"
+  | "cyber-lime"
+  | "amber-black"
+  | "ice-turquoise"
+  | "magenta-electric"
+  | "custom";
+
+type ReportDeliveryCardStyle = {
+  cardBackground: string;
+  headerBackground: string;
+  sectionBackground: string;
+  textColor: string;
+  mutedText: string;
+  inputBackground: string;
+  inputText: string;
+  borderColor: string;
+  primaryButtonBackground: string;
+  secondaryButtonBackground: string;
+  buttonText: string;
+  activeColor: string;
+  errorColor: string;
+  fontFamily: string;
+  baseFontSize: number;
+  titleFontSize: number;
+  fontWeight: number;
+  borderWidth: number;
+  borderRadius: number;
+  fieldHeight: number;
+  padding: number;
+  gap: number;
+  shadowBlur: number;
+  shadowOpacity: number;
+};
+
+const REPORT_DELIVERY_CARD_PRESETS: Record<Exclude<ReportDeliveryCardPresetId, "custom">, { name: string; description: string; style: ReportDeliveryCardStyle }> = {
+  "industrial-night": {
+    name: "Ipari éjszaka",
+    description: "Sötét műhelyhangulat, kék kiemeléssel.",
+    style: { cardBackground: "#0b1220", headerBackground: "#111827", sectionBackground: "#0f172a", textColor: "#f8fafc", mutedText: "#94a3b8", inputBackground: "#07101f", inputText: "#f8fafc", borderColor: "#334155", primaryButtonBackground: "#2563eb", secondaryButtonBackground: "#111827", buttonText: "#ffffff", activeColor: "#22c55e", errorColor: "#ef4444", fontFamily: "Segoe UI, Arial, sans-serif", baseFontSize: 14, titleFontSize: 22, fontWeight: 700, borderWidth: 1, borderRadius: 16, fieldHeight: 40, padding: 16, gap: 12, shadowBlur: 16, shadowOpacity: 0.22 },
+  },
+  graphite: {
+    name: "Grafit",
+    description: "Semleges grafit, elegáns szürkékkel.",
+    style: { cardBackground: "#18181b", headerBackground: "#27272a", sectionBackground: "#202024", textColor: "#fafafa", mutedText: "#a1a1aa", inputBackground: "#111113", inputText: "#fafafa", borderColor: "#52525b", primaryButtonBackground: "#71717a", secondaryButtonBackground: "#27272a", buttonText: "#ffffff", activeColor: "#86efac", errorColor: "#fca5a5", fontFamily: "Arial, sans-serif", baseFontSize: 14, titleFontSize: 22, fontWeight: 700, borderWidth: 1, borderRadius: 12, fieldHeight: 40, padding: 16, gap: 12, shadowBlur: 12, shadowOpacity: 0.18 },
+  },
+  "steel-blue": {
+    name: "Acélkék",
+    description: "Hideg acélkék, ipari irodai megjelenés.",
+    style: { cardBackground: "#102033", headerBackground: "#17324d", sectionBackground: "#13283e", textColor: "#eff6ff", mutedText: "#a9c2d9", inputBackground: "#0b1a2a", inputText: "#eff6ff", borderColor: "#476985", primaryButtonBackground: "#0ea5e9", secondaryButtonBackground: "#17324d", buttonText: "#ffffff", activeColor: "#34d399", errorColor: "#fb7185", fontFamily: "Segoe UI, Arial, sans-serif", baseFontSize: 14, titleFontSize: 22, fontWeight: 700, borderWidth: 1, borderRadius: 14, fieldHeight: 40, padding: 16, gap: 12, shadowBlur: 14, shadowOpacity: 0.2 },
+  },
+  "light-office": {
+    name: "Világos iroda",
+    description: "Világos, tiszta, nyugodt vállalati stílus.",
+    style: { cardBackground: "#f8fafc", headerBackground: "#e2e8f0", sectionBackground: "#ffffff", textColor: "#0f172a", mutedText: "#64748b", inputBackground: "#ffffff", inputText: "#0f172a", borderColor: "#94a3b8", primaryButtonBackground: "#2563eb", secondaryButtonBackground: "#e2e8f0", buttonText: "#0f172a", activeColor: "#15803d", errorColor: "#b91c1c", fontFamily: "Segoe UI, Arial, sans-serif", baseFontSize: 14, titleFontSize: 22, fontWeight: 700, borderWidth: 1, borderRadius: 14, fieldHeight: 40, padding: 16, gap: 12, shadowBlur: 10, shadowOpacity: 0.12 },
+  },
+  "contrast-monitor": {
+    name: "Kontrasztos monitor",
+    description: "Fekete-fehér, nagy kontrasztú műhelynézet.",
+    style: { cardBackground: "#000000", headerBackground: "#ffffff", sectionBackground: "#0a0a0a", textColor: "#ffffff", mutedText: "#d4d4d4", inputBackground: "#000000", inputText: "#ffffff", borderColor: "#ffffff", primaryButtonBackground: "#ffffff", secondaryButtonBackground: "#171717", buttonText: "#000000", activeColor: "#22c55e", errorColor: "#ff4d4f", fontFamily: "Arial, sans-serif", baseFontSize: 15, titleFontSize: 24, fontWeight: 800, borderWidth: 2, borderRadius: 8, fieldHeight: 42, padding: 16, gap: 12, shadowBlur: 0, shadowOpacity: 0 },
+  },
+  "neon-purple": {
+    name: "Neon lila",
+    description: "Extrém lila-cián futurisztikus kombináció.",
+    style: { cardBackground: "#170b2f", headerBackground: "#3b0764", sectionBackground: "#241044", textColor: "#f5f3ff", mutedText: "#d8b4fe", inputBackground: "#120524", inputText: "#f5f3ff", borderColor: "#c026d3", primaryButtonBackground: "#a855f7", secondaryButtonBackground: "#312e81", buttonText: "#ffffff", activeColor: "#22d3ee", errorColor: "#fb7185", fontFamily: "Trebuchet MS, Arial, sans-serif", baseFontSize: 14, titleFontSize: 23, fontWeight: 800, borderWidth: 2, borderRadius: 20, fieldHeight: 42, padding: 18, gap: 13, shadowBlur: 24, shadowOpacity: 0.34 },
+  },
+  "cyber-lime": {
+    name: "Cyber lime",
+    description: "Fekete és élénk lime, nagyon erős kontraszttal.",
+    style: { cardBackground: "#071108", headerBackground: "#102b12", sectionBackground: "#0a1b0c", textColor: "#ecfccb", mutedText: "#a3e635", inputBackground: "#020a03", inputText: "#f7fee7", borderColor: "#84cc16", primaryButtonBackground: "#84cc16", secondaryButtonBackground: "#1a2e05", buttonText: "#102000", activeColor: "#bef264", errorColor: "#f87171", fontFamily: "Verdana, Arial, sans-serif", baseFontSize: 14, titleFontSize: 23, fontWeight: 800, borderWidth: 2, borderRadius: 10, fieldHeight: 42, padding: 16, gap: 12, shadowBlur: 22, shadowOpacity: 0.3 },
+  },
+  "amber-black": {
+    name: "Borostyán / fekete",
+    description: "Fekete alapon ipari borostyán kiemelések.",
+    style: { cardBackground: "#15100a", headerBackground: "#2b1b05", sectionBackground: "#1d1408", textColor: "#fff7ed", mutedText: "#fdba74", inputBackground: "#0d0905", inputText: "#fff7ed", borderColor: "#f59e0b", primaryButtonBackground: "#f59e0b", secondaryButtonBackground: "#3a2507", buttonText: "#1c1203", activeColor: "#facc15", errorColor: "#ef4444", fontFamily: "Tahoma, Arial, sans-serif", baseFontSize: 14, titleFontSize: 23, fontWeight: 800, borderWidth: 2, borderRadius: 12, fieldHeight: 42, padding: 16, gap: 12, shadowBlur: 18, shadowOpacity: 0.28 },
+  },
+  "ice-turquoise": {
+    name: "Jeges türkiz",
+    description: "Világos türkiz-fehér, modern technikai megjelenés.",
+    style: { cardBackground: "#ecfeff", headerBackground: "#cffafe", sectionBackground: "#ffffff", textColor: "#083344", mutedText: "#0e7490", inputBackground: "#ffffff", inputText: "#083344", borderColor: "#06b6d4", primaryButtonBackground: "#0891b2", secondaryButtonBackground: "#cffafe", buttonText: "#083344", activeColor: "#059669", errorColor: "#dc2626", fontFamily: "Segoe UI, Arial, sans-serif", baseFontSize: 14, titleFontSize: 22, fontWeight: 700, borderWidth: 1, borderRadius: 18, fieldHeight: 40, padding: 17, gap: 12, shadowBlur: 14, shadowOpacity: 0.13 },
+  },
+  "magenta-electric": {
+    name: "Elektromos magenta",
+    description: "Extrém magenta-kék, látványos vezetői nézet.",
+    style: { cardBackground: "#1f0726", headerBackground: "#4a044e", sectionBackground: "#2b0b35", textColor: "#fdf4ff", mutedText: "#f0abfc", inputBackground: "#17041d", inputText: "#ffffff", borderColor: "#f0abfc", primaryButtonBackground: "#db2777", secondaryButtonBackground: "#1d4ed8", buttonText: "#ffffff", activeColor: "#38bdf8", errorColor: "#fb7185", fontFamily: "Trebuchet MS, Arial, sans-serif", baseFontSize: 14, titleFontSize: 24, fontWeight: 900, borderWidth: 2, borderRadius: 22, fieldHeight: 44, padding: 18, gap: 14, shadowBlur: 28, shadowOpacity: 0.4 },
+  },
+};
+
+function cloneReportDeliveryCardStyle(style: ReportDeliveryCardStyle): ReportDeliveryCardStyle {
+  return { ...style };
+}
+
+const DEFAULT_REPORT_DELIVERY_CARD_STYLE = cloneReportDeliveryCardStyle(REPORT_DELIVERY_CARD_PRESETS["industrial-night"].style);
 
 const REPORT_DELIVERY_REPORT_TYPE_LABELS: Record<ReportDeliveryReportType, string> = {
   "worker-analysis": "Dolgozói időszaki elemzés",
@@ -1063,8 +1178,11 @@ const DEFAULT_REPORT_DELIVERY_PROFILE: ReportDeliveryProfile = {
   active: false,
   lastSentMarker: "",
   lastSentAt: "",
+  lastAttemptAt: "",
+  lastSendStatus: "never",
   lastSendError: "",
   createdBy: "",
+  createdAt: "",
   updatedAt: "",
 };
 
@@ -2491,6 +2609,8 @@ async function ensureProductionBatchStartMachineSaved(
 const REPORT_SETTINGS_STORAGE_KEY = "work-report-settings-v2";
 const REPORT_AUTO_SEND_MARKER_KEY = "work-report-last-auto-send-v1";
 const REPORT_DELIVERY_PROFILES_TABLE = "report_delivery_profiles";
+const REPORT_DELIVERY_SEND_LOGS_TABLE = "report_delivery_send_logs";
+const REPORT_DELIVERY_PROFILE_UI_PREFIX = "report-delivery-profile:";
 const DEFAULT_REPORT_SETTINGS: ReportSettings = {
   recipients: [],
   refreshMinutes: 15,
@@ -4612,10 +4732,17 @@ export default function Page() {
 
   const [officeLabelPrinterStation, setOfficeLabelPrinterStation] = useState("Asztalos");
   const [reportDeliveryProfiles, setReportDeliveryProfiles] = useState<ReportDeliveryProfile[]>([]);
-  const [reportDeliveryDraft, setReportDeliveryDraft] = useState<ReportDeliveryProfile>({ ...DEFAULT_REPORT_DELIVERY_PROFILE });
+  const [reportDeliveryDrafts, setReportDeliveryDrafts] = useState<Record<string, ReportDeliveryProfile>>({});
+  const [reportDeliveryRecipientTextById, setReportDeliveryRecipientTextById] = useState<Record<string, string>>({});
   const [reportDeliveryProfilesLoaded, setReportDeliveryProfilesLoaded] = useState(false);
   const [reportDeliveryLoading, setReportDeliveryLoading] = useState(false);
-  const [reportDeliverySaving, setReportDeliverySaving] = useState(false);
+  const [reportDeliveryBusyById, setReportDeliveryBusyById] = useState<Record<string, boolean>>({});
+  const [reportDeliverySendingById, setReportDeliverySendingById] = useState<Record<string, boolean>>({});
+  const [reportDeliveryCardStyleByProfile, setReportDeliveryCardStyleByProfile] = useState<Record<string, ReportDeliveryCardStyle>>({});
+  const [reportDeliveryCardPresetByProfile, setReportDeliveryCardPresetByProfile] = useState<Record<string, ReportDeliveryCardPresetId>>({});
+  const [reportDeliveryStyleEditorOpenById, setReportDeliveryStyleEditorOpenById] = useState<Record<string, boolean>>({});
+  const [reportDeliveryLogOpenById, setReportDeliveryLogOpenById] = useState<Record<string, boolean>>({});
+  const [reportDeliverySendLogsByProfile, setReportDeliverySendLogsByProfile] = useState<Record<string, ReportDeliverySendLog[]>>({});
   const reportDeliveryAutoCheckBusyRef = useRef(false);
 
   const [scanModalOpen, setScanModalOpen] = useState(false);
@@ -4930,6 +5057,14 @@ export default function Page() {
     const customBlocks = Array.isArray(blocksRaw)
       ? blocksRaw.map((value) => String(value) as ReportDeliveryBlock).filter((value) => REPORT_DELIVERY_BLOCK_OPTIONS.some((item) => item.id === value))
       : ["worker-analysis"] as ReportDeliveryBlock[];
+    const statusRaw = String(row.last_send_status || "").toLowerCase();
+    const inferredStatus: "never" | "success" | "error" = statusRaw === "success" || statusRaw === "error"
+      ? statusRaw
+      : String(row.last_send_error || "").trim()
+        ? "error"
+        : row.last_sent_at
+          ? "success"
+          : "never";
     return {
       ...DEFAULT_REPORT_DELIVERY_PROFILE,
       id: String(row.id || ""),
@@ -4955,9 +5090,28 @@ export default function Page() {
       active: Boolean(row.active),
       lastSentMarker: String(row.last_sent_marker || ""),
       lastSentAt: String(row.last_sent_at || ""),
+      lastAttemptAt: String(row.last_attempt_at || ""),
+      lastSendStatus: inferredStatus,
       lastSendError: String(row.last_send_error || ""),
       createdBy: String(row.created_by || ""),
+      createdAt: String(row.created_at || ""),
       updatedAt: String(row.updated_at || ""),
+    };
+  }
+
+  function mapReportDeliverySendLogRow(row: Record<string, unknown>): ReportDeliverySendLog {
+    const recipientsRaw = row.recipients;
+    return {
+      id: String(row.id || ""),
+      profileId: String(row.profile_id || ""),
+      profileName: String(row.profile_name || ""),
+      recipients: Array.isArray(recipientsRaw) ? recipientsRaw.map((value) => String(value || "")) : [],
+      status: String(row.status || ""),
+      isTest: Boolean(row.is_test),
+      errorMessage: String(row.error_message || ""),
+      attemptedAt: String(row.attempted_at || row.created_at || ""),
+      completedAt: String(row.completed_at || ""),
+      createdBy: String(row.created_by || ""),
     };
   }
 
@@ -4979,22 +5133,184 @@ export default function Page() {
     ));
   }
 
-  async function loadReportDeliveryProfiles(selectId = ""): Promise<void> {
+  function cloneReportDeliveryProfile(profile: ReportDeliveryProfile): ReportDeliveryProfile {
+    return { ...profile, recipients: [...profile.recipients], customBlocks: [...profile.customBlocks] };
+  }
+
+  function sortReportDeliveryProfiles(rows: ReportDeliveryProfile[]): ReportDeliveryProfile[] {
+    return [...rows].sort((a, b) => {
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : Number(a.id || 0);
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : Number(b.id || 0);
+      if (aTime !== bTime) return aTime - bTime;
+      return Number(a.id || 0) - Number(b.id || 0);
+    });
+  }
+
+  function setReportDeliveryProfileBusy(profileId: string, busy: boolean): void {
+    setReportDeliveryBusyById((current) => ({ ...current, [profileId]: busy }));
+  }
+
+  function updateReportDeliveryDraft(profileId: string, patch: Partial<ReportDeliveryProfile>): void {
+    setReportDeliveryDrafts((current) => {
+      const existing = current[profileId] || reportDeliveryProfiles.find((item) => item.id === profileId);
+      if (!existing) return current;
+      return { ...current, [profileId]: { ...existing, ...patch } };
+    });
+  }
+
+  function getReportDeliveryCardStyle(profileId: string): ReportDeliveryCardStyle {
+    return reportDeliveryCardStyleByProfile[profileId] || cloneReportDeliveryCardStyle(DEFAULT_REPORT_DELIVERY_CARD_STYLE);
+  }
+
+  function applyReportDeliveryCardPreset(profileId: string, presetId: Exclude<ReportDeliveryCardPresetId, "custom">): void {
+    setReportDeliveryCardPresetByProfile((current) => ({ ...current, [profileId]: presetId }));
+    setReportDeliveryCardStyleByProfile((current) => ({
+      ...current,
+      [profileId]: cloneReportDeliveryCardStyle(REPORT_DELIVERY_CARD_PRESETS[presetId].style),
+    }));
+  }
+
+  function updateReportDeliveryCardStyle(profileId: string, patch: Partial<ReportDeliveryCardStyle>): void {
+    setReportDeliveryCardPresetByProfile((current) => ({ ...current, [profileId]: "custom" }));
+    setReportDeliveryCardStyleByProfile((current) => ({
+      ...current,
+      [profileId]: {
+        ...(current[profileId] || cloneReportDeliveryCardStyle(DEFAULT_REPORT_DELIVERY_CARD_STYLE)),
+        ...patch,
+      },
+    }));
+  }
+
+  async function loadReportDeliveryProfileStyles(profileIds: string[]): Promise<void> {
+    if (!supabase || !activeWorker || !profileIds.length) return;
+    const pageKeys = profileIds.map((id) => `${REPORT_DELIVERY_PROFILE_UI_PREFIX}${id}`);
+    const defaultStyles: Record<string, ReportDeliveryCardStyle> = {};
+    const defaultPresets: Record<string, ReportDeliveryCardPresetId> = {};
+    profileIds.forEach((id) => {
+      defaultStyles[id] = cloneReportDeliveryCardStyle(DEFAULT_REPORT_DELIVERY_CARD_STYLE);
+      defaultPresets[id] = "industrial-night";
+    });
+    try {
+      const response = await supabase
+        .from("user_ui_preferences")
+        .select("page_key, theme_preset, theme_json")
+        .eq("worker_name", activeWorker["Teljes nev"])
+        .in("page_key", pageKeys);
+      if (response.error) {
+        console.warn("Riportprofil megjelenési beállítások nem olvashatók:", response.error);
+        setReportDeliveryCardStyleByProfile((current) => ({ ...defaultStyles, ...current }));
+        setReportDeliveryCardPresetByProfile((current) => ({ ...defaultPresets, ...current }));
+        return;
+      }
+      for (const row of (response.data || []) as Array<Record<string, unknown>>) {
+        const pageKey = String(row.page_key || "");
+        const profileId = pageKey.startsWith(REPORT_DELIVERY_PROFILE_UI_PREFIX) ? pageKey.slice(REPORT_DELIVERY_PROFILE_UI_PREFIX.length) : "";
+        if (!profileId) continue;
+        const presetRaw = String(row.theme_preset || "industrial-night") as ReportDeliveryCardPresetId;
+        const validPreset = Object.prototype.hasOwnProperty.call(REPORT_DELIVERY_CARD_PRESETS, presetRaw) || presetRaw === "custom"
+          ? presetRaw
+          : "industrial-night";
+        const baseStyle = validPreset === "custom"
+          ? DEFAULT_REPORT_DELIVERY_CARD_STYLE
+          : REPORT_DELIVERY_CARD_PRESETS[validPreset as Exclude<ReportDeliveryCardPresetId, "custom">].style;
+        defaultPresets[profileId] = validPreset;
+        defaultStyles[profileId] = {
+          ...cloneReportDeliveryCardStyle(baseStyle),
+          ...((row.theme_json || {}) as Partial<ReportDeliveryCardStyle>),
+        };
+      }
+      setReportDeliveryCardStyleByProfile((current) => ({ ...current, ...defaultStyles }));
+      setReportDeliveryCardPresetByProfile((current) => ({ ...current, ...defaultPresets }));
+    } catch (error) {
+      console.warn("Riportprofil megjelenési beállítás betöltési hiba:", error);
+    }
+  }
+
+  async function saveReportDeliveryProfileStyle(profileId: string, styleOverride?: ReportDeliveryCardStyle, presetOverride?: ReportDeliveryCardPresetId): Promise<void> {
+    if (!supabase || !activeWorker || !profileId) return;
+    const style = styleOverride || getReportDeliveryCardStyle(profileId);
+    const preset = presetOverride || reportDeliveryCardPresetByProfile[profileId] || "industrial-night";
+    const response = await supabase.from("user_ui_preferences").upsert({
+      worker_name: activeWorker["Teljes nev"],
+      worker_id: activeWorker.id,
+      page_key: `${REPORT_DELIVERY_PROFILE_UI_PREFIX}${profileId}`,
+      theme_preset: preset,
+      theme_json: style,
+      layout_json: {},
+      visible_fields_json: {},
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "worker_name,page_key" });
+    if (response.error) throw response.error;
+    setMessage({ type: "success", text: `A(z) ${profileId}. profil megjelenése elmentve a felhasználódhoz.` });
+  }
+
+  async function loadReportDeliverySendLogs(profileId: string): Promise<void> {
+    if (!supabase || !profileId) return;
+    try {
+      const response = await supabase
+        .from(REPORT_DELIVERY_SEND_LOGS_TABLE)
+        .select("*")
+        .eq("profile_id", Number(profileId))
+        .order("attempted_at", { ascending: false })
+        .limit(100);
+      if (response.error) throw response.error;
+      setReportDeliverySendLogsByProfile((current) => ({
+        ...current,
+        [profileId]: ((response.data || []) as Record<string, unknown>[]).map(mapReportDeliverySendLogRow),
+      }));
+    } catch (error) {
+      setMessage({ type: "error", text: `Küldési napló betöltési hiba: ${normalizeError(error)}. Ha most telepítetted a fejlesztést, futtasd le a mellékelt Supabase SQL-t.` });
+    }
+  }
+
+  async function writeReportDeliverySendLog(profile: ReportDeliveryProfile, params: { status: string; isTest: boolean; errorMessage?: string; attemptedAt: string; completedAt: string }): Promise<void> {
+    if (!supabase || !profile.id) return;
+    try {
+      const response = await supabase.from(REPORT_DELIVERY_SEND_LOGS_TABLE).insert({
+        profile_id: Number(profile.id),
+        profile_name: profile.name,
+        recipients: profile.recipients,
+        report_type: profile.reportType,
+        station_filter: profile.stationFilter,
+        worker_filter: profile.workerFilter,
+        order_filter: profile.orderFilter,
+        product_type_filter: profile.productTypeFilter,
+        frequency: profile.frequency,
+        period_scope: profile.periodScope,
+        status: params.status,
+        is_test: params.isTest,
+        error_message: params.errorMessage || "",
+        attempted_at: params.attemptedAt,
+        completed_at: params.completedAt,
+        created_by: activeWorker?.["Teljes nev"] || profile.createdBy || "",
+      });
+      if (response.error) console.warn("Riportküldési napló mentési hiba:", response.error);
+    } catch (error) {
+      console.warn("Riportküldési napló mentési hiba:", error);
+    }
+  }
+
+  async function loadReportDeliveryProfiles(): Promise<void> {
     if (!supabase) return;
     setReportDeliveryLoading(true);
     try {
       const response = await supabase
         .from(REPORT_DELIVERY_PROFILES_TABLE)
         .select("*")
-        .order("name", { ascending: true });
+        .order("created_at", { ascending: true });
       if (response.error) throw response.error;
-      const rows = ((response.data || []) as Record<string, unknown>[]).map(mapReportDeliveryProfileRow);
+      const rows = sortReportDeliveryProfiles(((response.data || []) as Record<string, unknown>[]).map(mapReportDeliveryProfileRow));
       setReportDeliveryProfiles(rows);
+      const drafts: Record<string, ReportDeliveryProfile> = {};
+      const recipientTexts: Record<string, string> = {};
+      rows.forEach((profile) => {
+        drafts[profile.id] = cloneReportDeliveryProfile(profile);
+        recipientTexts[profile.id] = profile.recipients.join("; ");
+      });
+      setReportDeliveryDrafts(drafts);
+      setReportDeliveryRecipientTextById(recipientTexts);
       setReportDeliveryProfilesLoaded(true);
-      const wantedId = selectId || reportDeliveryDraft.id;
-      const selected = rows.find((row) => row.id === wantedId) || rows[0];
-      if (selected) setReportDeliveryDraft({ ...selected, recipients: [...selected.recipients], customBlocks: [...selected.customBlocks] });
-      else if (!reportDeliveryDraft.id) setReportDeliveryDraft({ ...DEFAULT_REPORT_DELIVERY_PROFILE, customBlocks: [...DEFAULT_REPORT_DELIVERY_PROFILE.customBlocks] });
+      void loadReportDeliveryProfileStyles(rows.map((row) => row.id));
     } catch (error) {
       console.error("Riportküldési profilok betöltési hiba:", error);
       setMessage({ type: "error", text: `Riportprofilok betöltése sikertelen: ${normalizeError(error)}` });
@@ -5003,109 +5319,219 @@ export default function Page() {
     }
   }
 
-  function createNewReportDeliveryProfile(): void {
-    setReportDeliveryDraft({
-      ...DEFAULT_REPORT_DELIVERY_PROFILE,
-      id: "",
+  async function createNewReportDeliveryProfile(): Promise<void> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const nextNumber = reportDeliveryProfiles.length + 1;
+    const nowIso = new Date().toISOString();
+    const payload = {
       name: "Új automatikus riport",
       recipients: [],
-      customBlocks: ["worker-analysis"],
-      createdBy: activeWorker?.["Teljes nev"] || "",
-      updatedAt: "",
-    });
+      station_filter: "all",
+      worker_filter: "all",
+      order_filter: "",
+      product_type_filter: "all",
+      report_type: "worker-analysis",
+      custom_blocks: ["worker-analysis"],
+      frequency: "monthly",
+      period_scope: "previous",
+      send_time: "06:00",
+      weekly_day: 1,
+      monthly_day: 1,
+      active: false,
+      last_sent_marker: "",
+      last_sent_at: null,
+      last_send_error: "",
+      created_by: activeWorker?.["Teljes nev"] || "",
+      created_at: nowIso,
+      updated_at: nowIso,
+    };
+    setReportDeliveryLoading(true);
+    try {
+      const response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).insert(payload).select("*").single();
+      if (response.error) throw response.error;
+      const profile = mapReportDeliveryProfileRow((response.data || {}) as Record<string, unknown>);
+      setReportDeliveryProfiles((current) => sortReportDeliveryProfiles([...current, profile]));
+      setReportDeliveryDrafts((current) => ({ ...current, [profile.id]: cloneReportDeliveryProfile(profile) }));
+      setReportDeliveryRecipientTextById((current) => ({ ...current, [profile.id]: "" }));
+      setReportDeliveryCardStyleByProfile((current) => ({ ...current, [profile.id]: cloneReportDeliveryCardStyle(DEFAULT_REPORT_DELIVERY_CARD_STYLE) }));
+      setReportDeliveryCardPresetByProfile((current) => ({ ...current, [profile.id]: "industrial-night" }));
+      setMessage({ type: "success", text: `${nextNumber}. riportprofil létrehozva. Állítsd be, majd mentsd el.` });
+    } finally {
+      setReportDeliveryLoading(false);
+    }
   }
 
-  async function saveReportDeliveryProfile(asCopy = false): Promise<void> {
-    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
-    const recipients = reportDeliveryDraft.recipients.map((value) => value.trim()).filter(Boolean);
-    if (!reportDeliveryDraft.name.trim()) throw new Error("Adj nevet a riportprofilnak.");
-    if (!recipients.length) throw new Error("Adj meg legalább egy email címet.");
-    const payload = {
-      name: reportDeliveryDraft.name.trim(),
-      recipients,
-      station_filter: reportDeliveryDraft.stationFilter || "all",
-      worker_filter: reportDeliveryDraft.workerFilter || "all",
-      order_filter: reportDeliveryDraft.orderFilter.trim(),
-      product_type_filter: reportDeliveryDraft.productTypeFilter,
-      report_type: reportDeliveryDraft.reportType,
-      custom_blocks: reportDeliveryDraft.customBlocks,
-      frequency: reportDeliveryDraft.frequency,
-      period_scope: reportDeliveryDraft.periodScope,
-      send_time: reportDeliveryDraft.sendTime || "06:00",
-      weekly_day: Math.min(7, Math.max(1, Number(reportDeliveryDraft.weeklyDay || 1))),
-      monthly_day: Math.min(28, Math.max(1, Number(reportDeliveryDraft.monthlyDay || 1))),
-      active: reportDeliveryDraft.active,
-      created_by: reportDeliveryDraft.createdBy || activeWorker?.["Teljes nev"] || "",
+  function buildReportDeliveryProfilePayload(profile: ReportDeliveryProfile, activeOverride?: boolean): Record<string, unknown> {
+    return {
+      name: profile.name.trim() || "Automatikus riport",
+      recipients: profile.recipients.map((value) => value.trim()).filter(Boolean),
+      station_filter: profile.stationFilter || "all",
+      worker_filter: profile.workerFilter || "all",
+      order_filter: profile.orderFilter.trim(),
+      product_type_filter: profile.productTypeFilter,
+      report_type: profile.reportType,
+      custom_blocks: profile.customBlocks,
+      frequency: profile.frequency,
+      period_scope: profile.periodScope,
+      send_time: profile.sendTime || "06:00",
+      weekly_day: Math.min(7, Math.max(1, Number(profile.weeklyDay || 1))),
+      monthly_day: Math.min(28, Math.max(1, Number(profile.monthlyDay || 1))),
+      active: activeOverride === undefined ? profile.active : activeOverride,
+      created_by: profile.createdBy || activeWorker?.["Teljes nev"] || "",
       updated_at: new Date().toISOString(),
     };
-    setReportDeliverySaving(true);
+  }
+
+  async function saveReportDeliveryProfile(profile: ReportDeliveryProfile, asCopy = false): Promise<void> {
+    if (!supabase || !profile.id) throw new Error("Nincs menthető riportprofil.");
+    const recipients = profile.recipients.map((value) => value.trim()).filter(Boolean);
+    if (!profile.name.trim()) throw new Error("Adj nevet a riportprofilnak.");
+    if (!recipients.length) throw new Error("Adj meg legalább egy email címet.");
+    setReportDeliveryProfileBusy(profile.id, true);
     try {
-      let savedId = reportDeliveryDraft.id;
-      if (asCopy || !reportDeliveryDraft.id) {
-        const insertPayload = {
+      const payload = buildReportDeliveryProfilePayload({ ...profile, recipients });
+      if (asCopy) {
+        const copyPayload = {
           ...payload,
-          name: asCopy ? `${payload.name} – másolat` : payload.name,
-          active: asCopy ? false : payload.active,
+          name: `${profile.name.trim()} – másolat`,
+          active: false,
           last_sent_marker: "",
           last_sent_at: null,
           last_send_error: "",
+          created_at: new Date().toISOString(),
         };
-        const response = await supabase
-          .from(REPORT_DELIVERY_PROFILES_TABLE)
-          .insert(insertPayload)
-          .select("*")
-          .single();
+        const response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).insert(copyPayload).select("*").single();
         if (response.error) throw response.error;
-        savedId = String((response.data as Record<string, unknown>)?.id || "");
-      } else {
-        const response = await supabase
-          .from(REPORT_DELIVERY_PROFILES_TABLE)
-          .update(payload)
-          .eq("id", reportDeliveryDraft.id)
-          .select("*")
-          .single();
-        if (response.error) throw response.error;
+        const saved = mapReportDeliveryProfileRow((response.data || {}) as Record<string, unknown>);
+        setReportDeliveryProfiles((current) => sortReportDeliveryProfiles([...current, saved]));
+        setReportDeliveryDrafts((current) => ({ ...current, [saved.id]: cloneReportDeliveryProfile(saved) }));
+        setReportDeliveryRecipientTextById((current) => ({ ...current, [saved.id]: saved.recipients.join("; ") }));
+        const sourceStyle = getReportDeliveryCardStyle(profile.id);
+        const sourcePreset = reportDeliveryCardPresetByProfile[profile.id] || "industrial-night";
+        setReportDeliveryCardStyleByProfile((current) => ({ ...current, [saved.id]: cloneReportDeliveryCardStyle(sourceStyle) }));
+        setReportDeliveryCardPresetByProfile((current) => ({ ...current, [saved.id]: sourcePreset }));
+        try { await saveReportDeliveryProfileStyle(saved.id, sourceStyle, sourcePreset); } catch (error) { console.warn(error); }
+        setMessage({ type: "success", text: "A riportprofil másolata elkészült és új sorszámot kapott." });
+        return;
       }
-      await loadReportDeliveryProfiles(savedId);
-      setMessage({ type: "success", text: asCopy ? "A riportprofil másolata elmentve." : "A riportprofil elmentve Supabase-ba." });
-    } finally {
-      setReportDeliverySaving(false);
-    }
-  }
 
-  async function deleteReportDeliveryProfile(): Promise<void> {
-    if (!supabase || !reportDeliveryDraft.id) return;
-    if (typeof window !== "undefined" && !window.confirm(`Biztosan törlöd ezt a riportprofilt?\n\n${reportDeliveryDraft.name}`)) return;
-    setReportDeliverySaving(true);
-    try {
-      const response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).delete().eq("id", reportDeliveryDraft.id);
-      if (response.error) throw response.error;
-      setReportDeliveryDraft({ ...DEFAULT_REPORT_DELIVERY_PROFILE, customBlocks: ["worker-analysis"] });
-      await loadReportDeliveryProfiles();
-      setMessage({ type: "success", text: "A riportprofil törölve." });
-    } finally {
-      setReportDeliverySaving(false);
-    }
-  }
-
-  async function toggleReportDeliveryProfile(): Promise<void> {
-    if (!supabase || !reportDeliveryDraft.id) {
-      setReportDeliveryDraft((current) => ({ ...current, active: !current.active }));
-      return;
-    }
-    const nextActive = !reportDeliveryDraft.active;
-    setReportDeliverySaving(true);
-    try {
       const response = await supabase
         .from(REPORT_DELIVERY_PROFILES_TABLE)
-        .update({ active: nextActive, updated_at: new Date().toISOString() })
-        .eq("id", reportDeliveryDraft.id);
+        .update(payload)
+        .eq("id", profile.id)
+        .select("*")
+        .single();
       if (response.error) throw response.error;
-      setReportDeliveryDraft((current) => ({ ...current, active: nextActive }));
-      setReportDeliveryProfiles((current) => current.map((profile) => profile.id === reportDeliveryDraft.id ? { ...profile, active: nextActive } : profile));
+      const saved = mapReportDeliveryProfileRow((response.data || {}) as Record<string, unknown>);
+      setReportDeliveryProfiles((current) => sortReportDeliveryProfiles(current.map((item) => item.id === saved.id ? saved : item)));
+      setReportDeliveryDrafts((current) => ({ ...current, [saved.id]: cloneReportDeliveryProfile(saved) }));
+      setReportDeliveryRecipientTextById((current) => ({ ...current, [saved.id]: saved.recipients.join("; ") }));
+      setMessage({ type: "success", text: `${profile.name} elmentve Supabase-ba.` });
     } finally {
-      setReportDeliverySaving(false);
+      setReportDeliveryProfileBusy(profile.id, false);
     }
+  }
+
+  async function deleteReportDeliveryProfile(profile: ReportDeliveryProfile): Promise<void> {
+    if (!supabase || !profile.id) return;
+    if (typeof window !== "undefined" && !window.confirm(`Biztosan törlöd ezt a riportprofilt?\n\n${profile.name}`)) return;
+    setReportDeliveryProfileBusy(profile.id, true);
+    try {
+      const response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).delete().eq("id", profile.id);
+      if (response.error) throw response.error;
+      if (activeWorker) {
+        await supabase.from("user_ui_preferences").delete()
+          .eq("worker_name", activeWorker["Teljes nev"])
+          .eq("page_key", `${REPORT_DELIVERY_PROFILE_UI_PREFIX}${profile.id}`);
+      }
+      setReportDeliveryProfiles((current) => current.filter((item) => item.id !== profile.id));
+      setReportDeliveryDrafts((current) => { const next = { ...current }; delete next[profile.id]; return next; });
+      setReportDeliveryRecipientTextById((current) => { const next = { ...current }; delete next[profile.id]; return next; });
+      setReportDeliveryCardStyleByProfile((current) => { const next = { ...current }; delete next[profile.id]; return next; });
+      setReportDeliveryCardPresetByProfile((current) => { const next = { ...current }; delete next[profile.id]; return next; });
+      setReportDeliverySendLogsByProfile((current) => { const next = { ...current }; delete next[profile.id]; return next; });
+      setMessage({ type: "success", text: "A riportprofil törölve. A látható profilsorszámok automatikusan újraszámozódtak." });
+    } finally {
+      setReportDeliveryProfileBusy(profile.id, false);
+    }
+  }
+
+  async function toggleReportDeliveryProfile(profile: ReportDeliveryProfile): Promise<void> {
+    if (!supabase || !profile.id) return;
+    const nextActive = !profile.active;
+    if (nextActive && !profile.recipients.map((value) => value.trim()).filter(Boolean).length) {
+      throw new Error("Aktiválás előtt adj meg legalább egy címzett email címet.");
+    }
+    setReportDeliveryProfileBusy(profile.id, true);
+    try {
+      const payload = buildReportDeliveryProfilePayload(profile, nextActive);
+      const response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).update(payload).eq("id", profile.id).select("*").single();
+      if (response.error) throw response.error;
+      const saved = mapReportDeliveryProfileRow((response.data || {}) as Record<string, unknown>);
+      setReportDeliveryProfiles((current) => sortReportDeliveryProfiles(current.map((item) => item.id === saved.id ? saved : item)));
+      setReportDeliveryDrafts((current) => ({ ...current, [saved.id]: cloneReportDeliveryProfile(saved) }));
+      setReportDeliveryRecipientTextById((current) => ({ ...current, [saved.id]: saved.recipients.join("; ") }));
+      setMessage({ type: "success", text: nextActive ? `${profile.name} automatikus küldése AKTÍV.` : `${profile.name} automatikus küldése KIKAPCSOLVA.` });
+    } finally {
+      setReportDeliveryProfileBusy(profile.id, false);
+    }
+  }
+
+  async function stopAllReportDeliveryProfiles(): Promise<void> {
+    if (!supabase) return;
+    const activeCount = reportDeliveryProfiles.filter((profile) => profile.active).length;
+    if (!activeCount) {
+      setMessage({ type: "info", text: "Jelenleg nincs aktív automatikus riportprofil." });
+      return;
+    }
+    if (typeof window !== "undefined" && !window.confirm(`Biztosan leállítod az összes automatikus riportküldést?\n\nAktív profilok: ${activeCount}`)) return;
+    setReportDeliveryLoading(true);
+    try {
+      const response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).update({ active: false, updated_at: new Date().toISOString() }).eq("active", true);
+      if (response.error) throw response.error;
+      setReportDeliveryProfiles((current) => current.map((profile) => ({ ...profile, active: false })));
+      setReportDeliveryDrafts((current) => {
+        const next = { ...current };
+        Object.keys(next).forEach((id) => { next[id] = { ...next[id], active: false }; });
+        return next;
+      });
+      setMessage({ type: "success", text: "MINDEN automatikus riportküldés leállítva." });
+    } finally {
+      setReportDeliveryLoading(false);
+    }
+  }
+
+  function getNextReportDeliveryRun(profile: ReportDeliveryProfile, now = new Date()): Date | null {
+    if (!profile.active || !profile.sendTime) return null;
+    const [hourText, minuteText] = profile.sendTime.split(":");
+    const hour = Math.min(23, Math.max(0, Number(hourText || 0)));
+    const minute = Math.min(59, Math.max(0, Number(minuteText || 0)));
+    const candidate = new Date(now);
+    candidate.setSeconds(0, 0);
+    candidate.setHours(hour, minute, 0, 0);
+    if (profile.frequency === "daily") {
+      if (candidate.getTime() <= now.getTime()) candidate.setDate(candidate.getDate() + 1);
+      return candidate;
+    }
+    if (profile.frequency === "weekly") {
+      const jsTargetDay = profile.weeklyDay === 7 ? 0 : profile.weeklyDay;
+      let delta = (jsTargetDay - candidate.getDay() + 7) % 7;
+      if (delta === 0 && candidate.getTime() <= now.getTime()) delta = 7;
+      candidate.setDate(candidate.getDate() + delta);
+      return candidate;
+    }
+    candidate.setDate(Math.min(28, Math.max(1, profile.monthlyDay || 1)));
+    if (candidate.getTime() <= now.getTime()) {
+      candidate.setMonth(candidate.getMonth() + 1, Math.min(28, Math.max(1, profile.monthlyDay || 1)));
+    }
+    return candidate;
+  }
+
+  function getReportDeliveryProfileStatus(profile: ReportDeliveryProfile): { label: string; color: string } {
+    if (reportDeliverySendingById[profile.id]) return { label: "KÜLDÉS FOLYAMATBAN", color: "#38bdf8" };
+    if (!profile.active) return { label: "KIKAPCSOLVA", color: "#94a3b8" };
+    if (profile.lastSendError || profile.lastSendStatus === "error") return { label: "HIBÁS", color: "#ef4444" };
+    return { label: "AKTÍV", color: "#22c55e" };
   }
 
   function getReportDeliveryProfileRange(profile: ReportDeliveryProfile, now = new Date()): { startIso: string; endIso: string; label: string } {
@@ -5529,10 +5955,11 @@ export default function Page() {
 
   async function sendReportDeliveryProfile(profile: ReportDeliveryProfile, testOnly = false): Promise<void> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    if (!profile.id) throw new Error("A riportprofilt előbb létre kell hozni.");
     if (!profile.recipients.length) throw new Error("A riportprofilhoz nincs címzett.");
 
-    const pdfBlob = await createReportDeliveryProfilePdfBlob(profile);
-    const errors: string[] = [];
+    const attemptedAt = new Date().toISOString();
+    setReportDeliverySendingById((current) => ({ ...current, [profile.id]: true }));
 
     const readSendReportError = async (response: Response): Promise<string> => {
       const contentType = response.headers.get("content-type") || "";
@@ -5556,93 +5983,192 @@ export default function Page() {
       return clean.slice(0, 500) || response.statusText || `HTTP ${response.status}`;
     };
 
-    for (const recipient of profile.recipients) {
-      const formData = new FormData();
-      formData.append("to", recipient);
-      formData.append("subject", `${testOnly ? "[TESZT] " : ""}${profile.name}`);
-      formData.append("html", `<p><strong>${profile.name}</strong></p><p>A csatolt PDF automatikusan generált termelési riport.</p>`);
-      formData.append("text", `${profile.name}\nAutomatikusan generált termelési riport.`);
-      formData.append("requestedFormat", "pdf");
-      formData.append("pdf", pdfBlob, `${profile.name.replace(/[^a-zA-Z0-9_-]+/g, "_") || "riport"}.pdf`);
+    let errors: string[] = [];
+    try {
+      const pdfBlob = await createReportDeliveryProfilePdfBlob(profile);
 
-      try {
-        const response = await fetch("/api/send-report", { method: "POST", body: formData });
-        if (!response.ok) {
-          errors.push(`${recipient}: ${await readSendReportError(response)}`);
-        }
-      } catch (error) {
-        errors.push(`${recipient}: ${normalizeError(error)}`);
-      }
-    }
+      for (const recipient of profile.recipients) {
+        const formData = new FormData();
+        formData.append("to", recipient);
+        formData.append("subject", `${testOnly ? "[TESZT] " : ""}${profile.name}`);
+        formData.append("html", `<p><strong>${profile.name}</strong></p><p>A csatolt PDF automatikusan generált termelési riport.</p>`);
+        formData.append("text", `${profile.name}\nAutomatikusan generált termelési riport.`);
+        formData.append("requestedFormat", "pdf");
+        formData.append("pdf", pdfBlob, `${profile.name.replace(/[^a-zA-Z0-9_-]+/g, "_") || "riport"}.pdf`);
 
-    if (testOnly) {
-      if (errors.length) throw new Error(errors.join(" | "));
-      setMessage({ type: "success", text: `Tesztküldés sikeres: ${profile.recipients.join(", ")}` });
-      return;
-    }
-
-    const marker = getReportDeliveryScheduleMarker(profile);
-    const nowIso = new Date().toISOString();
-    const lastSendError = errors.join(" | ");
-
-    // A marker sikertelen próbálkozásnál is mentődik, hogy ugyanabban az ütemezési
-    // ciklusban ne próbálkozzon 30 másodpercenként újra. A last_sent_at viszont
-    // kizárólag ténylegesen sikeres küldésnél frissül.
-    const updatePayload = errors.length
-      ? {
-          last_sent_marker: marker,
-          last_send_error: lastSendError,
-          updated_at: nowIso,
-        }
-      : {
-          last_sent_marker: marker,
-          last_sent_at: nowIso,
-          last_send_error: "",
-          updated_at: nowIso,
-        };
-
-    if (profile.id) {
-      const response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).update(updatePayload).eq("id", profile.id);
-      if (response.error) console.error("Riportküldési státusz mentési hiba:", response.error);
-    }
-
-    setReportDeliveryProfiles((current) => current.map((item) =>
-      item.id === profile.id
-        ? {
-            ...item,
-            lastSentMarker: marker,
-            lastSentAt: errors.length ? item.lastSentAt : nowIso,
-            lastSendError,
+        try {
+          const response = await fetch("/api/send-report", { method: "POST", body: formData });
+          if (!response.ok) {
+            errors.push(`${recipient}: ${await readSendReportError(response)}`);
           }
-        : item
-    ));
+        } catch (error) {
+          errors.push(`${recipient}: ${normalizeError(error)}`);
+        }
+      }
 
-    if (reportDeliveryDraft.id === profile.id) {
-      setReportDeliveryDraft((current) => ({
-        ...current,
+      const completedAt = new Date().toISOString();
+      const status = errors.length ? "error" : "success";
+      await writeReportDeliverySendLog(profile, {
+        status: testOnly ? `test-${status}` : status,
+        isTest: testOnly,
+        errorMessage: errors.join(" | "),
+        attemptedAt,
+        completedAt,
+      });
+
+      if (testOnly) {
+        void loadReportDeliverySendLogs(profile.id);
+        if (errors.length) throw new Error(errors.join(" | "));
+        setMessage({ type: "success", text: `Tesztküldés sikeres: ${profile.recipients.join(", ")}` });
+        return;
+      }
+
+      const marker = getReportDeliveryScheduleMarker(profile);
+      const lastSendError = errors.join(" | ");
+      const updatePayload: Record<string, unknown> = errors.length
+        ? {
+            last_sent_marker: marker,
+            last_attempt_at: completedAt,
+            last_send_status: "error",
+            last_send_error: lastSendError,
+            updated_at: completedAt,
+          }
+        : {
+            last_sent_marker: marker,
+            last_sent_at: completedAt,
+            last_attempt_at: completedAt,
+            last_send_status: "success",
+            last_send_error: "",
+            updated_at: completedAt,
+          };
+
+      let response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).update(updatePayload).eq("id", profile.id);
+      if (response.error && /last_attempt_at|last_send_status/i.test(String(response.error.message || ""))) {
+        const legacyPayload = errors.length
+          ? { last_sent_marker: marker, last_send_error: lastSendError, updated_at: completedAt }
+          : { last_sent_marker: marker, last_sent_at: completedAt, last_send_error: "", updated_at: completedAt };
+        response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).update(legacyPayload).eq("id", profile.id);
+      }
+      if (response.error) console.error("Riportküldési státusz mentési hiba:", response.error);
+
+      const statusPatch: Partial<ReportDeliveryProfile> = {
         lastSentMarker: marker,
-        lastSentAt: errors.length ? current.lastSentAt : nowIso,
+        lastSentAt: errors.length ? profile.lastSentAt : completedAt,
+        lastAttemptAt: completedAt,
+        lastSendStatus: errors.length ? "error" : "success",
         lastSendError,
-      }));
-    }
+      };
+      setReportDeliveryProfiles((current) => current.map((item) => item.id === profile.id ? { ...item, ...statusPatch } : item));
+      setReportDeliveryDrafts((current) => current[profile.id]
+        ? { ...current, [profile.id]: { ...current[profile.id], ...statusPatch } }
+        : current
+      );
+      void loadReportDeliverySendLogs(profile.id);
 
-    if (errors.length) throw new Error(errors.join(" | "));
+      if (errors.length) throw new Error(errors.join(" | "));
+    } catch (error) {
+      if (!testOnly && !errors.length) {
+        const completedAt = new Date().toISOString();
+        const errorText = normalizeError(error);
+        errors = [errorText];
+        await writeReportDeliverySendLog(profile, {
+          status: "error",
+          isTest: false,
+          errorMessage: errorText,
+          attemptedAt,
+          completedAt,
+        });
+        const marker = getReportDeliveryScheduleMarker(profile);
+        const updatePayload = {
+          last_sent_marker: marker,
+          last_attempt_at: completedAt,
+          last_send_status: "error",
+          last_send_error: errorText,
+          updated_at: completedAt,
+        };
+        let response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).update(updatePayload).eq("id", profile.id);
+        if (response.error && /last_attempt_at|last_send_status/i.test(String(response.error.message || ""))) {
+          response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).update({
+            last_sent_marker: marker,
+            last_send_error: errorText,
+            updated_at: completedAt,
+          }).eq("id", profile.id);
+        }
+        if (response.error) console.error("Riportküldési hibaállapot mentési hiba:", response.error);
+        const statusPatch: Partial<ReportDeliveryProfile> = {
+          lastSentMarker: marker,
+          lastAttemptAt: completedAt,
+          lastSendStatus: "error",
+          lastSendError: errorText,
+        };
+        setReportDeliveryProfiles((current) => current.map((item) => item.id === profile.id ? { ...item, ...statusPatch } : item));
+        setReportDeliveryDrafts((current) => current[profile.id]
+          ? { ...current, [profile.id]: { ...current[profile.id], ...statusPatch } }
+          : current
+        );
+        void loadReportDeliverySendLogs(profile.id);
+      } else if (testOnly && !errors.length) {
+        const completedAt = new Date().toISOString();
+        const errorText = normalizeError(error);
+        await writeReportDeliverySendLog(profile, {
+          status: "test-error",
+          isTest: true,
+          errorMessage: errorText,
+          attemptedAt,
+          completedAt,
+        });
+        void loadReportDeliverySendLogs(profile.id);
+      }
+      throw error;
+    } finally {
+      setReportDeliverySendingById((current) => ({ ...current, [profile.id]: false }));
+    }
   }
 
   async function checkAutomaticReportDeliveryProfiles(): Promise<void> {
     if (!supabase || reportDeliveryAutoCheckBusyRef.current) return;
     reportDeliveryAutoCheckBusyRef.current = true;
     try {
-      let profiles = reportDeliveryProfiles;
-      if (!reportDeliveryProfilesLoaded) {
-        const response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).select("*").eq("active", true);
-        if (response.error) throw response.error;
-        profiles = ((response.data || []) as Record<string, unknown>[]).map(mapReportDeliveryProfileRow);
-        setReportDeliveryProfiles(profiles);
-        setReportDeliveryProfilesLoaded(true);
-      }
+      // Mindig közvetlenül a Supabase-ból kérjük le az AKTÍV profilokat.
+      // Így egy korábban "beragadt" profil sem tud elbújni egy kliensoldali régi állapot mögött.
+      const response = await supabase
+        .from(REPORT_DELIVERY_PROFILES_TABLE)
+        .select("*")
+        .eq("active", true)
+        .order("created_at", { ascending: true });
+      if (response.error) throw response.error;
+      const activeFromDb = sortReportDeliveryProfiles(((response.data || []) as Record<string, unknown>[]).map(mapReportDeliveryProfileRow));
+      const activeIds = new Set(activeFromDb.map((profile) => profile.id));
+
+      setReportDeliveryProfiles((current) => current.map((profile) => {
+        const fresh = activeFromDb.find((item) => item.id === profile.id);
+        if (fresh) return { ...profile, ...fresh, recipients: [...fresh.recipients], customBlocks: [...fresh.customBlocks] };
+        return profile.active ? { ...profile, active: false } : profile;
+      }));
+      setReportDeliveryDrafts((current) => {
+        const next = { ...current };
+        Object.keys(next).forEach((id) => {
+          if (!activeIds.has(id) && next[id].active) next[id] = { ...next[id], active: false };
+          const fresh = activeFromDb.find((item) => item.id === id);
+          if (fresh) {
+            // Az űrlapban megadott, még nem mentett szűréseket nem írjuk felül;
+            // csak a futási státuszt frissítjük a DB-ből.
+            next[id] = {
+              ...next[id],
+              active: true,
+              lastSentMarker: fresh.lastSentMarker,
+              lastSentAt: fresh.lastSentAt,
+              lastAttemptAt: fresh.lastAttemptAt,
+              lastSendStatus: fresh.lastSendStatus,
+              lastSendError: fresh.lastSendError,
+            };
+          }
+        });
+        return next;
+      });
+
       const now = new Date();
-      for (const profile of profiles) {
+      for (const profile of activeFromDb) {
         if (!isReportDeliveryProfileDue(profile, now)) continue;
         try {
           await sendReportDeliveryProfile(profile, false);
@@ -5667,74 +6193,146 @@ export default function Page() {
 
   function ReportDeliveryAdmin(): React.JSX.Element {
     const theme = getOfficeTheme("report-delivery");
-    const control: React.CSSProperties = {
-      ...fieldStyle,
-      background: theme.inputBackground,
-      color: theme.inputText,
-      borderColor: theme.borderColor,
-    };
-    const panel: React.CSSProperties = {
+    const stationOptions = Array.from(new Set(getOrderedDashboardStations()));
+    const workerOptions = Array.from(new Set<string>(workers.map((worker) => String(worker["Teljes nev"] || "")).filter(Boolean))).sort((a,b) => a.localeCompare(b, "hu"));
+    const activeProfiles = reportDeliveryProfiles.filter((profile) => profile.active);
+
+    const pagePanel: React.CSSProperties = {
       background: theme.panelBackground,
       border: `1px solid ${theme.borderColor}`,
       borderRadius: 14,
       padding: 16,
     };
-    const stationOptions = Array.from(new Set(getOrderedDashboardStations()));
-    const workerOptions = Array.from(new Set(workers.map((worker) => worker["Teljes nev"]).filter(Boolean))).sort((a,b) => a.localeCompare(b, "hu"));
-    return (
-      <div style={{ background: theme.pageBackground, border: `1px solid ${theme.borderColor}`, borderRadius: 18, padding: 18, color: theme.textColor }}>
-        <ManagementNavigation />
-        <div style={{ display: "grid", gap: 14 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "end" }}>
-            <div>
-              <div style={{ color: theme.accentColor, fontWeight: 900, fontSize: 13, letterSpacing: 0.8 }}>AUTOMATIKUS RIPORTKÖZPONT</div>
-              <h2 style={{ margin: "4px 0", color: theme.textColor }}>Riport küldések</h2>
-              <div style={{ color: theme.mutedText, fontSize: 13 }}>Minden profil külön Supabase-beállítás. A mentett szűrés, PDF-típus és ütemezés később változatlanul visszatöltődik.</div>
+
+    function renderReportDeliveryProfileCard(profile: ReportDeliveryProfile, index: number): React.JSX.Element {
+      const draft = reportDeliveryDrafts[profile.id] || profile;
+      const style = getReportDeliveryCardStyle(profile.id);
+      const presetId = reportDeliveryCardPresetByProfile[profile.id] || "industrial-night";
+      const status = getReportDeliveryProfileStatus(profile);
+      const nextRun = getNextReportDeliveryRun(profile);
+      const busy = Boolean(reportDeliveryBusyById[profile.id] || reportDeliverySendingById[profile.id]);
+      const editorOpen = Boolean(reportDeliveryStyleEditorOpenById[profile.id]);
+      const logOpen = Boolean(reportDeliveryLogOpenById[profile.id]);
+      const logs = reportDeliverySendLogsByProfile[profile.id] || [];
+
+      const card: React.CSSProperties = {
+        background: style.cardBackground,
+        color: style.textColor,
+        border: `${style.borderWidth}px solid ${style.borderColor}`,
+        borderRadius: style.borderRadius,
+        padding: style.padding,
+        fontFamily: style.fontFamily,
+        fontSize: style.baseFontSize,
+        fontWeight: style.fontWeight,
+        boxShadow: style.shadowBlur > 0 ? `0 10px ${style.shadowBlur}px rgba(0,0,0,${style.shadowOpacity})` : "none",
+        display: "grid",
+        gap: style.gap,
+        overflow: "hidden",
+      };
+      const section: React.CSSProperties = {
+        background: style.sectionBackground,
+        border: `${Math.max(1, style.borderWidth)}px solid ${style.borderColor}`,
+        borderRadius: Math.max(6, style.borderRadius - 4),
+        padding: Math.max(10, style.padding - 3),
+        display: "grid",
+        gap: style.gap,
+      };
+      const control: React.CSSProperties = {
+        ...fieldStyle,
+        minHeight: style.fieldHeight,
+        height: style.fieldHeight,
+        background: style.inputBackground,
+        color: style.inputText,
+        borderColor: style.borderColor,
+        borderWidth: style.borderWidth,
+        borderStyle: "solid",
+        borderRadius: Math.max(5, style.borderRadius - 7),
+        fontFamily: style.fontFamily,
+        fontSize: style.baseFontSize,
+        fontWeight: style.fontWeight,
+      };
+      const textareaControl: React.CSSProperties = {
+        ...control,
+        minHeight: Math.max(76, style.fieldHeight * 2),
+        height: "auto",
+        resize: "vertical",
+      };
+      const primaryAction: React.CSSProperties = {
+        ...buttonPrimary,
+        background: style.primaryButtonBackground,
+        color: style.buttonText,
+        borderColor: style.borderColor,
+        fontFamily: style.fontFamily,
+        fontWeight: 800,
+      };
+      const secondaryAction: React.CSSProperties = {
+        ...buttonSecondary,
+        background: style.secondaryButtonBackground,
+        color: style.buttonText,
+        borderColor: style.borderColor,
+        fontFamily: style.fontFamily,
+        fontWeight: 800,
+      };
+
+      const colorFields: Array<[string, keyof ReportDeliveryCardStyle]> = [
+        ["Teljes profil háttér", "cardBackground"],
+        ["Fejléc háttér", "headerBackground"],
+        ["Belső ablakok háttér", "sectionBackground"],
+        ["Szövegszín", "textColor"],
+        ["Másodlagos szöveg", "mutedText"],
+        ["Mezők háttere", "inputBackground"],
+        ["Mezők szövege", "inputText"],
+        ["Keretszín", "borderColor"],
+        ["Elsődleges gomb", "primaryButtonBackground"],
+        ["Másodlagos gomb", "secondaryButtonBackground"],
+        ["Gombszöveg", "buttonText"],
+        ["Aktív státusz", "activeColor"],
+        ["Hiba státusz", "errorColor"],
+      ];
+
+      return (
+        <div key={profile.id} style={card}>
+          <div style={{ background: style.headerBackground, borderRadius: Math.max(6, style.borderRadius - 5), padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", border: `${Math.max(1, style.borderWidth)}px solid ${style.borderColor}` }}>
+            <div style={{ minWidth: 240 }}>
+              <div style={{ color: style.mutedText, fontSize: Math.max(11, style.baseFontSize - 2), fontWeight: 900, letterSpacing: 0.8 }}>#{index + 1} RIPORTPROFIL</div>
+              <div style={{ fontSize: style.titleFontSize, fontWeight: 900, lineHeight: 1.15, marginTop: 3 }}>{draft.name || `Riportprofil ${index + 1}`}</div>
+              <div style={{ color: style.mutedText, marginTop: 5, fontSize: Math.max(11, style.baseFontSize - 1) }}>
+                ID: {profile.id} • {REPORT_DELIVERY_REPORT_TYPE_LABELS[draft.reportType]} • {draft.stationFilter === "all" ? "Összes munkaállomás" : draft.stationFilter}
+              </div>
             </div>
-            <button type="button" onClick={createNewReportDeliveryProfile} style={buttonPrimary}>+ Új riportprofil</button>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <span style={{ padding: "7px 11px", borderRadius: 999, border: `1px solid ${status.color}`, color: status.label === "HIBÁS" ? style.errorColor : status.label === "AKTÍV" ? style.activeColor : status.color, fontWeight: 900, background: style.sectionBackground }}>
+                {status.label}
+              </span>
+              <button type="button" onClick={() => setReportDeliveryStyleEditorOpenById((current) => ({ ...current, [profile.id]: !current[profile.id] }))} style={secondaryAction}>🎨 Megjelenés</button>
+              <button type="button" onClick={() => {
+                const nextOpen = !reportDeliveryLogOpenById[profile.id];
+                setReportDeliveryLogOpenById((current) => ({ ...current, [profile.id]: nextOpen }));
+                if (nextOpen) void loadReportDeliverySendLogs(profile.id);
+              }} style={secondaryAction}>Küldési napló</button>
+            </div>
           </div>
 
-          <div style={{ ...panel, display: "grid", gridTemplateColumns: "minmax(260px, 420px) 1fr", gap: 12, alignItems: "end" }}>
-            <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>
-              Mentett profil
-              <select
-                value={reportDeliveryDraft.id}
-                onChange={(event) => {
-                  const selected = reportDeliveryProfiles.find((profile) => profile.id === event.target.value);
-                  if (selected) setReportDeliveryDraft({ ...selected, recipients: [...selected.recipients], customBlocks: [...selected.customBlocks] });
-                }}
-                style={control}
-              >
-                <option value="">-- új / még nincs mentve --</option>
-                {reportDeliveryProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.active ? "● " : "○ "}{profile.name}</option>)}
-              </select>
-            </label>
-            <div style={{ color: reportDeliveryDraft.active ? "#86efac" : theme.mutedText, fontWeight: 900 }}>
-              {reportDeliveryDraft.active ? "AKTÍV AUTOMATIKUS KÜLDÉS" : "INAKTÍV"}
-            </div>
-          </div>
-
-          <div style={{ ...panel, display: "grid", gap: 12 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Profil neve<input value={reportDeliveryDraft.name} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, name: e.target.value }))} style={control} /></label>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Címzettek (email, vessző/pontosvessző)<textarea key={`recipients-${reportDeliveryDraft.id || "new"}-${reportDeliveryDraft.updatedAt}`} defaultValue={reportDeliveryDraft.recipients.join("; ")} onBlur={(e) => setReportDeliveryDraft((c) => ({ ...c, recipients: parseReportDeliveryRecipients(e.target.value) }))} style={{ ...control, minHeight: 76, resize: "vertical" }} /></label>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Riport típusa<select value={reportDeliveryDraft.reportType} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, reportType: e.target.value as ReportDeliveryReportType }))} style={control}>{Object.entries(REPORT_DELIVERY_REPORT_TYPE_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}</select></label>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Munkaállomás<select value={reportDeliveryDraft.stationFilter} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, stationFilter: e.target.value }))} style={control}><option value="all">Összes munkaállomás</option>{stationOptions.map((station) => <option key={station} value={station}>{station}</option>)}</select></label>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Dolgozó<select value={reportDeliveryDraft.workerFilter} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, workerFilter: e.target.value }))} style={control}><option value="all">Összes dolgozó</option>{workerOptions.map((workerName) => <option key={workerName} value={workerName}>{workerName}</option>)}</select></label>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Rendelésszám / gyorskód<input value={reportDeliveryDraft.orderFilter} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, orderFilter: e.target.value }))} placeholder="pl. 07178 vagy R260716178" style={control} /></label>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Típus<select value={reportDeliveryDraft.productTypeFilter} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, productTypeFilter: e.target.value as ReportDeliveryProductType }))} style={control}><option value="all">Összes típus</option><option value="Standard">Standard</option><option value="Plus">Plus</option><option value="Extra">Extra</option></select></label>
+          <div style={section}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: style.gap }}>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Profil neve<input value={draft.name} onChange={(e) => updateReportDeliveryDraft(profile.id, { name: e.target.value })} style={control} /></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Címzettek (email, vessző/pontosvessző)<textarea value={reportDeliveryRecipientTextById[profile.id] ?? draft.recipients.join("; ")} onChange={(e) => { const value = e.target.value; setReportDeliveryRecipientTextById((current) => ({ ...current, [profile.id]: value })); updateReportDeliveryDraft(profile.id, { recipients: parseReportDeliveryRecipients(value) }); }} style={textareaControl} /></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Riport típusa<select value={draft.reportType} onChange={(e) => updateReportDeliveryDraft(profile.id, { reportType: e.target.value as ReportDeliveryReportType })} style={control}>{Object.entries(REPORT_DELIVERY_REPORT_TYPE_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}</select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Munkaállomás<select value={draft.stationFilter} onChange={(e) => updateReportDeliveryDraft(profile.id, { stationFilter: e.target.value })} style={control}><option value="all">Összes munkaállomás</option>{stationOptions.map((station) => <option key={station} value={station}>{station}</option>)}</select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Dolgozó<select value={draft.workerFilter} onChange={(e) => updateReportDeliveryDraft(profile.id, { workerFilter: e.target.value })} style={control}><option value="all">Összes dolgozó</option>{workerOptions.map((workerName) => <option key={workerName} value={workerName}>{workerName}</option>)}</select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Rendelésszám / gyorskód<input value={draft.orderFilter} onChange={(e) => updateReportDeliveryDraft(profile.id, { orderFilter: e.target.value })} placeholder="pl. 07178 vagy R260716178" style={control} /></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Típus<select value={draft.productTypeFilter} onChange={(e) => updateReportDeliveryDraft(profile.id, { productTypeFilter: e.target.value as ReportDeliveryProductType })} style={control}><option value="all">Összes típus</option><option value="Standard">Standard</option><option value="Plus">Plus</option><option value="Extra">Extra</option></select></label>
             </div>
 
-            {reportDeliveryDraft.reportType === "custom" && (
-              <div style={{ padding: 12, borderRadius: 12, background: theme.panelAltBackground, border: `1px solid ${theme.borderColor}` }}>
+            {draft.reportType === "custom" && (
+              <div style={{ ...section, padding: 12 }}>
                 <strong>Egyedi kombinált riport blokkjai</strong>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8, marginTop: 10 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
                   {REPORT_DELIVERY_BLOCK_OPTIONS.map((item) => (
                     <label key={item.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <input type="checkbox" checked={reportDeliveryDraft.customBlocks.includes(item.id)} onChange={(e) => setReportDeliveryDraft((c) => ({
-                        ...c,
-                        customBlocks: e.target.checked ? Array.from(new Set([...c.customBlocks, item.id])) : c.customBlocks.filter((value) => value !== item.id),
-                      }))} />
+                      <input type="checkbox" checked={draft.customBlocks.includes(item.id)} onChange={(e) => updateReportDeliveryDraft(profile.id, {
+                        customBlocks: e.target.checked ? Array.from(new Set([...draft.customBlocks, item.id])) : draft.customBlocks.filter((value) => value !== item.id),
+                      })} />
                       {item.label}
                     </label>
                   ))}
@@ -5743,30 +6341,181 @@ export default function Page() {
             )}
           </div>
 
-          <div style={{ ...panel, display: "grid", gap: 12 }}>
+          <div style={section}>
             <strong>Automatikus ütemezés</strong>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12 }}>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Ismétlődés<select value={reportDeliveryDraft.frequency} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, frequency: e.target.value as ReportDeliveryFrequency }))} style={control}><option value="daily">Naponta</option><option value="weekly">Hetente</option><option value="monthly">Havonta</option></select></label>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Riportált időszak<select value={reportDeliveryDraft.periodScope} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, periodScope: e.target.value as ReportDeliveryPeriodScope }))} style={control}><option value="previous">Előző lezárt időszak</option><option value="current">Aktuális időszak</option></select></label>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Küldési idő<input type="time" value={reportDeliveryDraft.sendTime} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, sendTime: e.target.value }))} style={control} /></label>
-              {reportDeliveryDraft.frequency === "weekly" && <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Küldés napja<select value={reportDeliveryDraft.weeklyDay} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, weeklyDay: Number(e.target.value) }))} style={control}>{["Hétfő","Kedd","Szerda","Csütörtök","Péntek","Szombat","Vasárnap"].map((label,index) => <option key={label} value={index+1}>{label}</option>)}</select></label>}
-              {reportDeliveryDraft.frequency === "monthly" && <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Hónap napja<input type="number" min={1} max={28} value={reportDeliveryDraft.monthlyDay} onChange={(e) => setReportDeliveryDraft((c) => ({ ...c, monthlyDay: Math.min(28, Math.max(1, Number(e.target.value) || 1)) }))} style={control} /></label>}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: style.gap }}>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Ismétlődés<select value={draft.frequency} onChange={(e) => updateReportDeliveryDraft(profile.id, { frequency: e.target.value as ReportDeliveryFrequency })} style={control}><option value="daily">Naponta</option><option value="weekly">Hetente</option><option value="monthly">Havonta</option></select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Riportált időszak<select value={draft.periodScope} onChange={(e) => updateReportDeliveryDraft(profile.id, { periodScope: e.target.value as ReportDeliveryPeriodScope })} style={control}><option value="previous">Előző lezárt időszak</option><option value="current">Aktuális időszak</option></select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Küldési idő<input type="time" value={draft.sendTime} onChange={(e) => updateReportDeliveryDraft(profile.id, { sendTime: e.target.value })} style={control} /></label>
+              {draft.frequency === "weekly" && <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Küldés napja<select value={draft.weeklyDay} onChange={(e) => updateReportDeliveryDraft(profile.id, { weeklyDay: Number(e.target.value) })} style={control}>{["Hétfő","Kedd","Szerda","Csütörtök","Péntek","Szombat","Vasárnap"].map((label,indexValue) => <option key={label} value={indexValue+1}>{label}</option>)}</select></label>}
+              {draft.frequency === "monthly" && <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Hónap napja<input type="number" min={1} max={28} value={draft.monthlyDay} onChange={(e) => updateReportDeliveryDraft(profile.id, { monthlyDay: Math.min(28, Math.max(1, Number(e.target.value) || 1)) })} style={control} /></label>}
             </div>
           </div>
 
-          <div style={{ ...panel, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <button type="button" onClick={() => void saveReportDeliveryProfile(false).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={reportDeliverySaving} style={buttonPrimary}>Mentés</button>
-            <button type="button" onClick={() => void saveReportDeliveryProfile(true).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={reportDeliverySaving} style={buttonSecondary}>Másolat készítése</button>
-            <button type="button" onClick={() => void (async () => { try { const blob = await createReportDeliveryProfilePdfBlob(reportDeliveryDraft); downloadBlob(`${reportDeliveryDraft.name.replace(/[^a-zA-Z0-9_-]+/g, "_") || "teszt_riport"}.pdf`, blob, "application/pdf"); } catch (error) { setMessage({ type: "error", text: normalizeError(error) }); } })()} style={buttonSecondary}>Teszt PDF</button>
-            <button type="button" onClick={() => void sendReportDeliveryProfile(reportDeliveryDraft, true).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} style={buttonSecondary}>Teszt küldés</button>
-            <button type="button" onClick={() => void toggleReportDeliveryProfile().catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={reportDeliverySaving} style={{ ...buttonSecondary, borderColor: reportDeliveryDraft.active ? "#f59e0b" : "#22c55e" }}>{reportDeliveryDraft.active ? "Kikapcsolás" : "Aktiválás"}</button>
-            <button type="button" onClick={() => void deleteReportDeliveryProfile().catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={!reportDeliveryDraft.id || reportDeliverySaving} style={{ ...buttonSecondary, borderColor: "#ef4444", color: "#fecaca" }}>Törlés</button>
+          <div style={{ ...section, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <button type="button" onClick={() => void saveReportDeliveryProfile(draft, false).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={primaryAction}>Mentés</button>
+            <button type="button" onClick={() => void saveReportDeliveryProfile(draft, true).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={secondaryAction}>Másolat készítése</button>
+            <button type="button" onClick={() => void (async () => { try { const blob = await createReportDeliveryProfilePdfBlob(draft); downloadBlob(`${draft.name.replace(/[^a-zA-Z0-9_-]+/g, "_") || "teszt_riport"}.pdf`, blob, "application/pdf"); } catch (error) { setMessage({ type: "error", text: normalizeError(error) }); } })()} disabled={busy} style={secondaryAction}>Teszt PDF</button>
+            <button type="button" onClick={() => void sendReportDeliveryProfile(draft, true).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={secondaryAction}>Teszt küldés</button>
+            <button type="button" onClick={() => void toggleReportDeliveryProfile(draft).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={{ ...secondaryAction, borderColor: profile.active ? "#f59e0b" : style.activeColor }}>{profile.active ? "Kikapcsolás" : "Aktiválás"}</button>
+            <button type="button" onClick={() => void deleteReportDeliveryProfile(profile).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={{ ...secondaryAction, borderColor: style.errorColor, color: style.errorColor }}>Törlés</button>
           </div>
 
-          <div style={{ ...panel, fontSize: 12, color: theme.mutedText, lineHeight: 1.6 }}>
-            <div><strong>Utolsó automatikus küldés:</strong> {reportDeliveryDraft.lastSentAt ? formatDateTime(reportDeliveryDraft.lastSentAt) : "még nem volt"}</div>
-            {reportDeliveryDraft.lastSendError && <div style={{ color: "#fca5a5", marginTop: 5 }}><strong>Utolsó hiba:</strong> {reportDeliveryDraft.lastSendError}</div>}
-            <div style={{ marginTop: 8 }}>Az automatikus ellenőrzés az irodai felület megnyitása alatt fut. A beállítások és az utolsó küldés állapota Supabase-ban marad meg.</div>
+          <div style={{ ...section, color: style.mutedText, fontSize: Math.max(11, style.baseFontSize - 1), lineHeight: 1.55 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 8 }}>
+              <div><strong style={{ color: style.textColor }}>Állapot:</strong> <span style={{ color: status.label === "HIBÁS" ? style.errorColor : status.label === "AKTÍV" ? style.activeColor : status.color, fontWeight: 900 }}>{status.label}</span></div>
+              <div><strong style={{ color: style.textColor }}>Következő küldés:</strong> {nextRun ? nextRun.toLocaleString("hu-HU") : "nincs ütemezve"}</div>
+              <div><strong style={{ color: style.textColor }}>Utolsó próbálkozás:</strong> {profile.lastAttemptAt ? formatDateTime(profile.lastAttemptAt) : "még nem volt"}</div>
+              <div><strong style={{ color: style.textColor }}>Utolsó sikeres küldés:</strong> {profile.lastSentAt ? formatDateTime(profile.lastSentAt) : "még nem volt"}</div>
+            </div>
+            {profile.lastSendError && <div style={{ color: style.errorColor, marginTop: 7 }}><strong>Utolsó hiba:</strong> {profile.lastSendError}</div>}
+          </div>
+
+          {editorOpen && (
+            <div style={{ ...section, borderWidth: Math.max(2, style.borderWidth) }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontWeight: 900, fontSize: Math.max(17, style.titleFontSize - 3), color: style.textColor }}>Megjelenés szerkesztése – #{index + 1}</div>
+                  <div style={{ color: style.mutedText, marginTop: 3 }}>Ez a megjelenés csak a bejelentkezett irodai felhasználóhoz és ehhez a riportprofilhoz mentődik.</div>
+                </div>
+                <button type="button" onClick={() => void saveReportDeliveryProfileStyle(profile.id).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} style={primaryAction}>Megjelenés mentése</button>
+              </div>
+
+              <div>
+                <strong>10 kész stílus</strong>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 9, marginTop: 9 }}>
+                  {(Object.entries(REPORT_DELIVERY_CARD_PRESETS) as Array<[Exclude<ReportDeliveryCardPresetId, "custom">, { name: string; description: string; style: ReportDeliveryCardStyle }]>).map(([id, preset]) => (
+                    <button key={id} type="button" onClick={() => applyReportDeliveryCardPreset(profile.id, id)} style={{ textAlign: "left", padding: 11, borderRadius: 10, cursor: "pointer", border: presetId === id ? `3px solid ${preset.style.primaryButtonBackground}` : `1px solid ${preset.style.borderColor}`, background: preset.style.cardBackground, color: preset.style.textColor, fontFamily: preset.style.fontFamily }}>
+                      <div style={{ fontWeight: 900 }}>{preset.name}</div>
+                      <div style={{ fontSize: 11, marginTop: 4, color: preset.style.mutedText }}>{preset.description}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
+                {colorFields.map(([label, key]) => (
+                  <label key={String(key)} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center", padding: 8, border: `1px solid ${style.borderColor}`, borderRadius: 9 }}>
+                    <span>{label}</span>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <input type="color" value={String(style[key])} onChange={(event) => updateReportDeliveryCardStyle(profile.id, { [key]: event.target.value } as Partial<ReportDeliveryCardStyle>)} style={{ width: 42, height: 34, padding: 2, borderRadius: 6, border: `1px solid ${style.borderColor}` }} />
+                      <input value={String(style[key])} onChange={(event) => updateReportDeliveryCardStyle(profile.id, { [key]: event.target.value } as Partial<ReportDeliveryCardStyle>)} style={{ ...control, width: 105, minHeight: 34, height: 34, fontSize: 11 }} />
+                    </div>
+                  </label>
+                ))}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10 }}>
+                <label style={{ display: "grid", gap: 6 }}>Betűtípus<select value={style.fontFamily} onChange={(e) => updateReportDeliveryCardStyle(profile.id, { fontFamily: e.target.value })} style={control}>{[
+                  "Segoe UI, Arial, sans-serif", "Arial, sans-serif", "Verdana, Arial, sans-serif", "Tahoma, Arial, sans-serif", "Trebuchet MS, Arial, sans-serif", "Georgia, serif", "Times New Roman, serif", "Courier New, monospace"
+                ].map((font) => <option key={font} value={font}>{font.split(",")[0]}</option>)}</select></label>
+                <label style={{ display: "grid", gap: 6 }}>Alap betűméret<input type="number" min={10} max={24} value={style.baseFontSize} onChange={(e) => updateReportDeliveryCardStyle(profile.id, { baseFontSize: Math.min(24, Math.max(10, Number(e.target.value) || 14)) })} style={control} /></label>
+                <label style={{ display: "grid", gap: 6 }}>Cím betűméret<input type="number" min={14} max={38} value={style.titleFontSize} onChange={(e) => updateReportDeliveryCardStyle(profile.id, { titleFontSize: Math.min(38, Math.max(14, Number(e.target.value) || 22)) })} style={control} /></label>
+                <label style={{ display: "grid", gap: 6 }}>Betűvastagság<select value={style.fontWeight} onChange={(e) => updateReportDeliveryCardStyle(profile.id, { fontWeight: Number(e.target.value) })} style={control}>{[400,500,600,700,800,900].map((weight) => <option key={weight} value={weight}>{weight}</option>)}</select></label>
+                <label style={{ display: "grid", gap: 6 }}>Keretvastagság<input type="number" min={0} max={6} value={style.borderWidth} onChange={(e) => updateReportDeliveryCardStyle(profile.id, { borderWidth: Math.min(6, Math.max(0, Number(e.target.value) || 0)) })} style={control} /></label>
+                <label style={{ display: "grid", gap: 6 }}>Lekerekítés<input type="number" min={0} max={40} value={style.borderRadius} onChange={(e) => updateReportDeliveryCardStyle(profile.id, { borderRadius: Math.min(40, Math.max(0, Number(e.target.value) || 0)) })} style={control} /></label>
+                <label style={{ display: "grid", gap: 6 }}>Mezőmagasság<input type="number" min={32} max={70} value={style.fieldHeight} onChange={(e) => updateReportDeliveryCardStyle(profile.id, { fieldHeight: Math.min(70, Math.max(32, Number(e.target.value) || 40)) })} style={control} /></label>
+                <label style={{ display: "grid", gap: 6 }}>Belső margó / padding<input type="number" min={6} max={40} value={style.padding} onChange={(e) => updateReportDeliveryCardStyle(profile.id, { padding: Math.min(40, Math.max(6, Number(e.target.value) || 16)) })} style={control} /></label>
+                <label style={{ display: "grid", gap: 6 }}>Elemek közti távolság<input type="number" min={4} max={30} value={style.gap} onChange={(e) => updateReportDeliveryCardStyle(profile.id, { gap: Math.min(30, Math.max(4, Number(e.target.value) || 12)) })} style={control} /></label>
+                <label style={{ display: "grid", gap: 6 }}>Árnyék mérete<input type="number" min={0} max={50} value={style.shadowBlur} onChange={(e) => updateReportDeliveryCardStyle(profile.id, { shadowBlur: Math.min(50, Math.max(0, Number(e.target.value) || 0)) })} style={control} /></label>
+                <label style={{ display: "grid", gap: 6 }}>Árnyék erőssége (0–1)<input type="number" min={0} max={1} step={0.05} value={style.shadowOpacity} onChange={(e) => updateReportDeliveryCardStyle(profile.id, { shadowOpacity: Math.min(1, Math.max(0, Number(e.target.value) || 0)) })} style={control} /></label>
+              </div>
+            </div>
+          )}
+
+          {logOpen && (
+            <div style={section}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <strong style={{ fontSize: Math.max(16, style.baseFontSize + 2) }}>Küldési napló – #{index + 1}</strong>
+                <button type="button" onClick={() => void loadReportDeliverySendLogs(profile.id)} style={secondaryAction}>Napló frissítése</button>
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+                  <thead><tr>
+                    {["Időpont","Típus","Állapot","Címzettek","Hiba"].map((label) => <th key={label} style={{ textAlign: "left", padding: 8, borderBottom: `1px solid ${style.borderColor}`, color: style.mutedText }}>{label}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {logs.length ? logs.map((log) => (
+                      <tr key={log.id}>
+                        <td style={{ padding: 8, borderBottom: `1px solid ${style.borderColor}` }}>{log.attemptedAt ? formatDateTime(log.attemptedAt) : "—"}</td>
+                        <td style={{ padding: 8, borderBottom: `1px solid ${style.borderColor}` }}>{log.isTest ? "TESZT" : "AUTOMATIKUS"}</td>
+                        <td style={{ padding: 8, borderBottom: `1px solid ${style.borderColor}`, color: log.status.includes("error") ? style.errorColor : style.activeColor, fontWeight: 900 }}>{log.status}</td>
+                        <td style={{ padding: 8, borderBottom: `1px solid ${style.borderColor}` }}>{log.recipients.join(", ") || "—"}</td>
+                        <td style={{ padding: 8, borderBottom: `1px solid ${style.borderColor}`, color: log.errorMessage ? style.errorColor : style.mutedText }}>{log.errorMessage || "—"}</td>
+                      </tr>
+                    )) : <tr><td colSpan={5} style={{ padding: 14, color: style.mutedText }}>Még nincs naplóbejegyzés, vagy a naplótábla még nincs létrehozva.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <div style={{ background: theme.pageBackground, border: `1px solid ${theme.borderColor}`, borderRadius: 18, padding: 18, color: theme.textColor }}>
+        <ManagementNavigation />
+        <div style={{ display: "grid", gap: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "end" }}>
+            <div>
+              <div style={{ color: theme.accentColor, fontWeight: 900, fontSize: 13, letterSpacing: 0.8 }}>AUTOMATIKUS RIPORTKÖZPONT</div>
+              <h2 style={{ margin: "4px 0", color: theme.textColor }}>Riport küldések</h2>
+              <div style={{ color: theme.mutedText, fontSize: 13 }}>Minden riportprofil külön kártyán látható. A sorszámok törlés után automatikusan újrarendeződnek.</div>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button type="button" onClick={() => void createNewReportDeliveryProfile().catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={reportDeliveryLoading} style={buttonPrimary}>+ Új riportprofil</button>
+              <button type="button" onClick={() => void loadReportDeliveryProfiles()} disabled={reportDeliveryLoading} style={buttonSecondary}>Profilok frissítése</button>
+              <button type="button" onClick={() => void stopAllReportDeliveryProfiles().catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={reportDeliveryLoading || !activeProfiles.length} style={{ ...buttonSecondary, borderColor: "#ef4444", color: "#fecaca" }}>⛔ Minden automatikus küldés leállítása</button>
+            </div>
+          </div>
+
+          <div style={{ ...pagePanel, borderWidth: activeProfiles.length ? 2 : 1, borderColor: activeProfiles.length ? "#22c55e" : theme.borderColor }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontWeight: 900, fontSize: 18 }}>Aktív automatikus riportok</div>
+                <div style={{ color: theme.mutedText, fontSize: 12, marginTop: 3 }}>Itt azonnal látszik, pontosan melyik profil küld automatikusan.</div>
+              </div>
+              <div style={{ fontWeight: 900, color: activeProfiles.length ? "#86efac" : theme.mutedText }}>{activeProfiles.length} aktív profil</div>
+            </div>
+            {activeProfiles.length ? (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 10, marginTop: 12 }}>
+                {activeProfiles.map((profile) => {
+                  const profileIndex = reportDeliveryProfiles.findIndex((item) => item.id === profile.id);
+                  const status = getReportDeliveryProfileStatus(profile);
+                  const nextRun = getNextReportDeliveryRun(profile);
+                  return (
+                    <div key={profile.id} style={{ padding: 12, borderRadius: 12, border: `1px solid ${status.label === "HIBÁS" ? "#ef4444" : "#22c55e"}`, background: theme.panelAltBackground }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                        <strong>#{profileIndex + 1} {profile.name}</strong>
+                        <span style={{ color: status.color, fontWeight: 900 }}>{status.label}</span>
+                      </div>
+                      <div style={{ color: theme.mutedText, fontSize: 12, marginTop: 6 }}>{profile.stationFilter === "all" ? "Összes munkaállomás" : profile.stationFilter} • {REPORT_DELIVERY_REPORT_TYPE_LABELS[profile.reportType]}</div>
+                      <div style={{ color: theme.mutedText, fontSize: 12, marginTop: 4 }}>Következő: {nextRun ? nextRun.toLocaleString("hu-HU") : "—"}</div>
+                      <div style={{ color: theme.mutedText, fontSize: 12, marginTop: 4 }}>Utolsó sikeres: {profile.lastSentAt ? formatDateTime(profile.lastSentAt) : "még nem volt"}</div>
+                      {profile.lastSendError && <div style={{ color: "#fca5a5", fontSize: 12, marginTop: 4 }}>Hiba: {profile.lastSendError}</div>}
+                      <button type="button" onClick={() => void toggleReportDeliveryProfile(reportDeliveryDrafts[profile.id] || profile).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} style={{ ...buttonSecondary, marginTop: 8, borderColor: "#f59e0b" }}>Kikapcsolás</button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ marginTop: 12, color: theme.mutedText }}>Nincs aktív automatikus riportprofil.</div>
+            )}
+          </div>
+
+          {reportDeliveryLoading && <div style={{ ...pagePanel, color: theme.mutedText }}>Riportprofilok betöltése...</div>}
+          {!reportDeliveryLoading && !reportDeliveryProfiles.length && (
+            <div style={{ ...pagePanel, textAlign: "center", padding: 28 }}>
+              <div style={{ fontSize: 18, fontWeight: 900 }}>Még nincs riportprofil</div>
+              <div style={{ color: theme.mutedText, marginTop: 6 }}>Az „Új riportprofil” gombbal hozz létre egyet.</div>
+            </div>
+          )}
+
+          {reportDeliveryProfiles.map((profile, index) => renderReportDeliveryProfileCard(profile, index))}
+
+          <div style={{ ...pagePanel, fontSize: 12, color: theme.mutedText, lineHeight: 1.6 }}>
+            Az automatikus ellenőrzés az irodai felület megnyitása alatt fut. A profilok aktív állapota, az utolsó küldési eredmény és a beállítások Supabase-ban maradnak meg. A profilkártyák megjelenése felhasználónként külön kerül mentésre.
           </div>
         </div>
       </div>
@@ -10373,7 +11122,6 @@ export default function Page() {
     terminalView,
     flowStage,
     reportDeliveryProfilesLoaded,
-    reportDeliveryProfiles,
   ]);
 
   useEffect(() => {
