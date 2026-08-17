@@ -2926,6 +2926,19 @@ function normalizeError(error: unknown): string {
   return "Ismeretlen hiba történt.";
 }
 
+function normalizePrinterAgentError(error: unknown): string {
+  const raw = error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : "";
+
+  if (!raw || raw === "Failed to fetch" || /networkerror|network request failed/i.test(raw)) {
+    return "A böngésző nem tudott kapcsolódni a 127.0.0.1:17861 címen futó helyi nyomtató-agenthez. Ez nem Supabase-hiba. Ellenőrizd, hogy az agent fut-e, és a Chrome-ban a NÍVÓ oldal Helyi hálózati hozzáférése engedélyezve van-e.";
+  }
+  return raw;
+}
+
 function isMissingRequiredStationsColumnError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
 
@@ -17734,15 +17747,28 @@ body {
   }
 
   async function fetchLocalPrinterAgentJson(pathOrUrl: string, init?: RequestInit): Promise<any> {
-    const response = await fetch(pathOrUrl, {
+    // Chrome 142+ / 145+ Local Network Access: a Vercelen futó HTTPS oldal
+    // csak felhasználói engedéllyel érheti el a helyi/loopback szolgáltatást.
+    // A targetAddressSpace a Chromium új Fetch-kiegészítése; régebbi böngészők
+    // egyszerűen figyelmen kívül hagyják az ismeretlen opciót.
+    const requestInit = {
       cache: "no-store",
       mode: "cors",
       ...init,
+      targetAddressSpace: "loopback",
       headers: {
         Accept: "application/json",
         ...(init?.headers || {}),
       },
-    });
+    } as RequestInit & { targetAddressSpace?: "public" | "local" | "loopback" };
+
+    let response: Response;
+    try {
+      response = await fetch(pathOrUrl, requestInit);
+    } catch (error) {
+      throw new Error(normalizePrinterAgentError(error));
+    }
+
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("application/json")
       ? await response.json().catch(() => ({}))
@@ -17765,7 +17791,7 @@ body {
     } catch (error) {
       setPrinterAgentStatus("offline");
       setPrinterAgentVersion("");
-      setPrinterAgentMessage(normalizeError(error));
+      setPrinterAgentMessage(normalizePrinterAgentError(error));
       return false;
     }
   }
@@ -17790,7 +17816,7 @@ body {
     } catch (localError) {
       setWindowsPrinters([]);
       setPrinterAgentStatus("offline");
-      const localMessage = normalizeError(localError);
+      const localMessage = normalizePrinterAgentError(localError);
 
       // Helyi fejlesztésnél továbbra is használható a régi Next.js Windows route.
       if (typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname)) {
@@ -18510,9 +18536,9 @@ body {
       };
     } catch (error) {
       setPrinterAgentStatus("offline");
-      setPrinterAgentMessage(normalizeError(error));
+      setPrinterAgentMessage(normalizePrinterAgentError(error));
       throw new Error(
-        `A címke elkészült, de a helyi Windows nyomtató-agent nem érhető el. Indítsd el a NivoPrinterAgent programot ezen a gépen. Részlet: ${normalizeError(error)}`
+        `A címke elkészült, de a helyi Windows nyomtató-agent nem érhető el. Indítsd el a NivoPrinterAgent programot ezen a gépen, és engedélyezd a Chrome helyi hálózati hozzáférését. Részlet: ${normalizePrinterAgentError(error)}`
       );
     }
   }
@@ -21587,7 +21613,13 @@ body {
                   {printerAgentVersion ? ` · Agent: ${printerAgentVersion}` : ""}
                 </div>
               </div>
-              <button type="button" onClick={() => void checkLocalPrinterAgent().then((ok) => { if (ok) void fetchWindowsPrinters(); })} style={buttonSecondary}>Agent ellenőrzése</button>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <button type="button" onClick={() => { if (typeof window !== "undefined") window.open(LOCAL_PRINTER_AGENT_HEALTH_API, "_blank", "noopener,noreferrer"); }} style={buttonSecondary}>Agent health megnyitása</button>
+                <button type="button" onClick={() => void checkLocalPrinterAgent().then((ok) => { if (ok) void fetchWindowsPrinters(); })} style={buttonSecondary}>Agent ellenőrzése</button>
+              </div>
+            </div>
+            <div style={{ padding: 12, borderRadius: 10, background: "#111827", border: "1px solid #475569", color: "#cbd5e1", fontSize: 12, lineHeight: 1.55 }}>
+              <strong>Chrome 142+ fontos:</strong> a Verceles oldal első helyi kapcsolódásakor a Chrome engedélyt kérhet a helyi hálózathoz / helyi eszközökhöz. Válaszd az <strong>Engedélyezés</strong> lehetőséget. Ha korábban letiltottad: címsor bal oldalán az oldalbeállítások ikon → Webhelybeállítások → <strong>Helyi hálózati hozzáférés</strong> → Engedélyezés, majd töltsd újra az oldalt.
             </div>
             <div style={{ padding: 12, borderRadius: 10, background: "#020617", color: "#94a3b8", fontSize: 12, lineHeight: 1.5 }}>A DPI és az X/Y korrekció címkenyomtató-kalibrációhoz használható. A Citizen CL-S621 tipikusan 203 DPI-s, de a tényleges Windows driver beállítás marad az elsődleges.</div>
             {windowsPrinters.length === 0 && carpenterPrinterSettingsLoaded && printerAgentStatus !== "checking" && <div style={{ color: "#fbbf24", fontSize: 13 }}>Nem érkezett nyomtatólista a helyi Windows agenttől. Ellenőrizd, hogy a NivoPrinterAgent fut-e ezen a gépen, majd nyomd meg az „Agent ellenőrzése” vagy a „Nyomtatólista frissítése” gombot.</div>}
