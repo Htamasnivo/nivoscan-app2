@@ -1488,6 +1488,11 @@ const LABEL_PRINT_LOG_TABLE = "label_print_log";
 const DYNAMIC_PRODUCTION_PLAN_TABLE = "termelesi_terv";
 const WINDOWS_PRINTERS_API = "/api/windows-printers";
 const LABEL_PRINT_API = "/api/label-print";
+const LOCAL_PRINTER_AGENT_BASE = "http://127.0.0.1:17861";
+const LOCAL_PRINTER_AGENT_HEALTH_API = `${LOCAL_PRINTER_AGENT_BASE}/health`;
+const LOCAL_PRINTER_AGENT_PRINTERS_API = `${LOCAL_PRINTER_AGENT_BASE}/printers`;
+const LOCAL_PRINTER_AGENT_PRINT_API = `${LOCAL_PRINTER_AGENT_BASE}/print`;
+const LABEL_PRINT_PREPARE_API = `${LABEL_PRINT_API}?prepare=1`;
 
 const CUTTING_LABEL_FIELDS: Array<{ key: string; label: string }> = [
   { key: "sorszam", label: "Sorszám" },
@@ -4628,6 +4633,9 @@ export default function Page() {
   const [windowsPrinters, setWindowsPrinters] = useState<string[]>([]);
   const [selectedWindowsPrinter, setSelectedWindowsPrinter] = useState("");
   const [loadingWindowsPrinters, setLoadingWindowsPrinters] = useState(false);
+  const [printerAgentStatus, setPrinterAgentStatus] = useState<"unknown" | "checking" | "online" | "offline">("unknown");
+  const [printerAgentMessage, setPrinterAgentMessage] = useState("");
+  const [printerAgentVersion, setPrinterAgentVersion] = useState("");
   const [savingCarpenterPrinterSettings, setSavingCarpenterPrinterSettings] = useState(false);
   const [carpenterPrinterCalibration, setCarpenterPrinterCalibration] = useState<PrinterCalibrationSettings>({ dpi: 203, offsetXmm: 0, offsetYmm: 0, copies: 1 });
   const [activeCarpenterLabelTemplateType, setActiveCarpenterLabelTemplateType] = useState<LabelTemplateType>("VAGAS_KULSO");
@@ -17725,17 +17733,88 @@ body {
     };
   }
 
+  async function fetchLocalPrinterAgentJson(pathOrUrl: string, init?: RequestInit): Promise<any> {
+    const response = await fetch(pathOrUrl, {
+      cache: "no-store",
+      mode: "cors",
+      ...init,
+      headers: {
+        Accept: "application/json",
+        ...(init?.headers || {}),
+      },
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json")
+      ? await response.json().catch(() => ({}))
+      : { error: await response.text().catch(() => "") };
+    if (!response.ok) {
+      throw new Error(String(payload?.error || payload?.message || `Helyi nyomtató-agent hiba (${response.status}).`));
+    }
+    return payload;
+  }
+
+  async function checkLocalPrinterAgent(): Promise<boolean> {
+    setPrinterAgentStatus("checking");
+    setPrinterAgentMessage("");
+    try {
+      const payload = await fetchLocalPrinterAgentJson(LOCAL_PRINTER_AGENT_HEALTH_API, { method: "GET" });
+      setPrinterAgentStatus("online");
+      setPrinterAgentVersion(String(payload?.version || ""));
+      setPrinterAgentMessage(String(payload?.computerName || payload?.message || "A helyi nyomtató-agent elérhető."));
+      return true;
+    } catch (error) {
+      setPrinterAgentStatus("offline");
+      setPrinterAgentVersion("");
+      setPrinterAgentMessage(normalizeError(error));
+      return false;
+    }
+  }
+
   async function fetchWindowsPrinters(): Promise<string[]> {
     setLoadingWindowsPrinters(true);
+    setPrinterAgentStatus("checking");
     try {
-      const response = await fetch(WINDOWS_PRINTERS_API, { method: "GET", cache: "no-store" });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(String(payload?.error || "Nem sikerült lekérni a Windows nyomtatókat."));
+      const payload = await fetchLocalPrinterAgentJson(LOCAL_PRINTER_AGENT_PRINTERS_API, { method: "GET" });
       const printers = Array.isArray(payload?.printers)
         ? payload.printers.map((printer: unknown) => String(printer || "").trim()).filter(Boolean)
         : [];
       setWindowsPrinters(printers);
+      setPrinterAgentStatus("online");
+      setPrinterAgentVersion(String(payload?.version || ""));
+      setPrinterAgentMessage(
+        printers.length > 0
+          ? `${printers.length} db Windows-nyomtató elérhető ezen a számítógépen.`
+          : "A helyi agent fut, de a Windows nem adott vissza telepített nyomtatót."
+      );
       return printers;
+    } catch (localError) {
+      setWindowsPrinters([]);
+      setPrinterAgentStatus("offline");
+      const localMessage = normalizeError(localError);
+
+      // Helyi fejlesztésnél továbbra is használható a régi Next.js Windows route.
+      if (typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname)) {
+        try {
+          const response = await fetch(WINDOWS_PRINTERS_API, { method: "GET", cache: "no-store" });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(String(payload?.error || "Nem sikerült lekérni a Windows nyomtatókat."));
+          const printers = Array.isArray(payload?.printers)
+            ? payload.printers.map((printer: unknown) => String(printer || "").trim()).filter(Boolean)
+            : [];
+          setWindowsPrinters(printers);
+          setPrinterAgentMessage("Helyi fejlesztői Next.js nyomtató-route használatban.");
+          return printers;
+        } catch {
+          // lent egységes hibaüzenetet adunk
+        }
+      }
+
+      setPrinterAgentMessage(
+        `A NÍVÓ helyi nyomtató-agent nem érhető el. ${localMessage} Indítsd el a NivoPrinterAgent programot ezen a Windows gépen.`
+      );
+      throw new Error(
+        "A helyi NÍVÓ nyomtató-agent nem érhető el. Indítsd el a NivoPrinterAgent programot azon a Windows gépen, amelyhez az USB címkenyomtató csatlakozik."
+      );
     } finally {
       setLoadingWindowsPrinters(false);
     }
@@ -18392,15 +18471,50 @@ body {
 
   async function sendLabelJobsWithExplicitConfig(printerName: string, template: LabelTemplateConfig, calibration: PrinterCalibrationSettings, jobs: LabelPrintJob[]): Promise<{ printerName: string; printedCount: number; templateRecord?: LabelTemplateRecord | null; copies?: number }> {
     if (!printerName.trim()) throw new Error("Nincs kiválasztott nyomtató.");
-    const preparedJobs = prepareLabelJobsWithRenderedBarcodes(template, jobs);
-    const response = await fetch(LABEL_PRINT_API, {
+    const barcodePreparedJobs = prepareLabelJobsWithRenderedBarcodes(template, jobs);
+
+    // 1) A Vercel/Next.js route csak előkészíti a QR-kódokat és a feltöltött képeket.
+    //    Maga a fizikai nyomtatás NEM a Vercelen történik.
+    const prepareResponse = await fetch(LABEL_PRINT_PREPARE_API, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ printerName, template, printSettings: calibration, jobs: preparedJobs }),
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ printerName, template, printSettings: calibration, jobs: barcodePreparedJobs }),
     });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(String(payload?.error || "A címkenyomtatás sikertelen."));
-    return { printerName, printedCount: Number(payload?.printedCount) || jobs.length, copies: Math.max(1, Math.min(20, Math.round(calibration.copies || 1))) };
+    const preparePayload = await prepareResponse.json().catch(() => ({}));
+    if (!prepareResponse.ok) {
+      throw new Error(String(preparePayload?.error || "A címke nyomtatás-előkészítése sikertelen."));
+    }
+
+    const localPrintPayload = {
+      printerName: String(preparePayload?.printerName || printerName),
+      template: preparePayload?.template || template,
+      printSettings: preparePayload?.printSettings || calibration,
+      jobs: Array.isArray(preparePayload?.jobs) ? preparePayload.jobs : barcodePreparedJobs,
+    };
+
+    // 2) A böngésző a helyi Windows agentnek adja át a már teljesen előkészített címkét.
+    try {
+      setPrinterAgentStatus("checking");
+      const payload = await fetchLocalPrinterAgentJson(LOCAL_PRINTER_AGENT_PRINT_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(localPrintPayload),
+      });
+      setPrinterAgentStatus("online");
+      setPrinterAgentVersion(String(payload?.version || printerAgentVersion || ""));
+      setPrinterAgentMessage(`Nyomtatás sikeresen átadva: ${String(payload?.printerName || printerName)}.`);
+      return {
+        printerName: String(payload?.printerName || printerName),
+        printedCount: Number(payload?.printedCount) || jobs.length,
+        copies: Math.max(1, Math.min(20, Math.round(calibration.copies || 1))),
+      };
+    } catch (error) {
+      setPrinterAgentStatus("offline");
+      setPrinterAgentMessage(normalizeError(error));
+      throw new Error(
+        `A címke elkészült, de a helyi Windows nyomtató-agent nem érhető el. Indítsd el a NivoPrinterAgent programot ezen a gépen. Részlet: ${normalizeError(error)}`
+      );
+    }
   }
 
   async function sendLabelJobsToPrinter(type: LabelTemplateType, jobs: LabelPrintJob[]): Promise<{ printerName: string; printedCount: number; templateRecord?: LabelTemplateRecord | null; copies?: number }> {
@@ -21463,8 +21577,20 @@ body {
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Függőleges korrekció (mm)<input type="number" min={-20} max={20} step={0.1} value={carpenterPrinterCalibration.offsetYmm} onChange={(e) => setCarpenterPrinterCalibration((prev) => ({ ...prev, offsetYmm: Number(e.target.value) }))} style={controlStyle} /></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Alap példányszám<input type="number" min={1} max={20} value={carpenterPrinterCalibration.copies} onChange={(e) => setCarpenterPrinterCalibration((prev) => ({ ...prev, copies: Number(e.target.value) }))} style={controlStyle} /></label>
             </div>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 1fr) auto", gap: 10, alignItems: "center", padding: 12, borderRadius: 10, background: printerAgentStatus === "online" ? "#052e16" : printerAgentStatus === "offline" ? "#450a0a" : "#020617", border: `1px solid ${printerAgentStatus === "online" ? "#22c55e" : printerAgentStatus === "offline" ? "#ef4444" : "#334155"}` }}>
+              <div>
+                <div style={{ fontWeight: 900, color: printerAgentStatus === "online" ? "#86efac" : printerAgentStatus === "offline" ? "#fecaca" : "#cbd5e1" }}>
+                  Helyi NÍVÓ nyomtató-agent: {printerAgentStatus === "online" ? "KAPCSOLÓDVA" : printerAgentStatus === "checking" ? "ELLENŐRZÉS..." : printerAgentStatus === "offline" ? "NEM ÉRHETŐ EL" : "NINCS ELLENŐRIZVE"}
+                </div>
+                <div style={{ marginTop: 4, color: "#cbd5e1", fontSize: 12, lineHeight: 1.5 }}>
+                  {printerAgentMessage || "A Vercelen futó alkalmazás a 127.0.0.1:17861 címen futó helyi agenten keresztül éri el ennek a számítógépnek a Windows-nyomtatóit."}
+                  {printerAgentVersion ? ` · Agent: ${printerAgentVersion}` : ""}
+                </div>
+              </div>
+              <button type="button" onClick={() => void checkLocalPrinterAgent().then((ok) => { if (ok) void fetchWindowsPrinters(); })} style={buttonSecondary}>Agent ellenőrzése</button>
+            </div>
             <div style={{ padding: 12, borderRadius: 10, background: "#020617", color: "#94a3b8", fontSize: 12, lineHeight: 1.5 }}>A DPI és az X/Y korrekció címkenyomtató-kalibrációhoz használható. A Citizen CL-S621 tipikusan 203 DPI-s, de a tényleges Windows driver beállítás marad az elsődleges.</div>
-            {windowsPrinters.length === 0 && carpenterPrinterSettingsLoaded && <div style={{ color: "#fbbf24", fontSize: 13 }}>A szerver nem adott vissza Windows-nyomtatót. A Next.js szervert annak a Windows gépnek kell futtatnia, amelyen a címkenyomtató telepítve van.</div>}
+            {windowsPrinters.length === 0 && carpenterPrinterSettingsLoaded && printerAgentStatus !== "checking" && <div style={{ color: "#fbbf24", fontSize: 13 }}>Nem érkezett nyomtatólista a helyi Windows agenttől. Ellenőrizd, hogy a NivoPrinterAgent fut-e ezen a gépen, majd nyomd meg az „Agent ellenőrzése” vagy a „Nyomtatólista frissítése” gombot.</div>}
             <div><button type="button" onClick={() => void (async () => { try { setSavingCarpenterPrinterSettings(true); await savePrinterConfigurationOnly(); setMessage({ type: "success", text: "Nyomtató és kalibráció elmentve." }); } catch (error) { setMessage({ type: "error", text: normalizeError(error) }); } finally { setSavingCarpenterPrinterSettings(false); } })()} disabled={savingCarpenterPrinterSettings} style={buttonPrimary}>Nyomtatóbeállítás mentése</button></div>
           </div>
         ) : (
