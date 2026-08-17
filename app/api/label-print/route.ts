@@ -520,12 +520,8 @@ foreach ($job in $jobs) {
 `;
 
 export async function POST(request: Request) {
-  if (process.platform !== "win32") {
-    return NextResponse.json(
-      { error: "A közvetlen Windows-nyomtatás csak Windows alatt futó Next.js szerveren használható." },
-      { status: 500 }
-    );
-  }
+  const requestUrl = new URL(request.url);
+  const prepareOnly = requestUrl.searchParams.get("prepare") === "1";
 
   let configPath = "";
   let scriptPath = "";
@@ -549,6 +545,31 @@ export async function POST(request: Request) {
 
     const qrJobs = await prepareQrImages(template, originalJobs);
     const jobs = await prepareTemplateAssetImages(template, qrJobs);
+
+    // Vercelen ez a route csak előkészíti a QR-kódokat és a feltöltött képeket.
+    // A tényleges fizikai nyomtatást a felhasználó Windows gépén futó NÍVÓ Printer Agent végzi.
+    if (prepareOnly) {
+      return NextResponse.json({
+        ok: true,
+        prepared: true,
+        printerName,
+        template,
+        printSettings,
+        jobs,
+        printedCount: 0,
+      });
+    }
+
+    if (process.platform !== "win32") {
+      return NextResponse.json(
+        {
+          error:
+            "A közvetlen Windows-nyomtatás ezen a szerveren nem érhető el. Használd a helyi NÍVÓ Printer Agentet, vagy hívd a route-ot ?prepare=1 módban.",
+        },
+        { status: 500 }
+      );
+    }
+
     const token = crypto.randomBytes(8).toString("hex");
     configPath = path.join(os.tmpdir(), `nivo-label-${token}.json`);
     scriptPath = path.join(os.tmpdir(), `nivo-label-${token}.ps1`);
