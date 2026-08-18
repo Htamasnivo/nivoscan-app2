@@ -3567,7 +3567,7 @@ function isEditableInputElement(element: Element | null): boolean {
   return tagName === "input" || tagName === "textarea" || Boolean((element as HTMLElement).isContentEditable);
 }
 
-function focusAndSelectInput(ref: React.RefObject<HTMLInputElement | null>, options?: { force?: boolean }): void {
+function focusAndSelectInput(ref: React.RefObject<HTMLInputElement | null>, options?: { force?: boolean; preventScroll?: boolean }): void {
   if (typeof window === "undefined") return;
 
   const shouldRespectCurrentEditable = !options?.force;
@@ -3581,7 +3581,7 @@ function focusAndSelectInput(ref: React.RefObject<HTMLInputElement | null>, opti
       return;
     }
 
-    targetInput.focus();
+    targetInput.focus({ preventScroll: options?.preventScroll === true });
     targetInput.select();
   };
 
@@ -11151,7 +11151,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const focusTarget = (force = false) => {
       if (!force && shouldSkipAutoFocus()) return;
-      focusAndSelectInput(getTargetInput(), { force });
+      focusAndSelectInput(getTargetInput(), { force, preventScroll: shouldKeepEndCommandFocus });
     };
 
     const intervalId = window.setInterval(() => {
@@ -19009,9 +19009,8 @@ body {
     });
 
     setEndReadyMap(next);
-    setSelectedEndBatch((prev) => (prev ? { ...prev, order_ids: [...prev.order_ids] } : prev));
     setEndBatchCommandInput("");
-    window.setTimeout(() => focusAndSelectInput(endBatchCommandInputRef), 0);
+    window.setTimeout(() => focusAndSelectInput(endBatchCommandInputRef, { preventScroll: true }), 0);
     const operationCode = normalizeBatchOperationCode(selectedEndBatch.operation_code);
     const readyText = operationCode === "SZABAS"
       ? "Szabás kész státuszba került; END mentés után Marásra vár állapot következik"
@@ -19425,7 +19424,7 @@ body {
     if (command.trim().toUpperCase() === "ALL-READY") {
       markAllEndOrdersReady();
       setEndBatchCommandInput("");
-      window.setTimeout(() => focusAndSelectInput(endBatchCommandInputRef), 0);
+      window.setTimeout(() => focusAndSelectInput(endBatchCommandInputRef, { preventScroll: true }), 0);
       return;
     }
     if (command.trim().toUpperCase() === "ATFORGATAS-MARASRA") {
@@ -22897,7 +22896,7 @@ body {
                       </div>
 
                       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                        <button onClick={() => { markAllEndOrdersReady(); window.setTimeout(() => focusAndSelectInput(endBatchCommandInputRef), 0); }} disabled={busy} style={buttonPrimary}>ALL-READY</button>
+                        <button onClick={() => { markAllEndOrdersReady(); }} disabled={busy} style={buttonPrimary}>ALL-READY</button>
                         {normalizeBatchOperationCode(selectedEndBatch.operation_code) === "SZABAS" && (
                           <button onClick={() => void transferReadyCuttingOrdersToMilling()} disabled={busy} style={buttonPrimary}>Átforgatás marásra</button>
                         )}
