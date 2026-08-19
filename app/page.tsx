@@ -201,6 +201,11 @@ type WorkLogRow = {
   selejt_megjegyzes?: string | null;
   selejt_potlas?: boolean | null;
   selejt_forras_munkaallomas?: string | null;
+
+  // Csak a vezetői műszerfal számításához használt kliensoldali segédmezők.
+  // Supabase-ba NEM kerülnek visszaírásra.
+  dashboard_batch_member_count?: number | null;
+  dashboard_batch_selected_member_count?: number | null;
 };
 
 type GroupedLogs = Record<string, WorkLogRow[]>;
@@ -4415,6 +4420,54 @@ function intersectDashboardIntervalWithWorkerDayWindows(
   return result;
 }
 
+function getDashboardBatchMemberCount(log: WorkLogRow): number {
+  const raw = Number(log.dashboard_batch_member_count || 1);
+  return Number.isFinite(raw) && raw > 1 ? Math.max(1, Math.round(raw)) : 1;
+}
+
+function getDashboardBatchSelectedMemberCount(log: WorkLogRow): number {
+  const total = getDashboardBatchMemberCount(log);
+  const raw = Number(log.dashboard_batch_selected_member_count || 1);
+  if (!Number.isFinite(raw) || raw <= 0) return 1;
+  return Math.min(total, Math.max(1, Math.round(raw)));
+}
+
+function getDashboardAllocatedIntervalEndMs(
+  log: WorkLogRow,
+  rawStartMs: number,
+  rawEndMs: number
+): number {
+  if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs) || rawEndMs <= rawStartMs) {
+    return rawEndMs;
+  }
+
+  const totalMembers = getDashboardBatchMemberCount(log);
+  if (totalMembers <= 1) return rawEndMs;
+
+  // Rendelésszám-szűréskor a köteg teljes idejéből csak a kiválasztott
+  // rendelés(ek) arányos része számít a dolgozói teljesítménybe.
+  // Példa: 5 órás köteg / 10 sor = 30 perc egy rendelésre.
+  // Ha egyszerre 2 rendelés van szűrve ugyanabból a kötegből:
+  // 5 óra * 2 / 10 = 1 óra.
+  const selectedMembers = getDashboardBatchSelectedMemberCount(log);
+  const allocatedMs = ((rawEndMs - rawStartMs) * selectedMembers) / totalMembers;
+  return rawStartMs + Math.max(0, allocatedMs);
+}
+
+function getDashboardPerOrderDurationMinutes(log: WorkLogRow): number | null {
+  const startAt = String(log.start_time || log.start_timestamp || "").trim();
+  const endAt = String(log.end_time || log.end_timestamp || "").trim();
+  if (!startAt || !endAt) return null;
+
+  const startMs = new Date(startAt).getTime();
+  const endMs = new Date(endAt).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return null;
+
+  const totalMembers = getDashboardBatchMemberCount(log);
+  const rawMinutes = (endMs - startMs) / 60000;
+  return Math.max(0, Math.round(rawMinutes / totalMembers));
+}
+
 function buildDashboardWorkerAggregation(
   logs: WorkLogRow[],
   workers: Worker[],
@@ -4452,7 +4505,10 @@ function buildDashboardWorkerAggregation(
     const explicitStart = String(log.start_time || "").trim();
     const explicitEnd = String(log.end_time || "").trim();
     const startMs = explicitStart ? new Date(explicitStart).getTime() : Number.NaN;
-    const endMs = explicitEnd ? new Date(explicitEnd).getTime() : Number.NaN;
+    const rawEndMs = explicitEnd ? new Date(explicitEnd).getTime() : Number.NaN;
+    const endMs = Number.isFinite(startMs) && Number.isFinite(rawEndMs)
+      ? getDashboardAllocatedIntervalEndMs(log, startMs, rawEndMs)
+      : rawEndMs;
 
     if (Number.isFinite(startMs)) {
       markDashboardWorkerMovement(
@@ -4515,8 +4571,11 @@ function buildDashboardWorkerAggregation(
     if (!explicitStart || !explicitEnd) continue;
 
     const rawStartMs = new Date(explicitStart).getTime();
-    const rawEndMs = new Date(explicitEnd).getTime();
-    if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs) || rawEndMs <= rawStartMs) continue;
+    const originalEndMs = new Date(explicitEnd).getTime();
+    if (!Number.isFinite(rawStartMs) || !Number.isFinite(originalEndMs) || originalEndMs <= rawStartMs) continue;
+
+    const rawEndMs = getDashboardAllocatedIntervalEndMs(log, rawStartMs, originalEndMs);
+    if (!Number.isFinite(rawEndMs) || rawEndMs <= rawStartMs) continue;
 
     const clippedStartMs = Math.max(rawStartMs, rangeStartMs);
     const clippedEndMs = Math.min(rawEndMs, rangeEndMs);
@@ -14848,9 +14907,90 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       allFetchedLogs.map((log) => String(log.order_number || "").trim()).filter(Boolean)
     )).sort((a, b) => a.localeCompare(b, "hu"));
 
-    const orderFilteredLogs = allFetchedLogs.filter((log) =>
+    const rawOrderFilteredLogs = allFetchedLogs.filter((log) =>
       matchesDashboardOrderFilters(log.order_number, orderFilters)
     );
+
+    let orderFilteredLogs = rawOrderFilteredLogs;
+
+    // Köteges lejelentés időosztása:
+    // Ha rendelésre szűrünk, a kiválasztott rendelés work_logs sora a teljes
+    // köteg START-END idejét tartalmazhatja. Ezért batch_code alapján lekérjük
+    // a köteg ÖSSZES egyedi rendelését, és a kötegidőt a sorok számával osztjuk.
+    //
+    // Ez nem munkaállomás-specifikus: minden olyan állomásnál működik,
+    // ahol batch_code-os köteges lejelentés van.
+    if (hasOrderFilter && rawOrderFilteredLogs.length > 0) {
+      const batchCodes = Array.from(new Set(
+        rawOrderFilteredLogs
+          .map((log) => String(log.batch_code || "").trim())
+          .filter(Boolean)
+      ));
+
+      if (batchCodes.length > 0) {
+        const batchMembersByCode = new Map<string, Set<string>>();
+
+        for (let index = 0; index < batchCodes.length; index += 50) {
+          const chunk = batchCodes.slice(index, index + 50);
+
+          let batchResponse = await supabase
+            .from("work_logs")
+            .select("batch_code, order_number")
+            .in("batch_code", chunk)
+            .limit(10000);
+
+          if (batchResponse.error) {
+            batchResponse = await supabase
+              .from("work_log")
+              .select("batch_code, order_number")
+              .in("batch_code", chunk)
+              .limit(10000);
+          }
+
+          if (batchResponse.error) {
+            console.warn("Köteg rendeléseinek betöltési hibája a vezetői műszerfalhoz:", batchResponse.error);
+            continue;
+          }
+
+          ((batchResponse.data || []) as Array<{ batch_code?: string | null; order_number?: string | null }>).forEach((row) => {
+            const batchCode = String(row.batch_code || "").trim();
+            const orderNumber = String(row.order_number || "").trim();
+            if (!batchCode || !orderNumber) return;
+
+            if (!batchMembersByCode.has(batchCode)) {
+              batchMembersByCode.set(batchCode, new Set<string>());
+            }
+            batchMembersByCode.get(batchCode)!.add(orderNumber);
+          });
+        }
+
+        const selectedOrdersByBatch = new Map<string, Set<string>>();
+        rawOrderFilteredLogs.forEach((log) => {
+          const batchCode = String(log.batch_code || "").trim();
+          const orderNumber = String(log.order_number || "").trim();
+          if (!batchCode || !orderNumber) return;
+
+          if (!selectedOrdersByBatch.has(batchCode)) {
+            selectedOrdersByBatch.set(batchCode, new Set<string>());
+          }
+          selectedOrdersByBatch.get(batchCode)!.add(orderNumber);
+        });
+
+        orderFilteredLogs = rawOrderFilteredLogs.map((log) => {
+          const batchCode = String(log.batch_code || "").trim();
+          if (!batchCode) return log;
+
+          const totalMembers = batchMembersByCode.get(batchCode)?.size || 1;
+          const selectedMembers = selectedOrdersByBatch.get(batchCode)?.size || 1;
+
+          return {
+            ...log,
+            dashboard_batch_member_count: Math.max(1, totalMembers),
+            dashboard_batch_selected_member_count: Math.max(1, Math.min(totalMembers, selectedMembers)),
+          };
+        });
+      }
+    }
 
     const rangeStartMs = new Date(range.startIso).getTime();
     const rangeEndMs = new Date(range.endIso).getTime();
@@ -14977,13 +15117,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const endAt = getDashboardLogEndAt(log);
     if (!startAt || !endAt) return "Folyamatban";
 
-    const startMs = new Date(startAt).getTime();
-    const endMs = new Date(endAt).getTime();
-    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
-      return "Folyamatban";
-    }
+    const perOrderMinutes = getDashboardPerOrderDurationMinutes(log);
+    if (perOrderMinutes === null) return "Folyamatban";
 
-    return formatDuration(Math.round((endMs - startMs) / 60000));
+    return formatDuration(perOrderMinutes);
   }
 
   function getFilteredDashboardActivity(): {
