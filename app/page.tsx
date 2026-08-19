@@ -1333,6 +1333,7 @@ const PRODUCTION_CARD_TYPE_FIELD_ID = "__card_product_type__";
 const PRODUCTION_CARD_STATUS_FIELD_ID = "__card_status__";
 const PRODUCTION_CARD_START_WORKER_FIELD_ID = "__card_start_worker__";
 const PRODUCTION_CARD_END_WORKER_FIELD_ID = "__card_end_worker__";
+const PRODUCTION_CARD_ELAPSED_FIELD_ID = "__card_elapsed_time__";
 const PRODUCTION_CARD_TOK_FIELD_ID = "__card_tok_completed__";
 const PRODUCTION_CARD_NYILO_FIELD_ID = "__card_nyilo_completed__";
 const PRODUCTION_CARD_FIELD_IDS = [
@@ -1344,6 +1345,7 @@ const PRODUCTION_CARD_FIELD_IDS = [
   PRODUCTION_CARD_STATUS_FIELD_ID,
   PRODUCTION_CARD_START_WORKER_FIELD_ID,
   PRODUCTION_CARD_END_WORKER_FIELD_ID,
+  PRODUCTION_CARD_ELAPSED_FIELD_ID,
   PRODUCTION_CARD_TOK_FIELD_ID,
   PRODUCTION_CARD_NYILO_FIELD_ID,
  ] as const;
@@ -1369,6 +1371,7 @@ const PRODUCTION_CARD_REQUIRED_FIELD_IDS = [
   PRODUCTION_CARD_STATUS_FIELD_ID,
   PRODUCTION_CARD_START_WORKER_FIELD_ID,
   PRODUCTION_CARD_END_WORKER_FIELD_ID,
+  PRODUCTION_CARD_ELAPSED_FIELD_ID,
 ] as const;
 
 function isRequiredProductionCardField(fieldId: string): boolean {
@@ -1383,6 +1386,7 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "megnevezes", label: "megnevezes", dataType: "text" },
     { key: "mennyiseg", label: "mennyiseg", dataType: "integer" },
     { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
+    { key: "statusz", label: "Státusz", dataType: "text" },
   ],
   osszeallitas: [
     { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
@@ -1397,6 +1401,7 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "normaido", label: "normaidő", dataType: "text" },
     { key: "szin", label: "szín", dataType: "text" },
     { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
+    { key: "statusz", label: "Státusz", dataType: "text" },
   ],
   lakatos: [
     { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
@@ -1419,9 +1424,9 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "takaro_belul2", label: "takaró belül2", dataType: "text" },
     { key: "takaroval", label: "takaróval", dataType: "text" },
     { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
+    { key: "statusz", label: "Státusz", dataType: "text" },
   ],
   szinter: [
-    // PONTOSAN a Napi_termelesi_terv.xlsx / Szinter munkafül üzleti oszlopai.
     { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
     { key: "gyartasi_szam", label: "gyártási szám", dataType: "text" },
     { key: "szin", label: "szín", dataType: "text" },
@@ -1432,8 +1437,9 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "tipus", label: "típus", dataType: "text" },
     { key: "takaro", label: "takaró", dataType: "text" },
     { key: "osszefogo_lemez", label: "összefogó lemez", dataType: "text" },
-    { key: "beszereles_datum", label: "beszerelés dátum", dataType: "date" },
+    { key: "beszereles_datuma", label: "beszerelés dátuma", dataType: "date" },
     { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
+    { key: "statusz", label: "Státusz", dataType: "text" },
   ],
   asztalos: [
     { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
@@ -1447,6 +1453,7 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "fa_szine_belul", label: "fa színe belül", dataType: "text" },
     { key: "beepites_datuma", label: "beépítés dátuma", dataType: "date" },
     { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
+    { key: "statusz", label: "Státusz", dataType: "text" },
   ],
   szereles: [
     { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
@@ -1454,7 +1461,12 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "rsz", label: "rsz", dataType: "text" },
     { key: "tipus", label: "típus", dataType: "text" },
     { key: "szin", label: "szín", dataType: "text" },
-    { key: "elszallitos", label: "elszállítós", dataType: "text" },
+    { key: "szinter", label: "szinter", dataType: "text" },
+    { key: "foliazo", label: "fóliázó", dataType: "text" },
+    { key: "raktar", label: "raktár", dataType: "text" },
+    { key: "elszallitos_telephely", label: "elszállítós_telephely", dataType: "text" },
+    { key: "beepites_datuma", label: "beépítés dátuma", dataType: "date" },
+    { key: "statusz", label: "Státusz", dataType: "text" },
   ],
   primapower: [
     { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
@@ -1462,6 +1474,7 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "megnevezes", label: "megnevezes", dataType: "text" },
     { key: "mennyiseg", label: "mennyiseg", dataType: "integer" },
     { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
+    { key: "statusz", label: "Státusz", dataType: "text" },
   ],
   lezerhegesztes: [
     { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
@@ -1469,26 +1482,49 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "megnevezes", label: "megnevezes", dataType: "text" },
     { key: "mennyiseg", label: "mennyiseg", dataType: "integer" },
     { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
+    { key: "statusz", label: "Státusz", dataType: "text" },
+  ],
+  csomagolas: [
+    { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
+    { key: "gyartasi_szam", label: "gyártási szám", dataType: "text" },
+    { key: "rsz", label: "rsz", dataType: "text" },
+    { key: "tipus", label: "tipus", dataType: "text" },
+    { key: "uveges", label: "üveges", dataType: "text" },
+    { key: "kulso_lap", label: "külső lap", dataType: "text" },
+    { key: "fa_szine_kivul", label: "fa színe kívül", dataType: "text" },
+    { key: "belso_lap", label: "belső lap", dataType: "text" },
+    { key: "fa_szine_belul", label: "fa színe belül", dataType: "text" },
+    { key: "beepites_datuma", label: "beépítés dátuma", dataType: "date" },
+    { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
+    { key: "statusz", label: "Státusz", dataType: "text" },
   ],
   foliazo: [
-    { key: "sorszam", label: "sorszam", dataType: "text" },
-    { key: "gyartasi_szam", label: "gyártási szám", dataType: "text" },
-    { key: "megnevezes", label: "megnevezes", dataType: "text" },
-    { key: "mennyiseg", label: "mennyiseg", dataType: "integer" },
     { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
+    { key: "gyartasi_szam", label: "gyártási szám", dataType: "text" },
+    { key: "rsz", label: "rsz", dataType: "text" },
     { key: "tipus", label: "tipus", dataType: "text" },
+    { key: "uveges", label: "üveges", dataType: "text" },
+    { key: "kulso_lap", label: "külső lap", dataType: "text" },
     { key: "fa_szine_kivul", label: "fa színe kívül", dataType: "text" },
+    { key: "belso_lap", label: "belső lap", dataType: "text" },
     { key: "fa_szine_belul", label: "fa színe belül", dataType: "text" },
+    { key: "beepites_datuma", label: "beépítés dátuma", dataType: "date" },
+    { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
+    { key: "statusz", label: "Státusz", dataType: "text" },
   ],
   fenyezo: [
-    { key: "sorszam", label: "sorszam", dataType: "text" },
-    { key: "gyartasi_szam", label: "gyártási szám", dataType: "text" },
-    { key: "megnevezes", label: "megnevezes", dataType: "text" },
-    { key: "mennyiseg", label: "mennyiseg", dataType: "integer" },
     { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
+    { key: "gyartasi_szam", label: "gyártási szám", dataType: "text" },
+    { key: "rsz", label: "rsz", dataType: "text" },
     { key: "tipus", label: "tipus", dataType: "text" },
+    { key: "uveges", label: "üveges", dataType: "text" },
+    { key: "kulso_lap", label: "külső lap", dataType: "text" },
     { key: "fa_szine_kivul", label: "fa színe kívül", dataType: "text" },
+    { key: "belso_lap", label: "belső lap", dataType: "text" },
     { key: "fa_szine_belul", label: "fa színe belül", dataType: "text" },
+    { key: "beepites_datuma", label: "beépítés dátuma", dataType: "date" },
+    { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
+    { key: "statusz", label: "Státusz", dataType: "text" },
   ],
 };
 
@@ -2197,10 +2233,11 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
     return `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${field.key}`;
   });
 
-  // A Szinter kártyán az Excel üzleti mezői jelennek meg, DE a három
-  // kötelező rendszermező (Állapot, Indító dolgozó, Befejező dolgozó)
-  // minden termelési kártyán mindig rajta marad.
-  if (normalizePlanColumnName(stationName) === "szinter") {
+  // Ezeknél a kártyáknál az Excel üzleti mezői a mestermezők. A kötelező
+  // rendszermezők (Állapot, Indító dolgozó, Befejező dolgozó, Eltelt idő)
+  // minden termelési kártyán automatikusan hozzáadódnak és nem rejthetők el.
+  const excelExactCardStations = new Set(["szinter", "lezerhegesztes", "csomagolas", "foliazo", "fenyezo"]);
+  if (excelExactCardStations.has(normalizePlanColumnName(stationName))) {
     return Array.from(new Set([...planFieldIds, ...PRODUCTION_CARD_REQUIRED_FIELD_IDS]));
   }
 
@@ -2219,6 +2256,7 @@ function getProductionCardFieldLabel(fieldId: string): string {
   if (fieldId === PRODUCTION_CARD_STATUS_FIELD_ID) return "Állapot";
   if (fieldId === PRODUCTION_CARD_START_WORKER_FIELD_ID) return "Indító dolgozó";
   if (fieldId === PRODUCTION_CARD_END_WORKER_FIELD_ID) return "Befejező dolgozó";
+  if (fieldId === PRODUCTION_CARD_ELAPSED_FIELD_ID) return "Eltelt idő";
   if (fieldId === PRODUCTION_CARD_TOK_FIELD_ID) return "Tok";
   if (fieldId === PRODUCTION_CARD_NYILO_FIELD_ID) return "Nyíló";
   if (fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID) return "Rendelésszám";
@@ -8213,6 +8251,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (fieldId === PRODUCTION_CARD_STATUS_FIELD_ID) return row.statusLabel;
     if (fieldId === PRODUCTION_CARD_START_WORKER_FIELD_ID) return row.startWorkerName;
     if (fieldId === PRODUCTION_CARD_END_WORKER_FIELD_ID) return row.endWorkerName;
+    if (fieldId === PRODUCTION_CARD_ELAPSED_FIELD_ID) {
+      if (!row.startedAt) return "–";
+      if (!row.endedAt) return "Folyamatban";
+      const startMs = new Date(row.startedAt).getTime();
+      const endMs = new Date(row.endedAt).getTime();
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return "–";
+      return formatDuration(Math.round((endMs - startMs) / 60000));
+    }
     if (fieldId === PRODUCTION_CARD_TOK_FIELD_ID) return row.doorWorkflow ? (row.tokKesz ? "Kész" : "Folyamatban") : "";
     if (fieldId === PRODUCTION_CARD_NYILO_FIELD_ID) return row.doorWorkflow ? (row.nyiloKesz ? "Kész" : "Folyamatban") : "";
     return "";
@@ -13246,13 +13292,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       let totalSkipped = 0;
 
       for (const stationName of importStations) {
-        const sheet = sheets.find((candidate) => candidate.name.trim().toLocaleLowerCase("hu") === stationName.trim().toLocaleLowerCase("hu"));
+        const sheet = sheets.find((candidate) => normalizePlanColumnName(candidate.name) === normalizePlanColumnName(stationName));
         if (!sheet) {
           missingSheets.push(stationName);
           continue;
         }
 
         try {
+          // A fejlécet tartalmazó, de még adat nélküli munkafül (pl. Csomagolás)
+          // nem hiba: egyszerűen 0 tervsort jelent az adott munkaállomásnak.
+          if (sheet.rows.length === 0) {
+            successfulSheets.push(`${stationName} (0 sor)`);
+            continue;
+          }
           const rows = parseStationPlanRowsFromWorkbookSheet(sheet.rows, `„${sheet.name}” munkafül`, stationName);
           const actions = await buildStationPlanMergeActions(stationName, rows, selectedFile.name);
           const result = await applyStationPlanMergeActions(stationName, actions);
