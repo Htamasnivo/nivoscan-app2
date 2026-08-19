@@ -14567,6 +14567,117 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       }
     });
 
+    // RENDELÉSSZÁM-GYORSSZŰRŐ SPECIÁLIS MŰKÖDÉS:
+    // Ha rendelésre szűrünk, a munkaállomás-listát nem csak az adott napi tervből
+    // építjük fel. A kiválasztott rendelés teljes work_logs előzményét átnézzük,
+    // így MINDEN olyan munkaállomás megjelenik, ahol a rendelésen valaha történt
+    // START vagy END jelentés. Ez független attól, hogy a jelentés melyik napon volt.
+    const normalizedActiveOrderFilters = orderFilters
+      .map((value) => normalizeDashboardOrderSearch(value))
+      .filter(Boolean);
+
+    if (normalizedActiveOrderFilters.length > 0) {
+      const reportedOrdersByStation = new Map<string, Set<string>>();
+      const reportedCompletedOrdersByStation = new Map<string, Set<string>>();
+      stations.forEach((station) => {
+        reportedOrdersByStation.set(station, new Set<string>());
+        reportedCompletedOrdersByStation.set(station, new Set<string>());
+      });
+
+      const historyLogs: WorkLogRow[] = [];
+      const seenHistoryRows = new Set<string>();
+
+      const appendHistoryRows = (rows: WorkLogRow[]): void => {
+        rows.forEach((row) => {
+          const orderNumber = String(row.order_number || "").trim();
+          if (!orderNumber || !matchesDashboardOrderFilters(orderNumber, orderFilters)) return;
+          const uniqueKey = [
+            orderNumber,
+            String(row.machine_id || ""),
+            String(row.worker_id || ""),
+            String(row.action || ""),
+            String(row.created_at || ""),
+            String(row.start_time || row.start_timestamp || ""),
+            String(row.end_time || row.end_timestamp || ""),
+          ].join("|");
+          if (seenHistoryRows.has(uniqueKey)) return;
+          seenHistoryRows.add(uniqueKey);
+          historyLogs.push(row);
+        });
+      };
+
+      for (const normalizedFilter of normalizedActiveOrderFilters) {
+        // A gyorskód formátuma pl. 07178. Ez R26 + 07 + ... + 178 mintára keres.
+        // Teljes rendelésnél (pl. R260716178) közvetlen részszöveges keresés történik.
+        const likePattern = /^\d{5}$/.test(normalizedFilter)
+          ? `R26${normalizedFilter.slice(0, 2)}%${normalizedFilter.slice(-3)}`
+          : `%${normalizedFilter}%`;
+
+        let historyResponse = await supabase
+          .from("work_logs")
+          .select(selectColumns)
+          .ilike("order_number", likePattern)
+          .order("created_at", { ascending: true })
+          .limit(10000);
+
+        if (historyResponse.error) {
+          historyResponse = await supabase
+            .from("work_log")
+            .select(selectColumns)
+            .ilike("order_number", likePattern)
+            .order("created_at", { ascending: true })
+            .limit(10000);
+        }
+
+        if (historyResponse.error) {
+          console.warn("Rendelés teljes munkaállomás-előzményének betöltési hibája:", historyResponse.error);
+          continue;
+        }
+
+        appendHistoryRows(((historyResponse.data || []) as WorkLogRow[]));
+      }
+
+      historyLogs.forEach((log) => {
+        const orderNumber = String(log.order_number || "").trim();
+        if (!orderNumber) return;
+
+        const resolvedStation = resolveLogStation(log, workers);
+        const canonicalStation = stations.find(
+          (station) => normalizeLooseText(station) === normalizeLooseText(resolvedStation)
+        );
+        if (!canonicalStation) return;
+
+        reportedOrdersByStation.get(canonicalStation)?.add(orderNumber);
+
+        const endAt = log.end_time || log.end_timestamp || (String(log.action || "").toUpperCase() === "END" ? log.created_at : null);
+        if (endAt && isFullyCompletedEndLog(log)) {
+          reportedCompletedOrdersByStation.get(canonicalStation)?.add(orderNumber);
+        }
+      });
+
+      const stationsWithReport = stations.filter((station) =>
+        (reportedOrdersByStation.get(station)?.size || 0) > 0
+      );
+
+      // Ha van tényleges work_logs előzmény, csak azokat az állomásokat mutatjuk,
+      // amelyeken a rendelést valóban jelentették. A "Terv" minimum az érintett
+      // rendelések száma, így egy tervből hiányzó, de már jelentett állomás sem tűnik el.
+      if (stationsWithReport.length > 0) {
+        return stationsWithReport.map((station) => {
+          const plannedFromTable = planOrdersByStation.get(station)?.size || 0;
+          const reportedItems = reportedOrdersByStation.get(station)?.size || 0;
+          const plannedItems = Math.max(plannedFromTable, reportedItems);
+          const completedItems = reportedCompletedOrdersByStation.get(station)?.size || 0;
+          return {
+            stationName: station,
+            plannedItems,
+            completedItems,
+            efficiencyPct: plannedItems > 0 ? Math.round((completedItems / plannedItems) * 100) : null,
+          };
+        });
+      }
+    }
+
     return stations.map((station) => {
       const plannedItems = planOrdersByStation.get(station)?.size || 0;
       const completedItems = completedOrdersByStation.get(station)?.size || 0;
