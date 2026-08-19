@@ -9600,13 +9600,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               {productionCardEditorTab === "layout" && (
                 <div style={{ display: "grid", gap: 10 }}>
                   <div style={{ padding: "10px 12px", borderRadius: 10, background: "#e0f2fe", border: "1px solid #7dd3fc", color: "#0c4a6e", fontSize: 12 }}>
-                    <strong>Elérhető mezők: {allFieldIds.length}</strong> · Az Állapot, Indító dolgozó és Befejező dolgozó kötelező mezők, ezek nem rejthetők el. A többi mező szabadon elrejthető és rendezhető.
+                    <strong>Elérhető mezők: {allFieldIds.length}</strong> · Az Állapot, Indító dolgozó, Befejező dolgozó és Eltelt idő kötelező mezők, ezek nem rejthetők el. A többi mező szabadon elrejthető és rendezhető. Az elrejtett mezők a kártyához beállított háttérszínnel jelennek meg a szerkesztőben.
                   </div>
                   {allFieldIds.map((fieldId, index) => {
                     const required = activeProductionCardTable.dataSource === "production-plan" && isRequiredProductionCardField(fieldId);
                     const hidden = !required && activeProductionCardTable.hiddenFieldIds.includes(fieldId);
                     return (
-                      <div key={fieldId} draggable onDragStart={() => { productionCardDraggedFieldIdRef.current = fieldId; }} onDragOver={(event) => event.preventDefault()} onDrop={() => { const dragged = productionCardDraggedFieldIdRef.current; productionCardDraggedFieldIdRef.current = null; if (dragged) reorderProductionCardField(dragged, fieldId); }} style={{ display: "grid", gridTemplateColumns: "32px minmax(150px, 1fr) auto auto auto", gap: 8, alignItems: "center", padding: 9, borderRadius: 10, background: hidden ? "#f1f5f9" : "#ffffff", color: "#0f172a", border: "1px solid #cbd5e1" }}>
+                      <div
+                        key={fieldId}
+                        draggable
+                        onDragStart={() => { productionCardDraggedFieldIdRef.current = fieldId; }}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={() => { const dragged = productionCardDraggedFieldIdRef.current; productionCardDraggedFieldIdRef.current = null; if (dragged) reorderProductionCardField(dragged, fieldId); }}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "32px minmax(150px, 1fr) auto auto auto",
+                          gap: 8,
+                          alignItems: "center",
+                          padding: 9,
+                          borderRadius: 10,
+                          background: hidden ? profileTheme.pageBackground : "#ffffff",
+                          color: hidden ? ensureReadableTextColor(profileTheme.pageBackground, profileTheme.headerPanelText) : "#0f172a",
+                          border: hidden ? `2px solid ${profileTheme.accentColor}` : "1px solid #cbd5e1",
+                          boxShadow: hidden ? `inset 4px 0 0 ${profileTheme.accentColor}` : "none",
+                          transition: "background-color 160ms ease, color 160ms ease, border-color 160ms ease",
+                        }}
+                      >
                         <strong>{index + 1}</strong><span>{getProductionCardFieldLabel(fieldId)}</span>
                         <button type="button" onClick={() => moveProductionCardField(fieldId, -1)} style={buttonSecondary}>←</button>
                         <button type="button" onClick={() => moveProductionCardField(fieldId, 1)} style={buttonSecondary}>→</button>
