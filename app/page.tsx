@@ -2374,23 +2374,36 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
           : table.dataSource === "backlog"
             ? "backlog"
             : "production-plan";
-        const validFields = dataSource === "scrap-replacement"
+        // FONTOS: a production-plan táblák mezői munkaállomásonként dinamikusak.
+        // Korábban itt csak a statikus PRODUCTION_CARD_FIELD_IDS lista volt érvényes,
+        // ezért a *_terv táblából származó mezők (pl. gyártási szám, rsz, külső lap)
+        // hiddenFieldIds / fieldStyles beállításai betöltéskor kieshettek. Emiatt a
+        // felhasználó elrejtett egy oszlopot, a mentés sikerült, de újratöltés után
+        // az oszlop újra megjelent. A valid mezőlista most ugyanaz a dinamikus lista,
+        // amelyet a szerkesztő és a kártya renderelése is használ.
+        const tableForFields: ProductionMonitorTableConfig = { ...table, dataSource };
+        const validFields: readonly string[] = dataSource === "scrap-replacement"
           ? PRODUCTION_CARD_SCRAP_FIELD_IDS
           : dataSource === "backlog"
             ? PRODUCTION_CARD_BACKLOG_FIELD_IDS
-            : PRODUCTION_CARD_FIELD_IDS;
+            : getProductionCardFieldIdsForTable(tableForFields, stationName);
+        const validFieldSet = new Set(validFields);
+        const nextFieldOrder = Array.from(new Set([
+          ...table.fieldOrder.filter((fieldId) => validFieldSet.has(fieldId)),
+          ...validFields.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
+        ]));
+        const nextHiddenFieldIds = Array.from(new Set(
+          table.hiddenFieldIds.filter((fieldId) => validFieldSet.has(fieldId))
+        ));
         return {
           ...table,
           dataSource,
           name: table.name || `Táblázat ${index + 1}`,
           title: table.title || table.name || `Táblázat ${index + 1}`,
-          fieldOrder: [
-            ...table.fieldOrder.filter((fieldId) => (validFields as readonly string[]).includes(fieldId)),
-            ...validFields.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
-          ],
-          hiddenFieldIds: table.hiddenFieldIds.filter((fieldId) => (validFields as readonly string[]).includes(fieldId)),
+          fieldOrder: nextFieldOrder,
+          hiddenFieldIds: nextHiddenFieldIds,
           fieldStyles: Object.fromEntries(
-            Object.entries(table.fieldStyles || {}).filter(([fieldId]) => (validFields as readonly string[]).includes(fieldId))
+            Object.entries(table.fieldStyles || {}).filter(([fieldId]) => validFieldSet.has(fieldId))
           ),
         };
       })
@@ -8383,7 +8396,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   async function saveProductionCardSettings(showFeedback = false): Promise<void> {
     const stationName = productionCardAdminStation.trim();
     if (!stationName || !productionCardLayoutLoaded) return;
-    const safeProfile = sanitizeProductionCardProfile(productionCardProfile);
+
+    // Mentés előtt ugyanazzal a munkaállomás-specifikus mezőlistával normalizáljuk
+    // a profilt, amelyből a szerkesztő dolgozik. Így az Elrejtés/Megjelenítés,
+    // sorrend és mezőformázás biztosan bekerül a Supabase settings JSON-ba.
+    const safeProfile = normalizeProductionCardProfile(
+      sanitizeProductionCardProfile(productionCardProfile),
+      stationName
+    );
     const serialized = JSON.stringify(safeProfile);
     if (!showFeedback && serialized === productionCardLastSavedPayloadRef.current) return;
 
@@ -8404,7 +8424,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       setProductionCardProfile(safeProfile);
       setProductionCardLastSavedAt(savedAt);
       if (showFeedback) {
-        setMessage({ type: "success", text: `A(z) „${stationName}” termelési kártyája elmentve.` });
+        const savedActiveTable = safeProfile.tables.find((table) => table.id === safeProfile.activeTableId) || safeProfile.tables[0];
+        const hiddenCount = savedActiveTable?.hiddenFieldIds.length || 0;
+        setMessage({
+          type: "success",
+          text: `A(z) „${stationName}” termelési kártyája elmentve. Elrejtett mezők az aktív táblában: ${hiddenCount}.`,
+        });
       }
     } catch (error) {
       console.error("A termelési kártya mentése sikertelen:", error);
