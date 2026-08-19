@@ -1408,6 +1408,7 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
   ],
   szinter: [
+    // PONTOSAN a Napi_termelesi_terv.xlsx / Szinter munkafül üzleti oszlopai.
     { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
     { key: "gyartasi_szam", label: "gyártási szám", dataType: "text" },
     { key: "szin", label: "szín", dataType: "text" },
@@ -1418,7 +1419,7 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "tipus", label: "típus", dataType: "text" },
     { key: "takaro", label: "takaró", dataType: "text" },
     { key: "osszefogo_lemez", label: "összefogó lemez", dataType: "text" },
-    { key: "beszereles_datuma", label: "beszerelés dátuma", dataType: "date" },
+    { key: "beszereles_datum", label: "beszerelés dátum", dataType: "date" },
     { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
   ],
   asztalos: [
@@ -2183,6 +2184,13 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
     return `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${field.key}`;
   });
 
+  // A Szinter termelési kártyán a Napi_termelesi_terv.xlsx Szinter munkafül
+  // legyen az egyetlen üzleti séma. Így nem jelennek meg a generikus
+  // Sorszám / Megnevezés / Mennyiség / Állapot / dolgozó / Tok / Nyíló mezők.
+  if (normalizePlanColumnName(stationName) === "szinter") {
+    return Array.from(new Set(planFieldIds));
+  }
+
   return Array.from(new Set([...planFieldIds, ...PRODUCTION_CARD_FIELD_IDS]));
 }
 
@@ -2351,8 +2359,11 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
   const theme = cloneProductionMonitorTheme(PRODUCTION_MONITOR_THEME_PRESETS["industrial-night"].theme);
   const table = createDefaultProductionMonitorTable(`${cleanStationName} termelési kártya`, "card-table-default", theme);
   table.dataSource = "production-plan";
-  table.fieldOrder = [...PRODUCTION_CARD_FIELD_IDS];
-  table.hiddenFieldIds = [PRODUCTION_CARD_DATE_FIELD_ID];
+  const isSzinterExcelSchema = normalizePlanColumnName(cleanStationName) === "szinter";
+  table.fieldOrder = isSzinterExcelSchema
+    ? [...getProductionCardFieldIdsForTable(table, cleanStationName)]
+    : [...PRODUCTION_CARD_FIELD_IDS];
+  table.hiddenFieldIds = isSzinterExcelSchema ? [] : [PRODUCTION_CARD_DATE_FIELD_ID];
   table.fieldStyles = {
     [PRODUCTION_CARD_ORDER_FIELD_ID]: {
       ...normalizeProductionMonitorFieldStyle(null),
