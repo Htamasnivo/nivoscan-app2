@@ -5114,6 +5114,7 @@ export default function Page() {
   const [officeWindowPresetByKey, setOfficeWindowPresetByKey] = useState<Record<string, OfficeThemePresetId>>({});
   const [officeUiAutoSaveState, setOfficeUiAutoSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const officeUiAutoSaveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  const officeThemeScopeMenuRef = useRef<HTMLDivElement | null>(null);
   const [dashboardData, setDashboardData] = useState<DashboardData>({
     logs: [],
     availableOrderNumbers: [],
@@ -5130,6 +5131,24 @@ export default function Page() {
     dailyEfficiencyPct: 0,
     lastUpdatedAt: "",
   });
+
+  useEffect(() => {
+    if (!officeThemeScopeMenuOpen) return;
+
+    const handleOutsidePointerDown = (event: MouseEvent | PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+
+      if (!officeThemeScopeMenuRef.current?.contains(target)) {
+        setOfficeThemeScopeMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handleOutsidePointerDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", handleOutsidePointerDown, true);
+    };
+  }, [officeThemeScopeMenuOpen]);
 
   const [reproductionReportFilterMode, setReproductionReportFilterMode] = useState<ReproductionReportFilterMode>("monthly");
   const [reproductionReportDate, setReproductionReportDate] = useState(getLocalDateKey(new Date()));
@@ -7236,7 +7255,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             </div>
 
             <div style={{ display:"grid", gridTemplateColumns:"minmax(240px, 360px) 1fr", gap:12, marginBottom:14 }}>
-              <div style={{ display:"grid", gap:6, fontWeight:900, position:"relative" }}>
+              <div
+                ref={officeThemeScopeMenuRef}
+                style={{ display:"grid", gap:6, fontWeight:900, position:"relative" }}
+              >
                 <span>Mit szeretnél szerkeszteni?</span>
 
                 <button
@@ -7283,7 +7305,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   >
                     <button
                       type="button"
-                      onClick={() => setOfficeThemeScope("__page__")}
+                      onClick={() => {
+                        setOfficeThemeScope("__page__");
+                        setOfficeThemeScopeMenuOpen(false);
+                      }}
                       style={{
                         width:"100%",
                         display:"block",
@@ -7313,10 +7338,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                           key={item.id}
                           type="button"
                           onClick={() => {
-                            // Egyetlen kattintás azonnal átváltja a szerkesztési célt.
-                            // A lista szándékosan NYITVA marad, amíg a felhasználó
-                            // a felső választógombbal külön be nem zárja.
+                            // Egyetlen kattintás azonnal átváltja a szerkesztési célt,
+                            // majd bezárja csak a legördülő listát.
                             setOfficeThemeScope(item.id);
+                            setOfficeThemeScopeMenuOpen(false);
                           }}
                           style={{
                             width:"100%",
@@ -7342,24 +7367,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       );
                     })}
 
-                    <button
-                      type="button"
-                      onClick={() => setOfficeThemeScopeMenuOpen(false)}
-                      style={{
-                        width:"100%",
-                        marginTop:4,
-                        padding:"9px 12px",
-                        borderRadius:Math.max(4, editorTheme.borderRadius - 6),
-                        border:`1px solid ${editorTheme.borderColor}`,
-                        background:editorTheme.secondaryButtonBackground,
-                        color:editorTheme.buttonText,
-                        fontFamily:editorTheme.fontFamily,
-                        fontWeight:900,
-                        cursor:"pointer",
-                      }}
-                    >
-                      ▲ Lista bezárása
-                    </button>
                   </div>
                 )}
               </div>
