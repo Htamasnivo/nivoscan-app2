@@ -382,6 +382,44 @@ type OfficeThemePresetDefinition = {
 type OfficeWindowDefinition = { id: string; label: string };
 const OFFICE_WINDOW_UI_PREFIX = "office-window:";
 
+
+function ensureReadableOfficeTextForBackgrounds(backgrounds: string[], preferred: string, minimumContrast = 4.5): string {
+  const validBackgrounds = backgrounds.filter((color) => Boolean(normalizeReadableHexColor(color)));
+  const preferredHex = normalizeReadableHexColor(preferred);
+  if (!validBackgrounds.length) return preferred;
+  if (preferredHex && validBackgrounds.every((background) => productionCardContrastRatio(background, preferredHex) >= minimumContrast)) {
+    return preferredHex;
+  }
+  const blackScore = Math.min(...validBackgrounds.map((background) => productionCardContrastRatio(background, "#000000")));
+  const whiteScore = Math.min(...validBackgrounds.map((background) => productionCardContrastRatio(background, "#FFFFFF")));
+  return blackScore >= whiteScore ? "#000000" : "#FFFFFF";
+}
+
+function ensureReadableOfficeTheme(theme: OfficeThemeConfig): OfficeThemeConfig {
+  // A megjelenésszerkesztőben szabadon választható színek maradnak, de
+  // a fontos szövegszínek nem menthetők olvashatatlan kontraszttal.
+  return {
+    ...theme,
+    textColor: ensureReadableOfficeTextForBackgrounds(
+      [theme.pageBackground, theme.panelBackground, theme.panelAltBackground, theme.sectionBackground, theme.headerBackground],
+      theme.textColor,
+      4.5
+    ),
+    mutedText: ensureReadableOfficeTextForBackgrounds(
+      [theme.panelBackground, theme.panelAltBackground, theme.sectionBackground],
+      theme.mutedText,
+      3.5
+    ),
+    inputText: ensureReadableOfficeTextForBackgrounds([theme.inputBackground], theme.inputText, 4.5),
+    navText: ensureReadableOfficeTextForBackgrounds([theme.navBackground, theme.navActiveBackground], theme.navText, 4.5),
+    buttonText: ensureReadableOfficeTextForBackgrounds(
+      [theme.primaryButtonBackground, theme.secondaryButtonBackground],
+      theme.buttonText,
+      4.5
+    ),
+  };
+}
+
 function buildOfficeTheme(input: {
   page: string; panel: string; alt: string; text: string; muted: string; border: string; accent: string;
   input?: string; inputText?: string; nav?: string; navActive?: string; navText?: string;
@@ -389,7 +427,7 @@ function buildOfficeTheme(input: {
   active?: string; error?: string; font?: string; baseFontSize?: number; titleFontSize?: number; fontWeight?: number;
   borderWidth?: number; borderRadius?: number; fieldHeight?: number; padding?: number; gap?: number; shadowBlur?: number; shadowOpacity?: number;
 }): OfficeThemeConfig {
-  return {
+  const theme: OfficeThemeConfig = {
     pageBackground: input.page,
     panelBackground: input.panel,
     panelAltBackground: input.alt,
@@ -421,6 +459,7 @@ function buildOfficeTheme(input: {
     shadowBlur: input.shadowBlur ?? 16,
     shadowOpacity: input.shadowOpacity ?? 0.20,
   };
+  return ensureReadableOfficeTheme(theme);
 }
 
 const OFFICE_THEME_PRESETS: Record<Exclude<OfficeThemePresetId, "custom">, OfficeThemePresetDefinition> = {
@@ -461,7 +500,7 @@ const OFFICE_THEME_PRESETS: Record<Exclude<OfficeThemePresetId, "custom">, Offic
   "matte-anthracite": { name:"Matt antracit", description:"Antracit szürke, modern és elegáns.", group:"matte", theme:buildOfficeTheme({ page:"#202326", panel:"#2b2f33", alt:"#353a3f", text:"#eef0f2", muted:"#aeb5bb", border:"#5d656c", accent:"#7d8992", input:"#25292c", nav:"#2b2f33", navActive:"#4b545c", header:"#353a3f", section:"#2b2f33", primary:"#65717a", secondary:"#3b4146", active:"#84a27d", error:"#c16a6a", shadowOpacity:0.14 }) },
 };
 
-function cloneOfficeTheme(theme: OfficeThemeConfig): OfficeThemeConfig { return { ...theme }; }
+function cloneOfficeTheme(theme: OfficeThemeConfig): OfficeThemeConfig { return ensureReadableOfficeTheme({ ...theme }); }
 function createDefaultOfficeThemeMap(): Record<OfficePageKey, OfficeThemeConfig> {
   const base = OFFICE_THEME_PRESETS["industrial-night"].theme;
   return {
@@ -5249,7 +5288,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         worker_id: activeWorker.id,
         page_key: dbPageKey,
         theme_preset: preset,
-        theme_json: theme,
+        theme_json: ensureReadableOfficeTheme(theme),
         updated_at: new Date().toISOString(),
       };
       if (existing) {
@@ -5284,7 +5323,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function updateOfficeTheme(pageKey: OfficePageKey, patch: Partial<OfficeThemeConfig>): void {
-    const nextTheme = { ...getOfficeTheme(pageKey), ...patch };
+    const nextTheme = ensureReadableOfficeTheme({ ...getOfficeTheme(pageKey), ...patch });
     setOfficeThemePresetByPage((current) => ({ ...current, [pageKey]: "custom" }));
     setOfficeThemeByPage((current) => ({ ...current, [pageKey]: nextTheme }));
     queueOfficeUiPreferenceSave(pageKey, "custom", nextTheme);
@@ -5300,7 +5339,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   function updateOfficeWindowTheme(pageKey: OfficePageKey, windowKey: string, patch: Partial<OfficeThemeConfig>): void {
     const stateKey = officeWindowStateKey(pageKey, windowKey);
-    const nextTheme = { ...getOfficeWindowTheme(pageKey, windowKey), ...patch };
+    const nextTheme = ensureReadableOfficeTheme({ ...getOfficeWindowTheme(pageKey, windowKey), ...patch });
     setOfficeWindowPresetByKey((current) => ({ ...current, [stateKey]: "custom" }));
     setOfficeWindowThemeByKey((current) => ({ ...current, [stateKey]: nextTheme }));
     queueOfficeUiPreferenceSave(officeWindowDbKey(pageKey, windowKey), "custom", nextTheme);
@@ -5326,7 +5365,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       }
       const previousPresetRaw = String(row.previous_theme_preset || "custom") as OfficeThemePresetId;
       const previousPreset: OfficeThemePresetId = previousPresetRaw === "custom" || Object.prototype.hasOwnProperty.call(OFFICE_THEME_PRESETS, previousPresetRaw) ? previousPresetRaw : "custom";
-      const previousTheme = { ...getOfficeTheme(pageKey), ...((row.previous_theme_json || {}) as Partial<OfficeThemeConfig>) };
+      const previousTheme = ensureReadableOfficeTheme({ ...getOfficeTheme(pageKey), ...((row.previous_theme_json || {}) as Partial<OfficeThemeConfig>) });
       const currentTheme = (row.theme_json || {}) as Record<string, unknown>;
       const currentPreset = String(row.theme_preset || "custom");
       const swapResponse = await supabase.from("user_ui_preferences").update({
@@ -5386,7 +5425,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const presetRaw = String(row.theme_preset || "industrial-night") as OfficeThemePresetId;
         const validPreset: OfficeThemePresetId = presetRaw === "custom" || Object.prototype.hasOwnProperty.call(OFFICE_THEME_PRESETS, presetRaw) ? presetRaw : "industrial-night";
         const baseTheme = validPreset === "custom" ? OFFICE_THEME_PRESETS["industrial-night"].theme : OFFICE_THEME_PRESETS[validPreset as Exclude<OfficeThemePresetId,"custom">].theme;
-        const loadedTheme = { ...cloneOfficeTheme(baseTheme), ...((row.theme_json || {}) as Partial<OfficeThemeConfig>) };
+        const loadedTheme = ensureReadableOfficeTheme({ ...cloneOfficeTheme(baseTheme), ...((row.theme_json || {}) as Partial<OfficeThemeConfig>) });
         if (pageKeyRaw.startsWith(OFFICE_WINDOW_UI_PREFIX)) {
           const stateKey = pageKeyRaw.slice(OFFICE_WINDOW_UI_PREFIX.length);
           nextWindowThemes[stateKey] = loadedTheme;
@@ -9350,7 +9389,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const editorLabelStyle: React.CSSProperties = { display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "#334155" };
     const editorControlStyle: React.CSSProperties = { width: "100%", boxSizing: "border-box", border: "1px solid #cbd5e1", borderRadius: 8, padding: "9px 10px", background: "#ffffff", color: "#0f172a" };
-    const editorSectionStyle: React.CSSProperties = { border: "1px solid #cbd5e1", borderRadius: 12, padding: 14, background: "#f8fafc" };
+    const editorSectionStyle: React.CSSProperties = { border: "1px solid #cbd5e1", borderRadius: 12, padding: 14, background: "#f8fafc", color: "#0f172a" };
     const renderColorControl = (label: string, value: string, onChange: (value: string) => void) => (
       <label style={editorLabelStyle}>
         <span>{label}</span>
@@ -9579,6 +9618,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       borderRadius: 12,
       padding: 14,
       background: "#f8fafc",
+      color: "#0f172a",
     };
     const tabButtonStyle = (tab: typeof productionMonitorEditorTab): React.CSSProperties => ({
       ...(productionMonitorEditorTab === tab ? buttonPrimary : buttonSecondary),
@@ -10147,6 +10187,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                             border: selectedFieldId === fieldId ? `2px solid ${productionMonitorTheme.accentColor}` : isVisible ? "1px solid #93c5fd" : "1px dashed #94a3b8",
                             borderRadius: 10,
                             background: isVisible ? "#eff6ff" : "#f8fafc",
+                            color: "#0f172a",
                             opacity: isVisible ? 1 : 0.68,
                             cursor: "grab",
                           }}
@@ -11077,6 +11118,150 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       periodScopeLabel: reportSettings.frequency === "weekly" ? "Teljes heti" : "Mai",
     };
   }, [filteredStatsRows, filteredRawLogs, roleSummary, unfinishedStatsRows, reportSettings.frequency]);
+
+  // Globális olvashatósági védelem: az egész alkalmazásban figyeli a ténylegesen
+  // kirajzolt hátteret. Ha a szöveg kontrasztja túl alacsony, automatikusan fekete vagy
+  // fehér szöveget választ a tényleges háttér alapján. Ez az inline és a felhasználó által
+  // mentett témákra is működik, ezért egyetlen képernyőn sem maradhat fehér szöveg
+  // fehér vagy nagyon világos háttéren.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+
+    type RgbaColor = { r: number; g: number; b: number; a: number };
+    const MIN_CONTRAST = 4.5;
+    const AUTO_FLAG = "nivoAutoContrast";
+    const ORIGINAL_COLOR = "nivoOriginalInlineColor";
+    const ORIGINAL_PRIORITY = "nivoOriginalInlineColorPriority";
+
+    const parseCssColor = (value: string): RgbaColor | null => {
+      const text = String(value || "").trim();
+      if (!text || text === "transparent") return null;
+      const rgb = text.match(/^rgba?\(\s*([\d.]+)\s*[, ]\s*([\d.]+)\s*[, ]\s*([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/i);
+      if (rgb) {
+        return {
+          r: Math.max(0, Math.min(255, Number(rgb[1]))),
+          g: Math.max(0, Math.min(255, Number(rgb[2]))),
+          b: Math.max(0, Math.min(255, Number(rgb[3]))),
+          a: rgb[4] === undefined ? 1 : Math.max(0, Math.min(1, Number(rgb[4]))),
+        };
+      }
+      const hex = text.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+      if (!hex) return null;
+      let raw = hex[1];
+      if (raw.length === 3) raw = raw.split("").map((char) => char + char).join("");
+      return {
+        r: parseInt(raw.slice(0, 2), 16),
+        g: parseInt(raw.slice(2, 4), 16),
+        b: parseInt(raw.slice(4, 6), 16),
+        a: 1,
+      };
+    };
+
+    const channelLuminance = (channel: number): number => {
+      const value = channel / 255;
+      return value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+    };
+    const luminance = (color: RgbaColor): number =>
+      0.2126 * channelLuminance(color.r) + 0.7152 * channelLuminance(color.g) + 0.0722 * channelLuminance(color.b);
+    const contrast = (a: RgbaColor, b: RgbaColor): number => {
+      const l1 = luminance(a);
+      const l2 = luminance(b);
+      return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    };
+
+    const getEffectiveBackground = (element: HTMLElement): RgbaColor => {
+      let node: HTMLElement | null = element;
+      while (node) {
+        const background = parseCssColor(window.getComputedStyle(node).backgroundColor);
+        if (background && background.a >= 0.92) return background;
+        node = node.parentElement;
+      }
+      return { r: 255, g: 255, b: 255, a: 1 };
+    };
+
+    const restoreAutoColor = (element: HTMLElement): void => {
+      if (!element.dataset[AUTO_FLAG]) return;
+      const originalColor = element.dataset[ORIGINAL_COLOR] || "";
+      const originalPriority = element.dataset[ORIGINAL_PRIORITY] || "";
+      if (originalColor) element.style.setProperty("color", originalColor, originalPriority);
+      else element.style.removeProperty("color");
+      delete element.dataset[AUTO_FLAG];
+      delete element.dataset[ORIGINAL_COLOR];
+      delete element.dataset[ORIGINAL_PRIORITY];
+    };
+
+    const fixElement = (element: HTMLElement): void => {
+      const tag = element.tagName.toLowerCase();
+      if (["script", "style", "svg", "path", "canvas", "img", "video", "source"].includes(tag)) return;
+
+      const background = getEffectiveBackground(element);
+
+      // Ha korábban már javítottuk, de közben téma/háttér váltott, előbb ellenőrizzük,
+      // hogy a kényszerített szín továbbra is megfelelő-e.
+      if (element.dataset[AUTO_FLAG]) {
+        const forcedForeground = parseCssColor(window.getComputedStyle(element).color);
+        if (forcedForeground && contrast(background, forcedForeground) >= MIN_CONTRAST) return;
+        restoreAutoColor(element);
+      }
+
+      const foreground = parseCssColor(window.getComputedStyle(element).color);
+      if (!foreground || contrast(background, foreground) >= MIN_CONTRAST) return;
+
+      const black: RgbaColor = { r: 15, g: 23, b: 42, a: 1 };
+      const white: RgbaColor = { r: 255, g: 255, b: 255, a: 1 };
+      const useDarkText = contrast(background, black) >= contrast(background, white);
+      const replacement = useDarkText ? "#0f172a" : "#ffffff";
+
+      element.dataset[ORIGINAL_COLOR] = element.style.getPropertyValue("color") || "";
+      element.dataset[ORIGINAL_PRIORITY] = element.style.getPropertyPriority("color") || "";
+      element.dataset[AUTO_FLAG] = useDarkText ? "dark" : "light";
+      element.style.setProperty("color", replacement, "important");
+    };
+
+    const fixSubtree = (root: ParentNode): void => {
+      if (root instanceof HTMLElement) fixElement(root);
+      root.querySelectorAll<HTMLElement>("*").forEach(fixElement);
+    };
+
+    let frame = 0;
+    const scheduleFullScan = (): void => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        fixSubtree(document.body);
+      });
+    };
+
+    scheduleFullScan();
+    const observer = new MutationObserver((mutations) => {
+      let requiresScan = false;
+      for (const mutation of mutations) {
+        if (mutation.type === "childList" || mutation.type === "attributes") {
+          requiresScan = true;
+          break;
+        }
+      }
+      if (requiresScan) scheduleFullScan();
+    });
+    observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["style", "class"],
+    });
+
+    const onThemeTransition = (): void => scheduleFullScan();
+    window.addEventListener("resize", onThemeTransition);
+    window.addEventListener("focus", onThemeTransition);
+
+    return () => {
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+      window.removeEventListener("resize", onThemeTransition);
+      window.removeEventListener("focus", onThemeTransition);
+      document.querySelectorAll<HTMLElement>(`[data-${AUTO_FLAG.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}]`).forEach(restoreAutoColor);
+    };
+  }, []);
 
   useEffect(() => {
     if (!supabase) return;
