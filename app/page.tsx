@@ -14733,6 +14733,46 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
     const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+    const hasOrderFilter = orderFilters.some((value) => Boolean(normalizeDashboardOrderSearch(value)));
+
+    const normalizeDashboardLogRow = (row: WorkLogRow): WorkLogRow => ({
+      ...row,
+      action: (String(row.action || "").toUpperCase() === "END" ? "END" : "START") as WorkAction,
+      scrap_qty: Number(row.scrap_qty || 0),
+      worker_name: row.worker_name || workers.find((worker) => Number(worker.id) === Number(row.worker_id))?.["Teljes nev"] || null,
+    });
+
+    const makeDashboardLogUniqueKey = (row: WorkLogRow): string => [
+      String(row.order_number || ""),
+      String(row.machine_id || ""),
+      String(row.worker_id || ""),
+      String(row.worker_name || ""),
+      String(row.action || ""),
+      String(row.created_at || ""),
+      String(row.start_time || row.start_timestamp || ""),
+      String(row.end_time || row.end_timestamp || ""),
+      String(row.batch_code || ""),
+      String(row.operation_code || ""),
+    ].join("|");
+
+    const mergeDashboardLogs = (...groups: WorkLogRow[][]): WorkLogRow[] => {
+      const result: WorkLogRow[] = [];
+      const seen = new Set<string>();
+      groups.flat().forEach((row) => {
+        const normalized = normalizeDashboardLogRow(row);
+        if (!String(normalized.order_number || "").trim()) return;
+        const key = makeDashboardLogUniqueKey(normalized);
+        if (seen.has(key)) return;
+        seen.add(key);
+        result.push(normalized);
+      });
+      return result;
+    };
+
+    // Normál műszerfal: a kiválasztott időszakot olvassuk.
+    // Rendelésszám-szűrésnél ez a lekérés csak a gyorskód-javaslatokhoz és
+    // kompatibilitáshoz marad meg; a kiválasztott rendeléshez lent TELJES
+    // work_logs előzményt töltünk be dátumkorlátozás nélkül.
     const bufferedStart = new Date(range.startIso);
     bufferedStart.setDate(bufferedStart.getDate() - 1);
 
@@ -14756,39 +14796,117 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     if (response.error) throw response.error;
 
-    const allFetchedLogs: WorkLogRow[] = ((response.data as WorkLogRow[]) || [])
-      .filter((row) => !!String(row.order_number || "").trim())
-      .map((row) => ({
-        ...row,
-        action: (String(row.action || "").toUpperCase() === "END" ? "END" : "START") as WorkAction,
-        scrap_qty: Number(row.scrap_qty || 0),
-        worker_name: row.worker_name || workers.find((worker) => Number(worker.id) === Number(row.worker_id))?.["Teljes nev"] || null,
-      }));
+    const periodLogs = mergeDashboardLogs(((response.data as WorkLogRow[]) || []));
+    let fullOrderHistoryLogs: WorkLogRow[] = [];
+
+    if (hasOrderFilter) {
+      const historyGroups: WorkLogRow[][] = [];
+
+      for (const rawFilter of orderFilters) {
+        const normalizedFilter = normalizeDashboardOrderSearch(rawFilter);
+        if (!normalizedFilter) continue;
+
+        // Gyorskód: pl. 07219 -> R26 + 07 + ... + 219.
+        // Teljes vagy részleges rendelésszám: részszöveges keresés.
+        const likePattern = /^\d{5}$/.test(normalizedFilter)
+          ? `R26${normalizedFilter.slice(0, 2)}%${normalizedFilter.slice(-3)}`
+          : `%${normalizedFilter}%`;
+
+        let historyResponse = await supabase
+          .from("work_logs")
+          .select(selectColumns)
+          .ilike("order_number", likePattern)
+          .order("created_at", { ascending: true })
+          .limit(10000);
+
+        if (historyResponse.error) {
+          historyResponse = await supabase
+            .from("work_log")
+            .select(selectColumns)
+            .ilike("order_number", likePattern)
+            .order("created_at", { ascending: true })
+            .limit(10000);
+        }
+
+        if (historyResponse.error) {
+          console.warn("Rendelés teljes work_logs előzményének betöltési hibája:", historyResponse.error);
+          continue;
+        }
+
+        historyGroups.push(((historyResponse.data || []) as WorkLogRow[]));
+      }
+
+      fullOrderHistoryLogs = mergeDashboardLogs(...historyGroups)
+        .filter((log) => matchesDashboardOrderFilters(log.order_number, orderFilters));
+    }
+
+    const allFetchedLogs = hasOrderFilter
+      ? mergeDashboardLogs(periodLogs, fullOrderHistoryLogs)
+      : periodLogs;
 
     const availableOrderNumbers = Array.from(new Set(
       allFetchedLogs.map((log) => String(log.order_number || "").trim()).filter(Boolean)
     )).sort((a, b) => a.localeCompare(b, "hu"));
+
     const orderFilteredLogs = allFetchedLogs.filter((log) =>
       matchesDashboardOrderFilters(log.order_number, orderFilters)
     );
 
     const rangeStartMs = new Date(range.startIso).getTime();
     const rangeEndMs = new Date(range.endIso).getTime();
-    const visibleLogs = orderFilteredLogs.filter((log) => {
-      const eventMs = new Date(getDashboardLogEventAt(log)).getTime();
-      return Number.isFinite(eventMs) && eventMs >= rangeStartMs && eventMs < rangeEndMs;
-    });
+
+    // Rendelésszám-szűrésnél az Eseménynapló a TELJES rendelési előzményt kapja,
+    // nem csak a fent kiválasztott nap/hét/hónap eseményeit.
+    const visibleLogs = hasOrderFilter
+      ? [...orderFilteredLogs]
+      : orderFilteredLogs.filter((log) => {
+          const eventMs = new Date(getDashboardLogEventAt(log)).getTime();
+          return Number.isFinite(eventMs) && eventMs >= rangeStartMs && eventMs < rangeEndMs;
+        });
 
     const calculationLogs = [...orderFilteredLogs].sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     );
+
+    // A dolgozói teljesítmény és a folyamatban lévő munkák is a rendelés TELJES
+    // előzményéből számolódnak. Ehhez a számítási időablakot a rendelés első
+    // eseményétől a jelen pillanatig / utolsó eseményig nyitjuk ki.
+    let calculationRange = range;
+    if (hasOrderFilter && calculationLogs.length > 0) {
+      const timestamps: number[] = [];
+      calculationLogs.forEach((log) => {
+        [
+          log.created_at,
+          log.start_time,
+          log.start_timestamp,
+          log.end_time,
+          log.end_timestamp,
+        ].forEach((value) => {
+          if (!value) return;
+          const ms = new Date(String(value)).getTime();
+          if (Number.isFinite(ms)) timestamps.push(ms);
+        });
+      });
+
+      if (timestamps.length > 0) {
+        const firstMs = Math.min(...timestamps);
+        const lastMs = Math.max(...timestamps, Date.now());
+        calculationRange = {
+          startIso: new Date(firstMs - 60_000).toISOString(),
+          endIso: new Date(lastMs + 60_000).toISOString(),
+        };
+      }
+    }
+
     const [built, stationEfficiencyRows] = await Promise.all([
-      Promise.resolve(buildDashboardData(calculationLogs, workers, range)),
+      Promise.resolve(buildDashboardData(calculationLogs, workers, calculationRange)),
       fetchDashboardPlanEfficiency(range, orderFilters),
     ]);
 
     return {
       ...built,
+      // Fontos: a buildDashboardData saját logs mezőjét felülírjuk azzal,
+      // amit az Eseménynaplóban valóban látni akarunk.
       logs: visibleLogs,
       availableOrderNumbers,
       stationEfficiencyRows,
@@ -14878,6 +14996,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const range = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
     const rangeStartMs = new Date(range.startIso).getTime();
     const rangeEndMs = new Date(range.endIso).getTime();
+    const hasOrderFilter = dashboardOrderFiltersRef.current.some(
+      (value) => Boolean(normalizeDashboardOrderSearch(value))
+    );
 
     const matchesWorker = (workerName: string): boolean =>
       selectedWorkerValue === "all" ||
@@ -14890,9 +15011,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const openRows = dashboardData.openRows
       .filter((row) => {
         const startedMs = new Date(row.startedAt).getTime();
-        return Number.isFinite(startedMs) &&
-          startedMs >= rangeStartMs &&
-          startedMs < rangeEndMs &&
+        const matchesTime = hasOrderFilter
+          ? Number.isFinite(startedMs)
+          : Number.isFinite(startedMs) && startedMs >= rangeStartMs && startedMs < rangeEndMs;
+
+        return matchesTime &&
           matchesWorker(row.workerName) &&
           matchesStation(row.station || row.role || "");
       })
@@ -14902,9 +15025,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       .filter((log) => {
         const eventAt = getDashboardLogEventAt(log);
         const eventMs = new Date(eventAt).getTime();
-        return Number.isFinite(eventMs) &&
-          eventMs >= rangeStartMs &&
-          eventMs < rangeEndMs &&
+        const matchesTime = hasOrderFilter
+          ? Number.isFinite(eventMs)
+          : Number.isFinite(eventMs) && eventMs >= rangeStartMs && eventMs < rangeEndMs;
+
+        return matchesTime &&
           matchesWorker(getDashboardLogWorkerName(log)) &&
           matchesStation(resolveLogStation(log, workers));
       })
@@ -14944,22 +15069,31 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const currentRange = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
     const currentRangeStartMs = new Date(currentRange.startIso).getTime();
     const currentRangeEndMs = new Date(currentRange.endIso).getTime();
+    const hasOrderFilter = dashboardOrderFiltersRef.current.some(
+      (value) => Boolean(normalizeDashboardOrderSearch(value))
+    );
     const activityWorkerNames = [
       ...dashboardData.openRows
         .filter((row) => {
           const startedMs = new Date(row.startedAt).getTime();
-          return Number.isFinite(startedMs) &&
-            startedMs >= currentRangeStartMs &&
-            startedMs < currentRangeEndMs &&
+          const matchesTime = hasOrderFilter
+            ? Number.isFinite(startedMs)
+            : Number.isFinite(startedMs) &&
+              startedMs >= currentRangeStartMs &&
+              startedMs < currentRangeEndMs;
+          return matchesTime &&
             (selectedStationValue === "all" || normalizeLooseText(row.station || row.role || "") === normalizeLooseText(selectedStationValue));
         })
         .map((row) => row.workerName),
       ...dashboardData.logs
         .filter((log) => {
           const eventMs = new Date(getDashboardLogEventAt(log)).getTime();
-          return Number.isFinite(eventMs) &&
-            eventMs >= currentRangeStartMs &&
-            eventMs < currentRangeEndMs &&
+          const matchesTime = hasOrderFilter
+            ? Number.isFinite(eventMs)
+            : Number.isFinite(eventMs) &&
+              eventMs >= currentRangeStartMs &&
+              eventMs < currentRangeEndMs;
+          return matchesTime &&
             (selectedStationValue === "all" || normalizeLooseText(resolveLogStation(log, workers)) === normalizeLooseText(selectedStationValue));
         })
         .map((log) => getDashboardLogWorkerName(log)),
