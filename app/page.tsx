@@ -5103,6 +5103,10 @@ export default function Page() {
   const [officeThemePresetByPage, setOfficeThemePresetByPage] = useState<Record<OfficePageKey, OfficeThemePresetId>>(createDefaultOfficeThemePresetMap());
   const [officeThemeByPage, setOfficeThemeByPage] = useState<Record<OfficePageKey, OfficeThemeConfig>>(createDefaultOfficeThemeMap());
   const [officeThemeEditorOpen, setOfficeThemeEditorOpen] = useState(false);
+  const [officeThemeScopeMenuOpen, setOfficeThemeScopeMenuOpen] = useState(false);
+  const [officeThemeEditorChromeTheme, setOfficeThemeEditorChromeTheme] = useState<OfficeThemeConfig>(
+    () => cloneOfficeTheme(OFFICE_THEME_PRESETS["industrial-night"].theme)
+  );
   const [officeThemeSaving, setOfficeThemeSaving] = useState(false);
   const [officeThemeScope, setOfficeThemeScope] = useState<string>("__page__");
   const [officeThemePresetGroup, setOfficeThemePresetGroup] = useState<OfficeThemePresetGroup>("neon");
@@ -7152,6 +7156,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const selectedTheme = selectedWindowKey ? getOfficeWindowTheme(managementSection, selectedWindowKey) : currentTheme;
     const selectedPreset = selectedWindowKey ? getOfficeWindowPreset(managementSection, selectedWindowKey) : officeThemePresetByPage[managementSection];
     const windowDefs = getOfficeWindowDefinitions(managementSection);
+
+    // A megjelenésszerkesztő saját "krómja" külön témát használ.
+    // Emiatt az éppen szerkesztett ablak színének módosítása nem színezi át
+    // magát a szerkesztőpanelt, és az autosave miatti újrarender sem zavarja.
+    const editorTheme = officeThemeEditorChromeTheme;
+    const selectedScopeLabel = officeThemeScope === "__page__"
+      ? `TELJES OLDAL – ${items.find((item) => item.id === managementSection)?.label || managementSection}`
+      : `Ablak – ${windowDefs.find((item) => item.id === officeThemeScope)?.label || officeThemeScope}`;
     const colorFields: Array<[string, keyof OfficeThemeConfig]> = [
       ["Oldal / ablak háttere", selectedWindowKey ? "panelBackground" : "pageBackground"], ["Panel háttere", "panelBackground"], ["Másodlagos panel", "panelAltBackground"],
       ["Fejléc háttere", "headerBackground"], ["Szekció háttere", "sectionBackground"], ["Fő szöveg", "textColor"], ["Halvány szöveg", "mutedText"],
@@ -7179,40 +7191,186 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               else if (item.id === "report-delivery") void loadReportDeliveryProfiles();
             }} style={{ border:active ? `1px solid ${currentTheme.accentColor}` : "1px solid transparent", background:active ? currentTheme.navActiveBackground : "transparent", color:active ? currentTheme.textColor : currentTheme.navText, borderRadius:Math.max(4,currentTheme.borderRadius-5), padding:"10px 14px", fontWeight:800, cursor:"pointer", fontFamily:currentTheme.fontFamily }}>{item.label}</button>;
           })}
-          <button type="button" onClick={() => setOfficeThemeEditorOpen((value) => !value)} style={{ marginLeft:"auto", border:`1px solid ${currentTheme.borderColor}`, background:officeThemeEditorOpen ? currentTheme.navActiveBackground : currentTheme.panelAltBackground, color:currentTheme.textColor, borderRadius:Math.max(4,currentTheme.borderRadius-5), padding:"10px 14px", fontWeight:800, cursor:"pointer", fontFamily:currentTheme.fontFamily }}>🎨 Megjelenés</button>
+          <button
+            type="button"
+            onClick={() => {
+              if (officeThemeEditorOpen) {
+                setOfficeThemeEditorOpen(false);
+                setOfficeThemeScopeMenuOpen(false);
+                return;
+              }
+
+              // Nyitáskor lefagyasztjuk a szerkesztő SAJÁT kinézetét.
+              // A célablak szerkesztése ezt nem módosíthatja.
+              setOfficeThemeEditorChromeTheme(cloneOfficeTheme(currentTheme));
+              setOfficeThemeEditorOpen(true);
+              setOfficeThemeScopeMenuOpen(false);
+            }}
+            style={{ marginLeft:"auto", border:`1px solid ${currentTheme.borderColor}`, background:officeThemeEditorOpen ? currentTheme.navActiveBackground : currentTheme.panelAltBackground, color:currentTheme.textColor, borderRadius:Math.max(4,currentTheme.borderRadius-5), padding:"10px 14px", fontWeight:800, cursor:"pointer", fontFamily:currentTheme.fontFamily }}
+          >🎨 Megjelenés</button>
         </div>
 
         {officeThemeEditorOpen && (
-          <div style={{ marginTop:8, padding:16, borderRadius:selectedTheme.borderRadius, background:selectedTheme.panelBackground, color:selectedTheme.textColor, border:`${selectedTheme.borderWidth}px solid ${selectedTheme.borderColor}`, boxShadow:`0 12px ${selectedTheme.shadowBlur}px rgba(0,0,0,${selectedTheme.shadowOpacity})`, fontFamily:selectedTheme.fontFamily }}>
+          <div style={{ marginTop:8, padding:16, overflow:"visible", borderRadius:editorTheme.borderRadius, background:editorTheme.panelBackground, color:editorTheme.textColor, border:`${editorTheme.borderWidth}px solid ${editorTheme.borderColor}`, boxShadow:`0 12px ${editorTheme.shadowBlur}px rgba(0,0,0,${editorTheme.shadowOpacity})`, fontFamily:editorTheme.fontFamily }}>
             <div style={{ display:"flex", justifyContent:"space-between", gap:12, flexWrap:"wrap", alignItems:"center", marginBottom:12 }}>
               <div>
-                <strong style={{ fontSize:Math.max(18,selectedTheme.titleFontSize-2) }}>Teljes irodai megjelenésszerkesztő</strong>
-                <div style={{ color:selectedTheme.mutedText, fontSize:12, marginTop:4 }}>Minden menü és minden felsorolt ablak külön formázható. A módosítások automatikusan Supabase-ba mentődnek a belépett felhasználóhoz.</div>
+                <strong style={{ fontSize:Math.max(18,editorTheme.titleFontSize-2) }}>Teljes irodai megjelenésszerkesztő</strong>
+                <div style={{ color:editorTheme.mutedText, fontSize:12, marginTop:4 }}>Minden menü és minden felsorolt ablak külön formázható. A módosítások automatikusan Supabase-ba mentődnek a belépett felhasználóhoz.</div>
               </div>
               <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
-                <span style={{ color:officeUiAutoSaveState === "error" ? selectedTheme.errorColor : officeUiAutoSaveState === "saved" ? selectedTheme.activeColor : selectedTheme.mutedText, fontWeight:900, fontSize:12 }}>
+                <span style={{ color:officeUiAutoSaveState === "error" ? editorTheme.errorColor : officeUiAutoSaveState === "saved" ? editorTheme.activeColor : editorTheme.mutedText, fontWeight:900, fontSize:12 }}>
                   {officeUiAutoSaveState === "saving" ? "● Automatikus mentés..." : officeUiAutoSaveState === "saved" ? "● Automatikusan mentve" : officeUiAutoSaveState === "error" ? "● Mentési hiba" : "● Automatikus mentés aktív"}
                 </span>
-                <button type="button" onClick={() => void restorePreviousOfficeUiPreference(managementSection, selectedWindowKey || undefined)} style={{ ...buttonSecondary, background:selectedTheme.secondaryButtonBackground, color:selectedTheme.buttonText, borderColor:selectedTheme.borderColor }}>↶ Előző beállítás</button>
+                <button type="button" onClick={() => void restorePreviousOfficeUiPreference(managementSection, selectedWindowKey || undefined)} style={{ ...buttonSecondary, background:editorTheme.secondaryButtonBackground, color:editorTheme.buttonText, borderColor:editorTheme.borderColor }}>↶ Előző beállítás</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOfficeThemeScopeMenuOpen(false);
+                    setOfficeThemeEditorOpen(false);
+                  }}
+                  style={{ ...buttonSecondary, background:editorTheme.secondaryButtonBackground, color:editorTheme.buttonText, borderColor:editorTheme.borderColor }}
+                >
+                  ✕ Bezárás
+                </button>
               </div>
             </div>
 
             <div style={{ display:"grid", gridTemplateColumns:"minmax(240px, 360px) 1fr", gap:12, marginBottom:14 }}>
-              <label style={{ display:"grid", gap:6, fontWeight:900 }}>
-                Mit szeretnél szerkeszteni?
-                <select value={officeThemeScope} onChange={(event) => setOfficeThemeScope(event.target.value)} style={{ ...fieldStyle, background:selectedTheme.inputBackground, color:selectedTheme.inputText, borderColor:selectedTheme.borderColor, fontFamily:selectedTheme.fontFamily }}>
-                  <option value="__page__">TELJES OLDAL – {items.find((item) => item.id === managementSection)?.label || managementSection}</option>
-                  {windowDefs.map((item) => <option key={item.id} value={item.id}>Ablak – {item.label}</option>)}
-                </select>
-              </label>
+              <div style={{ display:"grid", gap:6, fontWeight:900, position:"relative" }}>
+                <span>Mit szeretnél szerkeszteni?</span>
+
+                <button
+                  type="button"
+                  aria-expanded={officeThemeScopeMenuOpen}
+                  onClick={() => setOfficeThemeScopeMenuOpen((open) => !open)}
+                  style={{
+                    ...fieldStyle,
+                    width:"100%",
+                    minHeight:editorTheme.fieldHeight,
+                    display:"flex",
+                    alignItems:"center",
+                    justifyContent:"space-between",
+                    gap:10,
+                    textAlign:"left",
+                    background:editorTheme.inputBackground,
+                    color:editorTheme.inputText,
+                    borderColor:editorTheme.borderColor,
+                    fontFamily:editorTheme.fontFamily,
+                    cursor:"pointer",
+                    fontWeight:800,
+                  }}
+                >
+                  <span>{selectedScopeLabel}</span>
+                  <span aria-hidden="true">{officeThemeScopeMenuOpen ? "▲" : "▼"}</span>
+                </button>
+
+                {officeThemeScopeMenuOpen && (
+                  <div
+                    style={{
+                      position:"absolute",
+                      left:0,
+                      right:0,
+                      top:`calc(100% + 4px)`,
+                      zIndex:5000,
+                      maxHeight:420,
+                      overflowY:"auto",
+                      padding:6,
+                      borderRadius:Math.max(6, editorTheme.borderRadius - 3),
+                      border:`${Math.max(1, editorTheme.borderWidth)}px solid ${editorTheme.borderColor}`,
+                      background:editorTheme.panelBackground,
+                      boxShadow:`0 14px ${Math.max(18, editorTheme.shadowBlur)}px rgba(0,0,0,0.38)`,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setOfficeThemeScope("__page__")}
+                      style={{
+                        width:"100%",
+                        display:"block",
+                        textAlign:"left",
+                        padding:"10px 12px",
+                        marginBottom:4,
+                        borderRadius:Math.max(4, editorTheme.borderRadius - 6),
+                        border:officeThemeScope === "__page__"
+                          ? `2px solid ${editorTheme.accentColor}`
+                          : `1px solid ${editorTheme.borderColor}`,
+                        background:officeThemeScope === "__page__"
+                          ? editorTheme.navActiveBackground
+                          : editorTheme.panelAltBackground,
+                        color:editorTheme.textColor,
+                        fontFamily:editorTheme.fontFamily,
+                        fontWeight:900,
+                        cursor:"pointer",
+                      }}
+                    >
+                      TELJES OLDAL – {items.find((item) => item.id === managementSection)?.label || managementSection}
+                    </button>
+
+                    {windowDefs.map((item) => {
+                      const active = officeThemeScope === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => {
+                            // Egyetlen kattintás azonnal átváltja a szerkesztési célt.
+                            // A lista szándékosan NYITVA marad, amíg a felhasználó
+                            // a felső választógombbal külön be nem zárja.
+                            setOfficeThemeScope(item.id);
+                          }}
+                          style={{
+                            width:"100%",
+                            display:"block",
+                            textAlign:"left",
+                            padding:"10px 12px",
+                            marginBottom:4,
+                            borderRadius:Math.max(4, editorTheme.borderRadius - 6),
+                            border:active
+                              ? `2px solid ${editorTheme.accentColor}`
+                              : `1px solid ${editorTheme.borderColor}`,
+                            background:active
+                              ? editorTheme.navActiveBackground
+                              : editorTheme.panelAltBackground,
+                            color:editorTheme.textColor,
+                            fontFamily:editorTheme.fontFamily,
+                            fontWeight:active ? 900 : 750,
+                            cursor:"pointer",
+                          }}
+                        >
+                          Ablak – {item.label}
+                        </button>
+                      );
+                    })}
+
+                    <button
+                      type="button"
+                      onClick={() => setOfficeThemeScopeMenuOpen(false)}
+                      style={{
+                        width:"100%",
+                        marginTop:4,
+                        padding:"9px 12px",
+                        borderRadius:Math.max(4, editorTheme.borderRadius - 6),
+                        border:`1px solid ${editorTheme.borderColor}`,
+                        background:editorTheme.secondaryButtonBackground,
+                        color:editorTheme.buttonText,
+                        fontFamily:editorTheme.fontFamily,
+                        fontWeight:900,
+                        cursor:"pointer",
+                      }}
+                    >
+                      ▲ Lista bezárása
+                    </button>
+                  </div>
+                )}
+              </div>
               <div style={{ display:"flex", gap:8, alignItems:"end", flexWrap:"wrap" }}>
-                <button type="button" onClick={() => applyCurrentOfficeStyleToWholePage(managementSection, selectedTheme, selectedPreset)} style={{ ...buttonPrimary, background:selectedTheme.primaryButtonBackground, color:selectedTheme.buttonText }}>Aktuális stílus alkalmazása az egész oldalra</button>
-                <div style={{ color:selectedTheme.mutedText, fontSize:12, paddingBottom:8 }}>Utána bármelyik ablak külön tovább módosítható.</div>
+                <button type="button" onClick={() => applyCurrentOfficeStyleToWholePage(managementSection, selectedTheme, selectedPreset)} style={{ ...buttonPrimary, background:editorTheme.primaryButtonBackground, color:editorTheme.buttonText }}>Aktuális stílus alkalmazása az egész oldalra</button>
+                <div style={{ color:editorTheme.mutedText, fontSize:12, paddingBottom:8 }}>Utána bármelyik ablak külön tovább módosítható.</div>
               </div>
             </div>
 
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
-              {([['base','5 ALAP'],['neon','15 NEON'],['matte','10 MATT']] as Array<[OfficeThemePresetGroup,string]>).map(([group,label]) => <button key={group} type="button" onClick={() => setOfficeThemePresetGroup(group)} style={{ ...buttonSecondary, background:officeThemePresetGroup===group ? selectedTheme.primaryButtonBackground : selectedTheme.secondaryButtonBackground, color:selectedTheme.buttonText, borderColor:selectedTheme.borderColor }}>{label}</button>)}
+              {([['base','5 ALAP'],['neon','15 NEON'],['matte','10 MATT']] as Array<[OfficeThemePresetGroup,string]>).map(([group,label]) => <button key={group} type="button" onClick={() => setOfficeThemePresetGroup(group)} style={{ ...buttonSecondary, background:officeThemePresetGroup===group ? editorTheme.primaryButtonBackground : editorTheme.secondaryButtonBackground, color:editorTheme.buttonText, borderColor:editorTheme.borderColor }}>{label}</button>)}
             </div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))", gap:8, marginBottom:14, maxHeight:330, overflowY:"auto", paddingRight:4 }}>
               {(Object.entries(OFFICE_THEME_PRESETS) as Array<[Exclude<OfficeThemePresetId,"custom">,OfficeThemePresetDefinition]>).filter(([,preset]) => preset.group === officeThemePresetGroup).map(([presetId,preset]) => (
@@ -7224,14 +7382,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
             <div style={{ fontWeight:900, margin:"4px 0 8px" }}>Színek</div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(210px, 1fr))", gap:10, marginBottom:14 }}>
-              {colorFields.map(([label,key]) => <label key={`${label}-${String(key)}`} style={{ display:"grid", gap:5, color:selectedTheme.textColor, fontSize:12, fontWeight:800 }}><span>{label}</span><span style={{ display:"grid", gridTemplateColumns:"42px 1fr", gap:6 }}><input type="color" value={String(selectedTheme[key])} onChange={(event) => updateSelected({ [key]:event.target.value } as Partial<OfficeThemeConfig>)} style={{ width:42, height:36, padding:2, borderRadius:7, border:`1px solid ${selectedTheme.borderColor}` }} /><input value={String(selectedTheme[key])} onChange={(event) => updateSelected({ [key]:event.target.value } as Partial<OfficeThemeConfig>)} style={{ ...fieldStyle, background:selectedTheme.inputBackground, color:selectedTheme.inputText, borderColor:selectedTheme.borderColor }} /></span></label>)}
+              {colorFields.map(([label,key]) => <label key={`${label}-${String(key)}`} style={{ display:"grid", gap:5, color:editorTheme.textColor, fontSize:12, fontWeight:800 }}><span>{label}</span><span style={{ display:"grid", gridTemplateColumns:"42px 1fr", gap:6 }}><input type="color" value={String(selectedTheme[key])} onChange={(event) => updateSelected({ [key]:event.target.value } as Partial<OfficeThemeConfig>)} style={{ width:42, height:36, padding:2, borderRadius:7, border:`1px solid ${editorTheme.borderColor}` }} /><input value={String(selectedTheme[key])} onChange={(event) => updateSelected({ [key]:event.target.value } as Partial<OfficeThemeConfig>)} style={{ ...fieldStyle, background:editorTheme.inputBackground, color:editorTheme.inputText, borderColor:editorTheme.borderColor }} /></span></label>)}
             </div>
 
             <div style={{ fontWeight:900, margin:"4px 0 8px" }}>Betű, méretek és forma</div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(190px, 1fr))", gap:10 }}>
-              <label style={{ display:"grid", gap:5, fontSize:12, fontWeight:800 }}>Betűtípus<select value={selectedTheme.fontFamily} onChange={(e)=>updateSelected({fontFamily:e.target.value})} style={{ ...fieldStyle, background:selectedTheme.inputBackground, color:selectedTheme.inputText, borderColor:selectedTheme.borderColor }}><option value="Segoe UI, Arial, sans-serif">Segoe UI</option><option value="Arial, sans-serif">Arial</option><option value="Verdana, Arial, sans-serif">Verdana</option><option value="Trebuchet MS, Arial, sans-serif">Trebuchet MS</option><option value="Tahoma, Arial, sans-serif">Tahoma</option><option value="Georgia, serif">Georgia</option><option value="Courier New, monospace">Courier New</option></select></label>
-              {([['Alap betűméret','baseFontSize',10,22],['Cím betűméret','titleFontSize',16,38],['Betűvastagság','fontWeight',400,900],['Keretvastagság','borderWidth',0,5],['Lekerekítés','borderRadius',0,30],['Mezőmagasság','fieldHeight',30,60],['Belső térköz','padding',4,32],['Elemköz','gap',2,28],['Árnyék mérete','shadowBlur',0,50]] as Array<[string,keyof OfficeThemeConfig,number,number]>).map(([label,key,min,max]) => <label key={String(key)} style={{ display:"grid", gap:5, fontSize:12, fontWeight:800 }}>{label}<input type="number" min={min} max={max} value={Number(selectedTheme[key])} onChange={(e)=>updateSelected({[key]:Number(e.target.value)} as Partial<OfficeThemeConfig>)} style={{ ...fieldStyle, background:selectedTheme.inputBackground, color:selectedTheme.inputText, borderColor:selectedTheme.borderColor }} /></label>)}
-              <label style={{ display:"grid", gap:5, fontSize:12, fontWeight:800 }}>Árnyék erősség (0–1)<input type="number" min={0} max={1} step={0.05} value={selectedTheme.shadowOpacity} onChange={(e)=>updateSelected({shadowOpacity:Math.max(0,Math.min(1,Number(e.target.value)))})} style={{ ...fieldStyle, background:selectedTheme.inputBackground, color:selectedTheme.inputText, borderColor:selectedTheme.borderColor }} /></label>
+              <label style={{ display:"grid", gap:5, fontSize:12, fontWeight:800 }}>Betűtípus<select value={selectedTheme.fontFamily} onChange={(e)=>updateSelected({fontFamily:e.target.value})} style={{ ...fieldStyle, background:editorTheme.inputBackground, color:editorTheme.inputText, borderColor:editorTheme.borderColor }}><option value="Segoe UI, Arial, sans-serif">Segoe UI</option><option value="Arial, sans-serif">Arial</option><option value="Verdana, Arial, sans-serif">Verdana</option><option value="Trebuchet MS, Arial, sans-serif">Trebuchet MS</option><option value="Tahoma, Arial, sans-serif">Tahoma</option><option value="Georgia, serif">Georgia</option><option value="Courier New, monospace">Courier New</option></select></label>
+              {([['Alap betűméret','baseFontSize',10,22],['Cím betűméret','titleFontSize',16,38],['Betűvastagság','fontWeight',400,900],['Keretvastagság','borderWidth',0,5],['Lekerekítés','borderRadius',0,30],['Mezőmagasság','fieldHeight',30,60],['Belső térköz','padding',4,32],['Elemköz','gap',2,28],['Árnyék mérete','shadowBlur',0,50]] as Array<[string,keyof OfficeThemeConfig,number,number]>).map(([label,key,min,max]) => <label key={String(key)} style={{ display:"grid", gap:5, fontSize:12, fontWeight:800 }}>{label}<input type="number" min={min} max={max} value={Number(selectedTheme[key])} onChange={(e)=>updateSelected({[key]:Number(e.target.value)} as Partial<OfficeThemeConfig>)} style={{ ...fieldStyle, background:editorTheme.inputBackground, color:editorTheme.inputText, borderColor:editorTheme.borderColor }} /></label>)}
+              <label style={{ display:"grid", gap:5, fontSize:12, fontWeight:800 }}>Árnyék erősség (0–1)<input type="number" min={0} max={1} step={0.05} value={selectedTheme.shadowOpacity} onChange={(e)=>updateSelected({shadowOpacity:Math.max(0,Math.min(1,Number(e.target.value)))})} style={{ ...fieldStyle, background:editorTheme.inputBackground, color:editorTheme.inputText, borderColor:editorTheme.borderColor }} /></label>
             </div>
           </div>
         )}
