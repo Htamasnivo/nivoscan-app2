@@ -2412,7 +2412,7 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
 
   if (tables.length === 0) tables = createDefaultProductionCardProfile(stationName).tables;
 
-  return {
+  return sanitizeProductionCardProfile({
     ...normalized,
     id: normalized.id || `production-card-${stationName}`,
     name: normalized.name || `${stationName} termelési kártya`,
@@ -2420,7 +2420,7 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
     activeTableId: tables.some((table) => table.id === normalized.activeTableId)
       ? normalized.activeTableId
       : tables.find((table) => table.dataSource === "production-plan")?.id || tables[0].id,
-  };
+  });
 }
 
 function normalizeProductionMonitorFieldStyle(value: unknown): ProductionMonitorFieldStyle {
@@ -2508,6 +2508,96 @@ function normalizeProductionMonitorTheme(value: unknown): ProductionMonitorTheme
     showLastUpdated: booleanValue(raw.showLastUpdated, defaults.showLastUpdated),
     showSummaryCards: booleanValue(raw.showSummaryCards, defaults.showSummaryCards),
   };
+}
+
+function normalizeReadableHexColor(value: string): string | null {
+  const input = String(value || "").trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(input)) return input.toUpperCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(input)) {
+    const raw = input.slice(1);
+    return `#${raw[0]}${raw[0]}${raw[1]}${raw[1]}${raw[2]}${raw[2]}`.toUpperCase();
+  }
+  return null;
+}
+
+function productionCardRelativeLuminance(color: string): number | null {
+  const hex = normalizeReadableHexColor(color);
+  if (!hex) return null;
+  const channel = (offset: number): number => {
+    const value = parseInt(hex.slice(offset, offset + 2), 16) / 255;
+    return value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
+}
+
+function productionCardContrastRatio(background: string, foreground: string): number {
+  const backgroundLuminance = productionCardRelativeLuminance(background);
+  const foregroundLuminance = productionCardRelativeLuminance(foreground);
+  if (backgroundLuminance === null || foregroundLuminance === null) return 21;
+  const lighter = Math.max(backgroundLuminance, foregroundLuminance);
+  const darker = Math.min(backgroundLuminance, foregroundLuminance);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function ensureReadableProductionCardTextColor(background: string, preferred: string, minimumContrast = 4.5): string {
+  const backgroundHex = normalizeReadableHexColor(background);
+  const preferredHex = normalizeReadableHexColor(preferred);
+  if (!backgroundHex) return preferred;
+  if (preferredHex && productionCardContrastRatio(backgroundHex, preferredHex) >= minimumContrast) return preferredHex;
+  const blackContrast = productionCardContrastRatio(backgroundHex, "#000000");
+  const whiteContrast = productionCardContrastRatio(backgroundHex, "#FFFFFF");
+  return blackContrast >= whiteContrast ? "#000000" : "#FFFFFF";
+}
+
+function sanitizeProductionCardTheme(value: ProductionMonitorTheme): ProductionMonitorTheme {
+  const theme = normalizeProductionMonitorTheme(value);
+  return {
+    ...theme,
+    headerPanelText: ensureReadableProductionCardTextColor(theme.headerPanelBackground, theme.headerPanelText, 4.5),
+    subtitleText: ensureReadableProductionCardTextColor(theme.headerPanelBackground, theme.subtitleText, 3.5),
+    accentColor: ensureReadableProductionCardTextColor(theme.headerPanelBackground, theme.accentColor, 3.0),
+    tableTitleText: ensureReadableProductionCardTextColor(theme.tablePanelBackground, theme.tableTitleText, 4.5),
+    tableHeaderText: ensureReadableProductionCardTextColor(theme.tableHeaderBackground, theme.tableHeaderText, 4.5),
+    orderCellText: ensureReadableProductionCardTextColor(theme.orderCellBackground, theme.orderCellText, 4.5),
+    doneText: ensureReadableProductionCardTextColor(theme.doneBackground, theme.doneText, 4.5),
+    inProgressText: ensureReadableProductionCardTextColor(theme.inProgressBackground, theme.inProgressText, 4.5),
+    waitingText: ensureReadableProductionCardTextColor(theme.waitingBackground, theme.waitingText, 4.5),
+    notRequiredText: ensureReadableProductionCardTextColor(theme.notRequiredBackground, theme.notRequiredText, 3.5),
+  };
+}
+
+function sanitizeProductionCardFieldStyle(value: ProductionMonitorFieldStyle, theme: ProductionMonitorTheme): ProductionMonitorFieldStyle {
+  const style = normalizeProductionMonitorFieldStyle(value);
+  const safeTheme = sanitizeProductionCardTheme(theme);
+  const headerBackground = style.headerBackground || safeTheme.tableHeaderBackground;
+  const cellBackground = style.cellBackground || safeTheme.waitingBackground;
+  return {
+    ...style,
+    headerTextColor: style.headerBackground || style.headerTextColor
+      ? ensureReadableProductionCardTextColor(headerBackground, style.headerTextColor || safeTheme.tableHeaderText, 4.5)
+      : style.headerTextColor,
+    cellTextColor: style.cellBackground || style.cellTextColor
+      ? ensureReadableProductionCardTextColor(cellBackground, style.cellTextColor || safeTheme.waitingText, 4.5)
+      : style.cellTextColor,
+  };
+}
+
+function sanitizeProductionCardProfile(profile: ProductionMonitorProfile): ProductionMonitorProfile {
+  const safeProfileTheme = sanitizeProductionCardTheme(profile.theme);
+  const safeTables = profile.tables.map((table) => {
+    const safeTableTheme = sanitizeProductionCardTheme(table.theme || safeProfileTheme);
+    return {
+      ...table,
+      theme: safeTableTheme,
+      fieldStyles: Object.fromEntries(
+        Object.entries(table.fieldStyles || {}).map(([fieldId, style]) => [
+          fieldId,
+          sanitizeProductionCardFieldStyle(style, safeTableTheme),
+        ])
+      ),
+    };
+  });
+  return { ...profile, theme: safeProfileTheme, tables: safeTables };
 }
 
 function normalizeProductionMonitorTable(value: unknown, index: number, fallbackTheme: ProductionMonitorTheme): ProductionMonitorTableConfig {
@@ -8293,7 +8383,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   async function saveProductionCardSettings(showFeedback = false): Promise<void> {
     const stationName = productionCardAdminStation.trim();
     if (!stationName || !productionCardLayoutLoaded) return;
-    const serialized = JSON.stringify(productionCardProfile);
+    const safeProfile = sanitizeProductionCardProfile(productionCardProfile);
+    const serialized = JSON.stringify(safeProfile);
     if (!showFeedback && serialized === productionCardLastSavedPayloadRef.current) return;
 
     try {
@@ -8304,12 +8395,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         .from(PRODUCTION_CARD_SETTINGS_TABLE)
         .upsert({
           station_name: stationName,
-          settings: productionCardProfile,
+          settings: safeProfile,
           updated_by: String(activeWorker?.["Teljes nev"] || "").trim() || null,
           updated_at: savedAt,
         }, { onConflict: "station_name" });
       if (error) throw error;
       productionCardLastSavedPayloadRef.current = serialized;
+      setProductionCardProfile(safeProfile);
       setProductionCardLastSavedAt(savedAt);
       if (showFeedback) {
         setMessage({ type: "success", text: `A(z) „${stationName}” termelési kártyája elmentve.` });
@@ -8773,7 +8865,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function updateProductionCardProfile(updater: (profile: ProductionMonitorProfile) => ProductionMonitorProfile): void {
-    setProductionCardProfile((profile) => updater(profile));
+    setProductionCardProfile((profile) => sanitizeProductionCardProfile(updater(profile)));
   }
 
   function updateActiveProductionCardTable(updater: (table: ProductionMonitorTableConfig) => ProductionMonitorTableConfig): void {
@@ -8805,7 +8897,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       ...table,
       fieldStyles: {
         ...table.fieldStyles,
-        [fieldId]: normalizeProductionMonitorFieldStyle({ ...getProductionCardFieldStyle(fieldId, table), ...patch }),
+        [fieldId]: sanitizeProductionCardFieldStyle(
+          normalizeProductionMonitorFieldStyle({ ...getProductionCardFieldStyle(fieldId, table), ...patch }),
+          table.theme
+        ),
       },
     }));
   }
@@ -8967,7 +9062,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const compact = Boolean(options.compact);
     const editable = Boolean(options.editable);
     const zoomRatio = profile.zoomPercent / 100;
-    const profileTheme = profile.theme;
+    const safeProfile = sanitizeProductionCardProfile(profile);
+    const profileTheme = safeProfile.theme;
     const urgentScrapRows = data.scrapReplacementRows || [];
     const backlogRows = data.backlogRows || [];
 
@@ -8975,7 +9071,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const isActive = table.id === profile.activeTableId;
       const isScrapTable = table.dataSource === "scrap-replacement";
       const isBacklogTable = table.dataSource === "backlog";
-      const theme = table.theme;
+      const theme = sanitizeProductionCardTheme(table.theme);
       const validFieldIds = getProductionCardFieldIdsForTable(table, data.stationName);
       const orderedFieldIds = [
         ...table.fieldOrder.filter((fieldId) => (validFieldIds as readonly string[]).includes(fieldId)),
@@ -9201,8 +9297,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             {profileTheme.showLastUpdated && <div style={{ color: profileTheme.subtitleText, opacity: 0.82, marginTop: 3, fontSize: compact ? 10 : 11 }}>Utolsó frissítés: {data.lastUpdatedAt ? formatDateTime(data.lastUpdatedAt) : "–"}</div>}
           </div>
         )}
-        {profile.tables.filter((table) => table.dataSource === "scrap-replacement").map(renderTable)}
-        {profile.tables.filter((table) => table.dataSource === "backlog").map(renderTable)}
+        {safeProfile.tables.filter((table) => table.dataSource === "scrap-replacement").map(renderTable)}
+        {safeProfile.tables.filter((table) => table.dataSource === "backlog").map(renderTable)}
         {profileTheme.showSummaryCards && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(80px, 1fr))", gap: 6, marginBottom: 8 }}>
             <div style={{ background: profileTheme.doneBackground, color: profileTheme.doneText, borderRadius: profileTheme.panelRadius, padding: compact ? 8 : 10 }}><div style={{ fontSize: 10 }}>Kész</div><strong>{data.rows.filter((row) => row.status === "done").length}</strong></div>
@@ -9210,7 +9306,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={{ background: profileTheme.waitingBackground, color: profileTheme.waitingText, borderRadius: profileTheme.panelRadius, padding: compact ? 8 : 10 }}><div style={{ fontSize: 10 }}>Várakozik</div><strong>{data.rows.filter((row) => row.status === "waiting").length}</strong></div>
           </div>
         )}
-        {profile.tables.filter((table) => table.dataSource === "production-plan").map(renderTable)}
+        {safeProfile.tables.filter((table) => table.dataSource === "production-plan").map(renderTable)}
       </div>
     );
   }
@@ -9223,8 +9319,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       ? selectedProductionCardStyleFieldId
       : allFieldIds[0] || PRODUCTION_CARD_ORDER_FIELD_ID;
     const selectedFieldStyle = getProductionCardFieldStyle(selectedFieldId);
-    const profileTheme = productionCardProfile.theme;
-    const tableTheme = activeProductionCardTable.theme;
+    const profileTheme = sanitizeProductionCardTheme(productionCardProfile.theme);
+    const tableTheme = sanitizeProductionCardTheme(activeProductionCardTable.theme);
+    const editorTextColor = ensureReadableProductionCardTextColor(profileTheme.editorBackground, "#1f2937", 4.5);
 
     const editorLabelStyle: React.CSSProperties = { display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "#334155" };
     const editorControlStyle: React.CSSProperties = { width: "100%", boxSizing: "border-box", border: "1px solid #cbd5e1", borderRadius: 8, padding: "9px 10px", background: "#ffffff", color: "#0f172a" };
@@ -9265,7 +9362,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           </div>
 
           {productionCardEditMode && (
-            <div data-office-window="production-card:editor" style={{ background: profileTheme.editorBackground, color: "#1f2937", border: `2px solid ${profileTheme.accentColor}`, borderRadius: profileTheme.panelRadius, padding: 16, marginBottom: 14 }}>
+            <div data-office-window="production-card:editor" style={{ background: profileTheme.editorBackground, color: editorTextColor, border: `2px solid ${profileTheme.accentColor}`, borderRadius: profileTheme.panelRadius, padding: 16, marginBottom: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
                 <div><strong style={{ fontSize: 20 }}>Profi termelésikártya-szerkesztő</strong><div style={{ color: "#64748b", fontSize: 12, marginTop: 3 }}>Az adott munkaállomás összes _terv mezője és minden rendszermező kihelyezhető, elrejthető és sorrendezhető. A kártyabeállítás az aktuális munkaállomáshoz mentődik.</div></div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -9320,7 +9417,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   {allFieldIds.map((fieldId, index) => {
                     const hidden = activeProductionCardTable.hiddenFieldIds.includes(fieldId);
                     return (
-                      <div key={fieldId} draggable onDragStart={() => { productionCardDraggedFieldIdRef.current = fieldId; }} onDragOver={(event) => event.preventDefault()} onDrop={() => { const dragged = productionCardDraggedFieldIdRef.current; productionCardDraggedFieldIdRef.current = null; if (dragged) reorderProductionCardField(dragged, fieldId); }} style={{ display: "grid", gridTemplateColumns: "32px minmax(150px, 1fr) auto auto auto", gap: 8, alignItems: "center", padding: 9, borderRadius: 10, background: hidden ? "#f1f5f9" : "#ffffff", border: "1px solid #cbd5e1" }}>
+                      <div key={fieldId} draggable onDragStart={() => { productionCardDraggedFieldIdRef.current = fieldId; }} onDragOver={(event) => event.preventDefault()} onDrop={() => { const dragged = productionCardDraggedFieldIdRef.current; productionCardDraggedFieldIdRef.current = null; if (dragged) reorderProductionCardField(dragged, fieldId); }} style={{ display: "grid", gridTemplateColumns: "32px minmax(150px, 1fr) auto auto auto", gap: 8, alignItems: "center", padding: 9, borderRadius: 10, background: hidden ? "#f1f5f9" : "#ffffff", color: "#0f172a", border: "1px solid #cbd5e1" }}>
                         <strong>{index + 1}</strong><span>{getProductionCardFieldLabel(fieldId)}</span>
                         <button type="button" onClick={() => moveProductionCardField(fieldId, -1)} style={buttonSecondary}>←</button>
                         <button type="button" onClick={() => moveProductionCardField(fieldId, 1)} style={buttonSecondary}>→</button>
@@ -9343,7 +9440,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               )}
 
               {productionCardEditorTab === "colors" && (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 12 }}>
+                <div style={{ display: "grid", gap: 12 }}>
+                  <div style={{ padding: "10px 12px", borderRadius: 10, background: "#ecfeff", border: "1px solid #67e8f9", color: "#164e63", fontSize: 12, lineHeight: 1.45 }}>
+                    <strong>Automatikus olvashatóság:</strong> ha egy kiválasztott háttér- és szövegszín kontrasztja túl gyenge, a rendszer automatikusan fekete vagy fehér szövegre korrigálja. Így nem menthető olyan kártya, amelyen eltűnik a felirat.
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 12 }}>
                   {renderColorControl("Teljes kártya háttere", profileTheme.pageBackground, (value) => updateProductionCardProfileTheme({ pageBackground: value }))}
                   {renderColorControl("Felső panel háttere", profileTheme.headerPanelBackground, (value) => updateProductionCardProfileTheme({ headerPanelBackground: value }))}
                   {renderColorControl("Kiemelő szín", profileTheme.accentColor, (value) => updateProductionCardProfileTheme({ accentColor: value }))}
@@ -9351,9 +9452,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   {renderColorControl("Táblafejléc háttere", tableTheme.tableHeaderBackground, (value) => updateProductionCardTableTheme({ tableHeaderBackground: value }))}
                   {renderColorControl("Táblafejléc szövege", tableTheme.tableHeaderText, (value) => updateProductionCardTableTheme({ tableHeaderText: value }))}
                   {renderColorControl("Kész háttér", tableTheme.doneBackground, (value) => updateProductionCardTableTheme({ doneBackground: value }))}
+                  {renderColorControl("Kész szöveg", tableTheme.doneText, (value) => updateProductionCardTableTheme({ doneText: value }))}
                   {renderColorControl("Folyamatban háttér", tableTheme.inProgressBackground, (value) => updateProductionCardTableTheme({ inProgressBackground: value }))}
+                  {renderColorControl("Folyamatban szöveg", tableTheme.inProgressText, (value) => updateProductionCardTableTheme({ inProgressText: value }))}
                   {renderColorControl("Várakozik háttér", tableTheme.waitingBackground, (value) => updateProductionCardTableTheme({ waitingBackground: value }))}
+                  {renderColorControl("Várakozik szöveg", tableTheme.waitingText, (value) => updateProductionCardTableTheme({ waitingText: value }))}
                   {renderColorControl("Rácsvonalak", tableTheme.borderColor, (value) => updateProductionCardTableTheme({ borderColor: value }))}
+                  </div>
                 </div>
               )}
 
