@@ -4605,8 +4605,7 @@ export default function Page() {
   const [stationPlanFiles, setStationPlanFiles] = useState<Record<string, StationPlanFileSelection>>({});
   const [loadingStationPlanFile, setLoadingStationPlanFile] = useState("");
   const [uploadingStationPlans, setUploadingStationPlans] = useState(false);
-  const [productionPlanServerPath, setProductionPlanServerPath] = useState(DEFAULT_PRODUCTION_PLAN_SERVER_PATH);
-  const [productionPlanServerPathLoaded, setProductionPlanServerPathLoaded] = useState(false);
+  const [productionPlanWorkbookFile, setProductionPlanWorkbookFile] = useState<File | null>(null);
   const [refreshingProductionPlanWorkbook, setRefreshingProductionPlanWorkbook] = useState(false);
   const [productionPlanLastServerImportAt, setProductionPlanLastServerImportAt] = useState("");
   const [productionPlanLastFileModifiedAt, setProductionPlanLastFileModifiedAt] = useState("");
@@ -6980,7 +6979,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={{ fontSize: 13, color: officeTheme.accentColor, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Irodai modul</div>
             <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: officeTheme.textColor }}>Termelés tervezése</h2>
             <div style={{ color: officeTheme.mutedText, maxWidth: 900, lineHeight: 1.5 }}>
-              A szerveren tárolt közös XLSX minden munkaállomási munkafüle egyetlen frissítéssel betölthető, miközben a kézi tervkiegészítés továbbra is használható.
+              A közös XLSX-fájlt közvetlenül erről a számítógépről töltheted fel. A program a fájl összes munkaállomási munkafülét feldolgozza, miközben a kézi tervkiegészítés továbbra is használható.
             </div>
           </div>
           <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
@@ -6991,65 +6990,64 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={sectionHeaderStyle}>
               <div style={sectionNumberStyle}>1</div>
               <div>
-                <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Közös XLSX termelési terv</h3>
+                <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Közös XLSX termelési terv feltöltése</h3>
                 <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13, lineHeight: 1.45 }}>
-                  Egyetlen szerveres Excel-fájl minden munkafüle egyszerre kerül beolvasásra. A munkafülek neve egyezzen a machine_id tábla name értékeivel; minden sor a megfelelő <code style={{ color: "#7dd3fc" }}>_terv</code> táblába kerül.
+                  Tallózd ki a közös Excel-fájlt a számítógépedről. A munkafülek neve egyezzen a machine_id tábla name értékeivel; minden sor a megfelelő <code style={{ color: "#7dd3fc" }}>_terv</code> táblába és a központi termelesi_terv táblába kerül.
                 </div>
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) auto auto auto", gap: 12, alignItems: "end", padding: 16, borderRadius: 13, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}` }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) auto auto", gap: 12, alignItems: "end", padding: 16, borderRadius: 13, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}` }}>
               <div>
-                <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 800 }}>Szerveren tárolt XLSX elérési útja</label>
+                <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 800 }}>Feltöltendő XLSX fájl</label>
                 <input
-                  value={productionPlanServerPath}
-                  onChange={(event) => setProductionPlanServerPath(event.target.value.slice(0, 1000))}
-                  placeholder={DEFAULT_PRODUCTION_PLAN_SERVER_PATH}
-                  style={{ ...fieldStyle, width: "100%", boxSizing: "border-box" }}
+                  type="file"
+                  accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] || null;
+                    setProductionPlanWorkbookFile(file);
+                    if (file) {
+                      setMessage({ type: "info", text: `${file.name} kiválasztva. A feltöltéshez nyomd meg a „Termelési terv feltöltése” gombot.` });
+                    }
+                  }}
+                  disabled={refreshingProductionPlanWorkbook}
+                  style={{ ...fieldStyle, width: "100%", boxSizing: "border-box", padding: "10px 12px" }}
                 />
-                <div style={{ marginTop: 7, color: officeTheme.mutedText, fontSize: 12, lineHeight: 1.45 }}>
-                  Alapértelmezett: <code style={{ color: "#7dd3fc" }}>{DEFAULT_PRODUCTION_PLAN_SERVER_PATH}</code>. A Next.js szervert futtató Windows-felhasználónak hozzá kell férnie ehhez a meghajtóhoz.
+                <div style={{ marginTop: 7, color: productionPlanWorkbookFile ? "#4ade80" : officeTheme.mutedText, fontSize: 12, lineHeight: 1.45 }}>
+                  {productionPlanWorkbookFile
+                    ? `Kiválasztva: ${productionPlanWorkbookFile.name}`
+                    : "Válaszd ki a napi termelési terv .xlsx fájlt. A fájl közvetlenül a böngészőből kerül beolvasásra; nincs szükség szerveres elérési útra."}
                 </div>
               </div>
               <button
                 type="button"
                 onClick={downloadProductionPlanTemplate}
-                disabled={availableProductionStations.length === 0}
+                disabled={availableProductionStations.length === 0 || refreshingProductionPlanWorkbook}
                 style={buttonSecondary}
               >
                 Minta Excel letöltése
               </button>
               <button
                 type="button"
-                onClick={() => void saveProductionPlanImportSettings(true).catch((error) => {
-                  setMessage({ type: "error", text: `Az elérési út mentése sikertelen: ${normalizeError(error)}` });
-                })}
-                disabled={!productionPlanServerPathLoaded || refreshingProductionPlanWorkbook}
-                style={buttonSecondary}
-              >
-                Elérési út mentése
-              </button>
-              <button
-                type="button"
-                onClick={() => void refreshProductionPlansFromServerWorkbook()}
-                disabled={refreshingProductionPlanWorkbook || !productionPlanServerPath.trim()}
+                onClick={() => void importProductionPlansFromUploadedWorkbook()}
+                disabled={refreshingProductionPlanWorkbook || !productionPlanWorkbookFile}
                 style={buttonPrimary}
               >
-                {refreshingProductionPlanWorkbook ? "Beolvasás és mentés..." : "Termelési terv frissítése"}
+                {refreshingProductionPlanWorkbook ? "Beolvasás és mentés..." : "Termelési terv feltöltése"}
               </button>
             </div>
 
             <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
               <div style={{ padding: 12, borderRadius: 11, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}` }}>
-                <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Kötelező mezők minden munkafülön</div>
-                <div style={{ color: officeTheme.textColor, fontWeight: 800, marginTop: 4 }}>sorszam · megnevezes · mennyiseg · elkeszules_datum · tipus</div>
+                <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Excel-séma</div>
+                <div style={{ color: officeTheme.textColor, fontWeight: 800, marginTop: 4 }}>Munkaállomásonként a beállított Supabase-mezők szerint</div>
               </div>
               <div style={{ padding: 12, borderRadius: 11, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}` }}>
-                <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Utolsó sikeres szerveres frissítés</div>
+                <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Utolsó sikeres Excel-feltöltés</div>
                 <div style={{ color: productionPlanLastServerImportAt ? "#4ade80" : "#cbd5e1", fontWeight: 800, marginTop: 4 }}>
-                  {productionPlanLastServerImportAt ? formatDateTime(productionPlanLastServerImportAt) : "Még nem történt frissítés"}
+                  {productionPlanLastServerImportAt ? formatDateTime(productionPlanLastServerImportAt) : "Még nem történt feltöltés"}
                 </div>
-                {productionPlanLastFileModifiedAt && <div style={{ color: officeTheme.mutedText, fontSize: 11, marginTop: 3 }}>Excel módosítva: {formatDateTime(productionPlanLastFileModifiedAt)}</div>}
+                {productionPlanLastFileModifiedAt && <div style={{ color: officeTheme.mutedText, fontSize: 11, marginTop: 3 }}>Fájl módosítva: {formatDateTime(productionPlanLastFileModifiedAt)}</div>}
               </div>
               <div style={{ padding: 12, borderRadius: 11, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}` }}>
                 <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Egyező sorszám és dátum esetén</div>
@@ -11552,12 +11550,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
   }, [standaloneProductionMonitor, activeWorker?.id, terminalView, flowStage, managementSection, productionMonitorDate]);
 
-  useEffect(() => {
-    if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
-    if (terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "production-plan") return;
-    if (productionPlanServerPathLoaded) return;
-    void loadProductionPlanImportSettings();
-  }, [activeWorker?.id, terminalView, flowStage, managementSection, supabase, productionPlanServerPathLoaded]);
 
   useEffect(() => {
     const stations = getOrderedDashboardStations();
@@ -12616,49 +12608,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return parsedRows;
   }
 
-  async function loadProductionPlanImportSettings(): Promise<void> {
-    if (!supabase) return;
-    try {
-      const { data, error } = await supabase
-        .from(PRODUCTION_PLAN_IMPORT_SETTINGS_TABLE)
-        .select("id, excel_path, updated_by, updated_at, last_import_at, last_import_file_modified_at")
-        .eq("id", 1)
-        .maybeSingle();
-      if (error) throw error;
-      const settings = data as ProductionPlanImportSettingsRow | null;
-      setProductionPlanServerPath(String(settings?.excel_path || DEFAULT_PRODUCTION_PLAN_SERVER_PATH));
-      setProductionPlanLastServerImportAt(String(settings?.last_import_at || ""));
-      setProductionPlanLastFileModifiedAt(String(settings?.last_import_file_modified_at || ""));
-    } catch (error) {
-      console.error("A termelési terv szerveres elérési útjának betöltése sikertelen:", error);
-      setProductionPlanServerPath(DEFAULT_PRODUCTION_PLAN_SERVER_PATH);
-      setMessage({ type: "error", text: `A szerveres Excel-beállítás nem olvasható. Futtasd le a mellékelt SQL-t. Részletek: ${normalizeError(error)}` });
-    } finally {
-      setProductionPlanServerPathLoaded(true);
-    }
-  }
-
-  async function saveProductionPlanImportSettings(showFeedback = false, importMetadata?: { importedAt: string; fileModifiedAt: string }): Promise<void> {
-    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
-    const cleanPath = productionPlanServerPath.trim();
-    if (!cleanPath) throw new Error("Add meg az XLSX-fájl szerveres elérési útját.");
-    const payload: Record<string, unknown> = {
-      id: 1,
-      excel_path: cleanPath,
-      updated_by: String(activeWorker?.["Teljes nev"] || "").trim() || null,
-      updated_at: new Date().toISOString(),
-    };
-    if (importMetadata) {
-      payload.last_import_at = importMetadata.importedAt;
-      payload.last_import_file_modified_at = importMetadata.fileModifiedAt || null;
-    }
-    const { error } = await supabase
-      .from(PRODUCTION_PLAN_IMPORT_SETTINGS_TABLE)
-      .upsert(payload, { onConflict: "id" });
-    if (error) throw error;
-    if (showFeedback) setMessage({ type: "success", text: "A szerveres XLSX elérési útja elmentve." });
-  }
-
   function askStationPlanConflictAction(
     stationName: string,
     row: StationPlanUploadRow,
@@ -12847,38 +12796,31 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return payload.length;
   }
 
-  async function refreshProductionPlansFromServerWorkbook(): Promise<void> {
+  async function importProductionPlansFromUploadedWorkbook(fileOverride?: File): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
       return;
     }
-    const cleanPath = productionPlanServerPath.trim();
-    if (!cleanPath) {
-      setMessage({ type: "error", text: "Add meg az XLSX-fájl szerveres elérési útját." });
+
+    const selectedFile = fileOverride || productionPlanWorkbookFile;
+    if (!selectedFile) {
+      setMessage({ type: "error", text: "Válaszd ki a feltöltendő XLSX-fájlt." });
       return;
     }
+    if (!selectedFile.name.toLocaleLowerCase("hu").endsWith(".xlsx")) {
+      setMessage({ type: "error", text: "A közös termelési terv csak .xlsx fájl lehet." });
+      return;
+    }
+
     setRefreshingProductionPlanWorkbook(true);
     try {
-      await saveProductionPlanImportSettings(false);
-      const response = await fetch(PRODUCTION_PLAN_SERVER_IMPORT_API, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: cleanPath }),
-      });
-      if (!response.ok) {
-        let errorMessage = `A szerveres XLSX nem olvasható (${response.status}).`;
-        try {
-          const errorPayload = await response.json() as { error?: string };
-          if (errorPayload.error) errorMessage = errorPayload.error;
-        } catch {
-          // A szerver nem JSON hibát küldött.
-        }
-        throw new Error(errorMessage);
-      }
-      const fileModifiedAt = response.headers.get("x-file-modified-at") || "";
       const XLSX = await waitForXlsx();
-      if (!XLSX.read || !XLSX.utils.sheet_to_json) throw new Error("Az XLSX könyvtár nem támogatja az Excel beolvasását.");
-      const workbook = XLSX.read(await response.arrayBuffer(), { type: "array" });
+      if (!XLSX.read || !XLSX.utils.sheet_to_json) {
+        throw new Error("Az XLSX könyvtár nem támogatja az Excel beolvasását.");
+      }
+
+      // A fájlt közvetlenül a böngésző olvassa be. Nincs több szerveres P:\ elérési út vagy API-hívás.
+      const workbook = XLSX.read(await selectedFile.arrayBuffer(), { type: "array" });
       const importStations = machineOptions.filter((station) =>
         normalizeLooseText(station) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
         !normalizeLooseText(station).includes("iroda")
@@ -12887,6 +12829,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         name,
         rows: XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets[name], { defval: "", raw: true }),
       }));
+
       const missingSheets: string[] = [];
       const failedSheets: string[] = [];
       const successfulSheets: string[] = [];
@@ -12899,11 +12842,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           missingSheets.push(stationName);
           continue;
         }
+
         try {
           const rows = parseStationPlanRowsFromWorkbookSheet(sheet.rows, `„${sheet.name}” munkafül`, stationName);
-          const actions = await buildStationPlanMergeActions(stationName, rows, cleanPath);
+          const actions = await buildStationPlanMergeActions(stationName, rows, selectedFile.name);
           const result = await applyStationPlanMergeActions(stationName, actions);
-          await syncDynamicProductionPlanRows(stationName, rows as unknown as Array<Record<string, unknown>>, cleanPath);
+          await syncDynamicProductionPlanRows(stationName, rows as unknown as Array<Record<string, unknown>>, selectedFile.name);
           totalProcessed += result.processed;
           totalSkipped += result.skipped;
           successfulSheets.push(`${stationName} (${rows.length} sor)`);
@@ -12915,22 +12859,27 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (successfulSheets.length === 0) {
         throw new Error(`Egyetlen munkafül sem került sikeresen betöltésre.${failedSheets.length ? ` Hibák: ${failedSheets.join(" | ")}` : ""}`);
       }
+
       const importedAt = new Date().toISOString();
-      await saveProductionPlanImportSettings(false, { importedAt, fileModifiedAt });
+      const fileModifiedAt = selectedFile.lastModified > 0
+        ? new Date(selectedFile.lastModified).toISOString()
+        : "";
       setProductionPlanLastServerImportAt(importedAt);
       setProductionPlanLastFileModifiedAt(fileModifiedAt);
+
       const warningParts = [
         missingSheets.length ? `Hiányzó munkafülek: ${missingSheets.join(", ")}.` : "",
         failedSheets.length ? `Hibák: ${failedSheets.join(" | ")}` : "",
       ].filter(Boolean);
+
       setMessage({
         type: warningParts.length ? "info" : "success",
-        text: `${successfulSheets.length} munkafül sikeresen feldolgozva, ${totalProcessed} adatbázis-művelet, ${totalSkipped} kihagyás. ${successfulSheets.join(", ")}.${warningParts.length ? ` ${warningParts.join(" ")}` : ""}`,
+        text: `${selectedFile.name}: ${successfulSheets.length} munkafül sikeresen feldolgozva, ${totalProcessed} adatbázis-művelet, ${totalSkipped} kihagyás. ${successfulSheets.join(", ")}.${warningParts.length ? ` ${warningParts.join(" ")}` : ""}`,
       });
       if (productionCardAdminStation) void loadProductionCardData(productionCardAdminStation, productionCardDate);
     } catch (error) {
-      console.error("SZERVERES TERMELÉSI TERV IMPORT HIBA:", error);
-      setMessage({ type: "error", text: `A közös XLSX termelési terv frissítése sikertelen: ${normalizeError(error)}` });
+      console.error("FELTÖLTÖTT TERMELÉSI TERV IMPORT HIBA:", error);
+      setMessage({ type: "error", text: `A közös XLSX termelési terv feltöltése sikertelen: ${normalizeError(error)}` });
     } finally {
       setRefreshingProductionPlanWorkbook(false);
     }
