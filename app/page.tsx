@@ -1363,6 +1363,19 @@ const STATION_PLAN_BASE_FIELD_DEFINITIONS: StationPlanFieldDefinition[] = [
   { key: "tipus", label: "tipus", dataType: "text" },
 ];
 
+// Ezek a mezők MINDEN normál munkaállomási termelési kártyán kötelezőek.
+// Nem rejthetők el a Profi szerkesztőből sem.
+const PRODUCTION_CARD_REQUIRED_FIELD_IDS = [
+  PRODUCTION_CARD_STATUS_FIELD_ID,
+  PRODUCTION_CARD_START_WORKER_FIELD_ID,
+  PRODUCTION_CARD_END_WORKER_FIELD_ID,
+] as const;
+
+function isRequiredProductionCardField(fieldId: string): boolean {
+  return (PRODUCTION_CARD_REQUIRED_FIELD_IDS as readonly string[]).includes(fieldId);
+}
+
+
 const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[]> = {
   csolezer: [
     { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
@@ -2184,11 +2197,11 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
     return `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${field.key}`;
   });
 
-  // A Szinter termelési kártyán a Napi_termelesi_terv.xlsx Szinter munkafül
-  // legyen az egyetlen üzleti séma. Így nem jelennek meg a generikus
-  // Sorszám / Megnevezés / Mennyiség / Állapot / dolgozó / Tok / Nyíló mezők.
+  // A Szinter kártyán az Excel üzleti mezői jelennek meg, DE a három
+  // kötelező rendszermező (Állapot, Indító dolgozó, Befejező dolgozó)
+  // minden termelési kártyán mindig rajta marad.
   if (normalizePlanColumnName(stationName) === "szinter") {
-    return Array.from(new Set(planFieldIds));
+    return Array.from(new Set([...planFieldIds, ...PRODUCTION_CARD_REQUIRED_FIELD_IDS]));
   }
 
   return Array.from(new Set([...planFieldIds, ...PRODUCTION_CARD_FIELD_IDS]));
@@ -2443,7 +2456,10 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
           ...validFields.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
         ]));
         const nextHiddenFieldIds = Array.from(new Set(
-          table.hiddenFieldIds.filter((fieldId) => validFieldSet.has(fieldId))
+          table.hiddenFieldIds.filter((fieldId) =>
+            validFieldSet.has(fieldId)
+            && !(dataSource === "production-plan" && isRequiredProductionCardField(fieldId))
+          )
         ));
         return {
           ...table,
@@ -2652,6 +2668,11 @@ function sanitizeProductionCardProfile(profile: ProductionMonitorProfile): Produ
     return {
       ...table,
       theme: safeTableTheme,
+      // Állapot / Indító dolgozó / Befejező dolgozó normál termelési
+      // kártyán soha nem kerülhet a rejtett mezők közé.
+      hiddenFieldIds: table.dataSource === "production-plan"
+        ? table.hiddenFieldIds.filter((fieldId) => !isRequiredProductionCardField(fieldId))
+        : table.hiddenFieldIds,
       fieldStyles: Object.fromEntries(
         Object.entries(table.fieldStyles || {}).map(([fieldId, style]) => [
           fieldId,
@@ -8987,7 +9008,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (!activeTableId) {
         const fallbackTable = createDefaultProductionMonitorTable("Termelési kártya", "card-table-default", profile.theme);
         fallbackTable.dataSource = "production-plan";
-        fallbackTable.fieldOrder = [...PRODUCTION_CARD_FIELD_IDS];
+        fallbackTable.fieldOrder = [...getProductionCardFieldIdsForTable(fallbackTable, productionCardAdminStation)];
         const table = updater(fallbackTable);
         return { ...profile, tables: [table], activeTableId: table.id, themePresetId: "custom" };
       }
@@ -9054,8 +9075,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const tableName = `Táblázat ${productionCardProfile.tables.length + 1}`;
     const table = createDefaultProductionMonitorTable(tableName, `card-table-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, productionCardProfile.theme);
     table.dataSource = "production-plan";
-    table.fieldOrder = [...PRODUCTION_CARD_FIELD_IDS];
-    table.hiddenFieldIds = [PRODUCTION_CARD_DATE_FIELD_ID];
+    table.fieldOrder = [...getProductionCardFieldIdsForTable(table, productionCardAdminStation)];
+    table.hiddenFieldIds = [PRODUCTION_CARD_DATE_FIELD_ID].filter((fieldId) => !isRequiredProductionCardField(fieldId));
     updateProductionCardProfile((profile) => ({
       ...profile,
       themePresetId: "custom",
@@ -9149,6 +9170,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function toggleProductionCardFieldVisibility(fieldId: string): void {
+    if (activeProductionCardTable.dataSource === "production-plan" && isRequiredProductionCardField(fieldId)) {
+      setMessage({
+        type: "info",
+        text: `A „${getProductionCardFieldLabel(fieldId)}” kötelező mező minden termelési kártyán, ezért nem rejthető el.`,
+      });
+      return;
+    }
     updateActiveProductionCardTable((table) => ({
       ...table,
       hiddenFieldIds: table.hiddenFieldIds.includes(fieldId)
@@ -9188,7 +9216,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         ...table.fieldOrder.filter((fieldId) => (validFieldIds as readonly string[]).includes(fieldId)),
         ...validFieldIds.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
       ];
-      const visibleFieldIds = orderedFieldIds.filter((fieldId) => !table.hiddenFieldIds.includes(fieldId));
+      const visibleFieldIds = orderedFieldIds.filter((fieldId) =>
+        !table.hiddenFieldIds.includes(fieldId)
+        || (table.dataSource === "production-plan" && isRequiredProductionCardField(fieldId))
+      );
       const visibleCount = Math.max(visibleFieldIds.length, 1);
       const baseFont = visibleCount >= 8 ? 9 : visibleCount >= 6 ? 10 : 12;
       const headerFontSize = Math.max(7, Math.round((theme.headerFontSize || baseFont) * zoomRatio * 10) / 10);
@@ -9523,16 +9554,29 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               {productionCardEditorTab === "layout" && (
                 <div style={{ display: "grid", gap: 10 }}>
                   <div style={{ padding: "10px 12px", borderRadius: 10, background: "#e0f2fe", border: "1px solid #7dd3fc", color: "#0c4a6e", fontSize: 12 }}>
-                    <strong>Elérhető mezők: {allFieldIds.length}</strong> · Minden mező visszatehető a „Megjelenítés” gombbal; drag & drop-pal vagy a nyilakkal tetszőlegesen rendezhető.
+                    <strong>Elérhető mezők: {allFieldIds.length}</strong> · Az Állapot, Indító dolgozó és Befejező dolgozó kötelező mezők, ezek nem rejthetők el. A többi mező szabadon elrejthető és rendezhető.
                   </div>
                   {allFieldIds.map((fieldId, index) => {
-                    const hidden = activeProductionCardTable.hiddenFieldIds.includes(fieldId);
+                    const required = activeProductionCardTable.dataSource === "production-plan" && isRequiredProductionCardField(fieldId);
+                    const hidden = !required && activeProductionCardTable.hiddenFieldIds.includes(fieldId);
                     return (
                       <div key={fieldId} draggable onDragStart={() => { productionCardDraggedFieldIdRef.current = fieldId; }} onDragOver={(event) => event.preventDefault()} onDrop={() => { const dragged = productionCardDraggedFieldIdRef.current; productionCardDraggedFieldIdRef.current = null; if (dragged) reorderProductionCardField(dragged, fieldId); }} style={{ display: "grid", gridTemplateColumns: "32px minmax(150px, 1fr) auto auto auto", gap: 8, alignItems: "center", padding: 9, borderRadius: 10, background: hidden ? "#f1f5f9" : "#ffffff", color: "#0f172a", border: "1px solid #cbd5e1" }}>
                         <strong>{index + 1}</strong><span>{getProductionCardFieldLabel(fieldId)}</span>
                         <button type="button" onClick={() => moveProductionCardField(fieldId, -1)} style={buttonSecondary}>←</button>
                         <button type="button" onClick={() => moveProductionCardField(fieldId, 1)} style={buttonSecondary}>→</button>
-                        <button type="button" onClick={() => toggleProductionCardFieldVisibility(fieldId)} style={hidden ? buttonPrimary : buttonSecondary}>{hidden ? "Megjelenítés" : "Elrejtés"}</button>
+                        <button
+                          type="button"
+                          onClick={() => toggleProductionCardFieldVisibility(fieldId)}
+                          disabled={required}
+                          title={required ? "Kötelező mező minden termelési kártyán" : undefined}
+                          style={{
+                            ...(hidden ? buttonPrimary : buttonSecondary),
+                            opacity: required ? 0.7 : 1,
+                            cursor: required ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          {required ? "Kötelező" : hidden ? "Megjelenítés" : "Elrejtés"}
+                        </button>
                       </div>
                     );
                   })}
