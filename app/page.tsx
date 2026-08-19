@@ -3335,6 +3335,41 @@ function parseSpreadsheetNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+// Excelben az időtartamok (pl. 1:45) nyersen a nap tört részeként érkeznek
+// (1:45 = 0.0729166666...). A normaidőt mindig óra:perc formában tartjuk és jelenítjük meg.
+function formatExcelDuration(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "";
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const totalMinutes = value.getUTCHours() * 60 + value.getUTCMinutes();
+    return `${Math.floor(totalMinutes / 60)}:${String(totalMinutes % 60).padStart(2, "0")}`;
+  }
+
+  const text = String(value).trim();
+  if (!text) return "";
+
+  // Ha már óra:perc (vagy óra:perc:másodperc) formában van, nem alakítjuk vissza számmá.
+  const timeMatch = text.match(/^(\d+):([0-5]?\d)(?::([0-5]?\d))?$/);
+  if (timeMatch) {
+    const hours = Number(timeMatch[1]);
+    const minutes = Number(timeMatch[2]);
+    const seconds = Number(timeMatch[3] || 0);
+    const roundedMinutes = hours * 60 + minutes + (seconds >= 30 ? 1 : 0);
+    return `${Math.floor(roundedMinutes / 60)}:${String(roundedMinutes % 60).padStart(2, "0")}`;
+  }
+
+  const numeric = parseSpreadsheetNumber(value);
+  if (numeric !== null) {
+    // Az XLSX raw:true módban az időt napokban adja vissza.
+    // Math.round kiküszöböli a lebegőpontos 0.069444444... jellegű eltéréseket.
+    const totalMinutes = Math.max(0, Math.round(numeric * 24 * 60));
+    return `${Math.floor(totalMinutes / 60)}:${String(totalMinutes % 60).padStart(2, "0")}`;
+  }
+
+  // Excel-hiba vagy tetszőleges szöveg (pl. #HIÁNYZIK) maradjon változatlan.
+  return text;
+}
+
 function parseSpreadsheetDate(value: unknown): string | null {
   if (value === null || value === undefined || value === "") return null;
 
@@ -8134,6 +8169,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
       const value = row.planData?.[key];
       if (value === null || value === undefined) return "";
+      if (key === "normaido") return formatExcelDuration(value);
       if (typeof value === "object") return JSON.stringify(value);
       return String(value);
     }
@@ -12869,7 +12905,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         } else if (definition.dataType === "integer") {
           normalizedValues[definition.key] = parseSpreadsheetNumber(rawValue);
         } else {
-          const value = rawValue === null || rawValue === undefined ? "" : String(rawValue).trim();
+          const value = definition.key === "normaido"
+            ? formatExcelDuration(rawValue)
+            : (rawValue === null || rawValue === undefined ? "" : String(rawValue).trim());
           if (value.length > 1000) throw new Error(`${sourceLabel}, ${rowNumber}. sor, ${definition.label}: legfeljebb 1000 karakter lehet.`);
           normalizedValues[definition.key] = value || null;
         }
@@ -12902,7 +12940,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const adat: Record<string, unknown> = {};
       Object.entries(normalizedRawRow).forEach(([key, rawValue]) => {
         const definition = definitionByKey.get(key);
-        if (definition?.dataType === "date") adat[key] = rawValue === "" ? null : (parseSpreadsheetDate(rawValue) || rawValue);
+        if (key === "normaido") adat[key] = formatExcelDuration(rawValue) || null;
+        else if (definition?.dataType === "date") adat[key] = rawValue === "" ? null : (parseSpreadsheetDate(rawValue) || rawValue);
         else if (definition?.dataType === "integer") adat[key] = parseSpreadsheetNumber(rawValue);
         else if (rawValue instanceof Date) adat[key] = rawValue.toISOString();
         else adat[key] = rawValue;
