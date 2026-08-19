@@ -9620,7 +9620,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                           padding: 9,
                           borderRadius: 10,
                           background: hidden ? profileTheme.pageBackground : "#ffffff",
-                          color: hidden ? ensureReadableTextColor(profileTheme.pageBackground, profileTheme.headerPanelText) : "#0f172a",
+                          color: hidden ? ensureReadableProductionCardTextColor(profileTheme.pageBackground, profileTheme.headerPanelText, 4.5) : "#0f172a",
                           border: hidden ? `2px solid ${profileTheme.accentColor}` : "1px solid #cbd5e1",
                           boxShadow: hidden ? `inset 4px 0 0 ${profileTheme.accentColor}` : "none",
                           transition: "background-color 160ms ease, color 160ms ease, border-color 160ms ease",
