@@ -2290,22 +2290,63 @@ function getProductionCardFieldLabel(fieldId: string): string {
   return fieldId;
 }
 
+const PRODUCTION_CARD_SCRAP_DEFAULT_COLOR_PATCH: Partial<ProductionMonitorTheme> = {
+  tablePanelBackground: "#fff7ed",
+  tableTitleText: "#991b1b",
+  tableHeaderBackground: "#7f1d1d",
+  tableHeaderText: "#ffffff",
+  orderCellBackground: "#fca5a5",
+  orderCellText: "#450a0a",
+  doneBackground: "#86efac",
+  doneText: "#052e16",
+  inProgressBackground: "#fde047",
+  inProgressText: "#422006",
+  waitingBackground: "#fca5a5",
+  waitingText: "#450a0a",
+  borderColor: "#ef4444",
+};
+
+const PRODUCTION_CARD_BACKLOG_DEFAULT_COLOR_PATCH: Partial<ProductionMonitorTheme> = {
+  // Az első képen látható barna / narancs / sárga alapstílus.
+  tablePanelBackground: "#422006",
+  tableTitleText: "#fef3c7",
+  tableHeaderBackground: "#a16207",
+  tableHeaderText: "#fffbeb",
+  orderCellBackground: "#fde68a",
+  orderCellText: "#451a03",
+  doneBackground: "#86efac",
+  doneText: "#052e16",
+  inProgressBackground: "#fb923c",
+  inProgressText: "#431407",
+  waitingBackground: "#fde68a",
+  waitingText: "#451a03",
+  borderColor: "#f59e0b",
+};
+
+function applyProductionCardPriorityDefaultColors(
+  theme: ProductionMonitorTheme,
+  dataSource: ProductionCardTableDataSource
+): ProductionMonitorTheme {
+  if (dataSource === "scrap-replacement") {
+    return normalizeProductionMonitorTheme({
+      ...theme,
+      ...PRODUCTION_CARD_SCRAP_DEFAULT_COLOR_PATCH,
+    });
+  }
+
+  if (dataSource === "backlog") {
+    return normalizeProductionMonitorTheme({
+      ...theme,
+      ...PRODUCTION_CARD_BACKLOG_DEFAULT_COLOR_PATCH,
+    });
+  }
+
+  return normalizeProductionMonitorTheme(theme);
+}
+
 function createDefaultScrapReplacementCardTable(theme: ProductionMonitorTheme): ProductionMonitorTableConfig {
   const scrapTheme = normalizeProductionMonitorTheme({
-    ...theme,
-    tablePanelBackground: "#fff7ed",
-    tableTitleText: "#991b1b",
-    tableHeaderBackground: "#7f1d1d",
-    tableHeaderText: "#ffffff",
-    orderCellBackground: "#fca5a5",
-    orderCellText: "#450a0a",
-    doneBackground: "#86efac",
-    doneText: "#052e16",
-    inProgressBackground: "#fde047",
-    inProgressText: "#422006",
-    waitingBackground: "#fca5a5",
-    waitingText: "#450a0a",
-    borderColor: "#ef4444",
+    ...applyProductionCardPriorityDefaultColors(theme, "scrap-replacement"),
     panelRadius: 14,
   });
   const table = createDefaultProductionMonitorTable(
@@ -2355,20 +2396,7 @@ function createDefaultScrapReplacementCardTable(theme: ProductionMonitorTheme): 
 
 function createDefaultBacklogCardTable(theme: ProductionMonitorTheme): ProductionMonitorTableConfig {
   const backlogTheme = normalizeProductionMonitorTheme({
-    ...theme,
-    tablePanelBackground: "#422006",
-    tableTitleText: "#fef3c7",
-    tableHeaderBackground: "#a16207",
-    tableHeaderText: "#fffbeb",
-    orderCellBackground: "#fde68a",
-    orderCellText: "#451a03",
-    doneBackground: "#86efac",
-    doneText: "#052e16",
-    inProgressBackground: "#fb923c",
-    inProgressText: "#431407",
-    waitingBackground: "#fde68a",
-    waitingText: "#451a03",
-    borderColor: "#f59e0b",
+    ...applyProductionCardPriorityDefaultColors(theme, "backlog"),
     panelRadius: 14,
   });
   const table = createDefaultProductionMonitorTable(
@@ -9333,6 +9361,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }));
   }
 
+  function resetActivePriorityProductionCardColors(): void {
+    const dataSource = activeProductionCardTable.dataSource;
+
+    if (dataSource !== "backlog" && dataSource !== "scrap-replacement") {
+      return;
+    }
+
+    updateActiveProductionCardTable((table) => ({
+      ...table,
+      theme: applyProductionCardPriorityDefaultColors(table.theme, dataSource),
+    }));
+
+    setMessage({
+      type: "success",
+      text: dataSource === "backlog"
+        ? "A Lemaradások kártya színei visszaálltak a barna–narancs–sárga alapértelmezett stílusra. A véglegesítéshez nyomd meg a Mentés gombot."
+        : "A Selejtpótlás kártya színei visszaálltak a piros alapértelmezett stílusra. A véglegesítéshez nyomd meg a Mentés gombot.",
+    });
+  }
+
   function switchProductionCardTable(tableId: string): void {
     const table = productionCardProfile.tables.find((candidate) => candidate.id === tableId);
     if (!table) return;
@@ -9796,13 +9844,49 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
               {activeProductionCardTable.dataSource === "scrap-replacement" && (
                 <div style={{ marginBottom: 12, padding: 12, borderRadius: 10, background: "#fff7ed", border: "1px solid #ef4444", color: "#991b1b", fontWeight: 800 }}>
-                  A Selejtpótlás kártyát szerkeszted. A mezők sorrendje, láthatósága, szélessége, betűi és színei ugyanúgy állíthatók, mint a napi termelési kártyánál. Ez a kártya mindig a napi terv előtt jelenik meg.
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ flex: "1 1 420px" }}>
+                      A Selejtpótlás kártyát szerkeszted. A mezők sorrendje, láthatósága, szélessége, betűi és színei ugyanúgy állíthatók, mint a napi termelési kártyánál. Ez a kártya mindig a napi terv előtt jelenik meg.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={resetActivePriorityProductionCardColors}
+                      style={{
+                        ...buttonSecondary,
+                        flex: "0 0 auto",
+                        background: "#7f1d1d",
+                        color: "#ffffff",
+                        borderColor: "#ef4444",
+                        fontWeight: 900,
+                      }}
+                    >
+                      Alapértelmezett szín
+                    </button>
+                  </div>
                 </div>
               )}
 
               {activeProductionCardTable.dataSource === "backlog" && (
                 <div style={{ marginBottom: 12, padding: 12, borderRadius: 10, background: "#fffbeb", border: "1px solid #f59e0b", color: "#92400e", fontWeight: 800 }}>
-                  A Lemaradások kártyát szerkeszted. Ez minden munkaállomáson automatikusan megjelenik, ha korábbi napról teljesítetlen mennyiség maradt, és a napi terv előtt kap helyet.
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ flex: "1 1 420px" }}>
+                      A Lemaradások kártyát szerkeszted. Ez minden munkaállomáson automatikusan megjelenik, ha korábbi napról teljesítetlen mennyiség maradt, és a napi terv előtt kap helyet.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={resetActivePriorityProductionCardColors}
+                      style={{
+                        ...buttonSecondary,
+                        flex: "0 0 auto",
+                        background: "#a16207",
+                        color: "#fffbeb",
+                        borderColor: "#f59e0b",
+                        fontWeight: 900,
+                      }}
+                    >
+                      Alapértelmezett szín
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -9886,7 +9970,27 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               {productionCardEditorTab === "colors" && (
                 <div style={{ display: "grid", gap: 12 }}>
                   <div style={{ padding: "10px 12px", borderRadius: 10, background: "#ecfeff", border: "1px solid #67e8f9", color: "#164e63", fontSize: 12, lineHeight: 1.45 }}>
-                    <strong>Automatikus olvashatóság:</strong> ha egy kiválasztott háttér- és szövegszín kontrasztja túl gyenge, a rendszer automatikusan fekete vagy fehér szövegre korrigálja. Így nem menthető olyan kártya, amelyen eltűnik a felirat.
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <div style={{ flex: "1 1 460px" }}>
+                        <strong>Automatikus olvashatóság:</strong> ha egy kiválasztott háttér- és szövegszín kontrasztja túl gyenge, a rendszer automatikusan fekete vagy fehér szövegre korrigálja. Így nem menthető olyan kártya, amelyen eltűnik a felirat.
+                      </div>
+                      {(activeProductionCardTable.dataSource === "backlog" || activeProductionCardTable.dataSource === "scrap-replacement") && (
+                        <button
+                          type="button"
+                          onClick={resetActivePriorityProductionCardColors}
+                          style={{
+                            ...buttonSecondary,
+                            flex: "0 0 auto",
+                            background: activeProductionCardTable.dataSource === "backlog" ? "#a16207" : "#7f1d1d",
+                            color: "#ffffff",
+                            borderColor: activeProductionCardTable.dataSource === "backlog" ? "#f59e0b" : "#ef4444",
+                            fontWeight: 900,
+                          }}
+                        >
+                          Alapértelmezett szín
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 12 }}>
                   {renderColorControl("Teljes kártya háttere", profileTheme.pageBackground, (value) => updateProductionCardProfileTheme({ pageBackground: value }))}
