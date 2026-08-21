@@ -931,6 +931,11 @@ type ProductionCardBacklogRow = {
   tokKesz: boolean;
   nyiloKesz: boolean;
   completionPercent: number | null;
+
+  // Az eredeti, késésbe került *_terv sor teljes adattartalma.
+  // Így a Lemaradások kártyán ugyanazok az Excel/Supabase mezők
+  // jeleníthetők meg, mint a normál napi termelési kártyán.
+  planData: Record<string, unknown>;
 };
 
 type ProductionCardRow = {
@@ -2227,9 +2232,31 @@ function isCarpenterProductionCardStation(stationName: string | null | undefined
 
 function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, stationName = ""): readonly string[] {
   if (table.dataSource === "scrap-replacement") return PRODUCTION_CARD_SCRAP_FIELD_IDS;
-  if (table.dataSource === "backlog") return PRODUCTION_CARD_BACKLOG_FIELD_IDS;
 
-  const planFieldIds = getStationPlanFieldDefinitions(stationName).map((field) => {
+  const stationPlanDefinitions = getStationPlanFieldDefinitions(stationName);
+
+  if (table.dataSource === "backlog") {
+    // A Lemaradások kártya az eredeti *_terv sor ÖSSZES mezőjét megkapja.
+    // A közös alapmezőket a meglévő lemaradás-oszlopokra kötjük, így nincs
+    // duplikált Sorszám / Megnevezés / Mennyiség / Terv dátuma.
+    // Minden további *_terv mező dinamikus plan mezőként kerül a kártyára.
+    const backlogPlanFieldIds = stationPlanDefinitions.map((field) => {
+      if (field.key === "sorszam") return PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID;
+      if (field.key === "megnevezes") return PRODUCTION_CARD_BACKLOG_PRODUCT_FIELD_ID;
+      if (field.key === "mennyiseg") return PRODUCTION_CARD_BACKLOG_PLANNED_FIELD_ID;
+      if (field.key === "elkeszules_datum") return PRODUCTION_CARD_BACKLOG_DATE_FIELD_ID;
+      return `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${field.key}`;
+    });
+
+    // A *_terv mezők mellett a lemaradási rendszermezők is megmaradnak,
+    // különösen a kért Késés és Állapot.
+    return Array.from(new Set([
+      ...backlogPlanFieldIds,
+      ...PRODUCTION_CARD_BACKLOG_FIELD_IDS,
+    ]));
+  }
+
+  const planFieldIds = stationPlanDefinitions.map((field) => {
     if (field.key === "sorszam") return PRODUCTION_CARD_ORDER_FIELD_ID;
     if (field.key === "megnevezes") return PRODUCTION_CARD_PRODUCT_FIELD_ID;
     if (field.key === "mennyiseg") return PRODUCTION_CARD_QUANTITY_FIELD_ID;
@@ -2240,7 +2267,7 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
 
   // Ezeknél a kártyáknál az Excel üzleti mezői a mestermezők. A kötelező
   // rendszermezők (Állapot, Indító dolgozó, Befejező dolgozó, Eltelt idő)
-  // minden termelési kártyán automatikusan hozzáadódnak és nem rejthetők el.
+  // minden normál termelési kártyán automatikusan hozzáadódnak és nem rejthetők el.
   const excelExactCardStations = new Set(["szinter", "lezerhegesztes", "csomagolas", "foliazo", "fenyezo"]);
   if (excelExactCardStations.has(normalizePlanColumnName(stationName))) {
     return Array.from(new Set([...planFieldIds, ...PRODUCTION_CARD_REQUIRED_FIELD_IDS]));
@@ -2394,7 +2421,7 @@ function createDefaultScrapReplacementCardTable(theme: ProductionMonitorTheme): 
   return table;
 }
 
-function createDefaultBacklogCardTable(theme: ProductionMonitorTheme): ProductionMonitorTableConfig {
+function createDefaultBacklogCardTable(theme: ProductionMonitorTheme, stationName = ""): ProductionMonitorTableConfig {
   const backlogTheme = normalizeProductionMonitorTheme({
     ...applyProductionCardPriorityDefaultColors(theme, "backlog"),
     panelRadius: 14,
@@ -2405,7 +2432,7 @@ function createDefaultBacklogCardTable(theme: ProductionMonitorTheme): Productio
     backlogTheme
   );
   table.dataSource = "backlog";
-  table.fieldOrder = [...PRODUCTION_CARD_BACKLOG_FIELD_IDS];
+  table.fieldOrder = [...getProductionCardFieldIdsForTable(table, stationName)];
   table.hiddenFieldIds = [
     PRODUCTION_CARD_BACKLOG_COMPLETED_FIELD_ID,
     PRODUCTION_CARD_BACKLOG_START_WORKER_FIELD_ID,
@@ -2482,7 +2509,7 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
       widthWeight: 0.8,
     },
   };
-  const backlogTable = createDefaultBacklogCardTable(theme);
+  const backlogTable = createDefaultBacklogCardTable(theme, cleanStationName);
   const tables = isCarpenterProductionCardStation(cleanStationName)
     ? [createDefaultScrapReplacementCardTable(theme), backlogTable, table]
     : [backlogTable, table];
@@ -2518,9 +2545,7 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
         const tableForFields: ProductionMonitorTableConfig = { ...table, dataSource };
         const validFields: readonly string[] = dataSource === "scrap-replacement"
           ? PRODUCTION_CARD_SCRAP_FIELD_IDS
-          : dataSource === "backlog"
-            ? PRODUCTION_CARD_BACKLOG_FIELD_IDS
-            : getProductionCardFieldIdsForTable(tableForFields, stationName);
+          : getProductionCardFieldIdsForTable(tableForFields, stationName);
         const validFieldSet = new Set(validFields);
         const nextFieldOrder = Array.from(new Set([
           ...table.fieldOrder.filter((fieldId) => validFieldSet.has(fieldId)),
@@ -2548,7 +2573,7 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
 
   const existingBacklogTable = tables.find((table) => table.dataSource === "backlog");
   const productionTables = tables.filter((table) => table.dataSource === "production-plan");
-  const backlogTable = existingBacklogTable || createDefaultBacklogCardTable(normalized.theme);
+  const backlogTable = existingBacklogTable || createDefaultBacklogCardTable(normalized.theme, stationName);
   if (carpenterStation) {
     const existingScrapTable = tables.find((table) => table.dataSource === "scrap-replacement");
     tables = [
@@ -8538,6 +8563,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getBacklogCardFieldValue(row: ProductionCardBacklogRow, fieldId: string): string | number {
+    if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
+      const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
+      const value = row.planData?.[key];
+      if (value === null || value === undefined) return "";
+      if (key === "normaido") return formatExcelDuration(value);
+      if (typeof value === "object") return JSON.stringify(value);
+      return String(value);
+    }
+
     if (fieldId === PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID) return row.orderNumber;
     if (fieldId === PRODUCTION_CARD_BACKLOG_PRODUCT_FIELD_ID) return row.productName;
     if (fieldId === PRODUCTION_CARD_BACKLOG_PLANNED_FIELD_ID) return row.plannedQuantity;
@@ -9079,14 +9113,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       sourceErrors.push(`A lemaradási kártya nem olvasható: ${normalizeError(overduePlanError)}`);
     } else {
       const overdueSourceRows = ((overduePlanData || []) as Array<ProductionCardPlanSourceRow & { id?: number | string | null }>)
-        .map((row, index) => ({
-          id: String(row.id ?? `${row.sorszam}-${row.elkeszules_datum}-${index}`),
-          orderNumber: String(row.sorszam ?? "").trim(),
-          productName: String(row.megnevezes ?? "").trim(),
-          plannedQuantity: Math.max(0, parseSpreadsheetNumber(row.mennyiseg) ?? 0),
-          completionDate: String(row.elkeszules_datum ?? "").slice(0, 10),
-          productType: String(row.tipus ?? "").trim(),
-        }))
+        .map((row, index) => {
+          const raw = row as unknown as Record<string, unknown>;
+          const jsonData = raw.adat && typeof raw.adat === "object" && !Array.isArray(raw.adat)
+            ? raw.adat as Record<string, unknown>
+            : {};
+
+          return {
+            id: String(row.id ?? `${row.sorszam}-${row.elkeszules_datum}-${index}`),
+            orderNumber: String(row.sorszam ?? "").trim(),
+            productName: String(row.megnevezes ?? "").trim(),
+            plannedQuantity: Math.max(0, parseSpreadsheetNumber(row.mennyiseg) ?? 0),
+            completionDate: String(row.elkeszules_datum ?? "").slice(0, 10),
+            productType: String(row.tipus ?? "").trim(),
+
+            // Pontosan az eredeti tervsor adatai maradnak a lemaradáshoz kötve.
+            // Ha a sor 2026-08-19-i tervből maradt vissza, akkor a 2026-08-19-i
+            // *_terv sor mezőit visszük tovább, nem a mai tervből keresünk hozzá adatot.
+            planData: { ...jsonData, ...raw },
+          };
+        })
         .filter((row) => row.orderNumber && row.completionDate);
 
       const overdueOrderNumbers = Array.from(new Set(overdueSourceRows.map((row) => row.orderNumber)));
@@ -9210,6 +9256,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             tokKesz: workerStatus.tokKesz,
             nyiloKesz: workerStatus.nyiloKesz,
             completionPercent: workerStatus.completionPercent,
+            planData: planRow.planData,
           });
         });
       });
@@ -9908,7 +9955,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               {productionCardEditorTab === "layout" && (
                 <div style={{ display: "grid", gap: 10 }}>
                   <div style={{ padding: "10px 12px", borderRadius: 10, background: "#e0f2fe", border: "1px solid #7dd3fc", color: "#0c4a6e", fontSize: 12 }}>
-                    <strong>Elérhető mezők: {allFieldIds.length}</strong> · Az Állapot, Indító dolgozó, Befejező dolgozó és Eltelt idő kötelező mezők, ezek nem rejthetők el. A többi mező szabadon elrejthető és rendezhető. Az elrejtett mezők a kártyához beállított háttérszínnel jelennek meg a szerkesztőben.
+                    <strong>Elérhető mezők: {allFieldIds.length}</strong>
+                    {activeProductionCardTable.dataSource === "backlog"
+                      ? " · A Lemaradások kártya tartalmazza az aktuális munkaállomás összes *_terv mezőjét, valamint a lemaradás saját mezőit (például Késés és Állapot). Ezen a kártyán nincs kötelező mező: minden oszlop elrejthető és szabadon rendezhető."
+                      : activeProductionCardTable.dataSource === "production-plan"
+                        ? " · Az Állapot, Indító dolgozó, Befejező dolgozó és Eltelt idő kötelező mezők, ezek nem rejthetők el. A többi mező szabadon elrejthető és rendezhető."
+                        : " · A mezők szabadon elrejthetők és rendezhetők."}
+                    {" "}Az elrejtett mezők a kártyához beállított háttérszínnel jelennek meg a szerkesztőben.
                   </div>
                   {allFieldIds.map((fieldId, index) => {
                     const required = activeProductionCardTable.dataSource === "production-plan" && isRequiredProductionCardField(fieldId);
