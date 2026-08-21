@@ -1068,6 +1068,7 @@ type ProductionMonitorFieldStyle = {
 
 type ProductionMonitorTheme = {
   fontFamily: string;
+  baseFontSize: number;
   titleFontSize: number;
   titleBold: boolean;
   titleItalic: boolean;
@@ -2104,6 +2105,7 @@ const PRODUCTION_MONITOR_FONT_OPTIONS = [
 
 const DEFAULT_PRODUCTION_MONITOR_THEME: ProductionMonitorTheme = {
   fontFamily: "Segoe UI",
+  baseFontSize: 12,
   titleFontSize: 36,
   titleBold: true,
   titleItalic: false,
@@ -2817,6 +2819,7 @@ function normalizeProductionMonitorTheme(value: unknown): ProductionMonitorTheme
 
   return {
     fontFamily: stringValue(raw.fontFamily, defaults.fontFamily),
+    baseFontSize: numberValue(raw.baseFontSize, defaults.baseFontSize, 7, 28),
     titleFontSize: numberValue(raw.titleFontSize, defaults.titleFontSize, 16, 72),
     titleBold: booleanValue(raw.titleBold, defaults.titleBold),
     titleItalic: booleanValue(raw.titleItalic, defaults.titleItalic),
@@ -5206,6 +5209,7 @@ export default function Page() {
   const [productionCardLayoutLoaded, setProductionCardLayoutLoaded] = useState(false);
   const [loadingProductionCard, setLoadingProductionCard] = useState(false);
   const [savingProductionCardSettings, setSavingProductionCardSettings] = useState(false);
+  const [applyingProductionCardTypographyToAll, setApplyingProductionCardTypographyToAll] = useState(false);
   const [productionCardLastSavedAt, setProductionCardLastSavedAt] = useState("");
   const productionCardDraggedFieldIdRef = useRef<string | null>(null);
   const productionCardAutoSaveTimerRef = useRef<number | null>(null);
@@ -7714,6 +7718,24 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+  function getPriorityTemplateSampleValue(field: StationPlanFieldDefinition): string | number {
+    const key = normalizePlanColumnName(field.key);
+    const label = normalizePlanColumnName(field.label);
+
+    if (field.dataType === "date") return getLocalDateKey(new Date());
+    if (field.dataType === "integer") return 1;
+    if (key === "normaido") return "1:30";
+    if (key === "gyartasi_szam" || key === "sorszam") return "MINTA-001";
+    if (key === "rsz") return "00001";
+    if (key === "megnevezes" || label.includes("megnevez")) return "Minta prioritási rendelés";
+    if (key === "tipus" || label.includes("tipus")) return "Standard";
+    if (key === "szin" || label.includes("szin")) return "Minta szín";
+    if (key === "statusz" || label.includes("statusz")) return "PRIORITÁS";
+    if (label.includes("megjegy")) return "Minta adat";
+    if (label.includes("darab") || label.includes("mennyiseg")) return 1;
+    return "Minta";
+  }
+
   async function exportPriorityWorkbookTemplate(): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
@@ -7756,9 +7778,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         PRIORITY_TEMPLATE_REASON_HEADER,
       ];
 
-      // Több prioritási rendelés egyszerre feltölthető. 100 előkészített üres sor.
-      const rows: Array<Array<string | number>> = [headers];
-      for (let index = 0; index < 100; index += 1) {
+      // Több prioritási rendelés egyszerre feltölthető.
+      // Az első adat sor egy TELJESEN kitöltött minta. A visszaimportáló logika
+      // automatikusan kihagyja, tehát akkor sem hoz létre prioritást, ha bent marad.
+      const rows: Array<Array<string | number>> = [
+        headers,
+        [
+          sessionId,
+          "MINTA – NEM IMPORTÁLÓDIK",
+          ...definitions.map((field) => getPriorityTemplateSampleValue(field)),
+          "MINTA – ide írd le, miért kell prioritásba tenni a rendelést",
+        ],
+      ];
+
+      // A mintasor után 99 üres kitölthető sor marad.
+      for (let index = 0; index < 99; index += 1) {
         rows.push([
           sessionId,
           "",
@@ -7873,6 +7907,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           .map(([, value]) => value)
           .filter((value) => value !== null && value !== undefined && String(value).trim() !== "");
         if (meaningfulValues.length === 0) return;
+
+        // Az exportált mintasor soha nem importálódhat be prioritási rendelésként.
+        const rawExplicitOrderNumber = String(row[orderHeaderKey] || "").trim();
+        if (normalizeLooseText(rawExplicitOrderNumber).startsWith("minta")) return;
 
         const data: Record<string, unknown> = {};
         definitions.forEach((definition) => {
@@ -10231,6 +10269,124 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }));
   }
 
+  async function applyCurrentProductionCardTypographyToAllStations(): Promise<void> {
+    if (!supabase) {
+      setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
+      return;
+    }
+
+    const stations = getOrderedDashboardStations();
+    if (stations.length === 0) {
+      setMessage({ type: "error", text: "Nincs elérhető termelési munkaállomás." });
+      return;
+    }
+
+    const currentProfileTheme = sanitizeProductionCardTheme(productionCardProfile.theme);
+    const currentTableTheme = sanitizeProductionCardTheme(activeProductionCardTable.theme);
+
+    // KIZÁRÓLAG tipográfiai tulajdonságokat másolunk.
+    // Szín, háttér, oszlopszélesség, mezősorrend, elrejtés és térköz nem változik.
+    const typographyPatch: Partial<ProductionMonitorTheme> = {
+      fontFamily: currentTableTheme.fontFamily || currentProfileTheme.fontFamily,
+      baseFontSize: currentTableTheme.baseFontSize,
+      titleFontSize: currentProfileTheme.titleFontSize,
+      titleBold: currentProfileTheme.titleBold,
+      titleItalic: currentProfileTheme.titleItalic,
+      tableTitleFontSize: currentTableTheme.tableTitleFontSize,
+      tableTitleBold: currentTableTheme.tableTitleBold,
+      tableTitleItalic: currentTableTheme.tableTitleItalic,
+      headerFontSize: currentTableTheme.headerFontSize,
+      cellFontSize: currentTableTheme.cellFontSize,
+      headerBold: currentTableTheme.headerBold,
+      headerItalic: currentTableTheme.headerItalic,
+      cellBold: currentTableTheme.cellBold,
+      cellItalic: currentTableTheme.cellItalic,
+    };
+
+    setApplyingProductionCardTypographyToAll(true);
+    try {
+      const savedAt = new Date().toISOString();
+      const updatedBy = String(activeWorker?.["Teljes nev"] || "").trim() || null;
+      const rowsToUpsert: Array<{
+        station_name: string;
+        settings: ProductionMonitorProfile;
+        updated_by: string | null;
+        updated_at: string;
+      }> = [];
+
+      let currentStationUpdatedProfile: ProductionMonitorProfile | null = null;
+
+      for (const stationName of stations) {
+        const isCurrentStation =
+          normalizeLooseText(stationName) === normalizeLooseText(productionCardAdminStation);
+
+        // Az aktuális állomásnál az éppen képernyőn lévő (akár még nem mentett)
+        // elrendezést használjuk, hogy a globális tipográfia ne írjon felül más módosítást.
+        const sourceProfile = isCurrentStation
+          ? normalizeProductionCardProfile(
+              sanitizeProductionCardProfile(productionCardProfile),
+              stationName
+            )
+          : (await fetchProductionCardProfileForStation(stationName)).profile;
+
+        const updatedProfile: ProductionMonitorProfile = {
+          ...sourceProfile,
+          themePresetId: "custom",
+          theme: normalizeProductionMonitorTheme({
+            ...sourceProfile.theme,
+            ...typographyPatch,
+          }),
+          tables: sourceProfile.tables.map((table) => ({
+            ...table,
+            theme: normalizeProductionMonitorTheme({
+              ...table.theme,
+              ...typographyPatch,
+            }),
+          })),
+        };
+
+        const safeUpdatedProfile = normalizeProductionCardProfile(
+          sanitizeProductionCardProfile(updatedProfile),
+          stationName
+        );
+
+        rowsToUpsert.push({
+          station_name: stationName,
+          settings: safeUpdatedProfile,
+          updated_by: updatedBy,
+          updated_at: savedAt,
+        });
+
+        if (isCurrentStation) currentStationUpdatedProfile = safeUpdatedProfile;
+      }
+
+      const { error } = await supabase
+        .from(PRODUCTION_CARD_SETTINGS_TABLE)
+        .upsert(rowsToUpsert, { onConflict: "station_name" });
+
+      if (error) throw error;
+
+      if (currentStationUpdatedProfile) {
+        setProductionCardProfile(currentStationUpdatedProfile);
+        setProductionCardLastSavedAt(savedAt);
+        productionCardLastSavedPayloadRef.current = JSON.stringify(currentStationUpdatedProfile);
+      }
+
+      setMessage({
+        type: "success",
+        text: `A tipográfia alkalmazva lett ${rowsToUpsert.length} munkaállomás összes termelési kártyájára. A színek, hátterek, mezősorrendek, elrejtések és oszlopszélességek változatlanok maradtak.`,
+      });
+    } catch (error) {
+      console.error("A globális termelésikártya-tipográfia alkalmazása sikertelen:", error);
+      setMessage({
+        type: "error",
+        text: `A tipográfia minden kártyára alkalmazása sikertelen: ${normalizeError(error)}`,
+      });
+    } finally {
+      setApplyingProductionCardTypographyToAll(false);
+    }
+  }
+
   function resetActivePriorityProductionCardColors(): void {
     const dataSource = activeProductionCardTable.dataSource;
 
@@ -10413,7 +10569,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         || (table.dataSource === "production-plan" && isRequiredProductionCardField(fieldId))
       );
       const visibleCount = Math.max(visibleFieldIds.length, 1);
-      const baseFont = visibleCount >= 8 ? 9 : visibleCount >= 6 ? 10 : 12;
+      const automaticBaseFont = visibleCount >= 8 ? 9 : visibleCount >= 6 ? 10 : 12;
+      const baseFont = Math.max(7, Number(theme.baseFontSize || automaticBaseFont));
       const headerFontSize = Math.max(7, Math.round((theme.headerFontSize || baseFont) * zoomRatio * 10) / 10);
       const cellFontSize = Math.max(7, Math.round((theme.cellFontSize || baseFont) * zoomRatio * 10) / 10);
       const fieldWeights = Object.fromEntries(visibleFieldIds.map((fieldId) => [fieldId, getProductionCardFieldStyle(fieldId, table).widthWeight])) as Record<string, number>;
@@ -10874,13 +11031,92 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               )}
 
               {productionCardEditorTab === "typography" && (
-                <div style={{ ...editorSectionStyle, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12 }}>
-                  <label style={editorLabelStyle}><span>Betűtípus</span><select value={tableTheme.fontFamily} onChange={(event) => updateProductionCardTableTheme({ fontFamily: event.target.value })} style={{ ...editorControlStyle, fontFamily: tableTheme.fontFamily }}>{PRODUCTION_MONITOR_FONT_OPTIONS.map((font) => <option key={font} value={font}>{font}</option>)}</select></label>
-                  <label style={editorLabelStyle}><span>Cím betűmérete</span><input type="number" min={12} max={48} value={tableTheme.tableTitleFontSize} onChange={(event) => updateProductionCardTableTheme({ tableTitleFontSize: Number(event.target.value) })} style={editorControlStyle} /></label>
-                  <label style={editorLabelStyle}><span>Fejléc betűmérete (0 = automatikus)</span><input type="number" min={0} max={36} value={tableTheme.headerFontSize} onChange={(event) => updateProductionCardTableTheme({ headerFontSize: Number(event.target.value) })} style={editorControlStyle} /></label>
-                  <label style={editorLabelStyle}><span>Cella betűmérete (0 = automatikus)</span><input type="number" min={0} max={36} value={tableTheme.cellFontSize} onChange={(event) => updateProductionCardTableTheme({ cellFontSize: Number(event.target.value) })} style={editorControlStyle} /></label>
-                  <label style={editorLabelStyle}><span>Cellák térköze</span><input type="number" min={2} max={28} value={tableTheme.cellPadding} onChange={(event) => updateProductionCardTableTheme({ cellPadding: Number(event.target.value) })} style={editorControlStyle} /></label>
-                  {([ ["Fejléc félkövér", "headerBold"], ["Fejléc dőlt", "headerItalic"], ["Cellák félkövérek", "cellBold"], ["Cellák dőltek", "cellItalic"] ] as const).map(([label, key]) => <label key={key} style={{ ...editorLabelStyle, display: "flex", alignItems: "center", gap: 8 }}><input type="checkbox" checked={Boolean(tableTheme[key])} onChange={(event) => updateProductionCardTableTheme({ [key]: event.target.checked } as Partial<ProductionMonitorTheme>)} />{label}</label>)}
+                <div style={{ ...editorSectionStyle, display: "grid", gap: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", padding: "10px 12px", borderRadius: 10, background: "#eef2ff", border: "1px solid #818cf8" }}>
+                    <div style={{ color: "#312e81", fontSize: 12, lineHeight: 1.45, flex: "1 1 520px" }}>
+                      <strong>Globális tipográfia:</strong> először állítsd be itt a kívánt betűket és méreteket, majd a gombbal ugyanazt a tipográfiát az összes munkaállomás összes kártyájára alkalmazhatod. A színek, hátterek, oszlopszélességek, mezősorrendek és elrejtések nem változnak.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void applyCurrentProductionCardTypographyToAllStations()}
+                      disabled={applyingProductionCardTypographyToAll}
+                      style={{ ...buttonPrimary, background: "#4338ca", color: "#ffffff", borderColor: "#818cf8", fontWeight: 900, whiteSpace: "nowrap" }}
+                    >
+                      {applyingProductionCardTypographyToAll ? "Alkalmazás minden kártyára..." : "Minden kártyára érvényes"}
+                    </button>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12 }}>
+                    <label style={editorLabelStyle}>
+                      <span>Betűtípus</span>
+                      <select
+                        value={tableTheme.fontFamily}
+                        onChange={(event) => {
+                          updateProductionCardTableTheme({ fontFamily: event.target.value });
+                          updateProductionCardProfileTheme({ fontFamily: event.target.value });
+                        }}
+                        style={{ ...editorControlStyle, fontFamily: tableTheme.fontFamily }}
+                      >
+                        {PRODUCTION_MONITOR_FONT_OPTIONS.map((font) => <option key={font} value={font}>{font}</option>)}
+                      </select>
+                    </label>
+
+                    <label style={editorLabelStyle}>
+                      <span>Alap betűméret</span>
+                      <input type="number" min={7} max={28} value={tableTheme.baseFontSize} onChange={(event) => updateProductionCardTableTheme({ baseFontSize: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+
+                    <label style={editorLabelStyle}>
+                      <span>Cím betűmérete</span>
+                      <input type="number" min={12} max={48} value={tableTheme.tableTitleFontSize} onChange={(event) => updateProductionCardTableTheme({ tableTitleFontSize: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+
+                    <label style={editorLabelStyle}>
+                      <span>Felső kártyacím betűmérete</span>
+                      <input type="number" min={16} max={72} value={profileTheme.titleFontSize} onChange={(event) => updateProductionCardProfileTheme({ titleFontSize: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+
+                    <label style={editorLabelStyle}>
+                      <span>Fejléc betűmérete (0 = alap)</span>
+                      <input type="number" min={0} max={36} value={tableTheme.headerFontSize} onChange={(event) => updateProductionCardTableTheme({ headerFontSize: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+
+                    <label style={editorLabelStyle}>
+                      <span>Cella betűmérete (0 = alap)</span>
+                      <input type="number" min={0} max={36} value={tableTheme.cellFontSize} onChange={(event) => updateProductionCardTableTheme({ cellFontSize: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+
+                    <label style={editorLabelStyle}>
+                      <span>Cellák térköze</span>
+                      <input type="number" min={2} max={28} value={tableTheme.cellPadding} onChange={(event) => updateProductionCardTableTheme({ cellPadding: Number(event.target.value) })} style={editorControlStyle} />
+                    </label>
+
+                    {([
+                      ["Felső kártyacím félkövér", "titleBold", "profile"],
+                      ["Felső kártyacím dőlt", "titleItalic", "profile"],
+                      ["Kártyacím félkövér", "tableTitleBold", "table"],
+                      ["Kártyacím dőlt", "tableTitleItalic", "table"],
+                      ["Fejléc félkövér", "headerBold", "table"],
+                      ["Fejléc dőlt", "headerItalic", "table"],
+                      ["Cellák félkövérek", "cellBold", "table"],
+                      ["Cellák dőltek", "cellItalic", "table"],
+                    ] as const).map(([label, key, target]) => (
+                      <label key={`${target}-${key}`} style={{ ...editorLabelStyle, display: "flex", alignItems: "center", gap: 8 }}>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(target === "profile" ? profileTheme[key] : tableTheme[key])}
+                          onChange={(event) => {
+                            if (target === "profile") {
+                              updateProductionCardProfileTheme({ [key]: event.target.checked } as Partial<ProductionMonitorTheme>);
+                            } else {
+                              updateProductionCardTableTheme({ [key]: event.target.checked } as Partial<ProductionMonitorTheme>);
+                            }
+                          }}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
                 </div>
               )}
 
