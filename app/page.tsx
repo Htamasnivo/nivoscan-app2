@@ -912,6 +912,67 @@ type LabelPrintJob = {
   renderedImages?: Record<string, string>;
 };
 
+
+type PriorityImportSessionRow = {
+  id: string;
+  station_names: string[];
+  field_keys?: string[] | null;
+  field_labels?: string[] | null;
+  exported_by_worker_id?: number | string | null;
+  exported_by_worker_name?: string | null;
+  source_filename?: string | null;
+  created_at?: string | null;
+  last_imported_at?: string | null;
+};
+
+type PriorityOrderDbRow = {
+  id: string;
+  order_number: string;
+  priority_reason?: string | null;
+  data?: Record<string, unknown> | null;
+  import_session_id?: string | null;
+  source_file?: string | null;
+  is_active?: boolean | null;
+  created_by_worker_id?: number | string | null;
+  created_by_worker_name?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  completed_at?: string | null;
+};
+
+type PriorityOrderStationDbRow = {
+  id: string;
+  priority_order_id: string;
+  station_name: string;
+  status: "VARAKOZIK" | "FOLYAMATBAN" | "KESZ" | string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  start_worker_name?: string | null;
+  end_worker_name?: string | null;
+  updated_at?: string | null;
+};
+
+type ProductionCardPriorityRow = {
+  id: string;
+  priorityOrderId: string;
+  orderNumber: string;
+  data: Record<string, unknown>;
+  status: ProductionMonitorStatus;
+  statusLabel: string;
+  startWorkerName: string;
+  endWorkerName: string;
+  startedAt: string | null;
+  endedAt: string | null;
+};
+
+type PriorityHistoryRow = {
+  id: string;
+  orderNumber: string;
+  createdAt: string | null;
+  completedAt: string | null;
+  stations: string[];
+};
+
 type ProductionCardBacklogRow = {
   id: string;
   orderNumber: string;
@@ -968,6 +1029,7 @@ type ProductionCardData = {
   dateKey: string;
   tableName: string;
   rows: ProductionCardRow[];
+  priorityRows?: ProductionCardPriorityRow[];
   scrapReplacementRows?: ScrapReplacementRow[];
   backlogRows?: ProductionCardBacklogRow[];
   lastUpdatedAt: string;
@@ -1049,7 +1111,7 @@ type ProductionMonitorTheme = {
   showSummaryCards: boolean;
 };
 
-type ProductionCardTableDataSource = "production-plan" | "scrap-replacement" | "backlog";
+type ProductionCardTableDataSource = "production-plan" | "scrap-replacement" | "backlog" | "priority";
 
 type ProductionMonitorTableConfig = {
   id: string;
@@ -1618,6 +1680,26 @@ const PRODUCTION_CARD_BACKLOG_FIELD_IDS = [
   PRODUCTION_CARD_BACKLOG_NYILO_FIELD_ID,
 ] as const;
 
+
+const PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID = "__priority_order_number__";
+const PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID = "__priority_status__";
+const PRODUCTION_CARD_PRIORITY_START_WORKER_FIELD_ID = "__priority_start_worker__";
+const PRODUCTION_CARD_PRIORITY_END_WORKER_FIELD_ID = "__priority_end_worker__";
+const PRODUCTION_CARD_PRIORITY_ELAPSED_FIELD_ID = "__priority_elapsed__";
+const PRODUCTION_CARD_PRIORITY_FIELD_IDS = [
+  PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID,
+  PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID,
+  PRODUCTION_CARD_PRIORITY_START_WORKER_FIELD_ID,
+  PRODUCTION_CARD_PRIORITY_END_WORKER_FIELD_ID,
+  PRODUCTION_CARD_PRIORITY_ELAPSED_FIELD_ID,
+] as const;
+
+const PRIORITY_IMPORT_SESSIONS_TABLE = "priority_import_sessions";
+const PRIORITY_ORDERS_TABLE = "priority_orders";
+const PRIORITY_ORDER_STATIONS_TABLE = "priority_order_stations";
+const PRIORITY_TEMPLATE_SESSION_HEADER = "__priority_import_session_id";
+const PRIORITY_TEMPLATE_ORDER_HEADER = "Prioritási rendelésszám";
+const PRIORITY_TEMPLATE_REASON_HEADER = "Prioritás oka / megjegyzés";
 
 const PRINTER_SETTINGS_TABLE = "printer_settings";
 const LABEL_TEMPLATES_TABLE = "label_templates";
@@ -2235,6 +2317,22 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
 
   const stationPlanDefinitions = getStationPlanFieldDefinitions(stationName);
 
+  if (table.dataSource === "priority") {
+    // A Prioritási kártya az adott munkaállomás saját *_terv mezőit mutatja,
+    // plusz a rendszermezőket. A rendszermezők ezen a kártyán is elrejthetők.
+    const priorityPlanFieldIds = stationPlanDefinitions.map((field) =>
+      `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${field.key}`
+    );
+    return Array.from(new Set([
+      PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID,
+      ...priorityPlanFieldIds,
+      PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID,
+      PRODUCTION_CARD_PRIORITY_START_WORKER_FIELD_ID,
+      PRODUCTION_CARD_PRIORITY_END_WORKER_FIELD_ID,
+      PRODUCTION_CARD_PRIORITY_ELAPSED_FIELD_ID,
+    ]));
+  }
+
   if (table.dataSource === "backlog") {
     // A Lemaradások kártya az eredeti *_terv sor ÖSSZES mezőjét megkapja.
     // A közös alapmezőket a meglévő lemaradás-oszlopokra kötjük, így nincs
@@ -2291,6 +2389,11 @@ function getProductionCardFieldLabel(fieldId: string): string {
   if (fieldId === PRODUCTION_CARD_ELAPSED_FIELD_ID) return "Eltelt idő";
   if (fieldId === PRODUCTION_CARD_TOK_FIELD_ID) return "Tok";
   if (fieldId === PRODUCTION_CARD_NYILO_FIELD_ID) return "Nyíló";
+  if (fieldId === PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID) return "Rendelésszám";
+  if (fieldId === PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID) return "Állapot";
+  if (fieldId === PRODUCTION_CARD_PRIORITY_START_WORKER_FIELD_ID) return "Indító dolgozó";
+  if (fieldId === PRODUCTION_CARD_PRIORITY_END_WORKER_FIELD_ID) return "Befejező dolgozó";
+  if (fieldId === PRODUCTION_CARD_PRIORITY_ELAPSED_FIELD_ID) return "Eltelt idő";
   if (fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID) return "Rendelésszám";
   if (fieldId === PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID) return "Hiba";
   if (fieldId === PRODUCTION_CARD_SCRAP_NOTE_FIELD_ID) return "Megjegyzés";
@@ -2316,6 +2419,24 @@ function getProductionCardFieldLabel(fieldId: string): string {
   if (fieldId === PRODUCTION_CARD_BACKLOG_NYILO_FIELD_ID) return "Nyíló";
   return fieldId;
 }
+
+const PRODUCTION_CARD_PRIORITY_DEFAULT_COLOR_PATCH: Partial<ProductionMonitorTheme> = {
+  // Szándékosan teljesen eltér az eddigi alap kártyáktól:
+  // mély lila + magenta + neon türkiz.
+  tablePanelBackground: "#24003b",
+  tableTitleText: "#67e8f9",
+  tableHeaderBackground: "#a21caf",
+  tableHeaderText: "#ecfeff",
+  orderCellBackground: "#164e63",
+  orderCellText: "#ecfeff",
+  doneBackground: "#0f766e",
+  doneText: "#ecfeff",
+  inProgressBackground: "#c026d3",
+  inProgressText: "#ffffff",
+  waitingBackground: "#3b0764",
+  waitingText: "#e0f2fe",
+  borderColor: "#22d3ee",
+};
 
 const PRODUCTION_CARD_SCRAP_DEFAULT_COLOR_PATCH: Partial<ProductionMonitorTheme> = {
   tablePanelBackground: "#fff7ed",
@@ -2354,6 +2475,13 @@ function applyProductionCardPriorityDefaultColors(
   theme: ProductionMonitorTheme,
   dataSource: ProductionCardTableDataSource
 ): ProductionMonitorTheme {
+  if (dataSource === "priority") {
+    return normalizeProductionMonitorTheme({
+      ...theme,
+      ...PRODUCTION_CARD_PRIORITY_DEFAULT_COLOR_PATCH,
+    });
+  }
+
   if (dataSource === "scrap-replacement") {
     return normalizeProductionMonitorTheme({
       ...theme,
@@ -2369,6 +2497,48 @@ function applyProductionCardPriorityDefaultColors(
   }
 
   return normalizeProductionMonitorTheme(theme);
+}
+
+function createDefaultPriorityCardTable(theme: ProductionMonitorTheme, stationName = ""): ProductionMonitorTableConfig {
+  const priorityTheme = normalizeProductionMonitorTheme({
+    ...applyProductionCardPriorityDefaultColors(theme, "priority"),
+    panelRadius: 16,
+  });
+
+  const table = createDefaultProductionMonitorTable(
+    "Prioritási kártya",
+    "card-table-priority",
+    priorityTheme
+  );
+  table.dataSource = "priority";
+  table.fieldOrder = [...getProductionCardFieldIdsForTable(table, stationName)];
+  table.hiddenFieldIds = [];
+  table.fieldStyles = {
+    [PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 1.25,
+      textAlign: "left",
+    },
+    [PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 1.05,
+    },
+    [PRODUCTION_CARD_PRIORITY_START_WORKER_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 1.2,
+      textAlign: "left",
+    },
+    [PRODUCTION_CARD_PRIORITY_END_WORKER_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 1.2,
+      textAlign: "left",
+    },
+    [PRODUCTION_CARD_PRIORITY_ELAPSED_FIELD_ID]: {
+      ...normalizeProductionMonitorFieldStyle(null),
+      widthWeight: 0.9,
+    },
+  };
+  return table;
 }
 
 function createDefaultScrapReplacementCardTable(theme: ProductionMonitorTheme): ProductionMonitorTableConfig {
@@ -2509,10 +2679,11 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
       widthWeight: 0.8,
     },
   };
+  const priorityTable = createDefaultPriorityCardTable(theme, cleanStationName);
   const backlogTable = createDefaultBacklogCardTable(theme, cleanStationName);
   const tables = isCarpenterProductionCardStation(cleanStationName)
-    ? [createDefaultScrapReplacementCardTable(theme), backlogTable, table]
-    : [backlogTable, table];
+    ? [priorityTable, createDefaultScrapReplacementCardTable(theme), backlogTable, table]
+    : [priorityTable, backlogTable, table];
   return {
     id: `production-card-${cleanStationName}`,
     name: `${cleanStationName} termelési kártya`,
@@ -2530,11 +2701,13 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
   const carpenterStation = isCarpenterProductionCardStation(stationName);
   let tables = normalized.tables.length > 0
     ? normalized.tables.map((table, index) => {
-        const dataSource: ProductionCardTableDataSource = table.dataSource === "scrap-replacement"
-          ? "scrap-replacement"
-          : table.dataSource === "backlog"
-            ? "backlog"
-            : "production-plan";
+        const dataSource: ProductionCardTableDataSource = table.dataSource === "priority"
+          ? "priority"
+          : table.dataSource === "scrap-replacement"
+            ? "scrap-replacement"
+            : table.dataSource === "backlog"
+              ? "backlog"
+              : "production-plan";
         // FONTOS: a production-plan táblák mezői munkaállomásonként dinamikusak.
         // Korábban itt csak a statikus PRODUCTION_CARD_FIELD_IDS lista volt érvényes,
         // ezért a *_terv táblából származó mezők (pl. gyártási szám, rsz, külső lap)
@@ -2571,18 +2744,21 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
       })
     : createDefaultProductionCardProfile(stationName).tables;
 
+  const existingPriorityTable = tables.find((table) => table.dataSource === "priority");
   const existingBacklogTable = tables.find((table) => table.dataSource === "backlog");
   const productionTables = tables.filter((table) => table.dataSource === "production-plan");
+  const priorityTable = existingPriorityTable || createDefaultPriorityCardTable(normalized.theme, stationName);
   const backlogTable = existingBacklogTable || createDefaultBacklogCardTable(normalized.theme, stationName);
   if (carpenterStation) {
     const existingScrapTable = tables.find((table) => table.dataSource === "scrap-replacement");
     tables = [
+      priorityTable,
       existingScrapTable || createDefaultScrapReplacementCardTable(normalized.theme),
       backlogTable,
       ...productionTables,
     ];
   } else {
-    tables = [backlogTable, ...productionTables];
+    tables = [priorityTable, backlogTable, ...productionTables];
   }
 
   if (tables.length === 0) tables = createDefaultProductionCardProfile(stationName).tables;
@@ -4966,6 +5142,16 @@ export default function Page() {
   const [uploadingStationPlans, setUploadingStationPlans] = useState(false);
   const [productionPlanWorkbookFile, setProductionPlanWorkbookFile] = useState<File | null>(null);
   const [refreshingProductionPlanWorkbook, setRefreshingProductionPlanWorkbook] = useState(false);
+
+  // Prioritási kártya admin / Excel workflow.
+  const [prioritySelectedStations, setPrioritySelectedStations] = useState<string[]>([]);
+  const [priorityWorkbookFile, setPriorityWorkbookFile] = useState<File | null>(null);
+  const [exportingPriorityWorkbook, setExportingPriorityWorkbook] = useState(false);
+  const [importingPriorityWorkbook, setImportingPriorityWorkbook] = useState(false);
+  const [priorityLastExportAt, setPriorityLastExportAt] = useState("");
+  const [priorityLastImportAt, setPriorityLastImportAt] = useState("");
+  const [priorityHistory, setPriorityHistory] = useState<PriorityHistoryRow[]>([]);
+  const [loadingPriorityHistory, setLoadingPriorityHistory] = useState(false);
   const [productionPlanLastServerImportAt, setProductionPlanLastServerImportAt] = useState("");
   const [productionPlanLastFileModifiedAt, setProductionPlanLastFileModifiedAt] = useState("");
   const [productionPlans, setProductionPlans] = useState<ProductionPlanRow[]>([]);
@@ -5006,6 +5192,7 @@ export default function Page() {
     dateKey: getLocalDateKey(new Date()),
     tableName: "",
     rows: [],
+    priorityRows: [],
     scrapReplacementRows: [],
     backlogRows: [],
     lastUpdatedAt: "",
@@ -5029,6 +5216,7 @@ export default function Page() {
     dateKey: getLocalDateKey(new Date()),
     tableName: "",
     rows: [],
+    priorityRows: [],
     scrapReplacementRows: [],
     backlogRows: [],
     lastUpdatedAt: "",
@@ -7457,6 +7645,416 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
   }
 
+  function getPrioritySelectedStationUnionDefinitions(stationNames: string[]): StationPlanFieldDefinition[] {
+    const byKey = new Map<string, StationPlanFieldDefinition>();
+    stationNames.forEach((stationName) => {
+      getStationPlanFieldDefinitions(stationName).forEach((field) => {
+        if (!byKey.has(field.key)) byKey.set(field.key, field);
+      });
+    });
+    return Array.from(byKey.values());
+  }
+
+  function togglePriorityStation(stationName: string): void {
+    setPrioritySelectedStations((previous) => {
+      const exists = previous.some((item) => normalizeLooseText(item) === normalizeLooseText(stationName));
+      return exists
+        ? previous.filter((item) => normalizeLooseText(item) !== normalizeLooseText(stationName))
+        : [...previous, stationName];
+    });
+  }
+
+  async function loadPriorityHistory(): Promise<void> {
+    if (!supabase) return;
+    setLoadingPriorityHistory(true);
+    try {
+      const { data: orders, error: ordersError } = await supabase
+        .from(PRIORITY_ORDERS_TABLE)
+        .select("id, order_number, created_at, completed_at")
+        .eq("is_active", false)
+        .not("completed_at", "is", null)
+        .order("completed_at", { ascending: false })
+        .limit(100);
+
+      if (ordersError) throw ordersError;
+
+      const orderRows = (orders || []) as Array<{
+        id: string;
+        order_number?: string | null;
+        created_at?: string | null;
+        completed_at?: string | null;
+      }>;
+      const ids = orderRows.map((row) => row.id);
+      let stations: Array<{ priority_order_id: string; station_name?: string | null }> = [];
+
+      if (ids.length > 0) {
+        const { data: stationData, error: stationError } = await supabase
+          .from(PRIORITY_ORDER_STATIONS_TABLE)
+          .select("priority_order_id, station_name")
+          .in("priority_order_id", ids)
+          .limit(10000);
+        if (stationError) throw stationError;
+        stations = (stationData || []) as Array<{ priority_order_id: string; station_name?: string | null }>;
+      }
+
+      setPriorityHistory(orderRows.map((order) => ({
+        id: order.id,
+        orderNumber: String(order.order_number || "").trim(),
+        createdAt: order.created_at || null,
+        completedAt: order.completed_at || null,
+        stations: stations
+          .filter((station) => station.priority_order_id === order.id)
+          .map((station) => String(station.station_name || "").trim())
+          .filter(Boolean),
+      })));
+    } catch (error) {
+      console.error("A lezárt prioritási előzmények betöltése sikertelen:", error);
+    } finally {
+      setLoadingPriorityHistory(false);
+    }
+  }
+
+  async function exportPriorityWorkbookTemplate(): Promise<void> {
+    if (!supabase) {
+      setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
+      return;
+    }
+
+    const selectedStations = machineOptions.filter((station) =>
+      prioritySelectedStations.some((selected) => normalizeLooseText(selected) === normalizeLooseText(station))
+    );
+
+    if (selectedStations.length === 0) {
+      setMessage({ type: "error", text: "A prioritási Excel exportálása előtt válassz ki legalább egy munkaállomást." });
+      return;
+    }
+
+    setExportingPriorityWorkbook(true);
+    try {
+      const definitions = getPrioritySelectedStationUnionDefinitions(selectedStations);
+      const { data: session, error: sessionError } = await supabase
+        .from(PRIORITY_IMPORT_SESSIONS_TABLE)
+        .insert([{
+          station_names: selectedStations,
+          field_keys: definitions.map((field) => field.key),
+          field_labels: definitions.map((field) => field.label),
+          exported_by_worker_id: activeWorker?.id ?? null,
+          exported_by_worker_name: activeWorker?.["Teljes nev"] || null,
+        }])
+        .select("id, station_names, field_keys, field_labels")
+        .single();
+
+      if (sessionError) throw sessionError;
+      const sessionId = String((session as { id?: string } | null)?.id || "").trim();
+      if (!sessionId) throw new Error("A prioritási Excel exportazonosítója nem jött létre.");
+
+      const XLSX = await waitForXlsx();
+      const headers = [
+        PRIORITY_TEMPLATE_SESSION_HEADER,
+        PRIORITY_TEMPLATE_ORDER_HEADER,
+        ...definitions.map((field) => field.label),
+        PRIORITY_TEMPLATE_REASON_HEADER,
+      ];
+
+      // Több prioritási rendelés egyszerre feltölthető. 100 előkészített üres sor.
+      const rows: Array<Array<string | number>> = [headers];
+      for (let index = 0; index < 100; index += 1) {
+        rows.push([
+          sessionId,
+          "",
+          ...definitions.map(() => ""),
+          "",
+        ]);
+      }
+
+      const worksheet = XLSX.utils.aoa_to_sheet(rows) as Record<string, unknown>;
+      (worksheet as any)["!cols"] = [
+        { hidden: true, width: 2 },
+        { width: 24 },
+        ...definitions.map((field) => ({ width: Math.max(13, Math.min(30, field.label.length + 4)) })),
+        { width: 42 },
+      ];
+
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Prioritasi_rendelesek");
+      const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+      downloadBlob(
+        `Prioritasi_rendelesek_${getLocalDateKey(new Date())}.xlsx`,
+        new Blob([output], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+
+      setPriorityLastExportAt(new Date().toISOString());
+      setMessage({
+        type: "success",
+        text: `A prioritási Excel elkészült. Kijelölt munkaállomások: ${selectedStations.join(", ")}. A fájl kitöltése után ugyanitt töltsd vissza.`,
+      });
+    } catch (error) {
+      console.error("Prioritási Excel export hiba:", error);
+      setMessage({ type: "error", text: `A prioritási Excel exportálása sikertelen: ${normalizeError(error)}` });
+    } finally {
+      setExportingPriorityWorkbook(false);
+    }
+  }
+
+  async function importPriorityWorkbook(fileOverride?: File): Promise<void> {
+    if (!supabase) {
+      setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
+      return;
+    }
+
+    const selectedFile = fileOverride || priorityWorkbookFile;
+    if (!selectedFile) {
+      setMessage({ type: "error", text: "Válaszd ki a kitöltött prioritási .xlsx fájlt." });
+      return;
+    }
+    if (!selectedFile.name.toLocaleLowerCase("hu").endsWith(".xlsx")) {
+      setMessage({ type: "error", text: "A prioritási import csak .xlsx fájl lehet." });
+      return;
+    }
+
+    setImportingPriorityWorkbook(true);
+    try {
+      const XLSX = await waitForXlsx();
+      const workbook = XLSX.read(await selectedFile.arrayBuffer(), { type: "array" });
+      const sheetName = workbook.SheetNames[0];
+      if (!sheetName) throw new Error("Az Excel nem tartalmaz munkafület.");
+      const worksheet = workbook.Sheets[sheetName];
+      const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, {
+        defval: null,
+        raw: true,
+      });
+
+      if (rawRows.length === 0) throw new Error("A prioritási Excel nem tartalmaz adatot.");
+
+      const normalizedRows = rawRows.map((row) => {
+        const normalized: Record<string, unknown> = {};
+        Object.entries(row || {}).forEach(([key, value]) => {
+          normalized[normalizePlanColumnName(key)] = value;
+        });
+        return normalized;
+      });
+
+      const sessionId = normalizedRows
+        .map((row) => String(row[normalizePlanColumnName(PRIORITY_TEMPLATE_SESSION_HEADER)] || "").trim())
+        .find(Boolean);
+
+      if (!sessionId) {
+        throw new Error("A fájlból hiányzik a prioritási export azonosítója. Kérlek a rendszerből exportált prioritási Excel fájlt töltsd vissza.");
+      }
+
+      const { data: sessionData, error: sessionError } = await supabase
+        .from(PRIORITY_IMPORT_SESSIONS_TABLE)
+        .select("id, station_names, field_keys, field_labels, created_at")
+        .eq("id", sessionId)
+        .single();
+
+      if (sessionError) throw sessionError;
+      const session = sessionData as PriorityImportSessionRow;
+      const stationNames = Array.isArray(session.station_names)
+        ? session.station_names.map((station) => String(station || "").trim()).filter(Boolean)
+        : [];
+      if (stationNames.length === 0) throw new Error("Ehhez a prioritási exporthoz nincs eltárolt munkaállomás.");
+
+      const definitions = getPrioritySelectedStationUnionDefinitions(stationNames);
+      const orderHeaderKey = normalizePlanColumnName(PRIORITY_TEMPLATE_ORDER_HEADER);
+      const reasonHeaderKey = normalizePlanColumnName(PRIORITY_TEMPLATE_REASON_HEADER);
+      const sessionHeaderKey = normalizePlanColumnName(PRIORITY_TEMPLATE_SESSION_HEADER);
+
+      const parsedOrders: Array<{
+        orderNumber: string;
+        reason: string;
+        data: Record<string, unknown>;
+      }> = [];
+
+      normalizedRows.forEach((row, index) => {
+        const meaningfulValues = Object.entries(row)
+          .filter(([key]) => key !== sessionHeaderKey)
+          .map(([, value]) => value)
+          .filter((value) => value !== null && value !== undefined && String(value).trim() !== "");
+        if (meaningfulValues.length === 0) return;
+
+        const data: Record<string, unknown> = {};
+        definitions.forEach((definition) => {
+          const rawValue = row[definition.key];
+          if (definition.dataType === "date") {
+            data[definition.key] = rawValue === null || rawValue === undefined || String(rawValue).trim() === ""
+              ? null
+              : parseSpreadsheetDate(rawValue);
+          } else if (definition.dataType === "integer") {
+            data[definition.key] = parseSpreadsheetNumber(rawValue);
+          } else {
+            data[definition.key] = definition.key === "normaido"
+              ? formatExcelDuration(rawValue)
+              : (rawValue === null || rawValue === undefined ? null : String(rawValue).trim() || null);
+          }
+        });
+
+        const explicitOrderNumber = String(row[orderHeaderKey] || "").trim();
+        const fallbackOrderNumber = [
+          data.sorszam,
+          data.gyartasi_szam,
+          data.gyartasi_szam_projekt_neve,
+          data.rsz,
+        ].map((value) => String(value || "").trim()).find(Boolean) || "";
+        const orderNumber = explicitOrderNumber || fallbackOrderNumber;
+
+        if (!orderNumber) {
+          throw new Error(`A prioritási Excel ${index + 2}. sorában nincs rendelésszám.`);
+        }
+
+        parsedOrders.push({
+          orderNumber,
+          reason: String(row[reasonHeaderKey] || "").trim(),
+          data,
+        });
+      });
+
+      if (parsedOrders.length === 0) throw new Error("A prioritási Excelben nincs importálható rendelés.");
+
+      let createdCount = 0;
+      let updatedCount = 0;
+
+      for (const incoming of parsedOrders) {
+        const { data: existingRows, error: existingError } = await supabase
+          .from(PRIORITY_ORDERS_TABLE)
+          .select("id, order_number, is_active, completed_at")
+          .ilike("order_number", incoming.orderNumber)
+          .limit(1);
+        if (existingError) throw existingError;
+
+        const existing = ((existingRows || [])[0] || null) as {
+          id: string;
+          order_number?: string | null;
+          is_active?: boolean | null;
+          completed_at?: string | null;
+        } | null;
+
+        let priorityOrderId = "";
+        const wasActive = Boolean(existing?.is_active);
+
+        if (!existing) {
+          const { data: inserted, error: insertError } = await supabase
+            .from(PRIORITY_ORDERS_TABLE)
+            .insert([{
+              order_number: incoming.orderNumber,
+              priority_reason: incoming.reason || null,
+              data: incoming.data,
+              import_session_id: sessionId,
+              source_file: selectedFile.name,
+              is_active: true,
+              created_by_worker_id: activeWorker?.id ?? null,
+              created_by_worker_name: activeWorker?.["Teljes nev"] || null,
+            }])
+            .select("id")
+            .single();
+          if (insertError) throw insertError;
+          priorityOrderId = String((inserted as { id?: string } | null)?.id || "");
+          createdCount += 1;
+        } else {
+          priorityOrderId = existing.id;
+          const { error: updateError } = await supabase
+            .from(PRIORITY_ORDERS_TABLE)
+            .update({
+              order_number: incoming.orderNumber,
+              priority_reason: incoming.reason || null,
+              data: incoming.data,
+              import_session_id: sessionId,
+              source_file: selectedFile.name,
+              is_active: true,
+              completed_at: wasActive ? existing.completed_at || null : null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", priorityOrderId);
+          if (updateError) throw updateError;
+          updatedCount += 1;
+        }
+
+        if (!priorityOrderId) throw new Error(`${incoming.orderNumber}: a prioritási rendelés azonosítója hiányzik.`);
+
+        const { data: existingStationData, error: existingStationError } = await supabase
+          .from(PRIORITY_ORDER_STATIONS_TABLE)
+          .select("id, station_name, status")
+          .eq("priority_order_id", priorityOrderId)
+          .limit(10000);
+        if (existingStationError) throw existingStationError;
+
+        const existingStations = (existingStationData || []) as Array<{
+          id: string;
+          station_name?: string | null;
+          status?: string | null;
+        }>;
+
+        if (!wasActive && existingStations.length > 0) {
+          const { error: deleteResetError } = await supabase
+            .from(PRIORITY_ORDER_STATIONS_TABLE)
+            .delete()
+            .eq("priority_order_id", priorityOrderId);
+          if (deleteResetError) throw deleteResetError;
+        } else if (wasActive) {
+          const selectedKeys = new Set(stationNames.map(normalizeLooseText));
+          const removeIds = existingStations
+            .filter((station) => !selectedKeys.has(normalizeLooseText(station.station_name)))
+            .map((station) => station.id);
+          if (removeIds.length > 0) {
+            const { error: removeError } = await supabase
+              .from(PRIORITY_ORDER_STATIONS_TABLE)
+              .delete()
+              .in("id", removeIds);
+            if (removeError) throw removeError;
+          }
+        }
+
+        const currentStationKeys = wasActive
+          ? new Set(existingStations.map((station) => normalizeLooseText(station.station_name)))
+          : new Set<string>();
+
+        const stationsToInsert = stationNames
+          .filter((stationName) => !currentStationKeys.has(normalizeLooseText(stationName)))
+          .map((stationName) => ({
+            priority_order_id: priorityOrderId,
+            station_name: stationName,
+            status: "VARAKOZIK",
+          }));
+
+        if (stationsToInsert.length > 0) {
+          const { error: stationInsertError } = await supabase
+            .from(PRIORITY_ORDER_STATIONS_TABLE)
+            .insert(stationsToInsert);
+          if (stationInsertError) throw stationInsertError;
+        }
+      }
+
+      const { error: sessionUpdateError } = await supabase
+        .from(PRIORITY_IMPORT_SESSIONS_TABLE)
+        .update({
+          last_imported_at: new Date().toISOString(),
+          source_filename: selectedFile.name,
+        })
+        .eq("id", sessionId);
+      if (sessionUpdateError) console.warn("A prioritási import session frissítése sikertelen:", sessionUpdateError);
+
+      setPriorityLastImportAt(new Date().toISOString());
+      await loadPriorityHistory();
+      if (productionCardAdminStation) {
+        void loadProductionCardData(productionCardAdminStation, productionCardDate);
+      }
+      if (isUsableProductionCardStation(machineId)) {
+        void loadTerminalProductionCard(machineId);
+      }
+
+      setMessage({
+        type: "success",
+        text: `Prioritási import kész: ${createdCount} új, ${updatedCount} frissített rendelés. Megjelenés: ${stationNames.join(", ")}.`,
+      });
+    } catch (error) {
+      console.error("Prioritási Excel import hiba:", error);
+      setMessage({ type: "error", text: `A prioritási Excel feltöltése sikertelen: ${normalizeError(error)}` });
+    } finally {
+      setImportingPriorityWorkbook(false);
+    }
+  }
+
   function ProductionPlanAdmin(): React.JSX.Element {
     const officeTheme = getOfficeTheme("production-plan");
     const sectionCardStyle: React.CSSProperties = {
@@ -7579,9 +8177,142 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               </div>
             </div>
           </section>
+
+          <section data-office-window="production-plan:priority-card" style={{ ...sectionCardStyle, border: "1px solid #22d3ee", background: "linear-gradient(135deg, rgba(36,0,59,0.88), rgba(88,28,135,0.72))" }}>
+            <div style={sectionHeaderStyle}>
+              <div style={{ ...sectionNumberStyle, background: "#a21caf", borderColor: "#22d3ee", color: "#ecfeff" }}>2</div>
+              <div style={{ flex: 1 }}>
+                <h3 style={{ margin: 0, color: "#67e8f9", fontSize: 21 }}>Prioritási kártya</h3>
+                <div style={{ marginTop: 4, color: "#e9d5ff", fontSize: 13, lineHeight: 1.5 }}>
+                  Válaszd ki azokat a munkaállomásokat, ahol a sürgős rendelésnek meg kell jelennie. Az export az érintett <code style={{ color: "#67e8f9" }}>_terv</code> táblák mezőinek unióját készíti el egyetlen munkafülesen. A visszatöltött rendelés minden más termelési kártya előtt jelenik meg, és az adott állomásról automatikusan eltűnik, amikor START → END alapján elkészül.
+                </div>
+              </div>
+            </div>
+
+            <div style={{ padding: 14, borderRadius: 13, border: "1px solid rgba(34,211,238,0.7)", background: "rgba(15,23,42,0.58)", marginBottom: 12 }}>
+              <div style={{ color: "#67e8f9", fontWeight: 900, marginBottom: 10 }}>Munkaállomások kiválasztása</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
+                {availableProductionStations.map((station) => {
+                  const checked = prioritySelectedStations.some((selected) => normalizeLooseText(selected) === normalizeLooseText(station));
+                  return (
+                    <label
+                      key={`priority-station-${station}`}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "9px 10px",
+                        borderRadius: 10,
+                        border: checked ? "2px solid #22d3ee" : "1px solid #6b21a8",
+                        background: checked ? "rgba(162,28,175,0.38)" : "rgba(36,0,59,0.42)",
+                        color: "#f5f3ff",
+                        fontWeight: 800,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => togglePriorityStation(station)}
+                      />
+                      <span>{station}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ marginTop: 10, color: "#c4b5fd", fontSize: 12 }}>
+                Kiválasztva: {prioritySelectedStations.length > 0 ? prioritySelectedStations.join(", ") : "nincs munkaállomás"}
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(300px, 1fr) auto auto", gap: 12, alignItems: "end", padding: 14, borderRadius: 13, background: "rgba(15,23,42,0.58)", border: "1px solid rgba(217,70,239,0.65)" }}>
+              <div>
+                <label style={{ display: "block", marginBottom: 8, color: "#e9d5ff", fontWeight: 850 }}>Kitöltött prioritási XLSX</label>
+                <input
+                  type="file"
+                  accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] || null;
+                    setPriorityWorkbookFile(file);
+                    if (file) setMessage({ type: "info", text: `${file.name} kiválasztva prioritási feltöltéshez.` });
+                  }}
+                  disabled={importingPriorityWorkbook || exportingPriorityWorkbook}
+                  style={{ ...fieldStyle, width: "100%", boxSizing: "border-box", padding: "10px 12px" }}
+                />
+                <div style={{ marginTop: 7, color: priorityWorkbookFile ? "#67e8f9" : "#c4b5fd", fontSize: 12 }}>
+                  {priorityWorkbookFile ? `Kiválasztva: ${priorityWorkbookFile.name}` : "Előbb exportáld a sablont a kijelölt állomásokkal, töltsd ki, majd töltsd vissza."}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => void exportPriorityWorkbookTemplate()}
+                disabled={exportingPriorityWorkbook || importingPriorityWorkbook || prioritySelectedStations.length === 0}
+                style={{ ...buttonSecondary, background: "#a21caf", color: "#ffffff", borderColor: "#22d3ee", fontWeight: 900 }}
+              >
+                {exportingPriorityWorkbook ? "Excel készül..." : "Prioritási Excel exportálása"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void importPriorityWorkbook()}
+                disabled={importingPriorityWorkbook || exportingPriorityWorkbook || !priorityWorkbookFile}
+                style={{ ...buttonPrimary, background: "#0891b2", color: "#ecfeff", borderColor: "#67e8f9", fontWeight: 900 }}
+              >
+                {importingPriorityWorkbook ? "Importálás..." : "Prioritási Excel feltöltése"}
+              </button>
+            </div>
+
+            <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 10 }}>
+              <div style={{ padding: 11, borderRadius: 10, background: "rgba(36,0,59,0.5)", border: "1px solid #6b21a8", color: "#e9d5ff" }}>
+                <div style={{ fontSize: 11, color: "#c4b5fd" }}>Utolsó export</div>
+                <strong>{priorityLastExportAt ? formatDateTime(priorityLastExportAt) : "Még nem történt"}</strong>
+              </div>
+              <div style={{ padding: 11, borderRadius: 10, background: "rgba(36,0,59,0.5)", border: "1px solid #6b21a8", color: "#e9d5ff" }}>
+                <div style={{ fontSize: 11, color: "#c4b5fd" }}>Utolsó import</div>
+                <strong>{priorityLastImportAt ? formatDateTime(priorityLastImportAt) : "Még nem történt"}</strong>
+              </div>
+              <div style={{ padding: 11, borderRadius: 10, background: "rgba(36,0,59,0.5)", border: "1px solid #6b21a8", color: "#e9d5ff" }}>
+                <div style={{ fontSize: 11, color: "#c4b5fd" }}>Lezárt prioritási előzmények</div>
+                <strong>{priorityHistory.length} rendelés</strong>
+                <button type="button" onClick={() => void loadPriorityHistory()} disabled={loadingPriorityHistory} style={{ ...buttonSecondary, marginLeft: 10, padding: "5px 9px" }}>
+                  {loadingPriorityHistory ? "Betöltés..." : "Frissítés"}
+                </button>
+              </div>
+            </div>
+
+            {priorityHistory.length > 0 && (
+              <div style={{ marginTop: 12, maxHeight: 260, overflow: "auto", border: "1px solid rgba(34,211,238,0.45)", borderRadius: 10 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", color: "#f5f3ff" }}>
+                  <thead style={{ position: "sticky", top: 0, background: "#581c87" }}>
+                    <tr>
+                      {["Rendelésszám", "Munkaállomások", "Létrehozva", "Teljesen elkészült"].map((label) => (
+                        <th key={label} style={{ padding: 9, textAlign: "left", borderBottom: "1px solid #22d3ee", fontSize: 12 }}>{label}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {priorityHistory.map((row) => (
+                      <tr key={row.id}>
+                        <td style={{ padding: 8, borderBottom: "1px solid rgba(103,232,249,0.2)", fontWeight: 900 }}>{row.orderNumber}</td>
+                        <td style={{ padding: 8, borderBottom: "1px solid rgba(103,232,249,0.2)" }}>{row.stations.join(", ") || "–"}</td>
+                        <td style={{ padding: 8, borderBottom: "1px solid rgba(103,232,249,0.2)" }}>{row.createdAt ? formatDateTime(row.createdAt) : "–"}</td>
+                        <td style={{ padding: 8, borderBottom: "1px solid rgba(103,232,249,0.2)" }}>{row.completedAt ? formatDateTime(row.completedAt) : "–"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div style={{ marginTop: 10, color: "#c4b5fd", fontSize: 11 }}>
+              A „Prioritás oka / megjegyzés” mező elmentődik az adatbázisba, de a termelési kártyákon és a lezárt előzménylistában nem jelenik meg.
+            </div>
+          </section>
+
           <section data-office-window="production-plan:plan-basics" style={{ ...sectionCardStyle }}>
             <div style={sectionHeaderStyle}>
-              <div style={sectionNumberStyle}>2</div>
+              <div style={sectionNumberStyle}>3</div>
               <div>
                 <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Terv alapadatai</h3>
                 <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13, lineHeight: 1.45 }}>
@@ -7621,7 +8352,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
           <section data-office-window="production-plan:product-card" style={{ ...sectionCardStyle }}>
             <div style={sectionHeaderStyle}>
-              <div style={sectionNumberStyle}>3</div>
+              <div style={sectionNumberStyle}>4</div>
               <div>
                 <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Termelési kártya</h3>
                 <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13, lineHeight: 1.45 }}>
@@ -8562,6 +9293,30 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return "in-progress";
   }
 
+  function getPriorityCardFieldValue(row: ProductionCardPriorityRow, fieldId: string): string | number {
+    if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
+      const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
+      const value = row.data?.[key];
+      if (value === null || value === undefined) return "";
+      if (key === "normaido") return formatExcelDuration(value);
+      if (typeof value === "object") return JSON.stringify(value);
+      return String(value);
+    }
+    if (fieldId === PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID) return row.orderNumber;
+    if (fieldId === PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID) return row.statusLabel;
+    if (fieldId === PRODUCTION_CARD_PRIORITY_START_WORKER_FIELD_ID) return row.startWorkerName;
+    if (fieldId === PRODUCTION_CARD_PRIORITY_END_WORKER_FIELD_ID) return row.endWorkerName;
+    if (fieldId === PRODUCTION_CARD_PRIORITY_ELAPSED_FIELD_ID) {
+      if (!row.startedAt) return "";
+      if (!row.endedAt) return "Folyamatban";
+      const startMs = new Date(row.startedAt).getTime();
+      const endMs = new Date(row.endedAt).getTime();
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return "";
+      return formatDuration(Math.max(0, Math.round((endMs - startMs) / 60000)));
+    }
+    return "";
+  }
+
   function getBacklogCardFieldValue(row: ProductionCardBacklogRow, fieldId: string): string | number {
     if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
       const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
@@ -8880,9 +9635,74 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+  async function fetchPriorityRowsForStation(stationName: string): Promise<ProductionCardPriorityRow[]> {
+    if (!supabase || !stationName) return [];
+
+    const { data: stationData, error: stationError } = await supabase
+      .from(PRIORITY_ORDER_STATIONS_TABLE)
+      .select("id, priority_order_id, station_name, status, started_at, ended_at, start_worker_name, end_worker_name, updated_at")
+      .eq("station_name", stationName)
+      .neq("status", "KESZ")
+      .order("updated_at", { ascending: false })
+      .limit(1000);
+
+    if (stationError) {
+      console.warn("A prioritási állomássorok nem olvashatók:", stationError);
+      return [];
+    }
+
+    const stationRows = (stationData || []) as PriorityOrderStationDbRow[];
+    const orderIds = Array.from(new Set(stationRows.map((row) => row.priority_order_id).filter(Boolean)));
+    if (orderIds.length === 0) return [];
+
+    const { data: orderData, error: orderError } = await supabase
+      .from(PRIORITY_ORDERS_TABLE)
+      .select("id, order_number, data, is_active, created_at, updated_at")
+      .in("id", orderIds)
+      .eq("is_active", true)
+      .order("created_at", { ascending: true })
+      .limit(1000);
+
+    if (orderError) {
+      console.warn("A prioritási rendelések nem olvashatók:", orderError);
+      return [];
+    }
+
+    const ordersById = new Map(
+      ((orderData || []) as PriorityOrderDbRow[]).map((order) => [order.id, order])
+    );
+
+    return stationRows
+      .map((station) => {
+        const order = ordersById.get(station.priority_order_id);
+        if (!order) return null;
+        const normalizedStatus = String(station.status || "VARAKOZIK").toUpperCase();
+        const status: ProductionMonitorStatus = normalizedStatus === "FOLYAMATBAN"
+          ? "in-progress"
+          : normalizedStatus === "KESZ"
+            ? "done"
+            : "waiting";
+        return {
+          id: station.id,
+          priorityOrderId: station.priority_order_id,
+          orderNumber: String(order.order_number || "").trim(),
+          data: order.data && typeof order.data === "object" ? order.data : {},
+          status,
+          statusLabel: status === "in-progress" ? "Folyamatban" : status === "done" ? "Kész" : "Várakozik",
+          startWorkerName: String(station.start_worker_name || "").trim(),
+          endWorkerName: String(station.end_worker_name || "").trim(),
+          startedAt: station.started_at || null,
+          endedAt: station.ended_at || null,
+        } as ProductionCardPriorityRow;
+      })
+      .filter((row): row is ProductionCardPriorityRow => Boolean(row))
+      .filter((row) => row.status !== "done");
+  }
+
   async function fetchProductionCardData(stationName: string, dateKey: string): Promise<ProductionCardData> {
     const cleanStationName = String(stationName || "").trim();
     const tableName = buildStationPlanTableName(cleanStationName);
+    const priorityRows = await fetchPriorityRowsForStation(cleanStationName);
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     if (!cleanStationName || !dateKey) {
       return { stationName: cleanStationName, dateKey, tableName, rows: [], lastUpdatedAt: new Date().toISOString(), errorMessage: "" };
@@ -9285,6 +10105,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       dateKey,
       tableName,
       rows,
+      priorityRows,
       scrapReplacementRows,
       backlogRows,
       lastUpdatedAt: new Date().toISOString(),
@@ -9304,6 +10125,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         dateKey,
         tableName: buildStationPlanTableName(stationName),
         rows: [],
+        priorityRows: [],
         lastUpdatedAt: new Date().toISOString(),
         errorMessage: normalizeError(error),
       });
@@ -9333,6 +10155,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         dateKey: today,
         tableName: buildStationPlanTableName(cleanStationName),
         rows: [],
+        priorityRows: [],
         lastUpdatedAt: new Date().toISOString(),
         errorMessage: normalizeError(error),
       });
@@ -9411,7 +10234,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function resetActivePriorityProductionCardColors(): void {
     const dataSource = activeProductionCardTable.dataSource;
 
-    if (dataSource !== "backlog" && dataSource !== "scrap-replacement") {
+    if (dataSource !== "priority" && dataSource !== "backlog" && dataSource !== "scrap-replacement") {
       return;
     }
 
@@ -9422,9 +10245,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     setMessage({
       type: "success",
-      text: dataSource === "backlog"
-        ? "A Lemaradások kártya színei visszaálltak a barna–narancs–sárga alapértelmezett stílusra. A véglegesítéshez nyomd meg a Mentés gombot."
-        : "A Selejtpótlás kártya színei visszaálltak a piros alapértelmezett stílusra. A véglegesítéshez nyomd meg a Mentés gombot.",
+      text: dataSource === "priority"
+        ? "A Prioritási kártya színei visszaálltak a lila–magenta–neon türkiz alapértelmezett stílusra. A véglegesítéshez nyomd meg a Mentés gombot."
+        : dataSource === "backlog"
+          ? "A Lemaradások kártya színei visszaálltak a barna–narancs–sárga alapértelmezett stílusra. A véglegesítéshez nyomd meg a Mentés gombot."
+          : "A Selejtpótlás kártya színei visszaálltak a piros alapértelmezett stílusra. A véglegesítéshez nyomd meg a Mentés gombot.",
     });
   }
 
@@ -9568,11 +10393,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const zoomRatio = profile.zoomPercent / 100;
     const safeProfile = sanitizeProductionCardProfile(profile);
     const profileTheme = safeProfile.theme;
+    const priorityRows = data.priorityRows || [];
     const urgentScrapRows = data.scrapReplacementRows || [];
     const backlogRows = data.backlogRows || [];
 
     const renderTable = (table: ProductionMonitorTableConfig, tableIndex: number): React.JSX.Element => {
       const isActive = table.id === profile.activeTableId;
+      const isPriorityTable = table.dataSource === "priority";
       const isScrapTable = table.dataSource === "scrap-replacement";
       const isBacklogTable = table.dataSource === "backlog";
       const theme = sanitizeProductionCardTheme(table.theme);
@@ -9591,9 +10418,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const cellFontSize = Math.max(7, Math.round((theme.cellFontSize || baseFont) * zoomRatio * 10) / 10);
       const fieldWeights = Object.fromEntries(visibleFieldIds.map((fieldId) => [fieldId, getProductionCardFieldStyle(fieldId, table).widthWeight])) as Record<string, number>;
       const totalWeight = Math.max(0.25, visibleFieldIds.reduce((sum, fieldId) => sum + Math.max(0.25, fieldWeights[fieldId] || 1), 0));
-      const sourceRows = isScrapTable ? urgentScrapRows : isBacklogTable ? backlogRows : data.rows;
+      const sourceRows = isPriorityTable ? priorityRows : isScrapTable ? urgentScrapRows : isBacklogTable ? backlogRows : data.rows;
 
-      if ((isScrapTable || isBacklogTable) && sourceRows.length === 0 && !editable) return <React.Fragment key={table.id} />;
+      if ((isPriorityTable || isScrapTable || isBacklogTable) && sourceRows.length === 0 && !editable) return <React.Fragment key={table.id} />;
 
       return (
         <section
@@ -9601,16 +10428,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           onClick={() => editable && switchProductionCardTable(table.id)}
           style={{
             background: theme.tablePanelBackground,
-            border: editable && isActive ? `3px solid ${theme.accentColor}` : `${isScrapTable || isBacklogTable ? 3 : 1}px solid ${theme.borderColor}`,
+            border: editable && isActive ? `3px solid ${theme.accentColor}` : `${isPriorityTable || isScrapTable || isBacklogTable ? 3 : 1}px solid ${theme.borderColor}`,
             borderRadius: theme.panelRadius,
             padding: compact ? 8 : 12,
             marginBottom: compact ? 8 : 14,
             overflow: "hidden",
-            boxShadow: compact ? "none" : isScrapTable
-              ? "0 12px 30px rgba(127,29,29,0.25)"
-              : isBacklogTable
-                ? "0 12px 30px rgba(245,158,11,0.22)"
-                : "0 10px 28px rgba(0,0,0,0.22)",
+            boxShadow: compact ? "none" : isPriorityTable
+              ? "0 0 26px rgba(34,211,238,0.34), 0 12px 34px rgba(162,28,175,0.28)"
+              : isScrapTable
+                ? "0 12px 30px rgba(127,29,29,0.25)"
+                : isBacklogTable
+                  ? "0 12px 30px rgba(245,158,11,0.22)"
+                  : "0 10px 28px rgba(0,0,0,0.22)",
             cursor: editable ? "pointer" : "default",
           }}
         >
@@ -9619,6 +10448,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <div style={{ color: theme.tableTitleText, fontFamily: theme.fontFamily, fontSize: Math.max(11, Math.round(theme.tableTitleFontSize * zoomRatio)), fontWeight: theme.tableTitleBold ? 900 : 400, fontStyle: theme.tableTitleItalic ? "italic" : "normal" }}>
                 {table.title || table.name || `Táblázat ${tableIndex + 1}`}
               </div>
+              {isPriorityTable && (
+                <div style={{ color: theme.tableTitleText, opacity: 0.9, fontSize: compact ? 9 : 11, marginTop: 2 }}>Sürgős prioritási rendelés – minden más termelési kártyát megelőz.</div>
+              )}
               {isScrapTable && (
                 <div style={{ color: theme.tableTitleText, opacity: 0.82, fontSize: compact ? 9 : 11, marginTop: 2 }}>A fóliázó vagy összeszerelő által jelzett pótlás mindig megelőzi a napi tervet.</div>
               )}
@@ -9627,6 +10459,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               )}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              {isPriorityTable && sourceRows.length > 0 && (
+                <span style={{ background: theme.tableHeaderBackground, color: theme.tableHeaderText, borderRadius: 999, padding: "5px 10px", fontWeight: 900, fontSize: 12, border: `1px solid ${theme.borderColor}` }}>
+                  {priorityRows.length} prioritás
+                </span>
+              )}
               {isScrapTable && sourceRows.length > 0 && (
                 <span style={{ background: theme.tableHeaderBackground, color: theme.tableHeaderText, borderRadius: 999, padding: "5px 10px", fontWeight: 900, fontSize: 12 }}>
                   {urgentScrapRows.filter((row) => row.status !== "KESZ").length} sürgős
@@ -9641,15 +10478,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             </div>
           </div>
 
-          {data.errorMessage && !isScrapTable && !isBacklogTable ? (
+          {data.errorMessage && !isPriorityTable && !isScrapTable && !isBacklogTable ? (
             <div style={{ color: "#fecaca", background: "#450a0a", border: "1px solid #ef4444", borderRadius: 10, padding: 12 }}>{data.errorMessage}</div>
           ) : sourceRows.length === 0 ? (
             <div style={{ color: theme.subtitleText, padding: compact ? 14 : 26, textAlign: "center" }}>
-              {isScrapTable
-                ? "Jelenleg nincs selejtpótlásra váró rendelés."
-                : isBacklogTable
-                  ? "Jelenleg nincs korábbi napról fennmaradt termelési lemaradás."
-                  : "A kiválasztott naphoz nincs feltöltött termelési terv ezen a munkaállomáson."}
+              {isPriorityTable
+                ? "Jelenleg nincs aktív prioritási rendelés ezen a munkaállomáson."
+                : isScrapTable
+                  ? "Jelenleg nincs selejtpótlásra váró rendelés."
+                  : isBacklogTable
+                    ? "Jelenleg nincs korábbi napról fennmaradt termelési lemaradás."
+                    : "A kiválasztott naphoz nincs feltöltött termelési terv ezen a munkaállomáson."}
             </div>
           ) : visibleFieldIds.length === 0 ? (
             <div style={{ color: theme.subtitleText, padding: 20, textAlign: "center" }}>Minden mező el van rejtve.</div>
@@ -9708,22 +10547,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 </thead>
                 <tbody>
                   {sourceRows.map((rawRow, rowIndex) => {
-                    const productionRow = !isScrapTable && !isBacklogTable ? rawRow as ProductionCardRow : null;
+                    const productionRow = !isPriorityTable && !isScrapTable && !isBacklogTable ? rawRow as ProductionCardRow : null;
+                    const priorityRow = isPriorityTable ? rawRow as ProductionCardPriorityRow : null;
                     const scrapRow = isScrapTable ? rawRow as ScrapReplacementRow : null;
                     const backlogRow = isBacklogTable ? rawRow as ProductionCardBacklogRow : null;
-                    const status = scrapRow ? getScrapReplacementCardStatus(scrapRow) : backlogRow ? backlogRow.status : productionRow!.status;
-                    const rowKey = scrapRow ? String(scrapRow.id) : backlogRow ? backlogRow.id : `${productionRow!.orderNumber}-${rowIndex}`;
+                    const status = priorityRow ? priorityRow.status : scrapRow ? getScrapReplacementCardStatus(scrapRow) : backlogRow ? backlogRow.status : productionRow!.status;
+                    const rowKey = priorityRow ? priorityRow.id : scrapRow ? String(scrapRow.id) : backlogRow ? backlogRow.id : `${productionRow!.orderNumber}-${rowIndex}`;
                     return (
                       <tr key={`${table.id}-${rowKey}`}>
                         {visibleFieldIds.map((fieldId) => {
                           const style = getProductionCardFieldStyle(fieldId, table);
                           const cellBold = resolveProductionMonitorTriState(style.cellBold, theme.cellBold);
                           const cellItalic = resolveProductionMonitorTriState(style.cellItalic, theme.cellItalic);
-                          const isStatus = fieldId === PRODUCTION_CARD_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID;
-                          const isOrder = fieldId === PRODUCTION_CARD_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID;
+                          const isStatus = fieldId === PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID;
+                          const isOrder = fieldId === PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID;
                           let background = isOrder ? theme.orderCellBackground : theme.waitingBackground;
                           let color = isOrder ? theme.orderCellText : theme.waitingText;
-                          if (isScrapTable || isBacklogTable || isStatus) {
+                          if (isPriorityTable || isScrapTable || isBacklogTable || isStatus) {
                             if (status === "done") { background = theme.doneBackground; color = theme.doneText; }
                             if (status === "in-progress") { background = theme.inProgressBackground; color = theme.inProgressText; }
                             if (status === "waiting") { background = theme.waitingBackground; color = theme.waitingText; }
@@ -9746,18 +10586,22 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                             background = isDonePart ? "#22c55e" : "#2563eb";
                             color = "#ffffff";
                           }
-                          const value = scrapRow
-                            ? getScrapReplacementCardFieldValue(scrapRow, fieldId)
-                            : backlogRow
-                              ? getBacklogCardFieldValue(backlogRow, fieldId)
-                              : getProductionCardFieldValue(productionRow!, fieldId);
-                          const title = scrapRow
-                            ? [scrapRow.started_at ? `Indítás: ${formatDateTime(scrapRow.started_at)}` : "", scrapRow.completed_at ? `Kész: ${formatDateTime(scrapRow.completed_at)}` : "", scrapRow.last_worker_name ? `Dolgozó: ${scrapRow.last_worker_name}` : ""].filter(Boolean).join(" | ")
-                            : backlogRow
-                              ? [backlogRow.startedAt ? `Indítás: ${formatDateTime(backlogRow.startedAt)}` : "", backlogRow.endedAt ? `Utolsó END: ${formatDateTime(backlogRow.endedAt)}` : "", `Teljesítve: ${backlogRow.completedQuantity}/${backlogRow.plannedQuantity}`].filter(Boolean).join(" | ")
-                              : fieldId === PRODUCTION_CARD_STATUS_FIELD_ID
-                                ? [productionRow!.startWorkerName ? `Indító: ${productionRow!.startWorkerName}` : "", productionRow!.endWorkerName ? `Befejező: ${productionRow!.endWorkerName}` : "", productionRow!.startedAt ? `START: ${formatDateTime(productionRow!.startedAt)}` : "", productionRow!.endedAt ? `END: ${formatDateTime(productionRow!.endedAt)}` : ""].filter(Boolean).join(" | ")
-                                : String(value ?? "");
+                          const value = priorityRow
+                            ? getPriorityCardFieldValue(priorityRow, fieldId)
+                            : scrapRow
+                              ? getScrapReplacementCardFieldValue(scrapRow, fieldId)
+                              : backlogRow
+                                ? getBacklogCardFieldValue(backlogRow, fieldId)
+                                : getProductionCardFieldValue(productionRow!, fieldId);
+                          const title = priorityRow
+                            ? [priorityRow.startedAt ? `START: ${formatDateTime(priorityRow.startedAt)}` : "", priorityRow.startWorkerName ? `Indító: ${priorityRow.startWorkerName}` : "", priorityRow.endWorkerName ? `Befejező: ${priorityRow.endWorkerName}` : ""].filter(Boolean).join(" | ")
+                            : scrapRow
+                              ? [scrapRow.started_at ? `Indítás: ${formatDateTime(scrapRow.started_at)}` : "", scrapRow.completed_at ? `Kész: ${formatDateTime(scrapRow.completed_at)}` : "", scrapRow.last_worker_name ? `Dolgozó: ${scrapRow.last_worker_name}` : ""].filter(Boolean).join(" | ")
+                              : backlogRow
+                                ? [backlogRow.startedAt ? `Indítás: ${formatDateTime(backlogRow.startedAt)}` : "", backlogRow.endedAt ? `Utolsó END: ${formatDateTime(backlogRow.endedAt)}` : "", `Teljesítve: ${backlogRow.completedQuantity}/${backlogRow.plannedQuantity}`].filter(Boolean).join(" | ")
+                                : fieldId === PRODUCTION_CARD_STATUS_FIELD_ID
+                                  ? [productionRow!.startWorkerName ? `Indító: ${productionRow!.startWorkerName}` : "", productionRow!.endWorkerName ? `Befejező: ${productionRow!.endWorkerName}` : "", productionRow!.startedAt ? `START: ${formatDateTime(productionRow!.startedAt)}` : "", productionRow!.endedAt ? `END: ${formatDateTime(productionRow!.endedAt)}` : ""].filter(Boolean).join(" | ")
+                                  : String(value ?? "");
                           return (
                             <td
                               key={`${table.id}-${rowKey}-${fieldId}`}
@@ -9804,6 +10648,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             {profileTheme.showLastUpdated && <div style={{ color: profileTheme.subtitleText, opacity: 0.82, marginTop: 3, fontSize: compact ? 10 : 11 }}>Utolsó frissítés: {data.lastUpdatedAt ? formatDateTime(data.lastUpdatedAt) : "–"}</div>}
           </div>
         )}
+        {safeProfile.tables.filter((table) => table.dataSource === "priority").map(renderTable)}
         {safeProfile.tables.filter((table) => table.dataSource === "scrap-replacement").map(renderTable)}
         {safeProfile.tables.filter((table) => table.dataSource === "backlog").map(renderTable)}
         {profileTheme.showSummaryCards && (
@@ -9889,6 +10734,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 </div>
               </div>
 
+              {activeProductionCardTable.dataSource === "priority" && (
+                <div style={{ marginBottom: 12, padding: 12, borderRadius: 10, background: "#24003b", border: "2px solid #22d3ee", color: "#e9d5ff", fontWeight: 800 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ flex: "1 1 420px" }}>
+                      A Prioritási kártyát szerkeszted. Ez minden más termelési kártya előtt jelenik meg, de csak azokon a munkaállomásokon, amelyeket a prioritási Excel exportálásakor kiválasztottak. Minden mező – az Állapot, Indító/Befejező dolgozó és Eltelt idő is – elrejthető és átrendezhető.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={resetActivePriorityProductionCardColors}
+                      style={{ ...buttonSecondary, background: "#a21caf", color: "#ffffff", borderColor: "#22d3ee", fontWeight: 900 }}
+                    >
+                      Alapértelmezett szín
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {activeProductionCardTable.dataSource === "scrap-replacement" && (
                 <div style={{ marginBottom: 12, padding: 12, borderRadius: 10, background: "#fff7ed", border: "1px solid #ef4444", color: "#991b1b", fontWeight: 800 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -9956,9 +10818,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <div style={{ display: "grid", gap: 10 }}>
                   <div style={{ padding: "10px 12px", borderRadius: 10, background: "#e0f2fe", border: "1px solid #7dd3fc", color: "#0c4a6e", fontSize: 12 }}>
                     <strong>Elérhető mezők: {allFieldIds.length}</strong>
-                    {activeProductionCardTable.dataSource === "backlog"
-                      ? " · A Lemaradások kártya tartalmazza az aktuális munkaállomás összes *_terv mezőjét, valamint a lemaradás saját mezőit (például Késés és Állapot). Ezen a kártyán nincs kötelező mező: minden oszlop elrejthető és szabadon rendezhető."
-                      : activeProductionCardTable.dataSource === "production-plan"
+                    {activeProductionCardTable.dataSource === "priority"
+                      ? " · A Prioritási kártya az aktuális munkaállomás *_terv mezőit és a prioritási rendszermezőket tartalmazza. Ezen a kártyán nincs kötelező mező: minden oszlop elrejthető és szabadon rendezhető."
+                      : activeProductionCardTable.dataSource === "backlog"
+                        ? " · A Lemaradások kártya tartalmazza az aktuális munkaállomás összes *_terv mezőjét, valamint a lemaradás saját mezőit (például Késés és Állapot). Ezen a kártyán nincs kötelező mező: minden oszlop elrejthető és szabadon rendezhető."
+                        : activeProductionCardTable.dataSource === "production-plan"
                         ? " · Az Állapot, Indító dolgozó, Befejező dolgozó és Eltelt idő kötelező mezők, ezek nem rejthetők el. A többi mező szabadon elrejthető és rendezhető."
                         : " · A mezők szabadon elrejthetők és rendezhetők."}
                     {" "}Az elrejtett mezők a kártyához beállított háttérszínnel jelennek meg a szerkesztőben.
@@ -10027,16 +10891,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       <div style={{ flex: "1 1 460px" }}>
                         <strong>Automatikus olvashatóság:</strong> ha egy kiválasztott háttér- és szövegszín kontrasztja túl gyenge, a rendszer automatikusan fekete vagy fehér szövegre korrigálja. Így nem menthető olyan kártya, amelyen eltűnik a felirat.
                       </div>
-                      {(activeProductionCardTable.dataSource === "backlog" || activeProductionCardTable.dataSource === "scrap-replacement") && (
+                      {(activeProductionCardTable.dataSource === "priority" || activeProductionCardTable.dataSource === "backlog" || activeProductionCardTable.dataSource === "scrap-replacement") && (
                         <button
                           type="button"
                           onClick={resetActivePriorityProductionCardColors}
                           style={{
                             ...buttonSecondary,
                             flex: "0 0 auto",
-                            background: activeProductionCardTable.dataSource === "backlog" ? "#a16207" : "#7f1d1d",
+                            background: activeProductionCardTable.dataSource === "priority" ? "#a21caf" : activeProductionCardTable.dataSource === "backlog" ? "#a16207" : "#7f1d1d",
                             color: "#ffffff",
-                            borderColor: activeProductionCardTable.dataSource === "backlog" ? "#f59e0b" : "#ef4444",
+                            borderColor: activeProductionCardTable.dataSource === "priority" ? "#22d3ee" : activeProductionCardTable.dataSource === "backlog" ? "#f59e0b" : "#ef4444",
                             fontWeight: 900,
                           }}
                         >
@@ -12417,6 +13281,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     void loadProductionCardSettingsForStation(productionCardAdminStation);
     void loadProductionCardData(productionCardAdminStation, productionCardDate);
   }, [activeWorker?.id, terminalView, flowStage, managementSection, productionCardAdminStation, supabase]);
+
+  useEffect(() => {
+    if (managementSection !== "production-plan") return;
+    void loadPriorityHistory();
+  }, [managementSection, supabase]);
 
   useEffect(() => {
     if (!productionCardAdminStation || managementSection !== "production-card") return;
