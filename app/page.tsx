@@ -2938,25 +2938,55 @@ function sanitizeProductionCardFieldStyle(value: ProductionMonitorFieldStyle, th
 
 function sanitizeProductionCardProfile(profile: ProductionMonitorProfile): ProductionMonitorProfile {
   const safeProfileTheme = sanitizeProductionCardTheme(profile.theme);
-  const safeTables = profile.tables.map((table) => {
-    const safeTableTheme = sanitizeProductionCardTheme(table.theme || safeProfileTheme);
-    return {
-      ...table,
-      theme: safeTableTheme,
-      // Állapot / Indító dolgozó / Befejező dolgozó normál termelési
-      // kártyán soha nem kerülhet a rejtett mezők közé.
-      hiddenFieldIds: table.dataSource === "production-plan"
-        ? table.hiddenFieldIds.filter((fieldId) => !isRequiredProductionCardField(fieldId))
-        : table.hiddenFieldIds,
-      fieldStyles: Object.fromEntries(
-        Object.entries(table.fieldStyles || {}).map(([fieldId, style]) => [
-          fieldId,
-          sanitizeProductionCardFieldStyle(style, safeTableTheme),
-        ])
-      ),
-    };
-  });
-  return { ...profile, theme: safeProfileTheme, tables: safeTables };
+  const singletonDataSources = new Set<ProductionCardTableDataSource>([
+    "priority",
+    "scrap-replacement",
+    "backlog",
+  ]);
+  const seenSingletonDataSources = new Set<ProductionCardTableDataSource>();
+
+  const safeTables = profile.tables
+    .filter((table) => {
+      const dataSource = table.dataSource as ProductionCardTableDataSource;
+      if (!singletonDataSources.has(dataSource)) return true;
+
+      // A rendszer által automatikusan biztosított elsőbbségi kártyákból
+      // munkaállomásonként és típusonként pontosan EGY példány lehet.
+      if (seenSingletonDataSources.has(dataSource)) return false;
+      seenSingletonDataSources.add(dataSource);
+      return true;
+    })
+    .map((table) => {
+      const safeTableTheme = sanitizeProductionCardTheme(table.theme || safeProfileTheme);
+      return {
+        ...table,
+        theme: safeTableTheme,
+        // Állapot / Indító dolgozó / Befejező dolgozó normál termelési
+        // kártyán soha nem kerülhet a rejtett mezők közé.
+        hiddenFieldIds: table.dataSource === "production-plan"
+          ? table.hiddenFieldIds.filter((fieldId) => !isRequiredProductionCardField(fieldId))
+          : table.hiddenFieldIds,
+        fieldStyles: Object.fromEntries(
+          Object.entries(table.fieldStyles || {}).map(([fieldId, style]) => [
+            fieldId,
+            sanitizeProductionCardFieldStyle(style, safeTableTheme),
+          ])
+        ),
+      };
+    });
+
+  const safeActiveTableId = safeTables.some((table) => table.id === profile.activeTableId)
+    ? profile.activeTableId
+    : safeTables.find((table) => table.dataSource === "production-plan")?.id
+      || safeTables[0]?.id
+      || "";
+
+  return {
+    ...profile,
+    theme: safeProfileTheme,
+    tables: safeTables,
+    activeTableId: safeActiveTableId,
+  };
 }
 
 function normalizeProductionMonitorTable(value: unknown, index: number, fallbackTheme: ProductionMonitorTheme): ProductionMonitorTableConfig {
@@ -5210,6 +5240,7 @@ export default function Page() {
   const [loadingProductionCard, setLoadingProductionCard] = useState(false);
   const [savingProductionCardSettings, setSavingProductionCardSettings] = useState(false);
   const [applyingProductionCardTypographyToAll, setApplyingProductionCardTypographyToAll] = useState(false);
+  const [applyingProductionCardVisibilityToAll, setApplyingProductionCardVisibilityToAll] = useState(false);
   const [productionCardLastSavedAt, setProductionCardLastSavedAt] = useState("");
   const productionCardDraggedFieldIdRef = useRef<string | null>(null);
   const productionCardAutoSaveTimerRef = useRef<number | null>(null);
@@ -6451,7 +6482,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (profile.frequency === "weekly" && weekday !== profile.weeklyDay) return false;
     if (profile.frequency === "monthly" && now.getDate() !== profile.monthlyDay) return false;
     const currentTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-    if (currentTime < profile.sendTime.slice(0, 5)) return false;
+    const scheduledTime = profile.sendTime.slice(0, 5);
+
+    // NINCS utólagos / belépéskori pótlás.
+    // 08:00-s beállítás kizárólag 08:00 percében küldhet.
+    // Ha az alkalmazás 08:01-kor nyílik meg, a 08:00-s riport már nem megy ki.
+    if (currentTime !== scheduledTime) return false;
+
     return profile.lastSentMarker !== getReportDeliveryScheduleMarker(profile, now);
   }
 
@@ -10269,6 +10306,168 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }));
   }
 
+  function getProductionCardGlobalColumnKey(fieldId: string): string {
+    if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
+      return `plan:${normalizePlanColumnName(fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length))}`;
+    }
+
+    const aliases: Record<string, string> = {
+      [PRODUCTION_CARD_ORDER_FIELD_ID]: "plan:sorszam",
+      [PRODUCTION_CARD_PRODUCT_FIELD_ID]: "plan:megnevezes",
+      [PRODUCTION_CARD_QUANTITY_FIELD_ID]: "plan:mennyiseg",
+      [PRODUCTION_CARD_DATE_FIELD_ID]: "plan:elkeszules_datum",
+      [PRODUCTION_CARD_TYPE_FIELD_ID]: "plan:tipus",
+
+      [PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID]: "plan:sorszam",
+      [PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID]: "system:status",
+      [PRODUCTION_CARD_PRIORITY_START_WORKER_FIELD_ID]: "system:start-worker",
+      [PRODUCTION_CARD_PRIORITY_END_WORKER_FIELD_ID]: "system:end-worker",
+      [PRODUCTION_CARD_PRIORITY_ELAPSED_FIELD_ID]: "system:elapsed",
+
+      [PRODUCTION_CARD_STATUS_FIELD_ID]: "system:status",
+      [PRODUCTION_CARD_START_WORKER_FIELD_ID]: "system:start-worker",
+      [PRODUCTION_CARD_END_WORKER_FIELD_ID]: "system:end-worker",
+      [PRODUCTION_CARD_ELAPSED_FIELD_ID]: "system:elapsed",
+
+      [PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID]: "plan:sorszam",
+      [PRODUCTION_CARD_BACKLOG_PRODUCT_FIELD_ID]: "plan:megnevezes",
+      [PRODUCTION_CARD_BACKLOG_PLANNED_FIELD_ID]: "plan:mennyiseg",
+      [PRODUCTION_CARD_BACKLOG_DATE_FIELD_ID]: "plan:elkeszules_datum",
+      [PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID]: "system:status",
+      [PRODUCTION_CARD_BACKLOG_START_WORKER_FIELD_ID]: "system:start-worker",
+      [PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID]: "system:end-worker",
+
+      [PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID]: "plan:sorszam",
+      [PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID]: "system:status",
+      [PRODUCTION_CARD_SCRAP_REPORTED_BY_FIELD_ID]: "system:start-worker",
+      [PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID]: "system:end-worker",
+    };
+
+    return aliases[fieldId] || `field:${fieldId}`;
+  }
+
+  async function applyCurrentProductionCardColumnVisibilityToAllStations(): Promise<void> {
+    if (!supabase) {
+      setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
+      return;
+    }
+
+    const stations = getOrderedDashboardStations();
+    if (stations.length === 0) {
+      setMessage({ type: "error", text: "Nincs elérhető termelési munkaállomás." });
+      return;
+    }
+
+    const currentValidFieldIds = getProductionCardFieldIdsForTable(
+      activeProductionCardTable,
+      productionCardAdminStation
+    );
+
+    const selectedVisibleKeys = new Set(
+      currentValidFieldIds
+        .filter((fieldId) =>
+          !activeProductionCardTable.hiddenFieldIds.includes(fieldId)
+          || (
+            activeProductionCardTable.dataSource === "production-plan"
+            && isRequiredProductionCardField(fieldId)
+          )
+        )
+        .map(getProductionCardGlobalColumnKey)
+    );
+
+    setApplyingProductionCardVisibilityToAll(true);
+    try {
+      const savedAt = new Date().toISOString();
+      const updatedBy = String(activeWorker?.["Teljes nev"] || "").trim() || null;
+      const rowsToUpsert: Array<{
+        station_name: string;
+        settings: ProductionMonitorProfile;
+        updated_by: string | null;
+        updated_at: string;
+      }> = [];
+
+      let currentStationUpdatedProfile: ProductionMonitorProfile | null = null;
+
+      for (const stationName of stations) {
+        const isCurrentStation =
+          normalizeLooseText(stationName) === normalizeLooseText(productionCardAdminStation);
+
+        const sourceProfile = isCurrentStation
+          ? normalizeProductionCardProfile(
+              sanitizeProductionCardProfile(productionCardProfile),
+              stationName
+            )
+          : (await fetchProductionCardProfileForStation(stationName)).profile;
+
+        const nextTables = sourceProfile.tables.map((table) => {
+          const validFields = Array.from(getProductionCardFieldIdsForTable(table, stationName));
+
+          const hiddenFieldIds = validFields.filter((fieldId) => {
+            // A korábban kötelezőnek meghatározott normál rendszermezők
+            // továbbra is láthatók maradnak.
+            if (
+              table.dataSource === "production-plan"
+              && isRequiredProductionCardField(fieldId)
+            ) {
+              return false;
+            }
+
+            return !selectedVisibleKeys.has(getProductionCardGlobalColumnKey(fieldId));
+          });
+
+          return {
+            ...table,
+            // FONTOS: kizárólag a láthatóságot másoljuk.
+            // Sorrend, szélesség, szín, tipográfia és mezőformázás változatlan.
+            hiddenFieldIds,
+          };
+        });
+
+        const updatedProfile = normalizeProductionCardProfile(
+          sanitizeProductionCardProfile({
+            ...sourceProfile,
+            tables: nextTables,
+          }),
+          stationName
+        );
+
+        rowsToUpsert.push({
+          station_name: stationName,
+          settings: updatedProfile,
+          updated_by: updatedBy,
+          updated_at: savedAt,
+        });
+
+        if (isCurrentStation) currentStationUpdatedProfile = updatedProfile;
+      }
+
+      const { error } = await supabase
+        .from(PRODUCTION_CARD_SETTINGS_TABLE)
+        .upsert(rowsToUpsert, { onConflict: "station_name" });
+
+      if (error) throw error;
+
+      if (currentStationUpdatedProfile) {
+        setProductionCardProfile(currentStationUpdatedProfile);
+        setProductionCardLastSavedAt(savedAt);
+        productionCardLastSavedPayloadRef.current = JSON.stringify(currentStationUpdatedProfile);
+      }
+
+      setMessage({
+        type: "success",
+        text: `Az aktuálisan látható oszlopok beállítása alkalmazva lett ${rowsToUpsert.length} munkaállomás összes kártyájára. A nem létező mezőket a rendszer automatikusan kihagyta; a sorrend, szélesség, színek és tipográfia nem változtak.`,
+      });
+    } catch (error) {
+      console.error("A globális kártya-oszlopláthatóság alkalmazása sikertelen:", error);
+      setMessage({
+        type: "error",
+        text: `Az oszlopláthatóság minden kártyára alkalmazása sikertelen: ${normalizeError(error)}`,
+      });
+    } finally {
+      setApplyingProductionCardVisibilityToAll(false);
+    }
+  }
+
   async function applyCurrentProductionCardTypographyToAllStations(): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
@@ -10546,8 +10745,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   ): React.JSX.Element {
     const compact = Boolean(options.compact);
     const editable = Boolean(options.editable);
-    const zoomRatio = profile.zoomPercent / 100;
-    const safeProfile = sanitizeProductionCardProfile(profile);
+    const safeProfile = normalizeProductionCardProfile(profile, data.stationName);
+    const zoomRatio = safeProfile.zoomPercent / 100;
     const profileTheme = safeProfile.theme;
     const priorityRows = data.priorityRows || [];
     const urgentScrapRows = data.scrapReplacementRows || [];
@@ -10577,7 +10776,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const totalWeight = Math.max(0.25, visibleFieldIds.reduce((sum, fieldId) => sum + Math.max(0.25, fieldWeights[fieldId] || 1), 0));
       const sourceRows = isPriorityTable ? priorityRows : isScrapTable ? urgentScrapRows : isBacklogTable ? backlogRows : data.rows;
 
-      if ((isPriorityTable || isScrapTable || isBacklogTable) && sourceRows.length === 0 && !editable) return <React.Fragment key={table.id} />;
+      if (isPriorityTable && sourceRows.length === 0) {
+        return <React.Fragment key={table.id} />;
+      }
+      if ((isScrapTable || isBacklogTable) && sourceRows.length === 0 && !editable) {
+        return <React.Fragment key={table.id} />;
+      }
 
       return (
         <section
@@ -10973,8 +11177,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
               {productionCardEditorTab === "layout" && (
                 <div style={{ display: "grid", gap: 10 }}>
-                  <div style={{ padding: "10px 12px", borderRadius: 10, background: "#e0f2fe", border: "1px solid #7dd3fc", color: "#0c4a6e", fontSize: 12 }}>
-                    <strong>Elérhető mezők: {allFieldIds.length}</strong>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", padding: "10px 12px", borderRadius: 10, background: "#e0f2fe", border: "1px solid #7dd3fc", color: "#0c4a6e", fontSize: 12 }}>
+                    <div style={{ flex: "1 1 560px" }}>
+                      <strong>Elérhető mezők: {allFieldIds.length}</strong>
                     {activeProductionCardTable.dataSource === "priority"
                       ? " · A Prioritási kártya az aktuális munkaállomás *_terv mezőit és a prioritási rendszermezőket tartalmazza. Ezen a kártyán nincs kötelező mező: minden oszlop elrejthető és szabadon rendezhető."
                       : activeProductionCardTable.dataSource === "backlog"
@@ -10983,6 +11188,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                         ? " · Az Állapot, Indító dolgozó, Befejező dolgozó és Eltelt idő kötelező mezők, ezek nem rejthetők el. A többi mező szabadon elrejthető és rendezhető."
                         : " · A mezők szabadon elrejthetők és rendezhetők."}
                     {" "}Az elrejtett mezők a kártyához beállított háttérszínnel jelennek meg a szerkesztőben.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void applyCurrentProductionCardColumnVisibilityToAllStations()}
+                      disabled={applyingProductionCardVisibilityToAll}
+                      style={{ ...buttonPrimary, background: "#0369a1", color: "#ffffff", borderColor: "#38bdf8", fontWeight: 900, whiteSpace: "nowrap" }}
+                    >
+                      {applyingProductionCardVisibilityToAll
+                        ? "Oszlopok alkalmazása..."
+                        : "Látható oszlopok minden kártyára"}
+                    </button>
                   </div>
                   {allFieldIds.map((fieldId, index) => {
                     const required = activeProductionCardTable.dataSource === "production-plan" && isRequiredProductionCardField(fieldId);
@@ -13321,11 +13537,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
     if (!autoRecipients.length) return;
 
-    void checkAndSendAutomaticReport();
-    const intervalId = window.setInterval(() => {
+    // Belépéskor SOHA nem indítunk azonnali automatikus küldést.
+    // A scheduler a következő teljes perc kezdetétől ellenőriz.
+    const now = new Date();
+    const delayToNextMinute = Math.max(
+      250,
+      60000 - (now.getSeconds() * 1000 + now.getMilliseconds()) + 150
+    );
+
+    let intervalId: number | null = null;
+    const timeoutId = window.setTimeout(() => {
       void checkAndSendAutomaticReport();
-    }, 30 * 1000);
-    return () => window.clearInterval(intervalId);
+      intervalId = window.setInterval(() => {
+        void checkAndSendAutomaticReport();
+      }, 60 * 1000);
+    }, delayToNextMinute);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      if (intervalId !== null) window.clearInterval(intervalId);
+    };
   }, [activeWorker, step, reportSettings]);
 
   useEffect(() => {
@@ -13335,12 +13566,28 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!reportDeliveryProfilesLoaded) {
       void loadReportDeliveryProfiles();
     }
-    void checkAutomaticReportDeliveryProfiles();
-    const intervalId = window.setInterval(() => {
-      void checkAutomaticReportDeliveryProfiles();
-    }, 30 * 1000);
 
-    return () => window.clearInterval(intervalId);
+    // Belépéskor / oldalmegnyitáskor NEM küldünk riportot.
+    // Az automata ellenőrzés a következő teljes perc kezdetén indul,
+    // majd percenként fut. Így nincs "kimaradt időpont pótlása".
+    const now = new Date();
+    const delayToNextMinute = Math.max(
+      250,
+      60000 - (now.getSeconds() * 1000 + now.getMilliseconds()) + 150
+    );
+
+    let intervalId: number | null = null;
+    const timeoutId = window.setTimeout(() => {
+      void checkAutomaticReportDeliveryProfiles();
+      intervalId = window.setInterval(() => {
+        void checkAutomaticReportDeliveryProfiles();
+      }, 60 * 1000);
+    }, delayToNextMinute);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      if (intervalId !== null) window.clearInterval(intervalId);
+    };
   }, [
     supabase,
     activeWorker?.id,
