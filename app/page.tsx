@@ -12707,6 +12707,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (managementSection === "report-delivery") return ReportDeliveryAdmin();
 
     const dashboardRange = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
+    const hasDashboardOrderSearch = dashboardOrderFilters.some(
+      (value) => Boolean(normalizeDashboardOrderSearch(value))
+    );
     const officeTheme = getOfficeTheme("dashboard");
     const availableStationRows = dashboardData.stationEfficiencyRows;
     const filteredWorkerStats = getFilteredDashboardWorkerStats();
@@ -12803,7 +12806,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={{ fontSize: 13, color: officeTheme.accentColor, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Management Dashboard</div>
             <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: officeTheme.textColor }}>Vezetői műszerfal</h2>
             <div style={{ color: officeTheme.mutedText }}>Termelési terv, munkaállomási teljesítés és dolgozói munkaidő egyetlen nézetben.</div>
-            <div style={{ color: officeTheme.mutedText, fontSize: 13, marginTop: 6 }}>Aktuális időszak: {dashboardRange.label}</div>
+            <div style={{ color: officeTheme.mutedText, fontSize: 13, marginTop: 6 }}>
+              {hasDashboardOrderSearch
+                ? "Keresési tartomány: teljes work_logs – nincs dátum/nézet korlátozás"
+                : `Aktuális időszak: ${dashboardRange.label}`}
+            </div>
             <div style={{ color: officeTheme.mutedText, fontSize: 13, marginTop: 4 }}>Utolsó frissítés: {dashboardData.lastUpdatedAt ? formatDateTime(dashboardData.lastUpdatedAt) : "-"}</div>
           </div>
 
@@ -12911,7 +12918,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 {filter} ×
               </button>
             ))}
-            <span style={{ color: officeTheme.mutedText, fontSize: 11 }}>Gyorskód: R260716178 → 07178. A részleges keresés is működik.</span>
+            <span style={{ color: officeTheme.mutedText, fontSize: 11 }}>
+              Gyorskód: R260716178 → 07178. A részleges keresés is működik. A rendelésszám-szűrés az egész work_logs táblában keres; a Napi/Heti/Havi/Egyedi nézet és a dátum nem korlátozza.
+            </span>
           </div>
         )}
 
@@ -16364,6 +16373,129 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const planOrdersByStation = new Map<string, Set<string>>();
     stations.forEach((station) => planOrdersByStation.set(station, new Set<string>()));
 
+    const normalizedActiveOrderFilters = orderFilters
+      .map((value) => normalizeDashboardOrderSearch(value))
+      .filter(Boolean);
+
+    // ==========================================================
+    // RENDELÉSSZÁM KERESÉS = TELJES WORK_LOGS
+    // ==========================================================
+    // Ha van aktív rendelésszám/gyorskód szűrő, a Napi / Heti / Havi /
+    // Egyedi nézetet és a kiválasztott dátumot TELJESEN figyelmen kívül
+    // hagyjuk. Ilyenkor kizárólag a work_logs teljes történetében keresünk.
+    if (normalizedActiveOrderFilters.length > 0) {
+      const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+
+      const reportedOrdersByStation = new Map<string, Set<string>>();
+      const reportedCompletedOrdersByStation = new Map<string, Set<string>>();
+      stations.forEach((station) => {
+        reportedOrdersByStation.set(station, new Set<string>());
+        reportedCompletedOrdersByStation.set(station, new Set<string>());
+      });
+
+      const historyLogs: WorkLogRow[] = [];
+      const seenHistoryRows = new Set<string>();
+
+      const appendHistoryRows = (rows: WorkLogRow[]): void => {
+        rows.forEach((row) => {
+          const orderNumber = String(row.order_number || "").trim();
+          if (!orderNumber || !matchesDashboardOrderFilters(orderNumber, orderFilters)) return;
+
+          const uniqueKey = [
+            orderNumber,
+            String(row.machine_id || ""),
+            String(row.worker_id || ""),
+            String(row.worker_name || ""),
+            String(row.action || ""),
+            String(row.created_at || ""),
+            String(row.start_time || row.start_timestamp || ""),
+            String(row.end_time || row.end_timestamp || ""),
+            String(row.batch_code || ""),
+            String(row.operation_code || ""),
+          ].join("|");
+
+          if (seenHistoryRows.has(uniqueKey)) return;
+          seenHistoryRows.add(uniqueKey);
+          historyLogs.push(row);
+        });
+      };
+
+      for (const normalizedFilter of normalizedActiveOrderFilters) {
+        // Gyorskód pl. 07178:
+        // R26 + 07 + tetszőleges köztes karakterek + 178.
+        // Teljes/részleges rendelésszámnál normál részszöveges keresés.
+        const likePattern = /^\d{5}$/.test(normalizedFilter)
+          ? `R26${normalizedFilter.slice(0, 2)}%${normalizedFilter.slice(-3)}`
+          : `%${normalizedFilter}%`;
+
+        let historyResponse = await supabase
+          .from("work_logs")
+          .select(selectColumns)
+          .ilike("order_number", likePattern)
+          .order("created_at", { ascending: true })
+          .limit(10000);
+
+        if (historyResponse.error) {
+          historyResponse = await supabase
+            .from("work_log")
+            .select(selectColumns)
+            .ilike("order_number", likePattern)
+            .order("created_at", { ascending: true })
+            .limit(10000);
+        }
+
+        if (historyResponse.error) {
+          console.warn(
+            "Rendelésszám teljes work_logs előzményének betöltési hibája:",
+            historyResponse.error
+          );
+          continue;
+        }
+
+        appendHistoryRows((historyResponse.data || []) as WorkLogRow[]);
+      }
+
+      historyLogs.forEach((log) => {
+        const orderNumber = String(log.order_number || "").trim();
+        if (!orderNumber) return;
+
+        const resolvedStation = resolveLogStation(log, workers);
+        const canonicalStation = stations.find(
+          (station) => normalizeLooseText(station) === normalizeLooseText(resolvedStation)
+        );
+        if (!canonicalStation) return;
+
+        reportedOrdersByStation.get(canonicalStation)?.add(orderNumber);
+
+        const endAt =
+          log.end_time
+          || log.end_timestamp
+          || (String(log.action || "").toUpperCase() === "END" ? log.created_at : null);
+
+        if (endAt && isFullyCompletedEndLog(log)) {
+          reportedCompletedOrdersByStation.get(canonicalStation)?.add(orderNumber);
+        }
+      });
+
+      // Rendelésszám keresésnél csak azok az állomások jelennek meg,
+      // ahol a teljes work_logs történetben tényleges jelentés volt.
+      return stations
+        .filter((station) => (reportedOrdersByStation.get(station)?.size || 0) > 0)
+        .map((station) => {
+          const plannedItems = reportedOrdersByStation.get(station)?.size || 0;
+          const completedItems = reportedCompletedOrdersByStation.get(station)?.size || 0;
+
+          return {
+            stationName: station,
+            plannedItems,
+            completedItems,
+            efficiencyPct: plannedItems > 0
+              ? Math.round((completedItems / plannedItems) * 100)
+              : null,
+          };
+        });
+    }
+
     const startDateKey = getLocalDateKey(new Date(range.startIso));
     const endDateKey = getLocalDateKey(new Date(range.endIso));
     let stationTablePlanCount = 0;
@@ -16484,117 +16616,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       }
     });
 
-    // RENDELÉSSZÁM-GYORSSZŰRŐ SPECIÁLIS MŰKÖDÉS:
-    // Ha rendelésre szűrünk, a munkaállomás-listát nem csak az adott napi tervből
-    // építjük fel. A kiválasztott rendelés teljes work_logs előzményét átnézzük,
-    // így MINDEN olyan munkaállomás megjelenik, ahol a rendelésen valaha történt
-    // START vagy END jelentés. Ez független attól, hogy a jelentés melyik napon volt.
-    const normalizedActiveOrderFilters = orderFilters
-      .map((value) => normalizeDashboardOrderSearch(value))
-      .filter(Boolean);
-
-    if (normalizedActiveOrderFilters.length > 0) {
-      const reportedOrdersByStation = new Map<string, Set<string>>();
-      const reportedCompletedOrdersByStation = new Map<string, Set<string>>();
-      stations.forEach((station) => {
-        reportedOrdersByStation.set(station, new Set<string>());
-        reportedCompletedOrdersByStation.set(station, new Set<string>());
-      });
-
-      const historyLogs: WorkLogRow[] = [];
-      const seenHistoryRows = new Set<string>();
-
-      const appendHistoryRows = (rows: WorkLogRow[]): void => {
-        rows.forEach((row) => {
-          const orderNumber = String(row.order_number || "").trim();
-          if (!orderNumber || !matchesDashboardOrderFilters(orderNumber, orderFilters)) return;
-          const uniqueKey = [
-            orderNumber,
-            String(row.machine_id || ""),
-            String(row.worker_id || ""),
-            String(row.action || ""),
-            String(row.created_at || ""),
-            String(row.start_time || row.start_timestamp || ""),
-            String(row.end_time || row.end_timestamp || ""),
-          ].join("|");
-          if (seenHistoryRows.has(uniqueKey)) return;
-          seenHistoryRows.add(uniqueKey);
-          historyLogs.push(row);
-        });
-      };
-
-      for (const normalizedFilter of normalizedActiveOrderFilters) {
-        // A gyorskód formátuma pl. 07178. Ez R26 + 07 + ... + 178 mintára keres.
-        // Teljes rendelésnél (pl. R260716178) közvetlen részszöveges keresés történik.
-        const likePattern = /^\d{5}$/.test(normalizedFilter)
-          ? `R26${normalizedFilter.slice(0, 2)}%${normalizedFilter.slice(-3)}`
-          : `%${normalizedFilter}%`;
-
-        let historyResponse = await supabase
-          .from("work_logs")
-          .select(selectColumns)
-          .ilike("order_number", likePattern)
-          .order("created_at", { ascending: true })
-          .limit(10000);
-
-        if (historyResponse.error) {
-          historyResponse = await supabase
-            .from("work_log")
-            .select(selectColumns)
-            .ilike("order_number", likePattern)
-            .order("created_at", { ascending: true })
-            .limit(10000);
-        }
-
-        if (historyResponse.error) {
-          console.warn("Rendelés teljes munkaállomás-előzményének betöltési hibája:", historyResponse.error);
-          continue;
-        }
-
-        appendHistoryRows(((historyResponse.data || []) as WorkLogRow[]));
-      }
-
-      historyLogs.forEach((log) => {
-        const orderNumber = String(log.order_number || "").trim();
-        if (!orderNumber) return;
-
-        const resolvedStation = resolveLogStation(log, workers);
-        const canonicalStation = stations.find(
-          (station) => normalizeLooseText(station) === normalizeLooseText(resolvedStation)
-        );
-        if (!canonicalStation) return;
-
-        reportedOrdersByStation.get(canonicalStation)?.add(orderNumber);
-
-        const endAt = log.end_time || log.end_timestamp || (String(log.action || "").toUpperCase() === "END" ? log.created_at : null);
-        if (endAt && isFullyCompletedEndLog(log)) {
-          reportedCompletedOrdersByStation.get(canonicalStation)?.add(orderNumber);
-        }
-      });
-
-      const stationsWithReport = stations.filter((station) =>
-        (reportedOrdersByStation.get(station)?.size || 0) > 0
-      );
-
-      // Ha van tényleges work_logs előzmény, csak azokat az állomásokat mutatjuk,
-      // amelyeken a rendelést valóban jelentették. A "Terv" minimum az érintett
-      // rendelések száma, így egy tervből hiányzó, de már jelentett állomás sem tűnik el.
-      if (stationsWithReport.length > 0) {
-        return stationsWithReport.map((station) => {
-          const plannedFromTable = planOrdersByStation.get(station)?.size || 0;
-          const reportedItems = reportedOrdersByStation.get(station)?.size || 0;
-          const plannedItems = Math.max(plannedFromTable, reportedItems);
-          const completedItems = reportedCompletedOrdersByStation.get(station)?.size || 0;
-          return {
-            stationName: station,
-            plannedItems,
-            completedItems,
-            efficiencyPct: plannedItems > 0 ? Math.round((completedItems / plannedItems) * 100) : null,
-          };
-        });
-      }
-    }
-
     return stations.map((station) => {
       const plannedItems = planOrdersByStation.get(station)?.size || 0;
       const completedItems = completedOrdersByStation.get(station)?.size || 0;
@@ -16686,34 +16707,38 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return result;
     };
 
-    // Normál műszerfal: a kiválasztott időszakot olvassuk.
-    // Rendelésszám-szűrésnél ez a lekérés csak a gyorskód-javaslatokhoz és
-    // kompatibilitáshoz marad meg; a kiválasztott rendeléshez lent TELJES
-    // work_logs előzményt töltünk be dátumkorlátozás nélkül.
-    const bufferedStart = new Date(range.startIso);
-    bufferedStart.setDate(bufferedStart.getDate() - 1);
+    // Normál műszerfalnál a kiválasztott időszakot olvassuk.
+    // RENDELÉSSZÁM-SZŰRÉSNÉL viszont EZ A LEKÉRÉS NEM FUT LE:
+    // ilyenkor az egész work_logs táblában keresünk, teljesen függetlenül
+    // a Napi / Heti / Havi / Egyedi nézettől és a kiválasztott dátumtól.
+    let periodLogs: WorkLogRow[] = [];
 
-    let response = await supabase
-      .from("work_logs")
-      .select(selectColumns)
-      .gte("created_at", bufferedStart.toISOString())
-      .lt("created_at", range.endIso)
-      .order("created_at", { ascending: false })
-      .limit(10000);
+    if (!hasOrderFilter) {
+      const bufferedStart = new Date(range.startIso);
+      bufferedStart.setDate(bufferedStart.getDate() - 1);
 
-    if (response.error) {
-      response = await supabase
-        .from("work_log")
+      let response = await supabase
+        .from("work_logs")
         .select(selectColumns)
         .gte("created_at", bufferedStart.toISOString())
         .lt("created_at", range.endIso)
         .order("created_at", { ascending: false })
         .limit(10000);
+
+      if (response.error) {
+        response = await supabase
+          .from("work_log")
+          .select(selectColumns)
+          .gte("created_at", bufferedStart.toISOString())
+          .lt("created_at", range.endIso)
+          .order("created_at", { ascending: false })
+          .limit(10000);
+      }
+
+      if (response.error) throw response.error;
+      periodLogs = mergeDashboardLogs(((response.data as WorkLogRow[]) || []));
     }
 
-    if (response.error) throw response.error;
-
-    const periodLogs = mergeDashboardLogs(((response.data as WorkLogRow[]) || []));
     let fullOrderHistoryLogs: WorkLogRow[] = [];
 
     if (hasOrderFilter) {
@@ -16936,7 +16961,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       orderTypeLatestValueRef.current = "";
       setFlowStage("dashboard");
       setStep(7);
-      setMessage({ type: "success", text: `Vezetői műszerfal betöltve: ${range.label}` });
+      setMessage({
+        type: "success",
+        text: orderFilters.some((value) => Boolean(normalizeDashboardOrderSearch(value)))
+          ? "Rendelésszám keresés betöltve a teljes work_logs táblából – a dátum és a nézet nem korlátozza."
+          : `Vezetői műszerfal betöltve: ${range.label}`,
+      });
     } catch (error) {
       console.error("SUPABASE HIBA loadManagementDashboardView:", error);
       setMessage({ type: "error", text: normalizeError(error) });
