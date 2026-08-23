@@ -2697,13 +2697,83 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
   };
 }
 
+function isLegacyPriorityProductionCardTable(
+  table: Pick<ProductionMonitorTableConfig, "id" | "name" | "title" | "dataSource">
+): boolean {
+  if (table.dataSource === "priority") return true;
+
+  const id = normalizeLooseText(table.id);
+  const name = normalizeLooseText(table.name);
+  const title = normalizeLooseText(table.title);
+
+  return id === "card-table-priority"
+    || name === "prioritasi kartya"
+    || title === "prioritasi kartya"
+    || name.startsWith("prioritasi kartya ")
+    || title.startsWith("prioritasi kartya ");
+}
+
+function getStoredProductionCardPriorityProblemState(value: unknown): {
+  exactPriorityCount: number;
+  legacyPriorityCount: number;
+  needsCleanup: boolean;
+} {
+  const raw = value && typeof value === "object"
+    ? value as { tables?: unknown[] }
+    : {};
+
+  if (!Array.isArray(raw.tables)) {
+    return {
+      exactPriorityCount: 0,
+      legacyPriorityCount: 0,
+      needsCleanup: true,
+    };
+  }
+
+  let exactPriorityCount = 0;
+  let legacyPriorityCount = 0;
+
+  raw.tables.forEach((rawTable) => {
+    if (!rawTable || typeof rawTable !== "object") return;
+
+    const table = rawTable as Partial<ProductionMonitorTableConfig>;
+    const dataSource = String(table.dataSource || "");
+
+    if (dataSource === "priority") {
+      exactPriorityCount += 1;
+      return;
+    }
+
+    const candidate: Pick<ProductionMonitorTableConfig, "id" | "name" | "title" | "dataSource"> = {
+      id: String(table.id || ""),
+      name: String(table.name || ""),
+      title: String(table.title || ""),
+      dataSource: dataSource === "scrap-replacement"
+        ? "scrap-replacement"
+        : dataSource === "backlog"
+          ? "backlog"
+          : "production-plan",
+    };
+
+    if (isLegacyPriorityProductionCardTable(candidate)) {
+      legacyPriorityCount += 1;
+    }
+  });
+
+  return {
+    exactPriorityCount,
+    legacyPriorityCount,
+    needsCleanup: exactPriorityCount !== 1 || legacyPriorityCount > 0,
+  };
+}
+
 function normalizeProductionCardProfile(value: unknown, stationName: string): ProductionMonitorProfile {
   if (!value || typeof value !== "object") return createDefaultProductionCardProfile(stationName);
   const normalized = normalizeProductionMonitorProfile(value, 0);
   const carpenterStation = isCarpenterProductionCardStation(stationName);
   let tables = normalized.tables.length > 0
     ? normalized.tables.map((table, index) => {
-        const dataSource: ProductionCardTableDataSource = table.dataSource === "priority"
+        const dataSource: ProductionCardTableDataSource = isLegacyPriorityProductionCardTable(table)
           ? "priority"
           : table.dataSource === "scrap-replacement"
             ? "scrap-replacement"
@@ -2746,9 +2816,20 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
       })
     : createDefaultProductionCardProfile(stationName).tables;
 
-  const existingPriorityTable = tables.find((table) => table.dataSource === "priority");
+  const priorityCandidates = tables.filter((table) => table.dataSource === "priority");
+  const existingPriorityTable =
+    priorityCandidates.find((table) => table.id === "card-table-priority")
+    || priorityCandidates[0];
+
   const existingBacklogTable = tables.find((table) => table.dataSource === "backlog");
-  const productionTables = tables.filter((table) => table.dataSource === "production-plan");
+
+  // A régi hibás profilokban a Prioritási kártya production-plan típusú
+  // másolatként is bent maradhatott. Ezeket nem engedjük vissza a normál kártyák közé.
+  const productionTables = tables.filter(
+    (table) =>
+      table.dataSource === "production-plan"
+      && !isLegacyPriorityProductionCardTable(table)
+  );
   const priorityTable = existingPriorityTable || createDefaultPriorityCardTable(normalized.theme, stationName);
   const backlogTable = existingBacklogTable || createDefaultBacklogCardTable(normalized.theme, stationName);
   if (carpenterStation) {
@@ -2945,7 +3026,13 @@ function sanitizeProductionCardProfile(profile: ProductionMonitorProfile): Produ
   ]);
   const seenSingletonDataSources = new Set<ProductionCardTableDataSource>();
 
-  const safeTables = profile.tables
+  const canonicalTables = profile.tables.map((table) =>
+    isLegacyPriorityProductionCardTable(table)
+      ? { ...table, dataSource: "priority" as ProductionCardTableDataSource }
+      : table
+  );
+
+  const safeTables = canonicalTables
     .filter((table) => {
       const dataSource = table.dataSource as ProductionCardTableDataSource;
       if (!singletonDataSources.has(dataSource)) return true;
@@ -3003,11 +3090,13 @@ function normalizeProductionMonitorTable(value: unknown, index: number, fallback
     fieldStyles: Object.fromEntries(
       Object.entries(rawFieldStyles).map(([fieldId, style]) => [fieldId, normalizeProductionMonitorFieldStyle(style)])
     ),
-    dataSource: raw.dataSource === "scrap-replacement"
-      ? "scrap-replacement"
-      : raw.dataSource === "backlog"
-        ? "backlog"
-        : "production-plan",
+    dataSource: raw.dataSource === "priority"
+      ? "priority"
+      : raw.dataSource === "scrap-replacement"
+        ? "scrap-replacement"
+        : raw.dataSource === "backlog"
+          ? "backlog"
+          : "production-plan",
   };
 }
 
@@ -5245,6 +5334,7 @@ export default function Page() {
   const productionCardDraggedFieldIdRef = useRef<string | null>(null);
   const productionCardAutoSaveTimerRef = useRef<number | null>(null);
   const productionCardLastSavedPayloadRef = useRef("");
+  const productionCardPriorityCleanupStartedRef = useRef(false);
 
   const [terminalProductionCardData, setTerminalProductionCardData] = useState<ProductionCardData>({
     stationName: "",
@@ -9616,6 +9706,72 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
   }
 
+  async function cleanupStoredProductionCardPriorityDuplicates(): Promise<void> {
+    if (!supabase) return;
+    if (productionCardPriorityCleanupStartedRef.current) return;
+
+    productionCardPriorityCleanupStartedRef.current = true;
+
+    try {
+      const { data, error } = await supabase
+        .from(PRODUCTION_CARD_SETTINGS_TABLE)
+        .select("station_name, settings, updated_by, updated_at")
+        .limit(10000);
+
+      if (error) throw error;
+
+      const rows = (data || []) as ProductionCardStationSettingsRow[];
+      const updates: Array<{
+        station_name: string;
+        settings: ProductionMonitorProfile;
+        updated_by: string | null;
+        updated_at: string;
+      }> = [];
+
+      rows.forEach((row) => {
+        const stationName = String(row.station_name || "").trim();
+        if (!stationName) return;
+
+        const problemState = getStoredProductionCardPriorityProblemState(row.settings);
+        if (!problemState.needsCleanup) return;
+
+        // Ez az egy normalizálás:
+        // - helyreállítja a dataSource='priority' típust,
+        // - eltávolítja az összes régi Prioritási kártya másolatot,
+        // - pontosan egy szerkeszthető Prioritási kártyát hagy meg.
+        const cleanedProfile = normalizeProductionCardProfile(row.settings, stationName);
+
+        updates.push({
+          station_name: stationName,
+          settings: cleanedProfile,
+          updated_by: String(row.updated_by || "").trim() || null,
+          updated_at: new Date().toISOString(),
+        });
+      });
+
+      for (let index = 0; index < updates.length; index += 50) {
+        const chunk = updates.slice(index, index + 50);
+        const { error: updateError } = await supabase
+          .from(PRODUCTION_CARD_SETTINGS_TABLE)
+          .upsert(chunk, { onConflict: "station_name" });
+
+        if (updateError) throw updateError;
+      }
+
+      if (updates.length > 0) {
+        console.info(
+          `[NÍVÓ] Prioritási kártya profilok automatikusan megtisztítva: ${updates.length} munkaállomás.`
+        );
+      }
+    } catch (error) {
+      // A tisztítási hiba nem állíthatja le a teljes lejelentőrendszert.
+      console.error(
+        "A tárolt prioritási kártya-duplikációk automatikus tisztítása sikertelen:",
+        error
+      );
+    }
+  }
+
   async function fetchProductionCardProfileForStation(stationName: string): Promise<{ profile: ProductionMonitorProfile; updatedAt: string }> {
     const cleanStationName = String(stationName || "").trim();
     if (!cleanStationName) return { profile: createDefaultProductionCardProfile(), updatedAt: "" };
@@ -9629,8 +9785,31 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (error) throw error;
 
     const row = data as ProductionCardStationSettingsRow | null;
+    const profile = normalizeProductionCardProfile(row?.settings, cleanStationName);
+
+    if (row && getStoredProductionCardPriorityProblemState(row.settings).needsCleanup) {
+      const cleanedAt = new Date().toISOString();
+      const { error: cleanupError } = await supabase
+        .from(PRODUCTION_CARD_SETTINGS_TABLE)
+        .upsert({
+          station_name: cleanStationName,
+          settings: profile,
+          updated_by: String(row.updated_by || "").trim() || null,
+          updated_at: cleanedAt,
+        }, { onConflict: "station_name" });
+
+      if (cleanupError) {
+        console.warn(
+          `A(z) ${cleanStationName} prioritási kártya-duplikációinak tisztítása nem menthető:`,
+          cleanupError
+        );
+      } else {
+        return { profile, updatedAt: cleanedAt };
+      }
+    }
+
     return {
-      profile: normalizeProductionCardProfile(row?.settings, cleanStationName),
+      profile,
       updatedAt: row?.updated_at || "",
     };
   }
@@ -11077,7 +11256,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           {productionCardEditMode && (
             <div data-office-window="production-card:editor" style={{ background: profileTheme.editorBackground, color: editorTextColor, border: `2px solid ${profileTheme.accentColor}`, borderRadius: profileTheme.panelRadius, padding: 16, marginBottom: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-                <div><strong style={{ fontSize: 20 }}>Profi termelésikártya-szerkesztő</strong><div style={{ color: "#64748b", fontSize: 12, marginTop: 3 }}>Az adott munkaállomás összes _terv mezője és minden rendszermező kihelyezhető, elrejthető és sorrendezhető. A kártyabeállítás az aktuális munkaállomáshoz mentődik.</div></div>
+                <div><strong style={{ fontSize: 20 }}>Profi termelésikártya-szerkesztő</strong><div style={{ color: "#64748b", fontSize: 12, marginTop: 3 }}>Az adott munkaállomás összes _terv mezője és minden rendszermező kihelyezhető, elrejthető és sorrendezhető. A kártyabeállítás az aktuális munkaállomáshoz mentődik. A Prioritási, Selejtpótlás és Lemaradások rendszerkártyából munkaállomásonként csak egy példány lehet.</div></div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <button type="button" onClick={() => void saveProductionCardSettings(true)} style={buttonPrimary}>Mentés</button>
                   <button type="button" onClick={resetProductionCardLayout} style={buttonSecondary}>Alapállapot visszaállítása</button>
@@ -13769,6 +13948,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (managementSection !== "production-plan") return;
     void loadPriorityHistory();
   }, [managementSection, supabase]);
+
+  useEffect(() => {
+    if (!supabase) return;
+    void cleanupStoredProductionCardPriorityDuplicates();
+  }, [supabase]);
 
   useEffect(() => {
     if (!productionCardAdminStation || managementSection !== "production-card") return;
