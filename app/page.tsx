@@ -5463,9 +5463,14 @@ export default function Page() {
   const [dashboardSelectedWorker, setDashboardSelectedWorker] = useState("all");
   const [dashboardOrderFilters, setDashboardOrderFilters] = useState<string[]>([]);
   const [dashboardOrderInput, setDashboardOrderInput] = useState("");
+  const [dashboardOrderSuggestions, setDashboardOrderSuggestions] = useState<string[]>([]);
+  const [dashboardOrderSuggestionsOpen, setDashboardOrderSuggestionsOpen] = useState(false);
+  const [dashboardOrderSuggestionsLoading, setDashboardOrderSuggestionsLoading] = useState(false);
   const [dashboardPdfIncludeComparison, setDashboardPdfIncludeComparison] = useState(true);
   const [dashboardPdfComparisonStation, setDashboardPdfComparisonStation] = useState("__dashboard__");
   const dashboardOrderFiltersRef = useRef<string[]>([]);
+  const dashboardOrderSuggestionBoxRef = useRef<HTMLDivElement | null>(null);
+  const dashboardOrderSuggestionRequestRef = useRef(0);
   const [officeThemePresetByPage, setOfficeThemePresetByPage] = useState<Record<OfficePageKey, OfficeThemePresetId>>(createDefaultOfficeThemePresetMap());
   const [officeThemeByPage, setOfficeThemeByPage] = useState<Record<OfficePageKey, OfficeThemeConfig>>(createDefaultOfficeThemeMap());
   const [officeThemeEditorOpen, setOfficeThemeEditorOpen] = useState(false);
@@ -6003,6 +6008,67 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     finally { setOfficeThemeSaving(false); }
   }
 
+  async function fetchDashboardOrderNumberSuggestions(rawValue: string): Promise<string[]> {
+    if (!supabase) return [];
+
+    const rawSearch = String(rawValue || "").trim();
+    const normalizedSearch = normalizeDashboardOrderSearch(rawSearch);
+    if (!normalizedSearch) return [];
+
+    // Gyorskód/részleges gyorskód esetén a szerveren előszűrünk az év + hónap
+    // részre, majd kliensoldalon a getDashboardQuickOrderCode alapján pontosítunk.
+    // Pl. 07178 -> R26 07 ... 178.
+    let serverPattern = `%${normalizedSearch}%`;
+    if (/^\d{2,5}$/.test(normalizedSearch)) {
+      serverPattern = `R26${normalizedSearch.slice(0, 2)}%`;
+    }
+
+    let response = await supabase
+      .from("work_logs")
+      .select("order_number, created_at")
+      .ilike("order_number", serverPattern)
+      .order("created_at", { ascending: false })
+      .limit(2500);
+
+    if (response.error) {
+      response = await supabase
+        .from("work_log")
+        .select("order_number, created_at")
+        .ilike("order_number", serverPattern)
+        .order("created_at", { ascending: false })
+        .limit(2500);
+    }
+
+    if (response.error) {
+      console.warn("Rendelésszám-javaslatok betöltési hibája:", response.error);
+      return [];
+    }
+
+    const selectedKeys = new Set(
+      dashboardOrderFiltersRef.current.map(normalizeDashboardOrderSearch)
+    );
+    const seen = new Set<string>();
+    const suggestions: string[] = [];
+
+    for (const row of (response.data || []) as Array<{ order_number?: string | null }>) {
+      const orderNumber = String(row.order_number || "").trim();
+      if (!orderNumber) continue;
+
+      // KIZÁRÓLAG order_number kerülhet a listába.
+      if (!matchesDashboardOrderFilters(orderNumber, [rawSearch])) continue;
+
+      const normalizedOrder = normalizeDashboardOrderSearch(orderNumber);
+      if (!normalizedOrder || selectedKeys.has(normalizedOrder) || seen.has(normalizedOrder)) continue;
+
+      seen.add(normalizedOrder);
+      suggestions.push(orderNumber);
+
+      if (suggestions.length >= 50) break;
+    }
+
+    return suggestions;
+  }
+
   function addDashboardOrderFilter(rawValue = dashboardOrderInput): void {
     const value = String(rawValue || "").trim();
     if (!value) return;
@@ -6012,6 +6078,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     dashboardOrderFiltersRef.current = [...next];
     setDashboardOrderFilters(next);
     setDashboardOrderInput("");
+    setDashboardOrderSuggestions([]);
+    setDashboardOrderSuggestionsOpen(false);
     void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, next);
   }
 
@@ -6029,6 +6097,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     dashboardOrderFiltersRef.current = [];
     setDashboardOrderFilters([]);
     setDashboardOrderInput("");
+    setDashboardOrderSuggestions([]);
+    setDashboardOrderSuggestionsOpen(false);
     void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, []);
   }
 
@@ -12732,10 +12802,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const selectedStationLabel = selectedStationValue === "all" ? "Összes munkaállomás" : selectedStationValue;
     const selectedWorkerLabel = selectedWorkerValue === "all" ? "Összes dolgozó" : selectedWorkerValue;
     const activeWorkerCount = visibleWorkerRows.filter((row) => row.totalMinutes > 0).length;
-    const orderFilterSuggestions = dashboardData.availableOrderNumbers
-      .filter((orderNumber) => !dashboardOrderInput.trim() || matchesDashboardOrderFilters(orderNumber, [dashboardOrderInput]))
-      .slice(0, 50);
-
     const dashboardCards: Array<{ label: string; value: string | number; helper: string }> = [
       {
         label: "Tervezett állomásfeladatok",
@@ -12878,26 +12944,115 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <option key={workerName} value={workerName}>{workerName}</option>
               ))}
             </select>
-            <div style={{ display: "flex", gap: 6, alignItems: "center", minWidth: 310 }}>
+            <div
+              ref={dashboardOrderSuggestionBoxRef}
+              style={{ display: "flex", gap: 6, alignItems: "center", minWidth: 310, position: "relative" }}
+            >
               <input
-                list="dashboard-order-filter-options"
                 value={dashboardOrderInput}
-                onChange={(event) => setDashboardOrderInput(event.target.value)}
+                name="dashboard-order-number-search"
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck={false}
+                onFocus={() => {
+                  if (dashboardOrderInput.trim()) {
+                    setDashboardOrderSuggestionsOpen(true);
+                  }
+                }}
+                onChange={(event) => {
+                  setDashboardOrderInput(event.target.value);
+                  if (event.target.value.trim()) {
+                    setDashboardOrderSuggestionsOpen(true);
+                  } else {
+                    setDashboardOrderSuggestions([]);
+                    setDashboardOrderSuggestionsOpen(false);
+                  }
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     event.preventDefault();
                     addDashboardOrderFilter();
+                  } else if (event.key === "Escape") {
+                    setDashboardOrderSuggestionsOpen(false);
                   }
                 }}
                 placeholder="Rendelésszám / gyors kód pl. 07178"
                 style={{ ...fieldStyle, width: 245, background: officeTheme.inputBackground, color: officeTheme.inputText, borderColor: officeTheme.borderColor }}
                 aria-label="Rendelésszám szűrése"
+                aria-expanded={dashboardOrderSuggestionsOpen}
               />
-              <datalist id="dashboard-order-filter-options">
-                {orderFilterSuggestions.map((orderNumber) => (
-                  <option key={orderNumber} value={orderNumber}>{getDashboardQuickOrderCode(orderNumber) || orderNumber}</option>
-                ))}
-              </datalist>
+
+              {dashboardOrderSuggestionsOpen && dashboardOrderInput.trim() && (
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    top: "calc(100% + 5px)",
+                    width: 330,
+                    maxHeight: 340,
+                    overflowY: "auto",
+                    zIndex: 10000,
+                    padding: 6,
+                    borderRadius: 10,
+                    border: `1px solid ${officeTheme.borderColor}`,
+                    background: officeTheme.panelBackground,
+                    boxShadow: "0 16px 38px rgba(0,0,0,0.38)",
+                  }}
+                >
+                  {dashboardOrderSuggestionsLoading ? (
+                    <div style={{ padding: "10px 12px", color: officeTheme.mutedText, fontSize: 12 }}>
+                      Keresés a teljes work_logs táblában...
+                    </div>
+                  ) : dashboardOrderSuggestions.length > 0 ? (
+                    dashboardOrderSuggestions.map((orderNumber) => {
+                      const quickCode = getDashboardQuickOrderCode(orderNumber);
+                      return (
+                        <button
+                          key={orderNumber}
+                          type="button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => {
+                            // Kattintásra rögtön az adott rendelésre szűrünk.
+                            addDashboardOrderFilter(orderNumber);
+                          }}
+                          style={{
+                            width: "100%",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 12,
+                            padding: "9px 10px",
+                            marginBottom: 4,
+                            borderRadius: 8,
+                            border: `1px solid ${officeTheme.borderColor}`,
+                            background: officeTheme.panelAltBackground,
+                            color: officeTheme.textColor,
+                            textAlign: "left",
+                            cursor: "pointer",
+                            fontWeight: 800,
+                          }}
+                        >
+                          <span>{orderNumber}</span>
+                          {quickCode && (
+                            <span style={{ color: officeTheme.mutedText, fontSize: 11, fontWeight: 700 }}>
+                              {quickCode}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })
+                  ) : (
+                    <div style={{ padding: "10px 12px", color: officeTheme.mutedText, fontSize: 12 }}>
+                      Nincs találat a work_logs.order_number mezőben.
+                    </div>
+                  )}
+
+                  <div style={{ padding: "7px 9px 3px", color: officeTheme.mutedText, fontSize: 10 }}>
+                    Maximum 50 egyedi rendelés · csak work_logs.order_number
+                  </div>
+                </div>
+              )}
+
               <button type="button" onClick={() => addDashboardOrderFilter()} style={{ ...buttonSecondary, minWidth: 48 }}>+</button>
             </div>
             <button type="button" onClick={clearDashboardSecondaryFilters} style={buttonSecondary}>Szűrők törlése</button>
@@ -13583,6 +13738,57 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   useEffect(() => {
     dashboardOrderFiltersRef.current = [...dashboardOrderFilters];
   }, [dashboardOrderFilters]);
+
+  useEffect(() => {
+    const rawSearch = dashboardOrderInput.trim();
+
+    if (managementSection !== "dashboard" || !rawSearch) {
+      setDashboardOrderSuggestions([]);
+      setDashboardOrderSuggestionsOpen(false);
+      setDashboardOrderSuggestionsLoading(false);
+      return;
+    }
+
+    const requestId = dashboardOrderSuggestionRequestRef.current + 1;
+    dashboardOrderSuggestionRequestRef.current = requestId;
+
+    const timeoutId = window.setTimeout(() => {
+      setDashboardOrderSuggestionsLoading(true);
+
+      void fetchDashboardOrderNumberSuggestions(rawSearch)
+        .then((suggestions) => {
+          if (dashboardOrderSuggestionRequestRef.current !== requestId) return;
+          setDashboardOrderSuggestions(suggestions);
+          setDashboardOrderSuggestionsOpen(true);
+        })
+        .finally(() => {
+          if (dashboardOrderSuggestionRequestRef.current === requestId) {
+            setDashboardOrderSuggestionsLoading(false);
+          }
+        });
+    }, 220);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [dashboardOrderInput, managementSection]);
+
+  useEffect(() => {
+    if (!dashboardOrderSuggestionsOpen) return;
+
+    const handleOutsidePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+
+      if (!dashboardOrderSuggestionBoxRef.current?.contains(target)) {
+        setDashboardOrderSuggestionsOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", handleOutsidePointerDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", handleOutsidePointerDown, true);
+    };
+  }, [dashboardOrderSuggestionsOpen]);
+
 
   useEffect(() => {
     if (!supabase || !activeWorker || !isManagementDashboardWorker(activeWorker)) return;
