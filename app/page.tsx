@@ -1188,6 +1188,12 @@ type ReportDeliveryReportType =
 
 type ReportDeliveryFrequency = "daily" | "weekly" | "monthly";
 type ReportDeliveryPeriodScope = "current" | "previous";
+type ReportDeliveryDataRangeMode =
+  | "today"
+  | "current-week"
+  | "current-month"
+  | "custom"
+  | "from-date-to-today";
 type ReportDeliveryProductType = "all" | "Standard" | "Plus" | "Extra";
 type ReportDeliveryBlock =
   | "worker-analysis"
@@ -1210,6 +1216,7 @@ type ReportDeliveryProfile = {
   customBlocks: ReportDeliveryBlock[];
   frequency: ReportDeliveryFrequency;
   periodScope: ReportDeliveryPeriodScope;
+  reportFilterMode: ReportDeliveryDataRangeMode;
   reportFilterStartDate: string;
   reportFilterEndDate: string;
   sendTime: string;
@@ -1344,6 +1351,7 @@ const DEFAULT_REPORT_DELIVERY_PROFILE: ReportDeliveryProfile = {
   customBlocks: ["worker-analysis"],
   frequency: "monthly",
   periodScope: "previous",
+  reportFilterMode: "current-month",
   reportFilterStartDate: "",
   reportFilterEndDate: "",
   sendTime: "06:00",
@@ -5783,6 +5791,7 @@ export default function Page() {
   const [reportDeliveryCardStyleByProfile, setReportDeliveryCardStyleByProfile] = useState<Record<string, ReportDeliveryCardStyle>>({});
   const [reportDeliveryCardPresetByProfile, setReportDeliveryCardPresetByProfile] = useState<Record<string, ReportDeliveryCardPresetId>>({});
   const [reportDeliveryStyleEditorOpenById, setReportDeliveryStyleEditorOpenById] = useState<Record<string, boolean>>({});
+  const [reportDeliverySpecialTimeOpenById, setReportDeliverySpecialTimeOpenById] = useState<Record<string, boolean>>({});
   const [reportDeliveryLogOpenById, setReportDeliveryLogOpenById] = useState<Record<string, boolean>>({});
   const [reportDeliverySendLogsByProfile, setReportDeliverySendLogsByProfile] = useState<Record<string, ReportDeliverySendLog[]>>({});
   const reportDeliveryAutoCheckBusyRef = useRef(false);
@@ -6477,6 +6486,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         ? String(row.frequency || "monthly")
         : "monthly") as ReportDeliveryFrequency,
       periodScope: (String(row.period_scope || "previous") === "current" ? "current" : "previous") as ReportDeliveryPeriodScope,
+      reportFilterMode: (
+        ["today", "current-week", "current-month", "custom", "from-date-to-today"].includes(String(row.report_filter_mode || ""))
+          ? String(row.report_filter_mode)
+          : String(row.report_filter_start_date || "").slice(0, 10)
+            ? "custom"
+            : String(row.frequency || "monthly") === "daily"
+              ? "today"
+              : String(row.frequency || "monthly") === "weekly"
+                ? "current-week"
+                : "current-month"
+      ) as ReportDeliveryDataRangeMode,
       reportFilterStartDate: String(row.report_filter_start_date || "").slice(0, 10),
       reportFilterEndDate: String(row.report_filter_end_date || "").slice(0, 10),
       sendTime: String(row.send_time || "06:00").slice(0, 5),
@@ -6755,6 +6775,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       custom_blocks: ["worker-analysis"],
       frequency: "monthly",
       period_scope: "previous",
+      report_filter_mode: "current-month",
       report_filter_start_date: null,
       report_filter_end_date: null,
       send_time: "06:00",
@@ -6786,7 +6807,39 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+  function normalizeReportDeliveryFilterDates(profile: ReportDeliveryProfile): {
+    mode: ReportDeliveryDataRangeMode;
+    startDate: string | null;
+    endDate: string | null;
+  } {
+    const mode = profile.reportFilterMode || "current-month";
+
+    if (mode === "custom") {
+      return {
+        mode,
+        startDate: profile.reportFilterStartDate || null,
+        endDate: profile.reportFilterEndDate || null,
+      };
+    }
+
+    if (mode === "from-date-to-today") {
+      return {
+        mode,
+        startDate: profile.reportFilterStartDate || null,
+        endDate: null,
+      };
+    }
+
+    return {
+      mode,
+      startDate: null,
+      endDate: null,
+    };
+  }
+
   function buildReportDeliveryProfilePayload(profile: ReportDeliveryProfile, activeOverride?: boolean): Record<string, unknown> {
+    const normalizedFilterDates = normalizeReportDeliveryFilterDates(profile);
+
     return {
       name: profile.name.trim() || "Automatikus riport",
       recipients: profile.recipients.map((value) => value.trim()).filter(Boolean),
@@ -6798,8 +6851,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       custom_blocks: profile.customBlocks,
       frequency: profile.frequency,
       period_scope: profile.periodScope,
-      report_filter_start_date: profile.reportFilterStartDate || null,
-      report_filter_end_date: profile.reportFilterEndDate || null,
+      report_filter_mode: normalizedFilterDates.mode,
+      report_filter_start_date: normalizedFilterDates.startDate,
+      report_filter_end_date: normalizedFilterDates.endDate,
       send_time: profile.sendTime || "06:00",
       schedule_start_date: profile.scheduleStartDate || null,
       schedule_end_date: profile.scheduleEndDate || null,
@@ -6811,14 +6865,89 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
   }
 
+  function validateReportDeliveryDataRange(profile: ReportDeliveryProfile): void {
+    if (profile.reportFilterMode === "custom") {
+      if (!profile.reportFilterStartDate || !profile.reportFilterEndDate) {
+        throw new Error("Az Egyedi dátumtartománynál add meg a kezdő és a záró dátumot is.");
+      }
+      if (profile.reportFilterStartDate > profile.reportFilterEndDate) {
+        throw new Error("A riport adatainak kezdő dátuma nem lehet későbbi a záró dátumnál.");
+      }
+    }
+
+    if (profile.reportFilterMode === "from-date-to-today" && !profile.reportFilterStartDate) {
+      throw new Error("A Fix kezdő dátumtól → Mai napig módhoz add meg a kezdő dátumot.");
+    }
+  }
+
+  async function saveReportDeliverySpecialTimeSettings(profile: ReportDeliveryProfile): Promise<void> {
+    if (!supabase || !profile.id) throw new Error("Nincs menthető riportprofil.");
+
+    validateReportDeliveryDataRange(profile);
+
+    const normalized = normalizeReportDeliveryFilterDates(profile);
+    setReportDeliveryProfileBusy(profile.id, true);
+
+    try {
+      const payload = {
+        report_filter_mode: normalized.mode,
+        report_filter_start_date: normalized.startDate,
+        report_filter_end_date: normalized.endDate,
+        updated_at: new Date().toISOString(),
+      };
+
+      const response = await supabase
+        .from(REPORT_DELIVERY_PROFILES_TABLE)
+        .update(payload)
+        .eq("id", profile.id)
+        .select("id, report_filter_mode, report_filter_start_date, report_filter_end_date, updated_at")
+        .single();
+
+      if (response.error) throw response.error;
+
+      const savedMode = String(response.data?.report_filter_mode || normalized.mode) as ReportDeliveryDataRangeMode;
+      const savedStart = String(response.data?.report_filter_start_date || "").slice(0, 10);
+      const savedEnd = String(response.data?.report_filter_end_date || "").slice(0, 10);
+      const savedUpdatedAt = String(response.data?.updated_at || new Date().toISOString());
+
+      setReportDeliveryProfiles((current) =>
+        current.map((item) =>
+          item.id === profile.id
+            ? {
+                ...item,
+                reportFilterMode: savedMode,
+                reportFilterStartDate: savedStart,
+                reportFilterEndDate: savedEnd,
+                updatedAt: savedUpdatedAt,
+              }
+            : item
+        )
+      );
+
+      setReportDeliveryDrafts((current) => ({
+        ...current,
+        [profile.id]: {
+          ...(current[profile.id] || profile),
+          reportFilterMode: savedMode,
+          reportFilterStartDate: savedStart,
+          reportFilterEndDate: savedEnd,
+          updatedAt: savedUpdatedAt,
+        },
+      }));
+
+      setReportDeliverySpecialTimeOpenById((current) => ({ ...current, [profile.id]: false }));
+      setMessage({ type: "success", text: "A speciális riport-időbeállítások elmentve." });
+    } finally {
+      setReportDeliveryProfileBusy(profile.id, false);
+    }
+  }
+
   async function saveReportDeliveryProfile(profile: ReportDeliveryProfile, asCopy = false): Promise<void> {
     if (!supabase || !profile.id) throw new Error("Nincs menthető riportprofil.");
     const recipients = profile.recipients.map((value) => value.trim()).filter(Boolean);
     if (!profile.name.trim()) throw new Error("Adj nevet a riportprofilnak.");
     if (!recipients.length) throw new Error("Adj meg legalább egy email címet.");
-    if (profile.reportFilterStartDate && profile.reportFilterEndDate && profile.reportFilterStartDate > profile.reportFilterEndDate) {
-      throw new Error("A riport adatainak kezdő dátuma nem lehet későbbi a záró dátumnál.");
-    }
+    validateReportDeliveryDataRange(profile);
     if (profile.scheduleStartDate && profile.scheduleEndDate && profile.scheduleStartDate > profile.scheduleEndDate) {
       throw new Error("A riportküldés kezdő dátuma nem lehet későbbi a záró dátumnál.");
     }
@@ -6897,9 +7026,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (nextActive && !profile.recipients.map((value) => value.trim()).filter(Boolean).length) {
       throw new Error("Aktiválás előtt adj meg legalább egy címzett email címet.");
     }
-    if (nextActive && profile.reportFilterStartDate && profile.reportFilterEndDate && profile.reportFilterStartDate > profile.reportFilterEndDate) {
-      throw new Error("A riport adatainak kezdő dátuma nem lehet későbbi a záró dátumnál.");
-    }
+    if (nextActive) validateReportDeliveryDataRange(profile);
     if (nextActive && profile.scheduleStartDate && profile.scheduleEndDate && profile.scheduleStartDate > profile.scheduleEndDate) {
       throw new Error("A riportküldés kezdő dátuma nem lehet későbbi a záró dátumnál.");
     }
@@ -7016,35 +7143,47 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getReportDeliveryProfileRange(profile: ReportDeliveryProfile, now = new Date()): { startIso: string; endIso: string; label: string } {
-    // A riport ADATAINAK dátumszűrője teljesen külön van az automatikus
-    // küldés érvényességi dátumaitól.
-    //
-    // Ha legalább az egyik riport-dátum meg van adva, egyedi dátumtartományt
-    // használunk. Egyetlen kitöltött dátumnál az az egy nap lesz a riport.
-    const customStart = String(profile.reportFilterStartDate || "").slice(0, 10);
-    const customEnd = String(profile.reportFilterEndDate || "").slice(0, 10);
+    const todayKey = getLocalDateKey(now);
+    const mode = profile.reportFilterMode || "current-month";
 
-    if (customStart || customEnd) {
-      const startKey = customStart || customEnd;
-      const endKey = customEnd || customStart;
-      return getDashboardDateRange("custom", startKey, endKey);
+    if (mode === "today") {
+      return getDashboardDateRange("custom", todayKey, todayKey);
     }
 
-    // Régi, még dátumszűrő nélküli profilok kompatibilitása.
-    const base = new Date(now);
-    base.setHours(0, 0, 0, 0);
-    if (profile.frequency === "daily") {
-      if (profile.periodScope === "previous") base.setDate(base.getDate() - 1);
-      return getDashboardDateRange("daily", getLocalDateKey(base));
+    if (mode === "current-week") {
+      const monday = getStartOfWeek(now);
+      return getDashboardDateRange("custom", getLocalDateKey(monday), todayKey);
     }
-    if (profile.frequency === "weekly") {
-      const monday = getStartOfWeek(base);
-      if (profile.periodScope === "previous") monday.setDate(monday.getDate() - 7);
-      return getDashboardDateRange("weekly", getLocalDateKey(monday));
+
+    if (mode === "current-month") {
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+      return getDashboardDateRange("custom", getLocalDateKey(firstDay), todayKey);
     }
-    const month = new Date(base.getFullYear(), base.getMonth(), 1);
-    if (profile.periodScope === "previous") month.setMonth(month.getMonth() - 1, 1);
-    return getDashboardDateRange("monthly", getLocalDateKey(month));
+
+    if (mode === "from-date-to-today") {
+      const startKey = String(profile.reportFilterStartDate || "").slice(0, 10) || todayKey;
+      return getDashboardDateRange("custom", startKey, todayKey);
+    }
+
+    const customStart = String(profile.reportFilterStartDate || "").slice(0, 10) || todayKey;
+    const customEnd = String(profile.reportFilterEndDate || "").slice(0, 10) || customStart;
+    return getDashboardDateRange("custom", customStart, customEnd);
+  }
+
+  function getReportDeliveryDataRangeModeLabel(mode: ReportDeliveryDataRangeMode): string {
+    if (mode === "today") return "Napi – mai nap";
+    if (mode === "current-week") return "Heti – hétfőtől mai napig";
+    if (mode === "current-month") return "Havi – hónap 1-től mai napig";
+    if (mode === "from-date-to-today") return "Fix kezdő dátumtól → mai napig";
+    return "Egyedi dátumtartomány";
+  }
+
+  function getReportDeliveryDataRangeSummary(profile: ReportDeliveryProfile, now = new Date()): string {
+    const range = getReportDeliveryProfileRange(profile, now);
+    const start = range.startIso.slice(0, 10);
+    const inclusiveEnd = new Date(new Date(range.endIso).getTime() - 1);
+    const end = Number.isNaN(inclusiveEnd.getTime()) ? range.endIso.slice(0, 10) : getLocalDateKey(inclusiveEnd);
+    return `${getReportDeliveryDataRangeModeLabel(profile.reportFilterMode || "current-month")} · ${start} → ${end}`;
   }
 
   function getReportDeliveryScheduleMarker(profile: ReportDeliveryProfile, now = new Date()): string {
@@ -7852,26 +7991,22 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <strong>Automatikus ütemezés</strong>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: style.gap }}>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Ismétlődés<select value={draft.frequency} onChange={(e) => updateReportDeliveryDraft(profile.id, { frequency: e.target.value as ReportDeliveryFrequency })} style={control}><option value="daily">Naponta</option><option value="weekly">Hetente</option><option value="monthly">Havonta</option></select></label>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>
-                Riport adatai ettől
-                <input
-                  type="date"
-                  value={draft.reportFilterStartDate}
-                  max={draft.reportFilterEndDate || undefined}
-                  onChange={(e) => updateReportDeliveryDraft(profile.id, { reportFilterStartDate: e.target.value })}
-                  style={control}
-                />
-              </label>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>
-                Riport adatai eddig
-                <input
-                  type="date"
-                  value={draft.reportFilterEndDate}
-                  min={draft.reportFilterStartDate || undefined}
-                  onChange={(e) => updateReportDeliveryDraft(profile.id, { reportFilterEndDate: e.target.value })}
-                  style={control}
-                />
-              </label>
+              <div style={{ display: "grid", gap: 6, alignContent: "end" }}>
+                <span style={{ fontWeight: 800 }}>Riport adatainak időszaka</span>
+                <button
+                  type="button"
+                  onClick={() => setReportDeliverySpecialTimeOpenById((current) => ({
+                    ...current,
+                    [profile.id]: !current[profile.id],
+                  }))}
+                  style={{ ...secondaryAction, minHeight: style.fieldHeight }}
+                >
+                  ⚙ Speciális időbeállítások
+                </button>
+                <span style={{ color: style.mutedText, fontSize: Math.max(10, style.baseFontSize - 2), lineHeight: 1.35 }}>
+                  {getReportDeliveryDataRangeSummary(draft)}
+                </span>
+              </div>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Küldési idő<input type="time" value={draft.sendTime} onChange={(e) => updateReportDeliveryDraft(profile.id, { sendTime: e.target.value })} style={control} /></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>
                 Automatikus küldés ettől
@@ -7897,6 +8032,159 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             </div>
           </div>
 
+          {reportDeliverySpecialTimeOpenById[profile.id] && (
+            <div
+              style={{
+                ...section,
+                borderWidth: Math.max(2, style.borderWidth),
+                boxShadow: "0 18px 45px rgba(0,0,0,0.28)",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontWeight: 900, fontSize: Math.max(17, style.titleFontSize - 3) }}>
+                    Speciális időbeállítások
+                  </div>
+                  <div style={{ color: style.mutedText, marginTop: 4 }}>
+                    Ez kizárólag azt szabályozza, hogy milyen dátumtartomány adatai kerüljenek a PDF-be és az email-riportba. A küldés ismétlődése ettől független.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const saved = reportDeliveryProfiles.find((item) => item.id === profile.id) || profile;
+                    setReportDeliveryDrafts((current) => ({
+                      ...current,
+                      [profile.id]: {
+                        ...(current[profile.id] || draft),
+                        reportFilterMode: saved.reportFilterMode,
+                        reportFilterStartDate: saved.reportFilterStartDate,
+                        reportFilterEndDate: saved.reportFilterEndDate,
+                      },
+                    }));
+                    setReportDeliverySpecialTimeOpenById((current) => ({ ...current, [profile.id]: false }));
+                  }}
+                  style={secondaryAction}
+                >
+                  Bezárás mentés nélkül
+                </button>
+              </div>
+
+              <div style={{ display: "grid", gap: 9 }}>
+                {([
+                  ["today", "Napi – mai nap", "Mindig csak a futás napjának adatai."],
+                  ["current-week", "Heti – hétfőtől mai napig", "Az aktuális hét hétfőjétől a futás napjáig."],
+                  ["current-month", "Havi – hónap 1-től mai napig", "Az aktuális hónap 1. napjától a futás napjáig."],
+                  ["from-date-to-today", "Fix kezdő dátumtól → mai napig", "A kezdő dátum rögzített, a záró dátum minden nap automatikusan a mai nap."],
+                  ["custom", "Egyedi dátumtartomány", "A kezdő és záró dátum is fixen elmentődik."],
+                ] as Array<[ReportDeliveryDataRangeMode, string, string]>).map(([mode, label, description]) => (
+                  <label
+                    key={mode}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "auto 1fr",
+                      gap: 10,
+                      alignItems: "start",
+                      padding: "10px 12px",
+                      borderRadius: Math.max(7, style.borderRadius - 5),
+                      border: `${draft.reportFilterMode === mode ? Math.max(2, style.borderWidth) : 1}px solid ${draft.reportFilterMode === mode ? style.activeColor : style.borderColor}`,
+                      background: draft.reportFilterMode === mode ? style.headerBackground : style.cardBackground,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name={`report-time-mode-${profile.id}`}
+                      checked={draft.reportFilterMode === mode}
+                      onChange={() => updateReportDeliveryDraft(profile.id, {
+                        reportFilterMode: mode,
+                        reportFilterStartDate: mode === "today" || mode === "current-week" || mode === "current-month"
+                          ? ""
+                          : draft.reportFilterStartDate,
+                        reportFilterEndDate: mode === "custom" ? draft.reportFilterEndDate : "",
+                      })}
+                    />
+                    <span>
+                      <strong>{label}</strong>
+                      <span style={{ display: "block", color: style.mutedText, marginTop: 2, fontSize: Math.max(10, style.baseFontSize - 2) }}>
+                        {description}
+                      </span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              {draft.reportFilterMode === "from-date-to-today" && (
+                <label style={{ display: "grid", gap: 6, fontWeight: 800, maxWidth: 420 }}>
+                  Fix kezdő dátum
+                  <input
+                    type="date"
+                    value={draft.reportFilterStartDate}
+                    max={getLocalDateKey(new Date())}
+                    onChange={(event) => updateReportDeliveryDraft(profile.id, {
+                      reportFilterStartDate: event.target.value,
+                      reportFilterEndDate: "",
+                    })}
+                    style={control}
+                  />
+                  <span style={{ color: style.mutedText, fontSize: Math.max(10, style.baseFontSize - 2) }}>
+                    Elmentés után ez a dátum változatlan marad, a riport vége pedig minden futáskor automatikusan az aktuális nap lesz.
+                  </span>
+                </label>
+              )}
+
+              {draft.reportFilterMode === "custom" && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: style.gap }}>
+                  <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>
+                    Riport adatai ettől
+                    <input
+                      type="date"
+                      value={draft.reportFilterStartDate}
+                      max={draft.reportFilterEndDate || undefined}
+                      onChange={(event) => updateReportDeliveryDraft(profile.id, { reportFilterStartDate: event.target.value })}
+                      style={control}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>
+                    Riport adatai eddig
+                    <input
+                      type="date"
+                      value={draft.reportFilterEndDate}
+                      min={draft.reportFilterStartDate || undefined}
+                      onChange={(event) => updateReportDeliveryDraft(profile.id, { reportFilterEndDate: event.target.value })}
+                      style={control}
+                    />
+                  </label>
+                </div>
+              )}
+
+              <div
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: Math.max(7, style.borderRadius - 5),
+                  border: `1px solid ${style.borderColor}`,
+                  background: style.headerBackground,
+                }}
+              >
+                <strong>Aktuális szűrés:</strong>{" "}
+                {getReportDeliveryDataRangeSummary(draft)}
+              </div>
+
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void saveReportDeliverySpecialTimeSettings(draft).catch((error) =>
+                    setMessage({ type: "error", text: normalizeError(error) })
+                  )}
+                  style={primaryAction}
+                >
+                  Időbeállítások mentése
+                </button>
+              </div>
+            </div>
+          )}
+
           <div style={{ ...section, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <button type="button" onClick={() => void saveReportDeliveryProfile(draft, false).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={primaryAction}>Mentés</button>
             <button type="button" onClick={() => void saveReportDeliveryProfile(draft, true).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={secondaryAction}>Másolat készítése</button>
@@ -7912,9 +8200,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <div><strong style={{ color: style.textColor }}>Következő küldés:</strong> {nextRun ? nextRun.toLocaleString("hu-HU") : "nincs ütemezve"}</div>
               <div>
                 <strong style={{ color: style.textColor }}>Riport adatai:</strong>{" "}
-                {draft.reportFilterStartDate || "automatikus"}
-                {" – "}
-                {draft.reportFilterEndDate || draft.reportFilterStartDate || "automatikus"}
+                {getReportDeliveryDataRangeSummary(draft)}
               </div>
               <div>
                 <strong style={{ color: style.textColor }}>Automatikus küldés érvényes:</strong>{" "}
