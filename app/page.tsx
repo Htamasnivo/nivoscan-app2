@@ -2038,22 +2038,89 @@ function normalizeLabelTemplate(raw: unknown, type: LabelTemplateType): LabelTem
   };
 }
 
+function getAsztalosCuttingLabelFieldDefinitions(): Array<{ key: string; label: string }> {
+  // A címkeszerkesztőben az Asztalos _terv minden üzleti mezője elérhető.
+  // A kulcs változatlanul az eredeti Supabase / _terv oszlopnév marad,
+  // csak a megjelenő felirat lesz emberbarát.
+  const readableLabels: Record<string, string> = {
+    sorszam: "Sorszám",
+    lap_tipus: "Lap típusa",
+    elkeszules_datum: "Elkészülés dátuma",
+    gyartasi_szam: "Gyártási szám",
+    rsz: "RSZ",
+    tipus: "Típus",
+    uveges: "Üveges",
+    kulso_lap: "Külső lap",
+    fa_szine_kivul: "Fa színe kívül",
+    belso_lap: "Belső lap",
+    fa_szine_belul: "Fa színe belül",
+    beepites_datuma: "Beépítés dátuma",
+    megjegyzes: "Megjegyzés",
+    statusz: "Státusz",
+    szin: "Szín",
+  };
+
+  const byKey = new Map<string, { key: string; label: string }>();
+
+  // Megtartjuk a már létező címkemezőket is, hogy a korábbi sablonok
+  // változtatás nélkül tovább működjenek.
+  CUTTING_LABEL_FIELDS.forEach((field) => {
+    byKey.set(field.key, {
+      key: field.key,
+      label: readableLabels[field.key] || field.label,
+    });
+  });
+
+  // Hozzáadjuk az Asztalos _terv teljes definiált mezőkészletét.
+  getStationPlanFieldDefinitions("Asztalos").forEach((field) => {
+    byKey.set(field.key, {
+      key: field.key,
+      label: readableLabels[field.key] || field.label || getStationPlanFieldLabel(field.key),
+    });
+  });
+
+  // A rendelésazonosító és a számított lap-típus mindig használható marad.
+  if (!byKey.has("sorszam")) byKey.set("sorszam", { key: "sorszam", label: "Sorszám" });
+  if (!byKey.has("lap_tipus")) byKey.set("lap_tipus", { key: "lap_tipus", label: "Lap típusa" });
+
+  return Array.from(byKey.values());
+}
+
 function getLabelTemplateFieldDefinitions(type: LabelTemplateType): Array<{ key: string; label: string }> {
-  if (type === "VAGAS_KULSO") return CUTTING_LABEL_FIELDS.filter((field) => field.key !== "belso_lap");
-  if (type === "VAGAS_BELSO") return CUTTING_LABEL_FIELDS.filter((field) => field.key !== "kulso_lap");
+  if (isCuttingLabelTemplateType(type)) {
+    // Külső és belső címkén is az Asztalos _terv ÖSSZES mezője választható.
+    return getAsztalosCuttingLabelFieldDefinitions();
+  }
   return REPRINT_LABEL_FIELDS;
 }
 
 function getLabelSampleData(type: LabelTemplateType, workerName = "Dolgozó"): Record<string, string> {
   if (isCuttingLabelTemplateType(type)) {
-    return {
+    const sample: Record<string, string> = {
       sorszam: "R260812345",
       lap_tipus: type === "VAGAS_KULSO" ? "KÜLSŐ LAP" : "BELSŐ LAP",
-      kulso_lap: type === "VAGAS_KULSO" ? "Wenge" : "",
-      belso_lap: type === "VAGAS_BELSO" ? "Wenge" : "",
+      elkeszules_datum: "2026-08-24",
+      gyartasi_szam: "R260812345",
+      rsz: "08123",
+      tipus: "Standard",
+      uveges: "Nem",
+      kulso_lap: "3D Fólia",
+      fa_szine_kivul: "Wenge",
+      belso_lap: "3D Fólia",
+      fa_szine_belul: "Wenge",
+      beepites_datuma: "2026-08-28",
+      megjegyzes: "Minta megjegyzés",
+      statusz: "Várakozik",
       szin: "Wenge",
-      tipus: "Ajtó",
     };
+
+    // Ha később új Asztalos _terv mező kerül a központi meződefinícióba,
+    // az előnézetben akkor se legyen undefined.
+    getStationPlanFieldDefinitions("Asztalos").forEach((field) => {
+      if (!(field.key in sample)) sample[field.key] = `Minta – ${field.label}`;
+    });
+
+    return sample;
   }
   return {
     sorszam: "R260812345",
@@ -21229,14 +21296,68 @@ body {
   }
 
   function buildCuttingLabelData(orderNumberValue: string, planRow: Record<string, unknown> | null): Record<string, string> {
-    return {
+    const data: Record<string, string> = {
       sorszam: String(orderNumberValue || "").trim(),
       lap_tipus: "",
-      kulso_lap: valueAsText(readRecordValue(planRow, ["kulso_lap", "külső lap", "kulso lap", "szin_kivul", "szín kívül", "szin_tipus_kivul", "szín típus kívül"])),
-      belso_lap: valueAsText(readRecordValue(planRow, ["belso_lap", "belső lap", "belso lap", "szin_belul", "szín belül", "szin_tipus_belul", "szín típus belül"])),
-      szin: valueAsText(readRecordValue(planRow, ["szin", "szín", "szin_kivul", "szín kívül", "szin_belul", "szín belül"])),
-      tipus: valueAsText(readRecordValue(planRow, ["tipus", "típus", "termek_tipus", "terméktípus"])),
     };
+
+    // Az Asztalos _terv ÖSSZES mezőjét átemeljük ugyanazzal a stabil
+    // mezőkulccsal, amelyet a címkeszerkesztő elment a sablonba.
+    getStationPlanFieldDefinitions("Asztalos").forEach((field) => {
+      data[field.key] = valueAsText(
+        readRecordValue(planRow, [
+          field.key,
+          field.label,
+          field.key.replace(/_/g, " "),
+        ])
+      );
+    });
+
+    // A korábbi címkesablonok kompatibilitása.
+    data.kulso_lap = data.kulso_lap || valueAsText(
+      readRecordValue(planRow, [
+        "kulso_lap",
+        "külső lap",
+        "kulso lap",
+        "szin_kivul",
+        "szín kívül",
+        "szin_tipus_kivul",
+        "szín típus kívül",
+      ])
+    );
+
+    data.belso_lap = data.belso_lap || valueAsText(
+      readRecordValue(planRow, [
+        "belso_lap",
+        "belső lap",
+        "belso lap",
+        "szin_belul",
+        "szín belül",
+        "szin_tipus_belul",
+        "szín típus belül",
+      ])
+    );
+
+    data.szin = valueAsText(
+      readRecordValue(planRow, [
+        "szin",
+        "szín",
+        "fa_szine_kivul",
+        "fa színe kívül",
+        "fa_szine_belul",
+        "fa színe belül",
+        "szin_kivul",
+        "szín kívül",
+        "szin_belul",
+        "szín belül",
+      ])
+    );
+
+    data.tipus = data.tipus || valueAsText(
+      readRecordValue(planRow, ["tipus", "típus", "termek_tipus", "terméktípus"])
+    );
+
+    return data;
   }
 
   function buildReprintLabelData(row: ReprintRequestRow): Record<string, string> {
@@ -22222,14 +22343,14 @@ body {
         lap_tipus: "KÜLSŐ LAP",
         kulso_lap: outerValue || "NINCS ADAT",
         belso_lap: "",
-        szin: valueAsText(readRecordValue(planRow, ["szin_kivul", "szín kívül", "szin", "szín"])) || baseData.szin,
+        szin: valueAsText(readRecordValue(planRow, ["fa_szine_kivul", "fa színe kívül", "szin_kivul", "szín kívül", "szin", "szín"])) || baseData.szin,
       };
       const innerData = {
         ...baseData,
         lap_tipus: "BELSŐ LAP",
         kulso_lap: "",
         belso_lap: innerValue || "NINCS ADAT",
-        szin: valueAsText(readRecordValue(planRow, ["szin_belul", "szín belül", "szin", "szín"])) || baseData.szin,
+        szin: valueAsText(readRecordValue(planRow, ["fa_szine_belul", "fa színe belül", "szin_belul", "szín belül", "szin", "szín"])) || baseData.szin,
       };
 
       const outerResult = await sendLabelJobsWithExplicitConfig(
