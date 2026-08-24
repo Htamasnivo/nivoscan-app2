@@ -21683,18 +21683,20 @@ body {
   }
 
   async function logAutomaticCuttingLabelPrint(params: {
-    batchCode: string;
+    requestId: string;
+    batchCode?: string | null;
     orderNumber: string;
     type: CuttingLabelTemplateType;
     printerName: string;
     templateRecord: LabelTemplateRecord | null;
     copies: number;
+    printReason: "SZABAS_START_AUTO" | "EGYEDI_START_AUTO";
   }): Promise<void> {
     if (!supabase) return;
     const printedBy = String(activeWorker?.["Teljes nev"] || "").trim() || "Ismeretlen";
     const response = await supabase.from(LABEL_PRINT_LOG_TABLE).insert({
-      request_id: params.batchCode,
-      batch_code: params.batchCode,
+      request_id: params.requestId,
+      batch_code: params.batchCode || null,
       order_number: params.orderNumber,
       machine_name: getCurrentMachineIdForInsert(),
       printer_name: params.printerName,
@@ -21703,7 +21705,7 @@ body {
       template_name: params.templateRecord?.name || getLabelTemplateDisplayName(params.type),
       template_version: params.templateRecord?.version || null,
       label_variant: params.type === "VAGAS_KULSO" ? "KULSO_LAP" : "BELSO_LAP",
-      print_reason: "SZABAS_START_AUTO",
+      print_reason: params.printReason,
       copies: Math.max(1, Math.round(params.copies || 1)),
       printed_by: printedBy,
       printed_at: new Date().toISOString(),
@@ -21711,19 +21713,39 @@ body {
     if (response.error) console.warn("Vágási címke naplózási hiba:", response.error);
   }
 
-  async function printCuttingLabelsForOrders(orderNumbers: string[], batchCode: string): Promise<{ printedCount: number; warnings: string[] }> {
+  async function printCuttingLabelsForOrders(
+    orderNumbers: string[],
+    batchCode: string,
+    options?: {
+      requestId?: string;
+      logBatchCode?: string | null;
+      printReason?: "SZABAS_START_AUTO" | "EGYEDI_START_AUTO";
+      checkDuplicateByBatch?: boolean;
+    }
+  ): Promise<{ printedCount: number; warnings: string[] }> {
     if (!supabase || orderNumbers.length === 0) return { printedCount: 0, warnings: [] };
 
-    // Dupla automatikus nyomtatás elleni védelem ugyanarra a szabási kötegre.
-    const previousPrints = await supabase
-      .from(LABEL_PRINT_LOG_TABLE)
-      .select("id")
-      .eq("batch_code", batchCode)
-      .in("template_type", ["VAGAS_KULSO", "VAGAS_BELSO"])
-      .limit(1);
-    if (!previousPrints.error && (previousPrints.data || []).length > 0) {
-      const confirmed = typeof window === "undefined" ? false : window.confirm("Ehhez a szabási köteghez a címkék már ki lettek nyomtatva. Biztosan újranyomtatod?");
-      if (!confirmed) return { printedCount: 0, warnings: ["Az újranyomtatást megszakítottad."] };
+    const requestId = String(options?.requestId || batchCode || `LABEL-${Date.now()}`).trim();
+    const logBatchCode = Object.prototype.hasOwnProperty.call(options || {}, "logBatchCode")
+      ? options?.logBatchCode ?? null
+      : batchCode;
+    const printReason = options?.printReason || "SZABAS_START_AUTO";
+    const checkDuplicateByBatch = options?.checkDuplicateByBatch !== false;
+
+    // Köteges automatikus nyomtatásnál marad a korábbi dupla-nyomtatás védelem.
+    // Egyedi START-nál a work_logs id egyedi requestId-t ad, ezért nincs szükség
+    // köteg szerinti újranyomtatási kérdésre.
+    if (checkDuplicateByBatch && batchCode) {
+      const previousPrints = await supabase
+        .from(LABEL_PRINT_LOG_TABLE)
+        .select("id")
+        .eq("batch_code", batchCode)
+        .in("template_type", ["VAGAS_KULSO", "VAGAS_BELSO"])
+        .limit(1);
+      if (!previousPrints.error && (previousPrints.data || []).length > 0) {
+        const confirmed = typeof window === "undefined" ? false : window.confirm("Ehhez a szabási köteghez a címkék már ki lettek nyomtatva. Biztosan újranyomtatod?");
+        if (!confirmed) return { printedCount: 0, warnings: ["Az újranyomtatást megszakítottad."] };
+      }
     }
 
     const [outerConfig, innerConfig, planByOrder] = await Promise.all([
@@ -21771,12 +21793,14 @@ body {
       );
       printedCount += outerResult.printedCount;
       await logAutomaticCuttingLabelPrint({
-        batchCode,
+        requestId,
+        batchCode: logBatchCode,
         orderNumber: order,
         type: "VAGAS_KULSO",
         printerName: outerConfig.printerName,
         templateRecord: outerConfig.templateRecord,
         copies: outerConfig.calibration.copies,
+        printReason,
       });
 
       const innerResult = await sendLabelJobsWithExplicitConfig(
@@ -21787,12 +21811,14 @@ body {
       );
       printedCount += innerResult.printedCount;
       await logAutomaticCuttingLabelPrint({
-        batchCode,
+        requestId,
+        batchCode: logBatchCode,
         orderNumber: order,
         type: "VAGAS_BELSO",
         printerName: innerConfig.printerName,
         templateRecord: innerConfig.templateRecord,
         copies: innerConfig.calibration.copies,
+        printReason,
       });
     }
 
@@ -23111,7 +23137,7 @@ body {
         ? await fetchOpenToklecScrapReplacement(finalOrder)
         : null;
 
-      const { error } = await supabase.from("work_logs").insert([
+      const { data: insertedSingleStartLog, error } = await supabase.from("work_logs").insert([
         {
           worker_id: activeWorker.id,
           worker_name: workerNameForSave,
@@ -23163,23 +23189,69 @@ body {
           selejt_potlas: Boolean(activeToklecReplacement),
           selejt_forras_munkaallomas: activeToklecReplacement?.source_station || null,
         },
-      ]);
+      ])
+        .select("id")
+        .single();
 
       if (error) throw error;
       if (activeToklecReplacement) {
         await updateSingleToklecReplacement(activeToklecReplacement, "SZABAS_FOLYAMATBAN", nowIso);
       }
 
-      handleReset();
-      setMessage({
-        type: "success",
-        text: activeToklecReplacement
-          ? "Tokléc selejtpótlás egyedi rendelésként sikeresen elindítva."
-          : orderProductionMeta.ujragyartas
+      let individualCuttingLabelPrintSuffix = "";
+
+      // CSAK az Asztalos munkaállomás egyedi START-jánál nyomtatunk automatikusan.
+      // Ugyanazt az aktív nyomtatóbeállítást és ugyanazokat a
+      // VAGAS_KULSO / VAGAS_BELSO sablonokat használjuk, mint a köteg START.
+      //
+      // Sorrend ugyanaz:
+      //   1) Külső lap címke
+      //   2) Belső lap címke
+      //
+      // A START már sikeresen elmentődött. Ha a nyomtató/agent hibázik,
+      // a START ettől nem vonódik vissza.
+      if (isCarpenterStationName(currentMachineId)) {
+        try {
+          const insertedWorkLogId = String(insertedSingleStartLog?.id ?? "").trim();
+          const requestId = insertedWorkLogId
+            ? `WORKLOG-${insertedWorkLogId}`
+            : `EGYEDI-${finalOrder}-${Date.now()}`;
+
+          const printResult = await printCuttingLabelsForOrders(
+            [finalOrder],
+            requestId,
+            {
+              requestId,
+              logBatchCode: null,
+              printReason: "EGYEDI_START_AUTO",
+              checkDuplicateByBatch: false,
+            }
+          );
+
+          individualCuttingLabelPrintSuffix =
+            ` Címkenyomtatás: ${printResult.printedCount} db címke elküldve (külső + belső lap).`
+            + (printResult.warnings.length
+              ? ` Figyelmeztetés: ${printResult.warnings.join("; ")}.`
+              : "");
+        } catch (printError) {
+          console.error("Asztalos egyedi START címkenyomtatási hiba:", printError);
+          individualCuttingLabelPrintSuffix =
+            ` A START mentve, de a külső/belső lap címkenyomtatás sikertelen: ${normalizeError(printError)}`;
+        }
+      }
+
+      const singleStartSuccessText = activeToklecReplacement
+        ? "Tokléc selejtpótlás egyedi rendelésként sikeresen elindítva."
+        : orderProductionMeta.ujragyartas
           ? `Egyedi rendelés újragyártásként sikeresen rögzítve! Újragyártás #${orderProductionMeta.ujragyartas_sorszam}`
           : orderProductionMeta.gyartas_tipus === "keszlet"
             ? "Készletre gyártott termék új gyártásként sikeresen rögzítve!"
-            : "Egyedi rendelés sikeresen rögzítve!",
+            : "Egyedi rendelés sikeresen rögzítve!";
+
+      handleReset();
+      setMessage({
+        type: "success",
+        text: `${singleStartSuccessText}${individualCuttingLabelPrintSuffix}`,
       });
     } catch (error) {
       console.error("SUPABASE HIBA finalizeSingleOrderCreation:", error);
