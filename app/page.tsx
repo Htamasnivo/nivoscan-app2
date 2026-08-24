@@ -4208,22 +4208,133 @@ function isEditableInputElement(element: Element | null): boolean {
   return tagName === "input" || tagName === "textarea" || Boolean((element as HTMLElement).isContentEditable);
 }
 
-function focusAndSelectInput(ref: React.RefObject<HTMLInputElement | null>, options?: { force?: boolean; preventScroll?: boolean }): void {
+type NivoScrollSnapshot = {
+  windowX: number;
+  windowY: number;
+  ancestors: Array<{
+    element: HTMLElement;
+    scrollTop: number;
+    scrollLeft: number;
+  }>;
+};
+
+function captureNivoScrollSnapshot(target?: HTMLElement | null): NivoScrollSnapshot {
+  const ancestors: NivoScrollSnapshot["ancestors"] = [];
+
+  if (typeof window !== "undefined" && target) {
+    let parent = target.parentElement;
+
+    while (parent) {
+      const style = window.getComputedStyle(parent);
+      const canScrollY =
+        /(auto|scroll|overlay)/.test(style.overflowY)
+        && parent.scrollHeight > parent.clientHeight;
+      const canScrollX =
+        /(auto|scroll|overlay)/.test(style.overflowX)
+        && parent.scrollWidth > parent.clientWidth;
+
+      if (canScrollY || canScrollX) {
+        ancestors.push({
+          element: parent,
+          scrollTop: parent.scrollTop,
+          scrollLeft: parent.scrollLeft,
+        });
+      }
+
+      parent = parent.parentElement;
+    }
+  }
+
+  return {
+    windowX: typeof window !== "undefined" ? window.scrollX : 0,
+    windowY: typeof window !== "undefined" ? window.scrollY : 0,
+    ancestors,
+  };
+}
+
+function restoreNivoScrollSnapshot(snapshot: NivoScrollSnapshot): void {
+  if (typeof window === "undefined") return;
+
+  snapshot.ancestors.forEach(({ element, scrollTop, scrollLeft }) => {
+    // Csak akkor állítjuk vissza, ha az elem még mindig az oldalon van.
+    if (!element.isConnected) return;
+    if (element.scrollTop !== scrollTop) element.scrollTop = scrollTop;
+    if (element.scrollLeft !== scrollLeft) element.scrollLeft = scrollLeft;
+  });
+
+  if (window.scrollX !== snapshot.windowX || window.scrollY !== snapshot.windowY) {
+    window.scrollTo({
+      left: snapshot.windowX,
+      top: snapshot.windowY,
+      behavior: "auto",
+    });
+  }
+}
+
+function restoreNivoScrollSnapshotAfterRender(snapshot: NivoScrollSnapshot): void {
+  if (typeof window === "undefined") return;
+
+  // React commit / böngésző fókusz-scroll késleltetés ellen több fázisban
+  // visszaállítjuk ugyanazt a pozíciót.
+  restoreNivoScrollSnapshot(snapshot);
+
+  window.requestAnimationFrame(() => {
+    restoreNivoScrollSnapshot(snapshot);
+
+    window.requestAnimationFrame(() => {
+      restoreNivoScrollSnapshot(snapshot);
+    });
+  });
+
+  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 0);
+  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 80);
+}
+
+function focusAndSelectInput(
+  ref: React.RefObject<HTMLInputElement | null>,
+  options?: {
+    force?: boolean;
+    preventScroll?: boolean;
+  }
+): void {
   if (typeof window === "undefined") return;
 
   const shouldRespectCurrentEditable = !options?.force;
+
+  // A lejelentőrendszerben a programozott scanner-fókusz ALAPÉRTELMEZÉSBEN
+  // soha nem mozgathatja meg a felhasználó oldalát.
+  // Csak explicit preventScroll:false esetén engednénk fókusz-scrollt.
+  const shouldPreventScroll = options?.preventScroll !== false;
 
   const focusAction = () => {
     const activeElement = document.activeElement;
     const targetInput = ref.current;
     if (!targetInput) return;
 
-    if (shouldRespectCurrentEditable && activeElement !== targetInput && isEditableInputElement(activeElement)) {
+    if (
+      shouldRespectCurrentEditable
+      && activeElement !== targetInput
+      && isEditableInputElement(activeElement)
+    ) {
       return;
     }
 
-    targetInput.focus({ preventScroll: options?.preventScroll === true });
+    const scrollSnapshot = shouldPreventScroll
+      ? captureNivoScrollSnapshot(targetInput)
+      : null;
+
+    try {
+      targetInput.focus({ preventScroll: shouldPreventScroll });
+    } catch {
+      // Régebbi böngésző fallback.
+      targetInput.focus();
+    }
+
     targetInput.select();
+
+    if (scrollSnapshot) {
+      restoreNivoScrollSnapshotAfterRender(scrollSnapshot);
+    }
   };
 
   window.requestAnimationFrame(() => {
@@ -4239,7 +4350,9 @@ function focusScannerInputAfterEditableBlur(ref: React.RefObject<HTMLInputElemen
     const activeElement = document.activeElement as HTMLElement | null;
     if (activeElement?.closest("button, a, select")) return;
     if (isEditableInputElement(activeElement) && activeElement !== ref.current) return;
-    focusAndSelectInput(ref, { force: true });
+
+    // Fókusz visszaadható a scannernek, de az oldal nem mozdulhat el.
+    focusAndSelectInput(ref, { force: true, preventScroll: true });
   }, 0);
 }
 
@@ -13698,7 +13811,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const focusTarget = (force = false) => {
       if (!force && shouldSkipAutoFocus()) return;
-      focusAndSelectInput(getTargetInput(), { force, preventScroll: shouldKeepEndCommandFocus });
+      focusAndSelectInput(getTargetInput(), { force, preventScroll: true });
     };
 
     const intervalId = window.setInterval(() => {
@@ -21777,11 +21890,20 @@ body {
     return normalizeBatchOperationStatus(batch.operation_status) || "SZABAS_FOLYAMATBAN";
   }
 
-  async function loadActiveProductionBatches(mode: BatchListMode = batchListMode): Promise<void> {
+  async function loadActiveProductionBatches(
+    mode: BatchListMode = batchListMode,
+    options?: { preserveScroll?: boolean }
+  ): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
       return;
     }
+
+    const preserveScroll = options?.preserveScroll !== false;
+    const scrollSnapshot = preserveScroll
+      ? captureNivoScrollSnapshot(activeBatchInputRef.current)
+      : null;
+
     setBusy(true);
     try {
       const currentMachineId = getCurrentMachineIdForInsert();
@@ -21821,6 +21943,10 @@ body {
       setMessage({ type: "error", text: normalizeError(error) });
     } finally {
       setBusy(false);
+
+      if (scrollSnapshot) {
+        restoreNivoScrollSnapshotAfterRender(scrollSnapshot);
+      }
     }
   }
   async function handleEndModuleSelection(): Promise<void> {
@@ -21843,8 +21969,13 @@ body {
     setEndDarab("");
     setEndSzal("");
     setStep(5);
-    await loadActiveProductionBatches("end");
-    window.setTimeout(() => focusAndSelectInput(activeBatchInputRef), 0);
+    await loadActiveProductionBatches("end", { preserveScroll: false });
+    window.setTimeout(() => {
+      focusAndSelectInput(activeBatchInputRef, {
+        force: true,
+        preventScroll: true,
+      });
+    }, 0);
   }
 
   async function handleMillingModuleSelection(): Promise<void> {
@@ -21867,8 +21998,13 @@ body {
     setEndDarab("");
     setEndSzal("");
     setStep(5);
-    await loadActiveProductionBatches("start-milling");
-    window.setTimeout(() => focusAndSelectInput(activeBatchInputRef), 0);
+    await loadActiveProductionBatches("start-milling", { preserveScroll: false });
+    window.setTimeout(() => {
+      focusAndSelectInput(activeBatchInputRef, {
+        force: true,
+        preventScroll: true,
+      });
+    }, 0);
   }
 
   async function startMillingForBatch(batch: ProductionBatchRow): Promise<void> {
@@ -23871,8 +24007,10 @@ body {
     const isValid = effectiveAction === "START" ? isStartBarcode(raw) : isEndBarcode(raw);
     if (!isValid) {
       setMessage({ type: "error", text: effectiveAction === "START" ? "A beolvasott kód nem START típusú." : "A beolvasott kód nem END típusú." });
-      actionBarcodeInputRef.current?.focus();
-      actionBarcodeInputRef.current?.select();
+      focusAndSelectInput(actionBarcodeInputRef, {
+        force: true,
+        preventScroll: true,
+      });
       return;
     }
 
@@ -25667,7 +25805,12 @@ body {
                             if (isScannerSubmitKey(e)) {
                               e.preventDefault();
                               void handleActiveBatchLookup(e.currentTarget.value);
-                              window.setTimeout(() => focusAndSelectInput(activeBatchInputRef), 0);
+                              window.setTimeout(() => {
+                                focusAndSelectInput(activeBatchInputRef, {
+                                  force: true,
+                                  preventScroll: true,
+                                });
+                              }, 0);
                             }
                           }}
                         />
@@ -25676,7 +25819,13 @@ body {
                       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
                         <button onClick={() => void handleActiveBatchLookup()} disabled={busy} style={buttonPrimary}>{batchListMode === "start-milling" ? "Marás indítása" : "Köteg megnyitása"}</button>
                         <button onClick={() => void startScanner("activeBatch")} disabled={busy} style={buttonPrimary}>Köteg beolvasása kamerával</button>
-                        <button onClick={() => void loadActiveProductionBatches(batchListMode)} disabled={busy} style={buttonSecondary}>Lista frissítése</button>
+                        <button
+                          onClick={() => void loadActiveProductionBatches(batchListMode, { preserveScroll: true })}
+                          disabled={busy}
+                          style={buttonSecondary}
+                        >
+                          Lista frissítése
+                        </button>
                         <button onClick={handleBackFromBatch} style={buttonSecondary}>Vissza</button>
                         <button onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
                       </div>
@@ -25859,7 +26008,12 @@ body {
                           <button onClick={() => void transferReadyCuttingOrdersToMilling()} disabled={busy} style={buttonPrimary}>Átforgatás marásra</button>
                         )}
                         <button onClick={() => void finalizeEndBatch()} disabled={busy} style={buttonPrimary}>END mentés</button>
-                        <button onClick={() => { setSelectedEndBatch(null); setFlowStage("active-batch-list"); window.setTimeout(() => focusAndSelectInput(activeBatchInputRef), 0); }} style={buttonSecondary}>Vissza a listához</button>
+                        <button onClick={() => { setSelectedEndBatch(null); setFlowStage("active-batch-list"); window.setTimeout(() => {
+                                focusAndSelectInput(activeBatchInputRef, {
+                                  force: true,
+                                  preventScroll: true,
+                                });
+                              }, 0); }} style={buttonSecondary}>Vissza a listához</button>
                         <button onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
                       </div>
                     </>
