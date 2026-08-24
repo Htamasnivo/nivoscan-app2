@@ -386,6 +386,8 @@ type OfficeThemePresetDefinition = {
 
 type OfficeWindowDefinition = { id: string; label: string };
 const OFFICE_WINDOW_UI_PREFIX = "office-window:";
+const WORKER_ENTRY_BACKGROUND_SETTINGS_TABLE = "worker_entry_background_settings";
+const DEFAULT_WORKER_ENTRY_BACKGROUND = "#020617";
 
 
 function ensureReadableOfficeTextForBackgrounds(backgrounds: string[], preferred: string, minimumContrast = 4.5): string {
@@ -1208,6 +1210,8 @@ type ReportDeliveryProfile = {
   customBlocks: ReportDeliveryBlock[];
   frequency: ReportDeliveryFrequency;
   periodScope: ReportDeliveryPeriodScope;
+  reportFilterStartDate: string;
+  reportFilterEndDate: string;
   sendTime: string;
   scheduleStartDate: string;
   scheduleEndDate: string;
@@ -1340,6 +1344,8 @@ const DEFAULT_REPORT_DELIVERY_PROFILE: ReportDeliveryProfile = {
   customBlocks: ["worker-analysis"],
   frequency: "monthly",
   periodScope: "previous",
+  reportFilterStartDate: "",
+  reportFilterEndDate: "",
   sendTime: "06:00",
   scheduleStartDate: "",
   scheduleEndDate: "",
@@ -5603,6 +5609,12 @@ export default function Page() {
   const [officeWindowPresetByKey, setOfficeWindowPresetByKey] = useState<Record<string, OfficeThemePresetId>>({});
   const [officeUiAutoSaveState, setOfficeUiAutoSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const officeUiAutoSaveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  // Dolgozói beléptető teljes oldalháttere munkaállomásonként.
+  // Ez nem felhasználóhoz kötött, mert a beléptető még dolgozói azonosítás ELŐTT látszik.
+  const [workerEntryBackgroundByStation, setWorkerEntryBackgroundByStation] = useState<Record<string, string>>({});
+  const [workerEntryBackgroundEditorStation, setWorkerEntryBackgroundEditorStation] = useState("");
+  const [workerEntryBackgroundSaveState, setWorkerEntryBackgroundSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const officeThemeScopeMenuRef = useRef<HTMLDivElement | null>(null);
   const [dashboardData, setDashboardData] = useState<DashboardData>({
     logs: [],
@@ -5873,6 +5885,119 @@ export default function Page() {
       return (fromTime === null || t >= fromTime) && (toTime === null || t <= toTime);
     });
   }, [rawWorkLogs, statsDateFrom, statsDateTo]);
+
+  function getWorkerEntryBackground(stationName: string): string {
+    const normalizedStation = normalizeLooseText(stationName);
+    const matchedEntry = Object.entries(workerEntryBackgroundByStation).find(
+      ([name]) => normalizeLooseText(name) === normalizedStation
+    );
+    return matchedEntry?.[1] || DEFAULT_WORKER_ENTRY_BACKGROUND;
+  }
+
+  function setWorkerEntryBackgroundLocal(stationName: string, color: string): void {
+    const cleanStation = String(stationName || "").trim();
+    if (!cleanStation) return;
+
+    const normalizedColor = normalizeReadableHexColor(color) || DEFAULT_WORKER_ENTRY_BACKGROUND;
+    setWorkerEntryBackgroundByStation((current) => ({
+      ...current,
+      [cleanStation]: normalizedColor,
+    }));
+  }
+
+  async function loadWorkerEntryBackgroundSettings(): Promise<void> {
+    if (!supabase) return;
+    try {
+      const response = await supabase
+        .from(WORKER_ENTRY_BACKGROUND_SETTINGS_TABLE)
+        .select("station_name, background_color")
+        .limit(10000);
+
+      if (response.error) {
+        console.warn("Dolgozói beléptető háttérbeállítások nem olvashatók:", response.error);
+        return;
+      }
+
+      const next: Record<string, string> = {};
+      ((response.data || []) as Array<Record<string, unknown>>).forEach((row) => {
+        const stationName = String(row.station_name || "").trim();
+        const color = normalizeReadableHexColor(String(row.background_color || ""));
+        if (stationName && color) next[stationName] = color;
+      });
+      setWorkerEntryBackgroundByStation(next);
+    } catch (error) {
+      console.warn("Dolgozói beléptető háttér betöltési hiba:", error);
+    }
+  }
+
+  async function persistWorkerEntryBackground(
+    stationName: string,
+    color: string,
+    showMessage = false
+  ): Promise<void> {
+    if (!supabase) return;
+
+    const cleanStation = String(stationName || "").trim();
+    if (!cleanStation) return;
+
+    const normalizedColor = normalizeReadableHexColor(color) || DEFAULT_WORKER_ENTRY_BACKGROUND;
+    setWorkerEntryBackgroundSaveState("saving");
+
+    try {
+      const response = await supabase
+        .from(WORKER_ENTRY_BACKGROUND_SETTINGS_TABLE)
+        .upsert({
+          station_name: cleanStation,
+          background_color: normalizedColor,
+          updated_by_worker_name: String(activeWorker?.["Teljes nev"] || "").trim() || null,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "station_name" });
+
+      if (response.error) throw response.error;
+
+      setWorkerEntryBackgroundLocal(cleanStation, normalizedColor);
+      setWorkerEntryBackgroundSaveState("saved");
+      if (showMessage) {
+        setMessage({
+          type: "success",
+          text: `A(z) ${cleanStation} dolgozói beléptető háttere elmentve.`,
+        });
+      }
+    } catch (error) {
+      setWorkerEntryBackgroundSaveState("error");
+      if (showMessage) {
+        setMessage({
+          type: "error",
+          text: `A dolgozói beléptető háttér mentése sikertelen: ${normalizeError(error)}`,
+        });
+      } else {
+        console.warn("Dolgozói beléptető háttér automatikus mentési hiba:", error);
+      }
+    }
+  }
+
+  function queueWorkerEntryBackgroundSave(stationName: string, color: string): void {
+    const key = `worker-entry-background:${normalizeLooseText(stationName)}`;
+    const currentTimer = officeUiAutoSaveTimersRef.current[key];
+    if (currentTimer) clearTimeout(currentTimer);
+
+    officeUiAutoSaveTimersRef.current[key] = setTimeout(() => {
+      delete officeUiAutoSaveTimersRef.current[key];
+      void persistWorkerEntryBackground(stationName, color, false);
+    }, 500);
+  }
+
+  function updateWorkerEntryBackground(stationName: string, color: string): void {
+    const normalizedColor = normalizeReadableHexColor(color);
+    if (!normalizedColor) return;
+    setWorkerEntryBackgroundLocal(stationName, normalizedColor);
+    queueWorkerEntryBackgroundSave(stationName, normalizedColor);
+  }
+
+  function resetWorkerEntryBackground(stationName: string): void {
+    setWorkerEntryBackgroundLocal(stationName, DEFAULT_WORKER_ENTRY_BACKGROUND);
+    queueWorkerEntryBackgroundSave(stationName, DEFAULT_WORKER_ENTRY_BACKGROUND);
+  }
 
   function getOfficeTheme(pageKey: OfficePageKey = managementSection): OfficeThemeConfig {
     return officeThemeByPage[pageKey] || cloneOfficeTheme(OFFICE_THEME_PRESETS["industrial-night"].theme);
@@ -6257,6 +6382,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         ? String(row.frequency || "monthly")
         : "monthly") as ReportDeliveryFrequency,
       periodScope: (String(row.period_scope || "previous") === "current" ? "current" : "previous") as ReportDeliveryPeriodScope,
+      reportFilterStartDate: String(row.report_filter_start_date || "").slice(0, 10),
+      reportFilterEndDate: String(row.report_filter_end_date || "").slice(0, 10),
       sendTime: String(row.send_time || "06:00").slice(0, 5),
       scheduleStartDate: String(row.schedule_start_date || "").slice(0, 10),
       scheduleEndDate: String(row.schedule_end_date || "").slice(0, 10),
@@ -6533,6 +6660,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       custom_blocks: ["worker-analysis"],
       frequency: "monthly",
       period_scope: "previous",
+      report_filter_start_date: null,
+      report_filter_end_date: null,
       send_time: "06:00",
       schedule_start_date: null,
       schedule_end_date: null,
@@ -6574,6 +6703,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       custom_blocks: profile.customBlocks,
       frequency: profile.frequency,
       period_scope: profile.periodScope,
+      report_filter_start_date: profile.reportFilterStartDate || null,
+      report_filter_end_date: profile.reportFilterEndDate || null,
       send_time: profile.sendTime || "06:00",
       schedule_start_date: profile.scheduleStartDate || null,
       schedule_end_date: profile.scheduleEndDate || null,
@@ -6590,6 +6721,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const recipients = profile.recipients.map((value) => value.trim()).filter(Boolean);
     if (!profile.name.trim()) throw new Error("Adj nevet a riportprofilnak.");
     if (!recipients.length) throw new Error("Adj meg legalább egy email címet.");
+    if (profile.reportFilterStartDate && profile.reportFilterEndDate && profile.reportFilterStartDate > profile.reportFilterEndDate) {
+      throw new Error("A riport adatainak kezdő dátuma nem lehet későbbi a záró dátumnál.");
+    }
     if (profile.scheduleStartDate && profile.scheduleEndDate && profile.scheduleStartDate > profile.scheduleEndDate) {
       throw new Error("A riportküldés kezdő dátuma nem lehet későbbi a záró dátumnál.");
     }
@@ -6667,6 +6801,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const nextActive = !profile.active;
     if (nextActive && !profile.recipients.map((value) => value.trim()).filter(Boolean).length) {
       throw new Error("Aktiválás előtt adj meg legalább egy címzett email címet.");
+    }
+    if (nextActive && profile.reportFilterStartDate && profile.reportFilterEndDate && profile.reportFilterStartDate > profile.reportFilterEndDate) {
+      throw new Error("A riport adatainak kezdő dátuma nem lehet későbbi a záró dátumnál.");
     }
     if (nextActive && profile.scheduleStartDate && profile.scheduleEndDate && profile.scheduleStartDate > profile.scheduleEndDate) {
       throw new Error("A riportküldés kezdő dátuma nem lehet későbbi a záró dátumnál.");
@@ -6784,6 +6921,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getReportDeliveryProfileRange(profile: ReportDeliveryProfile, now = new Date()): { startIso: string; endIso: string; label: string } {
+    // A riport ADATAINAK dátumszűrője teljesen külön van az automatikus
+    // küldés érvényességi dátumaitól.
+    //
+    // Ha legalább az egyik riport-dátum meg van adva, egyedi dátumtartományt
+    // használunk. Egyetlen kitöltött dátumnál az az egy nap lesz a riport.
+    const customStart = String(profile.reportFilterStartDate || "").slice(0, 10);
+    const customEnd = String(profile.reportFilterEndDate || "").slice(0, 10);
+
+    if (customStart || customEnd) {
+      const startKey = customStart || customEnd;
+      const endKey = customEnd || customStart;
+      return getDashboardDateRange("custom", startKey, endKey);
+    }
+
+    // Régi, még dátumszűrő nélküli profilok kompatibilitása.
     const base = new Date(now);
     base.setHours(0, 0, 0, 0);
     if (profile.frequency === "daily") {
@@ -7605,7 +7757,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <strong>Automatikus ütemezés</strong>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: style.gap }}>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Ismétlődés<select value={draft.frequency} onChange={(e) => updateReportDeliveryDraft(profile.id, { frequency: e.target.value as ReportDeliveryFrequency })} style={control}><option value="daily">Naponta</option><option value="weekly">Hetente</option><option value="monthly">Havonta</option></select></label>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Riportált időszak<select value={draft.periodScope} onChange={(e) => updateReportDeliveryDraft(profile.id, { periodScope: e.target.value as ReportDeliveryPeriodScope })} style={control}><option value="previous">Előző lezárt időszak</option><option value="current">Aktuális időszak</option></select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>
+                Riport adatai ettől
+                <input
+                  type="date"
+                  value={draft.reportFilterStartDate}
+                  max={draft.reportFilterEndDate || undefined}
+                  onChange={(e) => updateReportDeliveryDraft(profile.id, { reportFilterStartDate: e.target.value })}
+                  style={control}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>
+                Riport adatai eddig
+                <input
+                  type="date"
+                  value={draft.reportFilterEndDate}
+                  min={draft.reportFilterStartDate || undefined}
+                  onChange={(e) => updateReportDeliveryDraft(profile.id, { reportFilterEndDate: e.target.value })}
+                  style={control}
+                />
+              </label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Küldési idő<input type="time" value={draft.sendTime} onChange={(e) => updateReportDeliveryDraft(profile.id, { sendTime: e.target.value })} style={control} /></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>
                 Automatikus küldés ettől
@@ -7644,6 +7815,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 8 }}>
               <div><strong style={{ color: style.textColor }}>Állapot:</strong> <span style={{ color: status.label === "HIBÁS" ? style.errorColor : status.label === "AKTÍV" ? style.activeColor : status.color, fontWeight: 900 }}>{status.label}</span></div>
               <div><strong style={{ color: style.textColor }}>Következő küldés:</strong> {nextRun ? nextRun.toLocaleString("hu-HU") : "nincs ütemezve"}</div>
+              <div>
+                <strong style={{ color: style.textColor }}>Riport adatai:</strong>{" "}
+                {draft.reportFilterStartDate || "automatikus"}
+                {" – "}
+                {draft.reportFilterEndDate || draft.reportFilterStartDate || "automatikus"}
+              </div>
               <div>
                 <strong style={{ color: style.textColor }}>Automatikus küldés érvényes:</strong>{" "}
                 {draft.scheduleStartDate || "korlátlan"}
@@ -8027,6 +8204,117 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   <strong>{preset.name}</strong><div style={{ color:preset.theme.mutedText, fontSize:11, marginTop:4 }}>{preset.description}</div>
                 </button>
               ))}
+            </div>
+
+            <div
+              style={{
+                marginBottom:14,
+                padding:12,
+                borderRadius:Math.max(8, editorTheme.borderRadius - 3),
+                border:`1px solid ${editorTheme.borderColor}`,
+                background:editorTheme.panelAltBackground,
+                display:"grid",
+                gap:10,
+              }}
+            >
+              <div style={{ display:"flex", justifyContent:"space-between", gap:10, alignItems:"center", flexWrap:"wrap" }}>
+                <div>
+                  <div style={{ fontWeight:900, color:editorTheme.textColor }}>Dolgozói beléptető háttere</div>
+                  <div style={{ color:editorTheme.mutedText, fontSize:12, marginTop:3 }}>
+                    Csak a dolgozói beléptető teljes külső hátterét módosítja, munkaállomásonként külön. A panelek, termelési kártyák és gombok színe nem változik.
+                  </div>
+                </div>
+                <span
+                  style={{
+                    color:workerEntryBackgroundSaveState === "error"
+                      ? editorTheme.errorColor
+                      : workerEntryBackgroundSaveState === "saved"
+                        ? editorTheme.activeColor
+                        : editorTheme.mutedText,
+                    fontSize:12,
+                    fontWeight:900,
+                  }}
+                >
+                  {workerEntryBackgroundSaveState === "saving"
+                    ? "● Mentés..."
+                    : workerEntryBackgroundSaveState === "saved"
+                      ? "● Mentve"
+                      : workerEntryBackgroundSaveState === "error"
+                        ? "● Mentési hiba"
+                        : "● Automatikus mentés"}
+                </span>
+              </div>
+
+              <div style={{ display:"grid", gridTemplateColumns:"minmax(220px, 1fr) minmax(240px, 1fr) auto", gap:10, alignItems:"end" }}>
+                <label style={{ display:"grid", gap:5, fontSize:12, fontWeight:800 }}>
+                  Munkaállomás
+                  <select
+                    value={workerEntryBackgroundEditorStation}
+                    onChange={(event) => setWorkerEntryBackgroundEditorStation(event.target.value)}
+                    style={{ ...fieldStyle, background:editorTheme.inputBackground, color:editorTheme.inputText, borderColor:editorTheme.borderColor }}
+                  >
+                    <option value="">-- válassz munkaállomást --</option>
+                    {machineOptions
+                      .filter((station) => normalizeLooseText(station) !== normalizeLooseText(DEFAULT_MACHINE_ID))
+                      .map((station) => (
+                        <option key={`entry-bg-${station}`} value={station}>{station}</option>
+                      ))}
+                  </select>
+                </label>
+
+                <label style={{ display:"grid", gap:5, fontSize:12, fontWeight:800 }}>
+                  Háttérszín
+                  <span style={{ display:"grid", gridTemplateColumns:"48px 1fr", gap:7 }}>
+                    <input
+                      type="color"
+                      disabled={!workerEntryBackgroundEditorStation}
+                      value={getWorkerEntryBackground(workerEntryBackgroundEditorStation)}
+                      onChange={(event) => updateWorkerEntryBackground(workerEntryBackgroundEditorStation, event.target.value)}
+                      style={{ width:48, height:38, padding:2, borderRadius:7, border:`1px solid ${editorTheme.borderColor}` }}
+                    />
+                    <input
+                      disabled={!workerEntryBackgroundEditorStation}
+                      value={getWorkerEntryBackground(workerEntryBackgroundEditorStation)}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        const normalized = normalizeReadableHexColor(value);
+                        if (normalized) updateWorkerEntryBackground(workerEntryBackgroundEditorStation, normalized);
+                      }}
+                      style={{ ...fieldStyle, background:editorTheme.inputBackground, color:editorTheme.inputText, borderColor:editorTheme.borderColor }}
+                    />
+                  </span>
+                </label>
+
+                <button
+                  type="button"
+                  disabled={!workerEntryBackgroundEditorStation}
+                  onClick={() => resetWorkerEntryBackground(workerEntryBackgroundEditorStation)}
+                  style={{ ...buttonSecondary, background:editorTheme.secondaryButtonBackground, color:editorTheme.buttonText, borderColor:editorTheme.borderColor }}
+                >
+                  Alapértelmezett háttér
+                </button>
+              </div>
+
+              {workerEntryBackgroundEditorStation && (
+                <div
+                  style={{
+                    height:58,
+                    borderRadius:10,
+                    border:`1px solid ${editorTheme.borderColor}`,
+                    background:getWorkerEntryBackground(workerEntryBackgroundEditorStation),
+                    display:"grid",
+                    placeItems:"center",
+                    color:ensureReadableOfficeTextForBackgrounds(
+                      [getWorkerEntryBackground(workerEntryBackgroundEditorStation)],
+                      "#ffffff",
+                      4.5
+                    ),
+                    fontWeight:900,
+                  }}
+                >
+                  {workerEntryBackgroundEditorStation} – dolgozói beléptető háttér előnézet
+                </div>
+              )}
             </div>
 
             <div style={{ fontWeight:900, margin:"4px 0 8px" }}>Színek</div>
@@ -14409,6 +14697,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!supabase) return;
     void cleanupStoredProductionCardPriorityDuplicates();
   }, [supabase]);
+
+  useEffect(() => {
+    if (!supabase) return;
+    void loadWorkerEntryBackgroundSettings();
+  }, [supabase]);
+
+  useEffect(() => {
+    if (workerEntryBackgroundEditorStation) return;
+
+    const preferred = machineOptions.find(
+      (option) => normalizeLooseText(option) === normalizeLooseText(machineId)
+    ) || machineOptions[0] || "";
+
+    if (preferred) setWorkerEntryBackgroundEditorStation(preferred);
+  }, [machineOptions, machineId, workerEntryBackgroundEditorStation]);
 
   useEffect(() => {
     if (!productionCardAdminStation || managementSection !== "production-card") return;
@@ -25113,7 +25416,7 @@ body {
     <main
       style={{
         minHeight: "100vh",
-        background: "#020617",
+        background: getWorkerEntryBackground(machineId),
         padding: 24,
         fontFamily: "Arial, sans-serif",
         color: "#e2e8f0",
