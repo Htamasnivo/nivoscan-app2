@@ -6450,6 +6450,34 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
 
+  function normalizeReportDeliveryDateKey(value: unknown): string {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "";
+
+    // Supabase date/timestamp vagy már tiszta YYYY-MM-DD.
+    const candidate = raw.slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(candidate)) return "";
+
+    const parsed = new Date(`${candidate}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) return "";
+
+    const [year, month, day] = candidate.split("-").map(Number);
+    if (
+      parsed.getFullYear() !== year
+      || parsed.getMonth() + 1 !== month
+      || parsed.getDate() !== day
+    ) {
+      return "";
+    }
+
+    return candidate;
+  }
+
+  function getSafeReportDeliveryTodayKey(now = new Date()): string {
+    const candidate = Number.isNaN(now.getTime()) ? new Date() : now;
+    return getLocalDateKey(candidate);
+  }
+
   function mapReportDeliveryProfileRow(row: Record<string, unknown>): ReportDeliveryProfile {
     const recipientsRaw = row.recipients;
     const recipients = Array.isArray(recipientsRaw)
@@ -6489,7 +6517,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       reportFilterMode: (
         ["today", "current-week", "current-month", "custom", "from-date-to-today"].includes(String(row.report_filter_mode || ""))
           ? String(row.report_filter_mode)
-          : String(row.report_filter_start_date || "").slice(0, 10)
+          : normalizeReportDeliveryDateKey(row.report_filter_start_date)
             ? "custom"
             : String(row.frequency || "monthly") === "daily"
               ? "today"
@@ -6497,11 +6525,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 ? "current-week"
                 : "current-month"
       ) as ReportDeliveryDataRangeMode,
-      reportFilterStartDate: String(row.report_filter_start_date || "").slice(0, 10),
-      reportFilterEndDate: String(row.report_filter_end_date || "").slice(0, 10),
+      reportFilterStartDate: normalizeReportDeliveryDateKey(row.report_filter_start_date),
+      reportFilterEndDate: normalizeReportDeliveryDateKey(row.report_filter_end_date),
       sendTime: String(row.send_time || "06:00").slice(0, 5),
-      scheduleStartDate: String(row.schedule_start_date || "").slice(0, 10),
-      scheduleEndDate: String(row.schedule_end_date || "").slice(0, 10),
+      scheduleStartDate: normalizeReportDeliveryDateKey(row.schedule_start_date),
+      scheduleEndDate: normalizeReportDeliveryDateKey(row.schedule_end_date),
       weeklyDay: Math.min(7, Math.max(1, Number(row.weekly_day || 1))),
       monthlyDay: Math.min(28, Math.max(1, Number(row.monthly_day || 1))),
       active: Boolean(row.active),
@@ -6817,15 +6845,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (mode === "custom") {
       return {
         mode,
-        startDate: profile.reportFilterStartDate || null,
-        endDate: profile.reportFilterEndDate || null,
+        startDate: normalizeReportDeliveryDateKey(profile.reportFilterStartDate) || null,
+        endDate: normalizeReportDeliveryDateKey(profile.reportFilterEndDate) || null,
       };
     }
 
     if (mode === "from-date-to-today") {
       return {
         mode,
-        startDate: profile.reportFilterStartDate || null,
+        startDate: normalizeReportDeliveryDateKey(profile.reportFilterStartDate) || null,
         endDate: null,
       };
     }
@@ -6866,17 +6894,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function validateReportDeliveryDataRange(profile: ReportDeliveryProfile): void {
+    const startDate = normalizeReportDeliveryDateKey(profile.reportFilterStartDate);
+    const endDate = normalizeReportDeliveryDateKey(profile.reportFilterEndDate);
+
     if (profile.reportFilterMode === "custom") {
-      if (!profile.reportFilterStartDate || !profile.reportFilterEndDate) {
-        throw new Error("Az Egyedi dátumtartománynál add meg a kezdő és a záró dátumot is.");
+      if (!startDate || !endDate) {
+        throw new Error("Az Egyedi dátumtartománynál adj meg két érvényes dátumot.");
       }
-      if (profile.reportFilterStartDate > profile.reportFilterEndDate) {
+      if (startDate > endDate) {
         throw new Error("A riport adatainak kezdő dátuma nem lehet későbbi a záró dátumnál.");
       }
     }
 
-    if (profile.reportFilterMode === "from-date-to-today" && !profile.reportFilterStartDate) {
-      throw new Error("A Fix kezdő dátumtól → Mai napig módhoz add meg a kezdő dátumot.");
+    if (profile.reportFilterMode === "from-date-to-today" && !startDate) {
+      throw new Error("A Fix kezdő dátumtól → Mai napig módhoz adj meg egy érvényes kezdő dátumot.");
     }
   }
 
@@ -6906,8 +6937,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (response.error) throw response.error;
 
       const savedMode = String(response.data?.report_filter_mode || normalized.mode) as ReportDeliveryDataRangeMode;
-      const savedStart = String(response.data?.report_filter_start_date || "").slice(0, 10);
-      const savedEnd = String(response.data?.report_filter_end_date || "").slice(0, 10);
+      const savedStart = normalizeReportDeliveryDateKey(response.data?.report_filter_start_date);
+      const savedEnd = normalizeReportDeliveryDateKey(response.data?.report_filter_end_date);
       const savedUpdatedAt = String(response.data?.updated_at || new Date().toISOString());
 
       setReportDeliveryProfiles((current) =>
@@ -7143,31 +7174,42 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getReportDeliveryProfileRange(profile: ReportDeliveryProfile, now = new Date()): { startIso: string; endIso: string; label: string } {
-    const todayKey = getLocalDateKey(now);
+    const safeNow = Number.isNaN(now.getTime()) ? new Date() : now;
+    const todayKey = getSafeReportDeliveryTodayKey(safeNow);
     const mode = profile.reportFilterMode || "current-month";
 
-    if (mode === "today") {
-      return getDashboardDateRange("custom", todayKey, todayKey);
-    }
+    let startKey = todayKey;
+    let endKey = todayKey;
 
     if (mode === "current-week") {
-      const monday = getStartOfWeek(now);
-      return getDashboardDateRange("custom", getLocalDateKey(monday), todayKey);
+      startKey = getLocalDateKey(getStartOfWeek(safeNow));
+    } else if (mode === "current-month") {
+      startKey = getLocalDateKey(new Date(safeNow.getFullYear(), safeNow.getMonth(), 1));
+    } else if (mode === "from-date-to-today") {
+      startKey = normalizeReportDeliveryDateKey(profile.reportFilterStartDate) || todayKey;
+    } else if (mode === "custom") {
+      const customStart = normalizeReportDeliveryDateKey(profile.reportFilterStartDate);
+      const customEnd = normalizeReportDeliveryDateKey(profile.reportFilterEndDate);
+
+      // Régi vagy hibásan eltárolt dátum SOHA nem döntheti össze a riport oldalt.
+      // Ha valamelyik hibás, biztonságosan a mai napra esünk vissza,
+      // a felhasználó pedig a Speciális időbeállításokban újra elmentheti.
+      startKey = customStart || todayKey;
+      endKey = customEnd || customStart || todayKey;
     }
 
-    if (mode === "current-month") {
-      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-      return getDashboardDateRange("custom", getLocalDateKey(firstDay), todayKey);
+    if (startKey > endKey) {
+      const temp = startKey;
+      startKey = endKey;
+      endKey = temp;
     }
 
-    if (mode === "from-date-to-today") {
-      const startKey = String(profile.reportFilterStartDate || "").slice(0, 10) || todayKey;
-      return getDashboardDateRange("custom", startKey, todayKey);
+    try {
+      return getDashboardDateRange("custom", startKey, endKey);
+    } catch (error) {
+      console.warn("Hibás riport dátumtartomány javítva a mai napra:", error);
+      return getDashboardDateRange("custom", todayKey, todayKey);
     }
-
-    const customStart = String(profile.reportFilterStartDate || "").slice(0, 10) || todayKey;
-    const customEnd = String(profile.reportFilterEndDate || "").slice(0, 10) || customStart;
-    return getDashboardDateRange("custom", customStart, customEnd);
   }
 
   function getReportDeliveryDataRangeModeLabel(mode: ReportDeliveryDataRangeMode): string {
@@ -7179,11 +7221,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getReportDeliveryDataRangeSummary(profile: ReportDeliveryProfile, now = new Date()): string {
-    const range = getReportDeliveryProfileRange(profile, now);
-    const start = range.startIso.slice(0, 10);
-    const inclusiveEnd = new Date(new Date(range.endIso).getTime() - 1);
-    const end = Number.isNaN(inclusiveEnd.getTime()) ? range.endIso.slice(0, 10) : getLocalDateKey(inclusiveEnd);
-    return `${getReportDeliveryDataRangeModeLabel(profile.reportFilterMode || "current-month")} · ${start} → ${end}`;
+    try {
+      const range = getReportDeliveryProfileRange(profile, now);
+      const start = normalizeReportDeliveryDateKey(range.startIso) || getSafeReportDeliveryTodayKey(now);
+      const inclusiveEndMs = new Date(range.endIso).getTime() - 1;
+      const inclusiveEnd = new Date(inclusiveEndMs);
+      const end = Number.isNaN(inclusiveEnd.getTime())
+        ? start
+        : getLocalDateKey(inclusiveEnd);
+
+      return `${getReportDeliveryDataRangeModeLabel(profile.reportFilterMode || "current-month")} · ${start} → ${end}`;
+    } catch (error) {
+      console.warn("Riport időszak összefoglaló hiba:", error);
+      return `${getReportDeliveryDataRangeModeLabel(profile.reportFilterMode || "current-month")} · dátum újrabeállítása szükséges`;
+    }
   }
 
   function getReportDeliveryScheduleMarker(profile: ReportDeliveryProfile, now = new Date()): string {
