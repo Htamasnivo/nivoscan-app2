@@ -779,6 +779,7 @@ type ScrapReplacementRow = {
   reported_by_worker_id?: number | string | null;
   reported_by_worker_name?: string | null;
   reported_at: string;
+  start_worker_name?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
   cutting_batch_code?: string | null;
@@ -1208,6 +1209,8 @@ type ReportDeliveryProfile = {
   frequency: ReportDeliveryFrequency;
   periodScope: ReportDeliveryPeriodScope;
   sendTime: string;
+  scheduleStartDate: string;
+  scheduleEndDate: string;
   weeklyDay: number;
   monthlyDay: number;
   active: boolean;
@@ -1338,6 +1341,8 @@ const DEFAULT_REPORT_DELIVERY_PROFILE: ReportDeliveryProfile = {
   frequency: "monthly",
   periodScope: "previous",
   sendTime: "06:00",
+  scheduleStartDate: "",
+  scheduleEndDate: "",
   weeklyDay: 1,
   monthlyDay: 1,
   active: false,
@@ -2402,8 +2407,8 @@ function getProductionCardFieldLabel(fieldId: string): string {
   if (fieldId === PRODUCTION_CARD_SCRAP_TASK_FIELD_ID) return "Feladat";
   if (fieldId === PRODUCTION_CARD_SCRAP_SOURCE_FIELD_ID) return "Forrás";
   if (fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID) return "Állapot";
-  if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_BY_FIELD_ID) return "Jelentette";
-  if (fieldId === PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID) return "Utolsó dolgozó";
+  if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_BY_FIELD_ID) return "Indító dolgozó";
+  if (fieldId === PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID) return "Befejező dolgozó";
   if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID) return "Jelentés ideje";
   if (fieldId === PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID) return "Pótlás kezdete";
   if (fieldId === PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID) return "Pótlás vége";
@@ -6253,6 +6258,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         : "monthly") as ReportDeliveryFrequency,
       periodScope: (String(row.period_scope || "previous") === "current" ? "current" : "previous") as ReportDeliveryPeriodScope,
       sendTime: String(row.send_time || "06:00").slice(0, 5),
+      scheduleStartDate: String(row.schedule_start_date || "").slice(0, 10),
+      scheduleEndDate: String(row.schedule_end_date || "").slice(0, 10),
       weeklyDay: Math.min(7, Math.max(1, Number(row.weekly_day || 1))),
       monthlyDay: Math.min(28, Math.max(1, Number(row.monthly_day || 1))),
       active: Boolean(row.active),
@@ -6527,6 +6534,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       frequency: "monthly",
       period_scope: "previous",
       send_time: "06:00",
+      schedule_start_date: null,
+      schedule_end_date: null,
       weekly_day: 1,
       monthly_day: 1,
       active: false,
@@ -6566,6 +6575,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       frequency: profile.frequency,
       period_scope: profile.periodScope,
       send_time: profile.sendTime || "06:00",
+      schedule_start_date: profile.scheduleStartDate || null,
+      schedule_end_date: profile.scheduleEndDate || null,
       weekly_day: Math.min(7, Math.max(1, Number(profile.weeklyDay || 1))),
       monthly_day: Math.min(28, Math.max(1, Number(profile.monthlyDay || 1))),
       active: activeOverride === undefined ? profile.active : activeOverride,
@@ -6579,6 +6590,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const recipients = profile.recipients.map((value) => value.trim()).filter(Boolean);
     if (!profile.name.trim()) throw new Error("Adj nevet a riportprofilnak.");
     if (!recipients.length) throw new Error("Adj meg legalább egy email címet.");
+    if (profile.scheduleStartDate && profile.scheduleEndDate && profile.scheduleStartDate > profile.scheduleEndDate) {
+      throw new Error("A riportküldés kezdő dátuma nem lehet későbbi a záró dátumnál.");
+    }
     setReportDeliveryProfileBusy(profile.id, true);
     try {
       const payload = buildReportDeliveryProfilePayload({ ...profile, recipients });
@@ -6654,6 +6668,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (nextActive && !profile.recipients.map((value) => value.trim()).filter(Boolean).length) {
       throw new Error("Aktiválás előtt adj meg legalább egy címzett email címet.");
     }
+    if (nextActive && profile.scheduleStartDate && profile.scheduleEndDate && profile.scheduleStartDate > profile.scheduleEndDate) {
+      throw new Error("A riportküldés kezdő dátuma nem lehet későbbi a záró dátumnál.");
+    }
     setReportDeliveryProfileBusy(profile.id, true);
     try {
       const payload = buildReportDeliveryProfilePayload(profile, nextActive);
@@ -6693,29 +6710,69 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+  function getReportDeliveryScheduleStart(profile: ReportDeliveryProfile): Date | null {
+    if (!profile.scheduleStartDate) return null;
+    const value = new Date(`${profile.scheduleStartDate}T00:00:00`);
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  function getReportDeliveryScheduleEnd(profile: ReportDeliveryProfile): Date | null {
+    if (!profile.scheduleEndDate) return null;
+    const value = new Date(`${profile.scheduleEndDate}T23:59:59.999`);
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  function isInsideReportDeliveryScheduleWindow(profile: ReportDeliveryProfile, now = new Date()): boolean {
+    const start = getReportDeliveryScheduleStart(profile);
+    const end = getReportDeliveryScheduleEnd(profile);
+    if (start && now.getTime() < start.getTime()) return false;
+    if (end && now.getTime() > end.getTime()) return false;
+    return true;
+  }
+
   function getNextReportDeliveryRun(profile: ReportDeliveryProfile, now = new Date()): Date | null {
     if (!profile.active || !profile.sendTime) return null;
+
+    const scheduleStart = getReportDeliveryScheduleStart(profile);
+    const scheduleEnd = getReportDeliveryScheduleEnd(profile);
+    if (scheduleEnd && now.getTime() > scheduleEnd.getTime()) return null;
+
+    // Ha az érvényességi időszak még nem kezdődött el, onnan számoljuk
+    // az első ütemezett futást.
+    const calculationBase = scheduleStart && now.getTime() < scheduleStart.getTime()
+      ? new Date(scheduleStart)
+      : new Date(now);
+
     const [hourText, minuteText] = profile.sendTime.split(":");
     const hour = Math.min(23, Math.max(0, Number(hourText || 0)));
     const minute = Math.min(59, Math.max(0, Number(minuteText || 0)));
-    const candidate = new Date(now);
+    const candidate = new Date(calculationBase);
     candidate.setSeconds(0, 0);
     candidate.setHours(hour, minute, 0, 0);
+
     if (profile.frequency === "daily") {
-      if (candidate.getTime() <= now.getTime()) candidate.setDate(candidate.getDate() + 1);
-      return candidate;
-    }
-    if (profile.frequency === "weekly") {
+      if (candidate.getTime() <= calculationBase.getTime()) candidate.setDate(candidate.getDate() + 1);
+    } else if (profile.frequency === "weekly") {
       const jsTargetDay = profile.weeklyDay === 7 ? 0 : profile.weeklyDay;
       let delta = (jsTargetDay - candidate.getDay() + 7) % 7;
-      if (delta === 0 && candidate.getTime() <= now.getTime()) delta = 7;
+      if (delta === 0 && candidate.getTime() <= calculationBase.getTime()) delta = 7;
       candidate.setDate(candidate.getDate() + delta);
-      return candidate;
+    } else {
+      candidate.setDate(Math.min(28, Math.max(1, profile.monthlyDay || 1)));
+      if (candidate.getTime() <= calculationBase.getTime()) {
+        candidate.setMonth(
+          candidate.getMonth() + 1,
+          Math.min(28, Math.max(1, profile.monthlyDay || 1))
+        );
+      }
     }
-    candidate.setDate(Math.min(28, Math.max(1, profile.monthlyDay || 1)));
-    if (candidate.getTime() <= now.getTime()) {
-      candidate.setMonth(candidate.getMonth() + 1, Math.min(28, Math.max(1, profile.monthlyDay || 1)));
+
+    if (scheduleStart && candidate.getTime() < scheduleStart.getTime()) {
+      candidate.setTime(scheduleStart.getTime());
+      candidate.setHours(hour, minute, 0, 0);
     }
+
+    if (scheduleEnd && candidate.getTime() > scheduleEnd.getTime()) return null;
     return candidate;
   }
 
@@ -6751,6 +6808,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   function isReportDeliveryProfileDue(profile: ReportDeliveryProfile, now = new Date()): boolean {
     if (!profile.active || !profile.sendTime || !profile.recipients.length) return false;
+
+    // A naptár csak az AUTOMATIKUS küldés érvényességét korlátozza.
+    // A riportált adatok napi/heti/havi időszaklogikája változatlan.
+    if (!isInsideReportDeliveryScheduleWindow(profile, now)) return false;
+
     const weekday = now.getDay() === 0 ? 7 : now.getDay();
     if (profile.frequency === "weekly" && weekday !== profile.weeklyDay) return false;
     if (profile.frequency === "monthly" && now.getDate() !== profile.monthlyDay) return false;
@@ -7545,6 +7607,25 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Ismétlődés<select value={draft.frequency} onChange={(e) => updateReportDeliveryDraft(profile.id, { frequency: e.target.value as ReportDeliveryFrequency })} style={control}><option value="daily">Naponta</option><option value="weekly">Hetente</option><option value="monthly">Havonta</option></select></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Riportált időszak<select value={draft.periodScope} onChange={(e) => updateReportDeliveryDraft(profile.id, { periodScope: e.target.value as ReportDeliveryPeriodScope })} style={control}><option value="previous">Előző lezárt időszak</option><option value="current">Aktuális időszak</option></select></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Küldési idő<input type="time" value={draft.sendTime} onChange={(e) => updateReportDeliveryDraft(profile.id, { sendTime: e.target.value })} style={control} /></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>
+                Automatikus küldés ettől
+                <input
+                  type="date"
+                  value={draft.scheduleStartDate}
+                  onChange={(e) => updateReportDeliveryDraft(profile.id, { scheduleStartDate: e.target.value })}
+                  style={control}
+                />
+              </label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>
+                Automatikus küldés eddig
+                <input
+                  type="date"
+                  value={draft.scheduleEndDate}
+                  min={draft.scheduleStartDate || undefined}
+                  onChange={(e) => updateReportDeliveryDraft(profile.id, { scheduleEndDate: e.target.value })}
+                  style={control}
+                />
+              </label>
               {draft.frequency === "weekly" && <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Küldés napja<select value={draft.weeklyDay} onChange={(e) => updateReportDeliveryDraft(profile.id, { weeklyDay: Number(e.target.value) })} style={control}>{["Hétfő","Kedd","Szerda","Csütörtök","Péntek","Szombat","Vasárnap"].map((label,indexValue) => <option key={label} value={indexValue+1}>{label}</option>)}</select></label>}
               {draft.frequency === "monthly" && <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Hónap napja<input type="number" min={1} max={28} value={draft.monthlyDay} onChange={(e) => updateReportDeliveryDraft(profile.id, { monthlyDay: Math.min(28, Math.max(1, Number(e.target.value) || 1)) })} style={control} /></label>}
             </div>
@@ -7563,6 +7644,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 8 }}>
               <div><strong style={{ color: style.textColor }}>Állapot:</strong> <span style={{ color: status.label === "HIBÁS" ? style.errorColor : status.label === "AKTÍV" ? style.activeColor : status.color, fontWeight: 900 }}>{status.label}</span></div>
               <div><strong style={{ color: style.textColor }}>Következő küldés:</strong> {nextRun ? nextRun.toLocaleString("hu-HU") : "nincs ütemezve"}</div>
+              <div>
+                <strong style={{ color: style.textColor }}>Automatikus küldés érvényes:</strong>{" "}
+                {draft.scheduleStartDate || "korlátlan"}
+                {" – "}
+                {draft.scheduleEndDate || "korlátlan"}
+              </div>
               <div><strong style={{ color: style.textColor }}>Utolsó próbálkozás:</strong> {profile.lastAttemptAt ? formatDateTime(profile.lastAttemptAt) : "még nem volt"}</div>
               <div><strong style={{ color: style.textColor }}>Utolsó sikeres küldés:</strong> {profile.lastSentAt ? formatDateTime(profile.lastSentAt) : "még nem volt"}</div>
             </div>
@@ -9627,8 +9714,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (fieldId === PRODUCTION_CARD_SCRAP_TASK_FIELD_ID) return row.toklec_selejt ? "Tokléc pótlása – egyedi rendelés" : "Szabás + marás pótlása";
     if (fieldId === PRODUCTION_CARD_SCRAP_SOURCE_FIELD_ID) return row.source_station || "";
     if (fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID) return getScrapReplacementStatusLabel(row);
-    if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_BY_FIELD_ID) return row.reported_by_worker_name || "";
-    if (fieldId === PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID) return row.last_worker_name || "";
+    if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_BY_FIELD_ID) {
+      // Új adatoknál külön start_worker_name mezőt használunk.
+      // Régi folyamatban lévő soroknál a korábban last_worker_name mezőbe
+      // írt START dolgozó csak itt jelenhet meg, Befejező dolgozóként nem.
+      return row.start_worker_name
+        || (row.started_at && !row.completed_at ? row.last_worker_name || "" : "");
+    }
+    if (fieldId === PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID) {
+      return row.completed_at || row.status === "KESZ"
+        ? row.last_worker_name || ""
+        : "";
+    }
     if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID) return row.reported_at ? formatDateTime(row.reported_at) : "";
     if (fieldId === PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID) return row.started_at ? formatDateTime(row.started_at) : "";
     if (fieldId === PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID) return row.completed_at ? formatDateTime(row.completed_at) : "";
@@ -9753,7 +9850,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   } {
     const doorSnapshot = resolveDoorCompletionSnapshot(logs);
     const completedCandidates = logs
-      .filter((log) => Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END")
+      .filter((log) =>
+        (Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END")
+        && isFullyCompletedEndLog(log)
+      )
       .map((log) => {
         const metadata = getStructuredNoteMetadata(log.note);
         return {
@@ -10127,9 +10227,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           status,
           statusLabel: status === "in-progress" ? "Folyamatban" : status === "done" ? "Kész" : "Várakozik",
           startWorkerName: String(station.start_worker_name || "").trim(),
-          endWorkerName: String(station.end_worker_name || "").trim(),
+          endWorkerName: normalizedStatus === "KESZ"
+            ? String(station.end_worker_name || "").trim()
+            : "",
           startedAt: station.started_at || null,
-          endedAt: station.ended_at || null,
+          endedAt: normalizedStatus === "KESZ" ? station.ended_at || null : null,
         } as ProductionCardPriorityRow;
       })
       .filter((row): row is ProductionCardPriorityRow => Boolean(row))
@@ -10474,9 +10576,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         groupRows.forEach((planRow) => {
           const completedQuantity = Math.min(planRow.plannedQuantity, Math.max(0, unallocatedCompletedQuantity));
           unallocatedCompletedQuantity = Math.max(0, unallocatedCompletedQuantity - completedQuantity);
-          const completed = planRow.plannedQuantity <= 0
-            ? workerStatus.status === "done"
-            : completedQuantity >= planRow.plannedQuantity;
+          // A kártyáról csak valódi teljes END után tűnhet el.
+          // A darab/mennyiség önmagában nem jelent lezárt munkát.
+          const completed = workerStatus.status === "done";
           const completedOnSelectedDate = completed && latestCompletionTime !== undefined &&
             latestCompletionTime >= selectedDayStartTime && latestCompletionTime < selectedDayEndTime;
           if (completed && !completedOnSelectedDate) return;
@@ -10506,7 +10608,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   }, workerStatus.status === "in-progress")
                 : hasProgress ? "Pótlás folyamatban" : "Lemaradás – elvégzendő",
             startWorkerName: workerStatus.startWorkerName,
-            lastWorkerName: workerStatus.endWorkerName || workerStatus.startWorkerName,
+            lastWorkerName: workerStatus.endedAt ? workerStatus.endWorkerName : "",
             startedAt: workerStatus.startedAt,
             endedAt: workerStatus.endedAt,
             doorWorkflow: workerStatus.doorWorkflow,
@@ -11136,7 +11238,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const cellFontSize = Math.max(7, Math.round((theme.cellFontSize || baseFont) * zoomRatio * 10) / 10);
       const fieldWeights = Object.fromEntries(visibleFieldIds.map((fieldId) => [fieldId, getProductionCardFieldStyle(fieldId, table).widthWeight])) as Record<string, number>;
       const totalWeight = Math.max(0.25, visibleFieldIds.reduce((sum, fieldId) => sum + Math.max(0.25, fieldWeights[fieldId] || 1), 0));
-      const sourceRows = isPriorityTable ? priorityRows : isScrapTable ? urgentScrapRows : isBacklogTable ? backlogRows : data.rows;
+      const rawSourceRows = isPriorityTable
+        ? priorityRows
+        : isScrapTable
+          ? urgentScrapRows
+          : isBacklogTable
+            ? backlogRows
+            : data.rows;
+
+      // A termelési kártyákon KÉSZ sor nem maradhat látható.
+      // Ez minden kártyatípusra érvényes: normál, lemaradás,
+      // selejtpótlás és prioritási kártya.
+      const sourceRows = rawSourceRows.filter((rawRow) => {
+        if (isPriorityTable) return (rawRow as ProductionCardPriorityRow).status !== "done";
+        if (isScrapTable) return getScrapReplacementCardStatus(rawRow as ScrapReplacementRow) !== "done";
+        if (isBacklogTable) return (rawRow as ProductionCardBacklogRow).status !== "done";
+        return (rawRow as ProductionCardRow).status !== "done";
+      });
 
       if (isPriorityTable && sourceRows.length === 0) {
         return <React.Fragment key={table.id} />;
@@ -11325,14 +11443,24 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                 : fieldId === PRODUCTION_CARD_STATUS_FIELD_ID
                                   ? [productionRow!.startWorkerName ? `Indító: ${productionRow!.startWorkerName}` : "", productionRow!.endWorkerName ? `Befejező: ${productionRow!.endWorkerName}` : "", productionRow!.startedAt ? `START: ${formatDateTime(productionRow!.startedAt)}` : "", productionRow!.endedAt ? `END: ${formatDateTime(productionRow!.endedAt)}` : ""].filter(Boolean).join(" | ")
                                   : String(value ?? "");
+                          const forceRunningRowColor = status === "in-progress";
+                          const runningRowBackground = "#bbf7d0";
+                          const runningRowText = "#14532d";
+
                           return (
                             <td
                               key={`${table.id}-${rowKey}-${fieldId}`}
                               title={title}
                               style={{
                                 padding: `${Math.max(2, Math.round(theme.cellPadding * zoomRatio))}px 5px`,
-                                background: style.cellBackground || background,
-                                color: style.cellTextColor || color,
+                                // START után az EGÉSZ sor halványzöld.
+                                // A kártya saját színei várakozó állapotban változatlanok.
+                                background: forceRunningRowColor
+                                  ? runningRowBackground
+                                  : style.cellBackground || background,
+                                color: forceRunningRowColor
+                                  ? runningRowText
+                                  : style.cellTextColor || color,
                                 borderBottom: `1px solid ${theme.borderColor}`,
                                 borderRight: `1px solid ${theme.borderColor}`,
                                 textAlign: style.textAlign,
@@ -20655,11 +20783,18 @@ body {
     if (!supabase || !row) return;
     const payload: Record<string, unknown> = {
       status,
-      last_worker_name: activeWorker?.["Teljes nev"] || null,
       updated_at: timestamp,
     };
-    if (status === "SZABAS_FOLYAMATBAN") payload.started_at = row.started_at || timestamp;
-    if (status === "KESZ") payload.completed_at = timestamp;
+    if (status === "SZABAS_FOLYAMATBAN") {
+      payload.started_at = row.started_at || timestamp;
+      payload.start_worker_name = row.start_worker_name || activeWorker?.["Teljes nev"] || null;
+      // START-nál a befejező dolgozó mező maradjon üres.
+      payload.last_worker_name = null;
+    }
+    if (status === "KESZ") {
+      payload.completed_at = timestamp;
+      payload.last_worker_name = activeWorker?.["Teljes nev"] || null;
+    }
     const { error } = await supabase
       .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
       .update(payload)
@@ -20680,11 +20815,20 @@ body {
     const payload: Record<string, unknown> = {
       status,
       updated_at: nowIso,
-      last_worker_name: activeWorker?.["Teljes nev"] || null,
       ...extra,
     };
-    if (status === "SZABAS_FOLYAMATBAN" && !Object.prototype.hasOwnProperty.call(payload, "started_at")) payload.started_at = nowIso;
-    if (status === "KESZ" && !Object.prototype.hasOwnProperty.call(payload, "completed_at")) payload.completed_at = nowIso;
+
+    if (status === "SZABAS_FOLYAMATBAN") {
+      if (!Object.prototype.hasOwnProperty.call(payload, "started_at")) payload.started_at = nowIso;
+      payload.start_worker_name = activeWorker?.["Teljes nev"] || null;
+      // START / köztes folyamat alatt a Befejező dolgozó nem tölthető ki.
+      payload.last_worker_name = null;
+    }
+
+    if (status === "KESZ") {
+      if (!Object.prototype.hasOwnProperty.call(payload, "completed_at")) payload.completed_at = nowIso;
+      payload.last_worker_name = activeWorker?.["Teljes nev"] || null;
+    }
     const { error } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).update(payload).in("id", ids);
     if (error) throw error;
   }
