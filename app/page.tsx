@@ -1651,6 +1651,7 @@ const PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID = "__scrap_last_worker__";
 const PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID = "__scrap_reported_at__";
 const PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID = "__scrap_started_at__";
 const PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID = "__scrap_completed_at__";
+const PRODUCTION_CARD_SCRAP_ELAPSED_FIELD_ID = "__scrap_elapsed_time__";
 const PRODUCTION_CARD_SCRAP_FIELD_IDS = [
   PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID,
   PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID,
@@ -1663,6 +1664,7 @@ const PRODUCTION_CARD_SCRAP_FIELD_IDS = [
   PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID,
   PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID,
   PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_ELAPSED_FIELD_ID,
 ] as const;
 
 const PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID = "__backlog_order_number__";
@@ -1677,6 +1679,7 @@ const PRODUCTION_CARD_BACKLOG_START_WORKER_FIELD_ID = "__backlog_start_worker__"
 const PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID = "__backlog_last_worker__";
 const PRODUCTION_CARD_BACKLOG_TOK_FIELD_ID = "__backlog_tok_completed__";
 const PRODUCTION_CARD_BACKLOG_NYILO_FIELD_ID = "__backlog_nyilo_completed__";
+const PRODUCTION_CARD_BACKLOG_ELAPSED_FIELD_ID = "__backlog_elapsed_time__";
 const PRODUCTION_CARD_BACKLOG_FIELD_IDS = [
   PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID,
   PRODUCTION_CARD_BACKLOG_PRODUCT_FIELD_ID,
@@ -1690,6 +1693,7 @@ const PRODUCTION_CARD_BACKLOG_FIELD_IDS = [
   PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID,
   PRODUCTION_CARD_BACKLOG_TOK_FIELD_ID,
   PRODUCTION_CARD_BACKLOG_NYILO_FIELD_ID,
+  PRODUCTION_CARD_BACKLOG_ELAPSED_FIELD_ID,
 ] as const;
 
 
@@ -2485,6 +2489,7 @@ function getProductionCardFieldLabel(fieldId: string): string {
   if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID) return "Jelentés ideje";
   if (fieldId === PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID) return "Pótlás kezdete";
   if (fieldId === PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID) return "Pótlás vége";
+  if (fieldId === PRODUCTION_CARD_SCRAP_ELAPSED_FIELD_ID) return "Eltelt idő";
   if (fieldId === PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID) return "Sorszám";
   if (fieldId === PRODUCTION_CARD_BACKLOG_PRODUCT_FIELD_ID) return "Megnevezés";
   if (fieldId === PRODUCTION_CARD_BACKLOG_PLANNED_FIELD_ID) return "Tervezett mennyiség";
@@ -2497,6 +2502,7 @@ function getProductionCardFieldLabel(fieldId: string): string {
   if (fieldId === PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID) return "Utolsó dolgozó";
   if (fieldId === PRODUCTION_CARD_BACKLOG_TOK_FIELD_ID) return "Tok";
   if (fieldId === PRODUCTION_CARD_BACKLOG_NYILO_FIELD_ID) return "Nyíló";
+  if (fieldId === PRODUCTION_CARD_BACKLOG_ELAPSED_FIELD_ID) return "Eltelt idő";
   return fieldId;
 }
 
@@ -2639,6 +2645,7 @@ function createDefaultScrapReplacementCardTable(theme: ProductionMonitorTheme): 
     PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID,
     PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID,
     PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID,
+    PRODUCTION_CARD_SCRAP_ELAPSED_FIELD_ID,
   ];
   table.fieldStyles = {
     [PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID]: {
@@ -2687,6 +2694,7 @@ function createDefaultBacklogCardTable(theme: ProductionMonitorTheme, stationNam
     PRODUCTION_CARD_BACKLOG_COMPLETED_FIELD_ID,
     PRODUCTION_CARD_BACKLOG_START_WORKER_FIELD_ID,
     PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID,
+    PRODUCTION_CARD_BACKLOG_ELAPSED_FIELD_ID,
   ];
   table.fieldStyles = {
     [PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID]: {
@@ -2874,12 +2882,21 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
           ...table.fieldOrder.filter((fieldId) => validFieldSet.has(fieldId)),
           ...validFields.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
         ]));
-        const nextHiddenFieldIds = Array.from(new Set(
-          table.hiddenFieldIds.filter((fieldId) =>
+        const newlyAddedOptionalElapsedFields = [
+          PRODUCTION_CARD_SCRAP_ELAPSED_FIELD_ID,
+          PRODUCTION_CARD_BACKLOG_ELAPSED_FIELD_ID,
+        ].filter((fieldId) =>
+          validFieldSet.has(fieldId)
+          && !table.fieldOrder.includes(fieldId)
+        );
+
+        const nextHiddenFieldIds = Array.from(new Set([
+          ...table.hiddenFieldIds.filter((fieldId) =>
             validFieldSet.has(fieldId)
             && !(dataSource === "production-plan" && isRequiredProductionCardField(fieldId))
-          )
-        ));
+          ),
+          ...newlyAddedOptionalElapsedFields,
+        ]));
         return {
           ...table,
           dataSource,
@@ -5522,6 +5539,7 @@ export default function Page() {
   const [applyingProductionCardTypographyToAll, setApplyingProductionCardTypographyToAll] = useState(false);
   const [applyingProductionCardVisibilityToAll, setApplyingProductionCardVisibilityToAll] = useState(false);
   const [productionCardLastSavedAt, setProductionCardLastSavedAt] = useState("");
+  const [, setProductionCardElapsedTick] = useState(0);
   const productionCardDraggedFieldIdRef = useRef<string | null>(null);
   const productionCardAutoSaveTimerRef = useRef<number | null>(null);
   const productionCardLastSavedPayloadRef = useRef("");
@@ -5699,6 +5717,16 @@ export default function Page() {
     dailyEfficiencyPct: 0,
     lastUpdatedAt: "",
   });
+
+  useEffect(() => {
+    // START után az Eltelt idő élőben növekszik minden termelési kártyán.
+    // A kijelzés perc alapú; 15 másodperces frissítés stabil és kellően élő.
+    const intervalId = window.setInterval(() => {
+      setProductionCardElapsedTick((value) => value + 1);
+    }, 15 * 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   useEffect(() => {
     if (!officeThemeScopeMenuOpen) return;
@@ -10032,6 +10060,22 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       !normalized.includes("iroda");
   }
 
+  function getProductionCardElapsedValue(
+    startedAt: string | null | undefined,
+    endedAt: string | null | undefined
+  ): string {
+    if (!startedAt) return "–";
+
+    const startMs = new Date(startedAt).getTime();
+    const endMs = endedAt ? new Date(endedAt).getTime() : Date.now();
+
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) {
+      return "–";
+    }
+
+    return formatDuration(Math.max(0, Math.round((endMs - startMs) / 60000)));
+  }
+
   function getProductionCardFieldValue(row: ProductionCardRow, fieldId: string): string | number {
     if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
       const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
@@ -10050,12 +10094,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (fieldId === PRODUCTION_CARD_START_WORKER_FIELD_ID) return row.startWorkerName;
     if (fieldId === PRODUCTION_CARD_END_WORKER_FIELD_ID) return row.endWorkerName;
     if (fieldId === PRODUCTION_CARD_ELAPSED_FIELD_ID) {
-      if (!row.startedAt) return "–";
-      if (!row.endedAt) return "Folyamatban";
-      const startMs = new Date(row.startedAt).getTime();
-      const endMs = new Date(row.endedAt).getTime();
-      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return "–";
-      return formatDuration(Math.round((endMs - startMs) / 60000));
+      return getProductionCardElapsedValue(row.startedAt, row.endedAt);
     }
     if (fieldId === PRODUCTION_CARD_TOK_FIELD_ID) return row.doorWorkflow ? (row.tokKesz ? "Kész" : "Folyamatban") : "";
     if (fieldId === PRODUCTION_CARD_NYILO_FIELD_ID) return row.doorWorkflow ? (row.nyiloKesz ? "Kész" : "Folyamatban") : "";
@@ -10084,6 +10123,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (fieldId === PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID) return row.reported_at ? formatDateTime(row.reported_at) : "";
     if (fieldId === PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID) return row.started_at ? formatDateTime(row.started_at) : "";
     if (fieldId === PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID) return row.completed_at ? formatDateTime(row.completed_at) : "";
+    if (fieldId === PRODUCTION_CARD_SCRAP_ELAPSED_FIELD_ID) {
+      return getProductionCardElapsedValue(row.started_at, row.completed_at);
+    }
     return "";
   }
 
@@ -10107,12 +10149,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (fieldId === PRODUCTION_CARD_PRIORITY_START_WORKER_FIELD_ID) return row.startWorkerName;
     if (fieldId === PRODUCTION_CARD_PRIORITY_END_WORKER_FIELD_ID) return row.endWorkerName;
     if (fieldId === PRODUCTION_CARD_PRIORITY_ELAPSED_FIELD_ID) {
-      if (!row.startedAt) return "";
-      if (!row.endedAt) return "Folyamatban";
-      const startMs = new Date(row.startedAt).getTime();
-      const endMs = new Date(row.endedAt).getTime();
-      if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return "";
-      return formatDuration(Math.max(0, Math.round((endMs - startMs) / 60000)));
+      return getProductionCardElapsedValue(row.startedAt, row.endedAt);
     }
     return "";
   }
@@ -10139,6 +10176,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (fieldId === PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID) return row.lastWorkerName;
     if (fieldId === PRODUCTION_CARD_BACKLOG_TOK_FIELD_ID) return row.doorWorkflow ? (row.tokKesz ? "Kész" : "Folyamatban") : "";
     if (fieldId === PRODUCTION_CARD_BACKLOG_NYILO_FIELD_ID) return row.doorWorkflow ? (row.nyiloKesz ? "Kész" : "Folyamatban") : "";
+    if (fieldId === PRODUCTION_CARD_BACKLOG_ELAPSED_FIELD_ID) {
+      return getProductionCardElapsedValue(row.startedAt, row.endedAt);
+    }
     return "";
   }
 
@@ -10771,9 +10811,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       planData: Record<string, unknown>;
     }>();
 
-    stationPlanRows.forEach((row) => mergedPlanRows.set(normalizeLooseText(row.orderNumber), row));
+    const productionCardPlanRowKey = (row: {
+      orderNumber: string;
+      productName: string;
+    }): string => [
+      normalizeLooseText(row.orderNumber),
+      normalizeLooseText(row.productName),
+    ].join("|");
+
+    stationPlanRows.forEach((row) => mergedPlanRows.set(productionCardPlanRowKey(row), row));
     commonPlanRows.forEach((row) => {
-      const key = normalizeLooseText(row.orderNumber);
+      const key = productionCardPlanRowKey(row);
       if (!mergedPlanRows.has(key)) mergedPlanRows.set(key, row);
     });
 
@@ -11155,11 +11203,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       [PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID]: "system:status",
       [PRODUCTION_CARD_BACKLOG_START_WORKER_FIELD_ID]: "system:start-worker",
       [PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID]: "system:end-worker",
+      [PRODUCTION_CARD_BACKLOG_ELAPSED_FIELD_ID]: "system:elapsed",
 
       [PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID]: "plan:sorszam",
       [PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID]: "system:status",
       [PRODUCTION_CARD_SCRAP_REPORTED_BY_FIELD_ID]: "system:start-worker",
       [PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID]: "system:end-worker",
+      [PRODUCTION_CARD_SCRAP_ELAPSED_FIELD_ID]: "system:elapsed",
     };
 
     return aliases[fieldId] || `field:${fieldId}`;
@@ -15825,15 +15875,55 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return parsedRows;
   }
 
+  function getStationPlanManufacturingNumber(
+    row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
+  ): string {
+    const data = row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)
+      ? row.adat as Record<string, unknown>
+      : {};
+
+    const candidates = [
+      row.gyartasi_szam,
+      row.gyartasi_szam_projekt_neve,
+      data.gyartasi_szam,
+      data.gyartasi_szam_projekt_neve,
+      row.sorszam,
+    ];
+
+    for (const value of candidates) {
+      const candidate = String(value ?? "").trim();
+      if (candidate) return candidate;
+    }
+    return "";
+  }
+
+  function getStationPlanDuplicateKey(
+    row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
+  ): string {
+    const manufacturingNumber = getStationPlanManufacturingNumber(row);
+    const productName = String(row.megnevezes ?? "").trim();
+
+    // A dátum SZÁNDÉKOSAN nincs benne.
+    // Csak akkor egyezés, ha a gyártási szám ÉS a megnevezés is azonos.
+    return [
+      normalizeLooseText(manufacturingNumber),
+      normalizeLooseText(productName),
+    ].join("|");
+  }
+
   function askStationPlanConflictAction(
     stationName: string,
     row: StationPlanUploadRow,
     existingRows: StationPlanExistingRow[]
   ): "insert" | "add" | "update" | "skip" | "cancel" {
+    const manufacturingNumber = getStationPlanManufacturingNumber(row) || row.sorszam;
+    const productName = String(row.megnevezes || "").trim();
+
     const answer = window.prompt(
-      `${stationName}: a(z) ${row.sorszam} sorszám ${row.elkeszules_datum} dátummal már szerepel (${existingRows.length} sor).\\n\\n` +
-      `1 = Új sorba felveszem\\n2 = A legutóbbi sor mennyiségéhez hozzáadom (${row.mennyiseg})\\n` +
-      `3 = A legutóbbi sort frissítem az Excel adataira\\n4 = Kihagyom\\n0 = A teljes import megszakítása`,
+      `${stationName}: a gyártási szám + megnevezés páros már szerepel (${existingRows.length} sor).\n\n` +
+      `Gyártási szám: ${manufacturingNumber}\nMegnevezés: ${productName}\n\n` +
+      `1 = Új sorba felveszem\n2 = A legutóbbi sor mennyiségéhez hozzáadom (${row.mennyiseg})\n` +
+      `3 = A legutóbbi sort frissítem az Excel adataira\n4 = Kihagyom\n0 = A teljes import megszakítása`,
       "4"
     );
     if (answer === null || answer.trim() === "0") return "cancel";
@@ -15850,23 +15940,28 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   ): Promise<StationPlanMergeAction[]> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     const tableName = buildStationPlanTableName(stationName);
-    const dates = Array.from(new Set(rows.map((row) => row.elkeszules_datum)));
     const existingRows: StationPlanExistingRow[] = [];
-    for (let index = 0; index < dates.length; index += 100) {
-      const dateChunk = dates.slice(index, index + 100);
+
+    // A teljes *_terv táblát ellenőrizzük, mert az egyezőség nem dátumfüggő.
+    const pageSize = 1000;
+    for (let offset = 0; ; offset += pageSize) {
       const { data, error } = await supabase
         .from(tableName)
-        .select("id, sorszam, megnevezes, mennyiseg, elkeszules_datum, tipus")
-        .in("elkeszules_datum", dateChunk)
+        .select("*")
         .order("id", { ascending: true })
-        .limit(10000);
+        .range(offset, offset + pageSize - 1);
+
       if (error) throw error;
-      existingRows.push(...((data || []) as StationPlanExistingRow[]));
+
+      const pageRows = (data || []) as StationPlanExistingRow[];
+      existingRows.push(...pageRows);
+      if (pageRows.length < pageSize) break;
     }
 
     const actions: StationPlanMergeAction[] = [];
-    const rowKey = (row: Pick<StationPlanUploadRow, "sorszam" | "elkeszules_datum">) =>
-      `${normalizeLooseText(row.sorszam)}|${row.elkeszules_datum}`;
+    const rowKey = (
+      row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
+    ) => getStationPlanDuplicateKey(row);
 
     for (const row of rows) {
       const key = rowKey(row);
@@ -16003,13 +16098,36 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       };
     }).filter((row): row is NonNullable<typeof row> => Boolean(row));
 
-    for (let index = 0; index < payload.length; index += 500) {
-      const chunk = payload.slice(index, index + 500);
-      const response = await supabase.from(DYNAMIC_PRODUCTION_PLAN_TABLE).upsert(chunk, {
-        onConflict: "machine_name,sorszam,elkeszules_datum",
-      });
-      if (response.error) throw response.error;
+    const legacyConflictKeys = payload.map((row) =>
+      [
+        normalizeLooseText(String(row.machine_name || "")),
+        normalizeLooseText(String(row.sorszam || "")),
+        String(row.elkeszules_datum || ""),
+      ].join("|")
+    );
+    const hasLegacyConflictDuplicates =
+      new Set(legacyConflictKeys).size !== legacyConflictKeys.length;
+
+    if (hasLegacyConflictDuplicates) {
+      // A munkaállomási *_terv tábla mindkét sort megtartja.
+      // A központi kompatibilitási tábla régi konfliktuskulcsa miatt
+      // soronként szinkronizálunk, hogy a feltöltés ne fusson hibára.
+      for (const row of payload) {
+        const response = await supabase.from(DYNAMIC_PRODUCTION_PLAN_TABLE).upsert(row, {
+          onConflict: "machine_name,sorszam,elkeszules_datum",
+        });
+        if (response.error) throw response.error;
+      }
+    } else {
+      for (let index = 0; index < payload.length; index += 500) {
+        const chunk = payload.slice(index, index + 500);
+        const response = await supabase.from(DYNAMIC_PRODUCTION_PLAN_TABLE).upsert(chunk, {
+          onConflict: "machine_name,sorszam,elkeszules_datum",
+        });
+        if (response.error) throw response.error;
+      }
     }
+
     return payload.length;
   }
 
