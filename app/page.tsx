@@ -5580,6 +5580,7 @@ export default function Page() {
   const [selectedProductionPlanId, setSelectedProductionPlanId] = useState<string>("");
   const [productionPlanItems, setProductionPlanItems] = useState<ProductionPlanItemRow[]>([]);
   const [productionMonitorDate, setProductionMonitorDate] = useState(getLocalDateKey(new Date()));
+  const [productionMonitorDateTo, setProductionMonitorDateTo] = useState(getLocalDateKey(new Date()));
   const [productionMonitorData, setProductionMonitorData] = useState<ProductionMonitorData>({
     plan: null,
     stations: [],
@@ -8539,7 +8540,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               setManagementSection(item.id); setOfficeThemeScope("__page__");
               if (item.id === "dashboard") void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
               else if (item.id === "production-plan") void loadProductionPlans(productionPlanDate);
-              else if (item.id === "production-monitor") void loadProductionMonitor(productionMonitorDate);
+              else if (item.id === "production-monitor") void loadProductionMonitor(
+                productionMonitorDate,
+                activeProductionMonitorProfile.planStatusFilter,
+                productionMonitorDateTo
+              );
               else if (item.id === "production-card") { const stations = getOrderedDashboardStations(); const nextStation = productionCardAdminStation || stations[0] || ""; if (nextStation && nextStation !== productionCardAdminStation) setProductionCardAdminStation(nextStation); if (nextStation) { void loadProductionCardSettingsForStation(nextStation); void loadProductionCardData(nextStation, productionCardDate); } }
               else if (item.id === "reproduction-report") void loadReproductionReport(reproductionReportFilterMode, reproductionReportDate, reproductionReportDateTo, reproductionReportSelectedStation);
               else if (item.id === "label-printer") { const stations = getOrderedDashboardStations(); const preferred = stations.find((station) => normalizeLooseText(station) === normalizeLooseText("Asztalos")) || officeLabelPrinterStation || stations[0] || "Asztalos"; setOfficeLabelPrinterStation(preferred); setCarpenterPrinterTab("printer"); void loadCarpenterPrinterSettings(preferred); }
@@ -12840,7 +12845,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       setProductionMonitorProfileNameDraft(selectedProfile.name);
       setProductionMonitorTableNameDraft(selectedTable?.name || "Táblázat");
       setSelectedProductionMonitorStyleFieldId(PRODUCTION_MONITOR_ORDER_FIELD_ID);
-      void loadProductionMonitor(productionMonitorDate, selectedProfile.planStatusFilter);
+      void loadProductionMonitor(
+        productionMonitorDate,
+        selectedProfile.planStatusFilter,
+        productionMonitorDateTo
+      );
     };
 
     const getTableRuntime = (table: ProductionMonitorTableConfig) => {
@@ -12949,7 +12958,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={{ padding: 30, color: theme.subtitleText, textAlign: "center", fontSize: 17 }}>A kiválasztott naphoz nincs aktív termelési terv.</div>
           ) : productionMonitorData.rows.length === 0 ? (
             <div style={{ padding: 30, color: theme.subtitleText, textAlign: "center", fontSize: 17 }}>
-              A kiválasztott napon nincs „{activeMonitorStatusLabel}” státuszú rendelés a munkaállomási _terv táblákban.
+              A kiválasztott időszakban nincs „{activeMonitorStatusLabel}” státuszú rendelés a munkaállomási _terv táblákban.
             </div>
           ) : runtime.visibleFieldIds.length === 0 ? (
             <div style={{ padding: 30, color: theme.subtitleText, textAlign: "center", fontSize: 17 }}>
@@ -13142,7 +13151,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   <div style={{ color: profileTheme.subtitleText }}>
                     {productionMonitorData.plan
                       ? `${productionMonitorData.plan.name} · ${productionMonitorData.plan.plan_date}`
-                      : `Nincs aktív terv · ${productionMonitorDate}`}
+                      : `Nincs aktív terv · ${productionMonitorDate} → ${productionMonitorDateTo}`}
                   </div>
                 )}
                 {profileTheme.showLastUpdated && (
@@ -13181,16 +13190,70 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 ))}
                 <option value="custom">Egyedi stílus</option>
               </select>
-              <input
-                type="date"
-                value={productionMonitorDate}
-                onChange={(event) => {
-                  setProductionMonitorDate(event.target.value);
-                  void loadProductionMonitor(event.target.value, activeProductionMonitorProfile.planStatusFilter);
-                }}
-                style={{ ...fieldStyle, width: 170, background: "#ffffff", color: "#111827" }}
-              />
-              <button type="button" onClick={() => void loadProductionMonitor(productionMonitorDate)} disabled={loadingProductionMonitor} style={buttonSecondary}>
+              <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
+                <span>Dátumtól</span>
+                <input
+                  type="date"
+                  value={productionMonitorDate}
+                  max={productionMonitorDateTo || undefined}
+                  onChange={(event) => {
+                    const nextFrom = event.target.value;
+                    if (!nextFrom) return;
+
+                    const nextTo = !productionMonitorDateTo || nextFrom > productionMonitorDateTo
+                      ? nextFrom
+                      : productionMonitorDateTo;
+
+                    setProductionMonitorDate(nextFrom);
+                    if (nextTo !== productionMonitorDateTo) setProductionMonitorDateTo(nextTo);
+
+                    void loadProductionMonitor(
+                      nextFrom,
+                      activeProductionMonitorProfile.planStatusFilter,
+                      nextTo
+                    );
+                  }}
+                  style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
+                />
+              </label>
+
+              <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
+                <span>Dátumig</span>
+                <input
+                  type="date"
+                  value={productionMonitorDateTo}
+                  min={productionMonitorDate || undefined}
+                  onChange={(event) => {
+                    const nextTo = event.target.value;
+                    if (!nextTo) return;
+
+                    const nextFrom = !productionMonitorDate || nextTo < productionMonitorDate
+                      ? nextTo
+                      : productionMonitorDate;
+
+                    if (nextFrom !== productionMonitorDate) setProductionMonitorDate(nextFrom);
+                    setProductionMonitorDateTo(nextTo);
+
+                    void loadProductionMonitor(
+                      nextFrom,
+                      activeProductionMonitorProfile.planStatusFilter,
+                      nextTo
+                    );
+                  }}
+                  style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
+                />
+              </label>
+
+              <button
+                type="button"
+                onClick={() => void loadProductionMonitor(
+                  productionMonitorDate,
+                  activeProductionMonitorProfile.planStatusFilter,
+                  productionMonitorDateTo
+                )}
+                disabled={loadingProductionMonitor}
+                style={buttonSecondary}
+              >
                 {loadingProductionMonitor ? "Frissítés..." : "Frissítés"}
               </button>
               <button type="button" onClick={() => void saveProductionMonitorSettings(true)} disabled={savingProductionMonitorSettings || !productionMonitorSettingsOwner} style={buttonPrimary}>
@@ -13585,7 +13648,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
           {profileTheme.showSummaryCards && (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(120px, 1fr))", gap: 10, marginBottom: 14 }}>
-              <div style={{ background: profileTheme.headerPanelBackground, borderRadius: profileTheme.panelRadius, padding: 14, color: profileTheme.headerPanelText, border: `1px solid ${profileTheme.borderColor}` }}><div style={{ color: profileTheme.subtitleText, fontSize: 12 }}>Napi terv</div><div style={{ fontSize: 28, fontWeight: 900 }}>{productionMonitorData.rows.length}</div></div>
+              <div style={{ background: profileTheme.headerPanelBackground, borderRadius: profileTheme.panelRadius, padding: 14, color: profileTheme.headerPanelText, border: `1px solid ${profileTheme.borderColor}` }}><div style={{ color: profileTheme.subtitleText, fontSize: 12 }}>{productionMonitorDate === productionMonitorDateTo ? "Napi terv" : "Időszaki terv"}</div><div style={{ fontSize: 28, fontWeight: 900 }}>{productionMonitorData.rows.length}</div></div>
               <div style={{ background: profileTheme.doneBackground, borderRadius: profileTheme.panelRadius, padding: 14, color: profileTheme.doneText }}><div style={{ fontSize: 12 }}>Kész</div><div style={{ fontSize: 28, fontWeight: 900 }}>{completed}</div></div>
               <div style={{ background: profileTheme.inProgressBackground, borderRadius: profileTheme.panelRadius, padding: 14, color: profileTheme.inProgressText }}><div style={{ fontSize: 12 }}>Folyamatban</div><div style={{ fontSize: 28, fontWeight: 900 }}>{inProgress}</div></div>
               <div style={{ background: profileTheme.waitingBackground, borderRadius: profileTheme.panelRadius, padding: 14, color: profileTheme.waitingText }}><div style={{ fontSize: 12 }}>Várakozik</div><div style={{ fontSize: 28, fontWeight: 900 }}>{waiting}</div></div>
@@ -14580,10 +14643,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     if (params.get("view") !== "termeles-monitor") return;
-    const requestedDate = params.get("date");
-    if (requestedDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
-      setProductionMonitorDate(requestedDate);
-    }
+    // Új monitoroldal megnyitásakor a dátumszűrő szándékosan mindig
+    // a mai nap → mai nap alapállapotból indul.
     const requestedWorkerName = String(params.get("worker") || "").trim();
     if (requestedWorkerName) setStandaloneProductionMonitorWorkerName(requestedWorkerName);
     setStandaloneProductionMonitor(true);
@@ -15215,13 +15276,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
     if (!monitorVisible) return;
 
-    void loadProductionMonitor(productionMonitorDate);
+    void loadProductionMonitor(
+      productionMonitorDate,
+      activeProductionMonitorProfile.planStatusFilter,
+      productionMonitorDateTo
+    );
     const intervalId = window.setInterval(() => {
-      void loadProductionMonitor(productionMonitorDate);
+      void loadProductionMonitor(
+        productionMonitorDate,
+        activeProductionMonitorProfile.planStatusFilter,
+        productionMonitorDateTo
+      );
     }, 20 * 1000);
 
     return () => window.clearInterval(intervalId);
-  }, [standaloneProductionMonitor, activeWorker?.id, terminalView, flowStage, managementSection, productionMonitorDate, workers.length, machineOptions.length, activeProductionMonitorProfile.planStatusFilter]);
+  }, [
+    standaloneProductionMonitor,
+    activeWorker?.id,
+    terminalView,
+    flowStage,
+    managementSection,
+    productionMonitorDate,
+    productionMonitorDateTo,
+    workers.length,
+    machineOptions.length,
+    activeProductionMonitorProfile.planStatusFilter,
+  ]);
 
   useEffect(() => {
     if (!supabase) return;
@@ -15234,18 +15314,34 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!monitorVisible) return;
 
     let channel = supabase
-      .channel(`production-monitor-${productionMonitorDate}-${activeProductionMonitorProfile.planStatusFilter}`)
+      .channel(`production-monitor-${productionMonitorDate}-${productionMonitorDateTo}-${activeProductionMonitorProfile.planStatusFilter}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, () => {
-        void loadProductionMonitor(productionMonitorDate, activeProductionMonitorProfile.planStatusFilter);
+        void loadProductionMonitor(
+          productionMonitorDate,
+          activeProductionMonitorProfile.planStatusFilter,
+          productionMonitorDateTo
+        );
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plans" }, () => {
-        void loadProductionMonitor(productionMonitorDate, activeProductionMonitorProfile.planStatusFilter);
+        void loadProductionMonitor(
+          productionMonitorDate,
+          activeProductionMonitorProfile.planStatusFilter,
+          productionMonitorDateTo
+        );
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, () => {
-        void loadProductionMonitor(productionMonitorDate, activeProductionMonitorProfile.planStatusFilter);
+        void loadProductionMonitor(
+          productionMonitorDate,
+          activeProductionMonitorProfile.planStatusFilter,
+          productionMonitorDateTo
+        );
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, () => {
-        void loadProductionMonitor(productionMonitorDate, activeProductionMonitorProfile.planStatusFilter);
+        void loadProductionMonitor(
+          productionMonitorDate,
+          activeProductionMonitorProfile.planStatusFilter,
+          productionMonitorDateTo
+        );
       })
       ;
 
@@ -15257,7 +15353,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         "postgres_changes",
         { event: "*", schema: "public", table: buildStationPlanTableName(station) },
         () => {
-          void loadProductionMonitor(productionMonitorDate, activeProductionMonitorProfile.planStatusFilter);
+          void loadProductionMonitor(
+            productionMonitorDate,
+            activeProductionMonitorProfile.planStatusFilter,
+            productionMonitorDateTo
+          );
         }
       );
     });
@@ -15274,6 +15374,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     flowStage,
     managementSection,
     productionMonitorDate,
+    productionMonitorDateTo,
     activeProductionMonitorProfile.planStatusFilter,
     machineIdRows.length,
     machineOptions.length,
@@ -17468,8 +17569,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       setProductionPlanPreview([]);
       setProductionPlanFileName("");
       setProductionMonitorDate(productionPlanDate);
+      setProductionMonitorDateTo(productionPlanDate);
       await loadProductionPlans(productionPlanDate);
-      await loadProductionMonitor(productionPlanDate);
+      await loadProductionMonitor(
+        productionPlanDate,
+        activeProductionMonitorProfile.planStatusFilter,
+        productionPlanDate
+      );
       if (productionCardAdminStation && productionCardDate === productionPlanDate) {
         await loadProductionCardData(productionCardAdminStation, productionCardDate);
       }
@@ -17503,8 +17609,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const { error: activateError } = await supabase.from("production_plans").update({ is_active: true }).eq("id", plan.id);
       if (activateError) throw activateError;
       setProductionMonitorDate(plan.plan_date);
+      setProductionMonitorDateTo(plan.plan_date);
       await loadProductionPlans(plan.plan_date);
-      await loadProductionMonitor(plan.plan_date);
+      await loadProductionMonitor(
+        plan.plan_date,
+        activeProductionMonitorProfile.planStatusFilter,
+        plan.plan_date
+      );
       setMessage({ type: "success", text: `Aktív termelési terv: ${plan.name}` });
     } catch (error) {
       setMessage({ type: "error", text: normalizeError(error) });
@@ -17532,9 +17643,24 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   async function fetchProductionMonitorData(
     dateKey: string,
-    planStatusFilter: ProductionMonitorPlanStatusFilter = activeProductionMonitorProfile.planStatusFilter
+    planStatusFilter: ProductionMonitorPlanStatusFilter = activeProductionMonitorProfile.planStatusFilter,
+    dateToKey: string = dateKey
   ): Promise<ProductionMonitorData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    const todayKey = getLocalDateKey(new Date());
+    let startDateKey = /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : todayKey;
+    let endDateKey = /^\d{4}-\d{2}-\d{2}$/.test(dateToKey) ? dateToKey : startDateKey;
+
+    if (startDateKey > endDateKey) {
+      const swap = startDateKey;
+      startDateKey = endDateKey;
+      endDateKey = swap;
+    }
+
+    const monitorDateRangeLabel = startDateKey === endDateKey
+      ? startDateKey
+      : `${startDateKey} → ${endDateKey}`;
 
     const orderedMonitorStations = machineIdRows
       .map((row, originalIndex) => {
@@ -17658,7 +17784,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const response = await supabase
         .from(tableName)
         .select("*")
-        .eq("elkeszules_datum", dateKey)
+        .gte("elkeszules_datum", startDateKey)
+        .lte("elkeszules_datum", endDateKey)
         .limit(10000);
 
       if (response.error) {
@@ -17793,8 +17920,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       });
 
     const syntheticPlan: ProductionPlanRow = {
-      id: `monitor-${planStatusFilter}-${dateKey}`,
-      plan_date: dateKey,
+      id: `monitor-${planStatusFilter}-${startDateKey}-${endDateKey}`,
+      plan_date: monitorDateRangeLabel,
       name: `${statusLabel} termelési monitor`,
       is_active: true,
       uploaded_by: null,
@@ -17812,12 +17939,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   async function loadProductionMonitor(
     dateKey = productionMonitorDate,
-    planStatusFilter: ProductionMonitorPlanStatusFilter = activeProductionMonitorProfile.planStatusFilter
+    planStatusFilter: ProductionMonitorPlanStatusFilter = activeProductionMonitorProfile.planStatusFilter,
+    dateToKey = productionMonitorDateTo
   ): Promise<void> {
-    if (!supabase || !dateKey) return;
+    if (!supabase || !dateKey || !dateToKey) return;
     setLoadingProductionMonitor(true);
     try {
-      const data = await fetchProductionMonitorData(dateKey, planStatusFilter);
+      const data = await fetchProductionMonitorData(dateKey, planStatusFilter, dateToKey);
       setProductionMonitorData(data);
     } catch (error) {
       console.error("SUPABASE HIBA loadProductionMonitor:", error);
@@ -17832,7 +17960,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
     url.searchParams.set("view", "termeles-monitor");
-    url.searchParams.set("date", productionMonitorDate);
+    url.searchParams.delete("date");
+    url.searchParams.delete("dateTo");
     url.searchParams.set("monitor", activeProductionMonitorProfile.id);
     if (productionMonitorSettingsOwner) url.searchParams.set("worker", productionMonitorSettingsOwner);
     window.open(url.toString(), "_blank", "noopener,noreferrer");
