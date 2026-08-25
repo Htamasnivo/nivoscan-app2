@@ -1128,9 +1128,12 @@ type ProductionMonitorTableConfig = {
   dataSource?: ProductionCardTableDataSource;
 };
 
+type ProductionMonitorPlanStatusFilter = "ajto" | "kerites";
+
 type ProductionMonitorProfile = {
   id: string;
   name: string;
+  planStatusFilter: ProductionMonitorPlanStatusFilter;
   themePresetId: ProductionMonitorThemePresetId;
   zoomPercent: number;
   theme: ProductionMonitorTheme;
@@ -2382,21 +2385,93 @@ function createDefaultProductionMonitorTable(
   };
 }
 
+function getProductionMonitorPlanStatusLabel(filter: ProductionMonitorPlanStatusFilter): string {
+  return filter === "kerites" ? "Kerítés" : "Ajtó";
+}
+
 function createDefaultProductionMonitorProfile(
-  name = "Alapértelmezett monitor",
-  id = "default"
+  name = "Ajtó termelési monitor",
+  id = "monitor-ajto",
+  planStatusFilter: ProductionMonitorPlanStatusFilter = "ajto"
 ): ProductionMonitorProfile {
   const theme = cloneProductionMonitorTheme(PRODUCTION_MONITOR_THEME_PRESETS["industrial-night"].theme);
   const table = createDefaultProductionMonitorTable("Termelési állapot", "table-default", theme);
   return {
     id,
     name,
+    planStatusFilter,
     themePresetId: "industrial-night",
     zoomPercent: 100,
     theme,
     tables: [table],
     activeTableId: table.id,
   };
+}
+
+function cloneProductionMonitorProfileForStatus(
+  source: ProductionMonitorProfile,
+  planStatusFilter: ProductionMonitorPlanStatusFilter,
+  id: string,
+  name: string
+): ProductionMonitorProfile {
+  const tableIdMap = new Map<string, string>();
+  const tables = source.tables.map((table, index) => {
+    const nextId = `${id}-table-${index + 1}`;
+    tableIdMap.set(table.id, nextId);
+    return {
+      ...table,
+      id: nextId,
+      fieldOrder: [...table.fieldOrder],
+      hiddenFieldIds: [...table.hiddenFieldIds],
+      theme: { ...table.theme },
+      fieldStyles: Object.fromEntries(
+        Object.entries(table.fieldStyles).map(([fieldId, style]) => [fieldId, { ...style }])
+      ),
+    };
+  });
+
+  return {
+    ...source,
+    id,
+    name,
+    planStatusFilter,
+    theme: { ...source.theme },
+    tables,
+    activeTableId: tableIdMap.get(source.activeTableId) || tables[0]?.id || "",
+  };
+}
+
+function ensureProductionMonitorStatusProfiles(profiles: ProductionMonitorProfile[]): ProductionMonitorProfile[] {
+  if (profiles.length === 0) {
+    return [
+      createDefaultProductionMonitorProfile("Ajtó termelési monitor", "monitor-ajto", "ajto"),
+      createDefaultProductionMonitorProfile("Kerítés termelési monitor", "monitor-kerites", "kerites"),
+    ];
+  }
+
+  let next = profiles.map((profile) => ({ ...profile }));
+
+  const ajtoIndex = next.findIndex((profile) => profile.planStatusFilter === "ajto");
+  if (ajtoIndex < 0) {
+    next.unshift(createDefaultProductionMonitorProfile("Ajtó termelési monitor", "monitor-ajto", "ajto"));
+  } else if (
+    normalizeLooseText(next[ajtoIndex].name) === normalizeLooseText("Alapértelmezett monitor")
+    || next[ajtoIndex].id === "default"
+  ) {
+    next[ajtoIndex] = { ...next[ajtoIndex], name: "Ajtó termelési monitor" };
+  }
+
+  if (!next.some((profile) => profile.planStatusFilter === "kerites")) {
+    const source = next.find((profile) => profile.planStatusFilter === "ajto") || next[0];
+    next.push(cloneProductionMonitorProfileForStatus(
+      source,
+      "kerites",
+      "monitor-kerites",
+      "Kerítés termelési monitor"
+    ));
+  }
+
+  return next;
 }
 
 
@@ -3209,7 +3284,15 @@ function normalizeProductionMonitorProfile(value: unknown, index: number): Produ
     hiddenFieldIds?: string[];
     fieldStyles?: Record<string, unknown>;
   } : {};
-  const fallback = createDefaultProductionMonitorProfile(`Monitor ${index + 1}`, `monitor-${index + 1}`);
+  const inferredFilter: ProductionMonitorPlanStatusFilter =
+    normalizeLooseText(String(raw.name || raw.id || "")).includes("kerites")
+      ? "kerites"
+      : "ajto";
+  const rawFilter = String((raw as { planStatusFilter?: unknown }).planStatusFilter || "");
+  const planStatusFilter: ProductionMonitorPlanStatusFilter = rawFilter === "kerites" || rawFilter === "ajto"
+    ? rawFilter
+    : inferredFilter;
+  const fallback = createDefaultProductionMonitorProfile(`Monitor ${index + 1}`, `monitor-${index + 1}`, planStatusFilter);
   const profileTheme = normalizeProductionMonitorTheme(raw.theme);
   let tables: ProductionMonitorTableConfig[] = [];
 
@@ -3235,6 +3318,7 @@ function normalizeProductionMonitorProfile(value: unknown, index: number): Produ
   return {
     id: typeof raw.id === "string" && raw.id.trim() ? raw.id : fallback.id,
     name: typeof raw.name === "string" && raw.name.trim() ? raw.name.slice(0, 80) : fallback.name,
+    planStatusFilter,
     themePresetId: validPresetIds.includes(raw.themePresetId as ProductionMonitorThemePresetId)
       ? raw.themePresetId as ProductionMonitorThemePresetId
       : "custom",
@@ -5507,9 +5591,10 @@ export default function Page() {
   const [savingProductionPlan, setSavingProductionPlan] = useState(false);
   const [loadingProductionMonitor, setLoadingProductionMonitor] = useState(false);
   const [productionMonitorProfiles, setProductionMonitorProfiles] = useState<ProductionMonitorProfile[]>([
-    createDefaultProductionMonitorProfile(),
+    createDefaultProductionMonitorProfile("Ajtó termelési monitor", "monitor-ajto", "ajto"),
+    createDefaultProductionMonitorProfile("Kerítés termelési monitor", "monitor-kerites", "kerites"),
   ]);
-  const [activeProductionMonitorProfileId, setActiveProductionMonitorProfileId] = useState("default");
+  const [activeProductionMonitorProfileId, setActiveProductionMonitorProfileId] = useState("monitor-ajto");
   const [productionMonitorEditMode, setProductionMonitorEditMode] = useState(false);
   const [productionMonitorLayoutLoaded, setProductionMonitorLayoutLoaded] = useState(false);
   const [productionMonitorEditorTab, setProductionMonitorEditorTab] = useState<"layout" | "typography" | "colors" | "field">("layout");
@@ -9850,10 +9935,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     storage: Partial<ProductionMonitorProfilesStorage> | null | undefined,
     requestedProfileId = ""
   ): boolean {
-    const normalizedProfiles = Array.isArray(storage?.profiles)
+    const loadedProfiles = Array.isArray(storage?.profiles)
       ? storage!.profiles!.map((profile, index) => normalizeProductionMonitorProfile(profile, index))
       : [];
-    if (normalizedProfiles.length === 0) return false;
+    if (loadedProfiles.length === 0) return false;
+
+    const normalizedProfiles = ensureProductionMonitorStatusProfiles(loadedProfiles);
 
     const preferredProfileId = requestedProfileId
       || (typeof storage?.activeProfileId === "string" ? storage.activeProfileId : "");
@@ -9881,7 +9968,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       }
 
       const legacyStoredValue = window.localStorage.getItem(PRODUCTION_MONITOR_LAYOUT_STORAGE_KEY);
-      const migratedProfile = createDefaultProductionMonitorProfile();
+      const migratedProfile = createDefaultProductionMonitorProfile("Ajtó termelési monitor", "monitor-ajto", "ajto");
       if (legacyStoredValue) {
         const parsed = JSON.parse(legacyStoredValue) as Partial<ProductionMonitorLayoutPreferences>;
         const table = migratedProfile.tables[0];
@@ -9934,7 +10021,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (!applyLoadedProductionMonitorStorage(mergedSettings, requestedProfileId)) {
         const loadedLocally = loadProductionMonitorSettingsFromLocalStorage(requestedProfileId);
         if (!loadedLocally) {
-          const fallbackProfile = createDefaultProductionMonitorProfile();
+          const fallbackProfile = createDefaultProductionMonitorProfile("Ajtó termelési monitor", "monitor-ajto", "ajto");
           applyLoadedProductionMonitorStorage({ activeProfileId: fallbackProfile.id, profiles: [fallbackProfile] }, requestedProfileId);
         }
       }
@@ -9943,7 +10030,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       console.error("A termelési monitor Supabase-beállításainak betöltése sikertelen:", error);
       const loadedLocally = loadProductionMonitorSettingsFromLocalStorage(requestedProfileId);
       if (!loadedLocally) {
-        const fallbackProfile = createDefaultProductionMonitorProfile();
+        const fallbackProfile = createDefaultProductionMonitorProfile("Ajtó termelési monitor", "monitor-ajto", "ajto");
         applyLoadedProductionMonitorStorage({ activeProfileId: fallbackProfile.id, profiles: [fallbackProfile] }, requestedProfileId);
       }
       setMessage({
@@ -10130,8 +10217,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   function createProductionMonitorProfile(): void {
     const profileId = `monitor-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const profileName = `Monitor ${productionMonitorProfiles.length + 1}`;
-    const profile = createDefaultProductionMonitorProfile(profileName, profileId);
+    const monitorTypeLabel = getProductionMonitorPlanStatusLabel(activeProductionMonitorProfile.planStatusFilter);
+    const profileName = `${monitorTypeLabel} monitor ${productionMonitorProfiles.length + 1}`;
+    const profile = createDefaultProductionMonitorProfile(
+      profileName,
+      profileId,
+      activeProductionMonitorProfile.planStatusFilter
+    );
     profile.tables[0].fieldOrder = [
       PRODUCTION_MONITOR_ORDER_FIELD_ID,
       ...productionMonitorData.stations.map(getProductionMonitorStationFieldId),
@@ -10370,7 +10462,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function resetProductionMonitorLayout(): void {
     const profileName = activeProductionMonitorProfile.name;
     const profileId = activeProductionMonitorProfile.id;
-    const resetProfile = createDefaultProductionMonitorProfile(profileName, profileId);
+    const resetProfile = createDefaultProductionMonitorProfile(
+      profileName,
+      profileId,
+      activeProductionMonitorProfile.planStatusFilter
+    );
     resetProfile.tables[0].fieldOrder = [
       PRODUCTION_MONITOR_ORDER_FIELD_ID,
       ...productionMonitorData.stations.map(getProductionMonitorStationFieldId),
@@ -12671,6 +12767,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const zoomRatio = productionMonitorZoomPercent / 100;
     const profileTheme = productionMonitorProfileTheme;
     const monitorTitleFontSize = Math.max(16, Math.round(profileTheme.titleFontSize * zoomRatio));
+    const activeMonitorStatusLabel = getProductionMonitorPlanStatusLabel(activeProductionMonitorProfile.planStatusFilter);
 
     const handleFieldDragStart = (fieldId: string): void => {
       productionMonitorDraggedFieldIdRef.current = fieldId;
@@ -12743,6 +12840,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       setProductionMonitorProfileNameDraft(selectedProfile.name);
       setProductionMonitorTableNameDraft(selectedTable?.name || "Táblázat");
       setSelectedProductionMonitorStyleFieldId(PRODUCTION_MONITOR_ORDER_FIELD_ID);
+      void loadProductionMonitor(productionMonitorDate, selectedProfile.planStatusFilter);
     };
 
     const getTableRuntime = (table: ProductionMonitorTableConfig) => {
@@ -12850,7 +12948,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           {!productionMonitorData.plan ? (
             <div style={{ padding: 30, color: theme.subtitleText, textAlign: "center", fontSize: 17 }}>A kiválasztott naphoz nincs aktív termelési terv.</div>
           ) : productionMonitorData.rows.length === 0 ? (
-            <div style={{ padding: 30, color: theme.subtitleText, textAlign: "center", fontSize: 17 }}>Az aktív termelési terv nem tartalmaz rendeléseket.</div>
+            <div style={{ padding: 30, color: theme.subtitleText, textAlign: "center", fontSize: 17 }}>
+              A kiválasztott napon nincs „{activeMonitorStatusLabel}” státuszú rendelés a munkaállomási _terv táblákban.
+            </div>
           ) : runtime.visibleFieldIds.length === 0 ? (
             <div style={{ padding: 30, color: theme.subtitleText, textAlign: "center", fontSize: 17 }}>
               Ennél a táblázatnál minden mező el van rejtve. A szerkesztőben jelölj ki legalább egy mezőt.
@@ -13036,7 +13136,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     lineHeight: 1.08,
                   }}
                 >
-                  Rendelések nyomonkövetése
+                  {activeMonitorStatusLabel} rendelések nyomonkövetése
                 </h2>
                 {profileTheme.showPlanInfo && (
                   <div style={{ color: profileTheme.subtitleText }}>
@@ -13062,7 +13162,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 style={{ ...fieldStyle, width: 210, background: "#ffffff", color: "#111827" }}
               >
                 {productionMonitorProfiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>{profile.name}</option>
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name} · {getProductionMonitorPlanStatusLabel(profile.planStatusFilter)}
+                  </option>
                 ))}
               </select>
               <select
@@ -13084,7 +13186,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 value={productionMonitorDate}
                 onChange={(event) => {
                   setProductionMonitorDate(event.target.value);
-                  void loadProductionMonitor(event.target.value);
+                  void loadProductionMonitor(event.target.value, activeProductionMonitorProfile.planStatusFilter);
                 }}
                 style={{ ...fieldStyle, width: 170, background: "#ffffff", color: "#111827" }}
               />
@@ -13140,16 +13242,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               </div>
 
               <div style={{ ...editorSectionStyle, marginBottom: 12 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 260px) minmax(220px, 1fr) auto auto", gap: 9, alignItems: "end" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "minmax(180px, 260px) minmax(220px, 1fr) minmax(150px, 190px) auto auto", gap: 9, alignItems: "end" }}>
                   <label style={editorLabelStyle}>
                     <span>Aktív monitor</span>
                     <select value={activeProductionMonitorProfile.id} onChange={(event) => switchProfile(event.target.value)} style={editorControlStyle}>
-                      {productionMonitorProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                      {productionMonitorProfiles.map((profile) => (
+                        <option key={profile.id} value={profile.id}>
+                          {profile.name} · {getProductionMonitorPlanStatusLabel(profile.planStatusFilter)}
+                        </option>
+                      ))}
                     </select>
                   </label>
                   <label style={editorLabelStyle}>
                     <span>Monitor neve</span>
                     <input value={productionMonitorProfileNameDraft} maxLength={80} onChange={(event) => setProductionMonitorProfileNameDraft(event.target.value)} style={editorControlStyle} />
+                  </label>
+                  <label style={editorLabelStyle}>
+                    <span>Monitor tartalma</span>
+                    <div style={{ ...editorControlStyle, fontWeight: 900, background: "#e0f2fe", borderColor: "#38bdf8" }}>
+                      {activeMonitorStatusLabel}
+                    </div>
                   </label>
                   <button type="button" onClick={renameProductionMonitorProfile} style={buttonPrimary}>Név mentése</button>
                   <button type="button" onClick={deleteProductionMonitorProfile} disabled={productionMonitorProfiles.length <= 1} style={{ ...buttonSecondary, borderColor: "#ef4444", color: "#b91c1c", background: "#fff1f2" }}>Monitor törlése</button>
@@ -13247,6 +13359,22 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                         {label}
                       </label>
                     ))}
+                  </div>
+                  <div style={{ ...editorSectionStyle, background: "#ecfeff", borderColor: "#67e8f9" }}>
+                    <div style={{ fontWeight: 900, marginBottom: 6 }}>Munkaállomások alap sorrendje · machine_id.megjelenési_sorrend</div>
+                    <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                      {productionMonitorData.stations.map((station, stationIndex) => (
+                        <span
+                          key={`monitor-station-order-${station}`}
+                          style={{ padding: "6px 9px", borderRadius: 8, background: "#cffafe", border: "1px solid #22d3ee", color: "#164e63", fontWeight: 800 }}
+                        >
+                          {stationIndex + 1}. {station}
+                        </span>
+                      ))}
+                    </div>
+                    <div style={{ color: "#155e75", fontSize: 12, marginTop: 6 }}>
+                      Mindkét monitoron minden munkaállomás oszlopa megjelenhet akkor is, ha az adott napon nincs hozzá {activeMonitorStatusLabel} sor.
+                    </div>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                     <strong>„{activeProductionMonitorTable.name}” mezőinek sorrendje és láthatósága</strong>
@@ -15093,7 +15221,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }, 20 * 1000);
 
     return () => window.clearInterval(intervalId);
-  }, [standaloneProductionMonitor, activeWorker?.id, terminalView, flowStage, managementSection, productionMonitorDate, workers.length, machineOptions.length]);
+  }, [standaloneProductionMonitor, activeWorker?.id, terminalView, flowStage, managementSection, productionMonitorDate, workers.length, machineOptions.length, activeProductionMonitorProfile.planStatusFilter]);
 
   useEffect(() => {
     if (!supabase) return;
@@ -15105,26 +15233,51 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
     if (!monitorVisible) return;
 
-    const channel = supabase
-      .channel(`production-monitor-${productionMonitorDate}`)
+    let channel = supabase
+      .channel(`production-monitor-${productionMonitorDate}-${activeProductionMonitorProfile.planStatusFilter}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, () => {
-        void loadProductionMonitor(productionMonitorDate);
+        void loadProductionMonitor(productionMonitorDate, activeProductionMonitorProfile.planStatusFilter);
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plans" }, () => {
-        void loadProductionMonitor(productionMonitorDate);
+        void loadProductionMonitor(productionMonitorDate, activeProductionMonitorProfile.planStatusFilter);
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, () => {
-        void loadProductionMonitor(productionMonitorDate);
+        void loadProductionMonitor(productionMonitorDate, activeProductionMonitorProfile.planStatusFilter);
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, () => {
-        void loadProductionMonitor(productionMonitorDate);
+        void loadProductionMonitor(productionMonitorDate, activeProductionMonitorProfile.planStatusFilter);
       })
-      .subscribe();
+      ;
+
+    // A monitor adatforrása most a munkaállomási *_terv tábla, ezért ezek
+    // változásaira is azonnal frissítünk. A 20 mp-es háttérfrissítés ettől
+    // függetlenül biztonsági tartalékként megmarad.
+    getOrderedDashboardStations().forEach((station) => {
+      channel = channel.on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: buildStationPlanTableName(station) },
+        () => {
+          void loadProductionMonitor(productionMonitorDate, activeProductionMonitorProfile.planStatusFilter);
+        }
+      );
+    });
+
+    channel.subscribe();
 
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [standaloneProductionMonitor, activeWorker?.id, terminalView, flowStage, managementSection, productionMonitorDate]);
+  }, [
+    standaloneProductionMonitor,
+    activeWorker?.id,
+    terminalView,
+    flowStage,
+    managementSection,
+    productionMonitorDate,
+    activeProductionMonitorProfile.planStatusFilter,
+    machineIdRows.length,
+    machineOptions.length,
+  ]);
 
 
   useEffect(() => {
@@ -17377,29 +17530,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
-  async function fetchProductionMonitorData(dateKey: string): Promise<ProductionMonitorData> {
+  async function fetchProductionMonitorData(
+    dateKey: string,
+    planStatusFilter: ProductionMonitorPlanStatusFilter = activeProductionMonitorProfile.planStatusFilter
+  ): Promise<ProductionMonitorData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
-
-    let planResponse = await supabase
-      .from("production_plans")
-      .select("id, plan_date, name, is_active, uploaded_by, created_at")
-      .eq("plan_date", dateKey)
-      .eq("is_active", true)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (planResponse.error) throw planResponse.error;
-    if (!planResponse.data) {
-      planResponse = await supabase
-        .from("production_plans")
-        .select("id, plan_date, name, is_active, uploaded_by, created_at")
-        .eq("plan_date", dateKey)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-    }
-    if (planResponse.error) throw planResponse.error;
 
     const orderedMonitorStations = machineIdRows
       .map((row, originalIndex) => {
@@ -17421,9 +17556,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       })
       .filter((item) => {
         const normalized = normalizeLooseText(item.name);
-        return Boolean(item.name) &&
-          normalized !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
-          !normalized.includes("iroda");
+        return Boolean(item.name)
+          && normalized !== normalizeLooseText(DEFAULT_MACHINE_ID)
+          && !normalized.includes("iroda");
       })
       .sort((left, right) =>
         left.displayOrder - right.displayOrder || left.originalIndex - right.originalIndex
@@ -17436,53 +17571,138 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const monitorStations = orderedMonitorStations.length > 0
       ? orderedMonitorStations
       : machineOptions.filter((item) =>
-          normalizeLooseText(item) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
-          !normalizeLooseText(item).includes("iroda")
+          normalizeLooseText(item) !== normalizeLooseText(DEFAULT_MACHINE_ID)
+          && !normalizeLooseText(item).includes("iroda")
         );
 
-    const plan = (planResponse.data as ProductionPlanRow | null) || null;
-    if (!plan) {
-      return {
-        plan: null,
-        stations: monitorStations,
-        rows: [],
-        logs: [],
-        lastUpdatedAt: new Date().toISOString(),
-      };
+    const statusLabel = getProductionMonitorPlanStatusLabel(planStatusFilter);
+    const normalizedWantedStatus = normalizeLooseText(statusLabel);
+
+    type MonitorPlanAggregate = {
+      itemId: string;
+      orderNumber: string;
+      sequenceNumber: number;
+      plannedQuantity: number | null;
+      productName: string;
+      requiredStations: Set<string>;
+    };
+
+    const aggregates: MonitorPlanAggregate[] = [];
+    const aggregatesByOrder = new Map<string, MonitorPlanAggregate>();
+    let sequenceNumber = 1;
+
+    const getPlanOrderNumber = (row: Record<string, unknown>): string => valueAsText(
+      readRecordValue(row, [
+        "sorszam",
+        "gyartasi_szam",
+        "gyártási szám",
+        "gyartasi_szam_projekt_neve",
+        "gyártási szám_projekt neve",
+        "order_number",
+      ])
+    );
+
+    const getPlanProductName = (row: Record<string, unknown>): string => valueAsText(
+      readRecordValue(row, ["megnevezes", "megnevezés", "product_name"])
+    );
+
+    const addStationPlanRow = (station: string, row: Record<string, unknown>): void => {
+      const rowStatus = normalizeLooseText(valueAsText(
+        readRecordValue(row, ["statusz", "státusz", "status"])
+      ));
+      if (rowStatus !== normalizedWantedStatus) return;
+
+      const orderNumber = getPlanOrderNumber(row);
+      if (!orderNumber) return;
+
+      const productName = getPlanProductName(row);
+      const normalizedOrder = normalizeLooseText(orderNumber);
+      let aggregate = aggregatesByOrder.get(normalizedOrder);
+
+      if (!aggregate) {
+        const quantityRaw = readRecordValue(row, ["mennyiseg", "mennyiség", "planned_quantity"]);
+        const quantityNumber = Number(quantityRaw);
+        aggregate = {
+          itemId: normalizedOrder,
+          orderNumber,
+          sequenceNumber,
+          plannedQuantity: Number.isFinite(quantityNumber) ? quantityNumber : null,
+          productName,
+          requiredStations: new Set<string>(),
+        };
+        sequenceNumber += 1;
+        aggregates.push(aggregate);
+        aggregatesByOrder.set(normalizedOrder, aggregate);
+      }
+
+      // Egy gyártási/rendelési szám a monitoron pontosan EGY sor.
+      // Ugyanez a sor több munkaállomáson halad végig, ezért az állomásokat
+      // ugyanahhoz a rekordhoz gyűjtjük össze.
+      aggregate.requiredStations.add(station);
+      if (!aggregate.productName && productName) aggregate.productName = productName;
+
+      const quantityRaw = readRecordValue(row, ["mennyiseg", "mennyiség", "planned_quantity"]);
+      const quantityNumber = Number(quantityRaw);
+      if (Number.isFinite(quantityNumber)) {
+        aggregate.plannedQuantity = aggregate.plannedQuantity === null
+          ? quantityNumber
+          : Math.max(aggregate.plannedQuantity, quantityNumber);
+      }
+    };
+
+    // A monitor közvetlenül a munkaállomási *_terv táblákból épül fel.
+    // MINDEN munkaállomás oszlopa megmarad mindkét monitoron; az adott
+    // monitor csak a statusz = Ajtó / Kerítés sorokat veszi fel.
+    for (const station of monitorStations) {
+      const tableName = buildStationPlanTableName(station);
+      const response = await supabase
+        .from(tableName)
+        .select("*")
+        .eq("elkeszules_datum", dateKey)
+        .limit(10000);
+
+      if (response.error) {
+        console.warn(`A ${tableName} tábla nem olvasható a termelési monitorhoz:`, response.error);
+        continue;
+      }
+
+      ((response.data || []) as Record<string, unknown>[]).forEach((row) => {
+        addStationPlanRow(station, row);
+      });
     }
 
-    let itemResponse = await supabase
-      .from("production_plan_items")
-      .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, required_stations, created_at")
-      .eq("plan_id", plan.id)
-      .order("sequence_number", { ascending: true });
+    const orderNumbers = Array.from(new Set(
+      aggregates.map((row) => row.orderNumber.trim()).filter(Boolean)
+    ));
 
-    if (itemResponse.error && isMissingRequiredStationsColumnError(itemResponse.error)) {
-      itemResponse = await supabase
-        .from("production_plan_items")
-        .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, created_at")
-        .eq("plan_id", plan.id)
-        .order("sequence_number", { ascending: true });
-    }
-
-    if (itemResponse.error) throw itemResponse.error;
-    const items = (((itemResponse.data || []) as ProductionPlanItemRow[])).filter((item) => String(item.order_number || "").trim());
-
-    const orderNumbers = Array.from(new Set(items.map((item) => String(item.order_number).trim())));
     const logs: WorkLogRow[] = [];
     const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const orderChunk = orderNumbers.slice(index, index + 100);
-      const { data: logData, error: logError } = await supabase
+      let logResponse = await supabase
         .from("work_logs")
         .select(selectColumns)
         .in("order_number", orderChunk)
         .order("created_at", { ascending: true })
         .limit(10000);
-      if (logError) throw logError;
-      logs.push(...(((logData as WorkLogRow[]) || []).map((log) => ({
+
+      if (logResponse.error) {
+        logResponse = await supabase
+          .from("work_log")
+          .select(selectColumns)
+          .in("order_number", orderChunk)
+          .order("created_at", { ascending: true })
+          .limit(10000);
+      }
+
+      if (logResponse.error) throw logResponse.error;
+
+      logs.push(...(((logResponse.data as WorkLogRow[]) || []).map((log) => ({
         ...log,
-        worker_name: log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || null,
+        worker_name: log.worker_name
+          || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"]
+          || null,
       }))));
     }
 
@@ -17497,71 +17717,107 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       const plannedOrderSet = new Set(orderNumbers.map((orderNumber) => normalizeLooseText(orderNumber)));
       productionBatchStarts.push(...(((batchData as ProductionBatchRow[]) || []).filter((batch) =>
-        Array.isArray(batch.order_ids) && batch.order_ids.some((orderId) => plannedOrderSet.has(normalizeLooseText(String(orderId))))
+        Array.isArray(batch.order_ids)
+        && batch.order_ids.some((orderId) => plannedOrderSet.has(normalizeLooseText(String(orderId))))
       )));
     }
 
-    const stations = monitorStations;
+    const rows: ProductionMonitorRow[] = aggregates
+      .sort((left, right) => left.sequenceNumber - right.sequenceNumber)
+      .map((aggregate) => {
+        const orderNumber = aggregate.orderNumber;
+        const orderLogs = logs.filter(
+          (log) => normalizeLooseText(log.order_number) === normalizeLooseText(orderNumber)
+        );
+        const requiredStations = monitorStations.filter((station) =>
+          Array.from(aggregate.requiredStations).some(
+            (requiredStation) => normalizeLooseText(requiredStation) === normalizeLooseText(station)
+          )
+        );
+        const stationCells: Record<string, ProductionMonitorCell> = {};
 
-    const rows: ProductionMonitorRow[] = items.map((item) => {
-      const orderNumber = String(item.order_number).trim();
-      const orderLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(orderNumber));
-      const savedRequiredStations = Array.isArray(item.required_stations)
-        ? item.required_stations.map((station) => String(station).trim()).filter(Boolean)
-        : [];
-      const requiredStations = savedRequiredStations.length > 0 ? savedRequiredStations : stations;
-      const stationCells: Record<string, ProductionMonitorCell> = {};
-      stations.forEach((station) => {
-        const isRequired = requiredStations.some(
-          (requiredStation) => normalizeLooseText(requiredStation) === normalizeLooseText(station)
-        );
-        if (!isRequired) {
-          stationCells[station] = {
-            status: "not-required",
-            label: "–",
-            workerName: "",
-            startedAt: null,
-            endedAt: null,
-          };
-          return;
-        }
-        const stationLogs = orderLogs.filter((log) => normalizeLooseText(resolveLogStation(log, workers)) === normalizeLooseText(station));
-        const stationBatchStarts = productionBatchStarts.filter((batch) =>
-          normalizeLooseText(batch.machine_id) === normalizeLooseText(station) &&
-          Array.isArray(batch.order_ids) &&
-          batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(orderNumber))
-        );
-        stationCells[station] = getMonitorCellFromLogs(stationLogs, stationBatchStarts, orderNumber);
+        monitorStations.forEach((station) => {
+          const isRequired = requiredStations.some(
+            (requiredStation) => normalizeLooseText(requiredStation) === normalizeLooseText(station)
+          );
+
+          if (!isRequired) {
+            stationCells[station] = {
+              status: "not-required",
+              label: "–",
+              workerName: "",
+              startedAt: null,
+              endedAt: null,
+            };
+            return;
+          }
+
+          const stationLogs = orderLogs.filter(
+            (log) => normalizeLooseText(resolveLogStation(log, workers)) === normalizeLooseText(station)
+          );
+          const stationBatchStarts = productionBatchStarts.filter((batch) =>
+            normalizeLooseText(batch.machine_id) === normalizeLooseText(station)
+            && Array.isArray(batch.order_ids)
+            && batch.order_ids.some(
+              (orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(orderNumber)
+            )
+          );
+
+          stationCells[station] = getMonitorCellFromLogs(
+            stationLogs,
+            stationBatchStarts,
+            orderNumber
+          );
+        });
+
+        const statuses = Object.values(stationCells)
+          .map((cell) => cell.status)
+          .filter((status) => status !== "not-required");
+        const overallStatus: ProductionMonitorStatus =
+          statuses.length > 0 && statuses.every((status) => status === "done")
+            ? "done"
+            : statuses.some((status) => status === "done" || status === "in-progress")
+              ? "in-progress"
+              : "waiting";
+
+        return {
+          itemId: aggregate.itemId,
+          orderNumber,
+          sequenceNumber: aggregate.sequenceNumber,
+          plannedQuantity: aggregate.plannedQuantity,
+          productName: aggregate.productName,
+          requiredStations,
+          overallStatus,
+          stations: stationCells,
+        };
       });
-      const statuses = Object.values(stationCells)
-        .map((cell) => cell.status)
-        .filter((status) => status !== "not-required");
-      const overallStatus: ProductionMonitorStatus = statuses.length > 0 && statuses.every((status) => status === "done")
-        ? "done"
-        : statuses.some((status) => status === "done" || status === "in-progress")
-          ? "in-progress"
-          : "waiting";
 
-      return {
-        itemId: item.id,
-        orderNumber,
-        sequenceNumber: Number(item.sequence_number || 0),
-        plannedQuantity: item.planned_quantity === null || item.planned_quantity === undefined ? null : Number(item.planned_quantity),
-        productName: String(item.product_name || "").trim(),
-        requiredStations,
-        overallStatus,
-        stations: stationCells,
-      };
-    });
+    const syntheticPlan: ProductionPlanRow = {
+      id: `monitor-${planStatusFilter}-${dateKey}`,
+      plan_date: dateKey,
+      name: `${statusLabel} termelési monitor`,
+      is_active: true,
+      uploaded_by: null,
+      created_at: new Date().toISOString(),
+    };
 
-    return { plan, stations, rows, logs, lastUpdatedAt: new Date().toISOString() };
+    return {
+      plan: syntheticPlan,
+      stations: monitorStations,
+      rows,
+      logs,
+      lastUpdatedAt: new Date().toISOString(),
+    };
   }
 
-  async function loadProductionMonitor(dateKey = productionMonitorDate): Promise<void> {
+  async function loadProductionMonitor(
+    dateKey = productionMonitorDate,
+    planStatusFilter: ProductionMonitorPlanStatusFilter = activeProductionMonitorProfile.planStatusFilter
+  ): Promise<void> {
     if (!supabase || !dateKey) return;
     setLoadingProductionMonitor(true);
     try {
-      const data = await fetchProductionMonitorData(dateKey);
+      const data = await fetchProductionMonitorData(dateKey, planStatusFilter);
       setProductionMonitorData(data);
     } catch (error) {
       console.error("SUPABASE HIBA loadProductionMonitor:", error);
