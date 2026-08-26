@@ -11642,7 +11642,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (isCarpenterStationName(cleanStationName)) {
       const { data: replacementData, error: replacementError } = await supabase
         .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
-        .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, megjegyzes, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
+        .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, megjegyzes, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, start_worker_name, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
         .order("reported_at", { ascending: false })
         .limit(2000);
       if (replacementError) {
@@ -11687,6 +11687,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           const startedTimes = group.map((row) => row.started_at).filter(Boolean) as string[];
           const completedTimes = group.map((row) => row.completed_at).filter(Boolean) as string[];
 
+          const startedRows = group
+            .filter((row) => Boolean(row.started_at || row.start_worker_name))
+            .sort((left, right) => {
+              const leftTime = left.started_at ? new Date(left.started_at).getTime() : Number.POSITIVE_INFINITY;
+              const rightTime = right.started_at ? new Date(right.started_at).getTime() : Number.POSITIVE_INFINITY;
+              return leftTime - rightTime;
+            });
+
+          const aggregateStartWorkerName =
+            startedRows.find((row) => String(row.start_worker_name || "").trim())?.start_worker_name
+            || active.start_worker_name
+            || null;
+
           scrapReplacementRows.push({
             ...active,
             id: `aggregate-${normalizeLooseText(latest.order_number)}`,
@@ -11698,8 +11711,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             source_station: sources.join(" + "),
             status: allDone ? "KESZ" : active.status,
             reported_at: ordered[0]?.reported_at || latest.reported_at,
-            started_at: startedTimes.length ? startedTimes.sort()[0] : null,
-            completed_at: allDone && completedTimes.length ? completedTimes.sort().at(-1)! : null,
+            start_worker_name: aggregateStartWorkerName,
+            started_at: startedTimes.length ? [...startedTimes].sort()[0] : null,
+            completed_at: allDone && completedTimes.length ? [...completedTimes].sort().at(-1)! : null,
+            // Befejező dolgozó csak valódi KÉSZ állapotnál jelenhet meg.
             last_worker_name: allDone ? latest.last_worker_name || null : null,
           });
         });
@@ -22755,7 +22770,7 @@ body {
       const chunk = cleanOrders.slice(index, index + 100);
       const { data, error } = await supabase
         .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
-        .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, megjegyzes, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
+        .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, megjegyzes, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, start_worker_name, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
         .in("order_number", chunk)
         .neq("status", "KESZ")
         .order("reported_at", { ascending: false })
@@ -22786,7 +22801,7 @@ body {
     if (!cleanOrderNumber) return null;
     const { data, error } = await supabase
       .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
-      .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, megjegyzes, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
+      .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, megjegyzes, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, start_worker_name, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
       .eq("order_number", cleanOrderNumber)
       .eq("toklec_selejt", true)
       .neq("status", "KESZ")
@@ -22819,7 +22834,10 @@ body {
     };
     if (status === "SZABAS_FOLYAMATBAN") {
       payload.started_at = row.started_at || timestamp;
-      payload.start_worker_name = row.start_worker_name || activeWorker?.["Teljes nev"] || null;
+      payload.start_worker_name =
+        String(row.start_worker_name || "").trim()
+        || activeWorker?.["Teljes nev"]
+        || null;
       // START-nál a befejező dolgozó mező maradjon üres.
       payload.last_worker_name = null;
     }
