@@ -4685,6 +4685,12 @@ function isEditableInputElement(element: Element | null): boolean {
   return tagName === "input" || tagName === "textarea" || Boolean((element as HTMLElement).isContentEditable);
 }
 
+type NivoScrollAnchor = {
+  element: HTMLElement;
+  top: number;
+  left: number;
+};
+
 type NivoScrollSnapshot = {
   windowX: number;
   windowY: number;
@@ -4693,7 +4699,86 @@ type NivoScrollSnapshot = {
     scrollTop: number;
     scrollLeft: number;
   }>;
+  anchors: NivoScrollAnchor[];
 };
+
+function isNivoUsableScrollAnchor(element: HTMLElement): boolean {
+  if (typeof window === "undefined") return false;
+  if (!element.isConnected) return false;
+  if (element === document.body || element === document.documentElement) return false;
+
+  const rect = element.getBoundingClientRect();
+  if (rect.width < 40 || rect.height < 14) return false;
+  if (rect.bottom <= 0 || rect.top >= window.innerHeight) return false;
+
+  const style = window.getComputedStyle(element);
+  if (style.position === "fixed" || style.position === "sticky") return false;
+  if (style.display === "none" || style.visibility === "hidden") return false;
+
+  return true;
+}
+
+function collectNivoViewportAnchors(): NivoScrollAnchor[] {
+  if (typeof window === "undefined" || typeof document === "undefined") return [];
+
+  const found: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>();
+  const viewportWidth = Math.max(1, window.innerWidth);
+  const viewportHeight = Math.max(1, window.innerHeight);
+
+  // Több képernyőpontból keresünk stabilan látható elemet.
+  // Így táblázatnál tipikusan a látható sor, kártyánál a kártya egyik
+  // belső/ős eleme lesz a horgony.
+  const samplePoints = [
+    [0.50, 0.22],
+    [0.35, 0.28],
+    [0.65, 0.28],
+    [0.50, 0.42],
+    [0.25, 0.50],
+    [0.75, 0.50],
+    [0.50, 0.68],
+  ];
+
+  const addCandidate = (candidate: HTMLElement | null) => {
+    if (!candidate || seen.has(candidate) || !isNivoUsableScrollAnchor(candidate)) return;
+    seen.add(candidate);
+    found.push(candidate);
+  };
+
+  samplePoints.forEach(([xRatio, yRatio]) => {
+    const pointElement = document.elementFromPoint(
+      Math.round(viewportWidth * xRatio),
+      Math.round(viewportHeight * yRatio)
+    ) as HTMLElement | null;
+
+    if (!pointElement) return;
+
+    // Először a szemantikailag stabil sor/kártya jellegű őst keressük.
+    const semantic = pointElement.closest(
+      '[data-nivo-scroll-anchor], tr, [role="row"], article, section'
+    ) as HTMLElement | null;
+    addCandidate(semantic);
+
+    // Utána több DOM-szintet is eltárolunk. React frissítésnél gyakran
+    // legalább az egyik ugyanaz a DOM node marad.
+    let current: HTMLElement | null = pointElement;
+    let depth = 0;
+    while (current && depth < 7) {
+      addCandidate(current);
+      current = current.parentElement;
+      depth += 1;
+    }
+  });
+
+  return found.slice(0, 24).map((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      element,
+      top: rect.top,
+      left: rect.left,
+    };
+  });
+}
 
 function captureNivoScrollSnapshot(target?: HTMLElement | null): NivoScrollSnapshot {
   const ancestors: NivoScrollSnapshot["ancestors"] = [];
@@ -4703,8 +4788,13 @@ function captureNivoScrollSnapshot(target?: HTMLElement | null): NivoScrollSnaps
       const style = window.getComputedStyle(element);
       const canScrollY = /(auto|scroll|overlay)/.test(style.overflowY) && element.scrollHeight > element.clientHeight;
       const canScrollX = /(auto|scroll|overlay)/.test(style.overflowX) && element.scrollWidth > element.clientWidth;
+
       if ((canScrollY || canScrollX) && (element.scrollTop !== 0 || element.scrollLeft !== 0)) {
-        ancestors.push({ element, scrollTop: element.scrollTop, scrollLeft: element.scrollLeft });
+        ancestors.push({
+          element,
+          scrollTop: element.scrollTop,
+          scrollLeft: element.scrollLeft,
+        });
       }
     });
   }
@@ -4737,19 +4827,46 @@ function captureNivoScrollSnapshot(target?: HTMLElement | null): NivoScrollSnaps
     windowX: typeof window !== "undefined" ? window.scrollX : 0,
     windowY: typeof window !== "undefined" ? window.scrollY : 0,
     ancestors,
+    anchors: target ? [] : collectNivoViewportAnchors(),
   };
 }
 
 function restoreNivoScrollSnapshot(snapshot: NivoScrollSnapshot): void {
   if (typeof window === "undefined") return;
 
+  // A belső görgethető elemeket továbbra is a saját scroll pozíciójukra
+  // tesszük vissza.
   snapshot.ancestors.forEach(({ element, scrollTop, scrollLeft }) => {
-    // Csak akkor állítjuk vissza, ha az elem még mindig az oldalon van.
     if (!element.isConnected) return;
     if (element.scrollTop !== scrollTop) element.scrollTop = scrollTop;
     if (element.scrollLeft !== scrollLeft) element.scrollLeft = scrollLeft;
   });
 
+  // Elsődlegesen NEM a régi scrollY-t erőltetjük vissza.
+  // A képernyőn korábban látható konkrét DOM elemet tartjuk ugyanazon
+  // képernyőmagasságban. Ha fölötte kártya/sor jelenik meg vagy tűnik el,
+  // ettől a felhasználó nézete nem mozdul el.
+  const connectedAnchor = snapshot.anchors.find(({ element }) =>
+    isNivoUsableScrollAnchor(element)
+  );
+
+  if (connectedAnchor) {
+    const rect = connectedAnchor.element.getBoundingClientRect();
+    const deltaY = rect.top - connectedAnchor.top;
+    const deltaX = rect.left - connectedAnchor.left;
+
+    if (Math.abs(deltaY) > 0.5 || Math.abs(deltaX) > 0.5) {
+      window.scrollBy({
+        left: deltaX,
+        top: deltaY,
+        behavior: "auto",
+      });
+    }
+    return;
+  }
+
+  // Ha React teljesen lecserélte a látható DOM-részt, csak akkor használjuk
+  // a hagyományos abszolút pozíciót tartalékként.
   if (window.scrollX !== snapshot.windowX || window.scrollY !== snapshot.windowY) {
     window.scrollTo({
       left: snapshot.windowX,
@@ -4762,8 +4879,8 @@ function restoreNivoScrollSnapshot(snapshot: NivoScrollSnapshot): void {
 function restoreNivoScrollSnapshotAfterRender(snapshot: NivoScrollSnapshot): void {
   if (typeof window === "undefined") return;
 
-  // React commit / böngésző fókusz-scroll késleltetés ellen több fázisban
-  // visszaállítjuk ugyanazt a pozíciót.
+  // A horgony-alapú visszaállítás minden fázisban ugyanazt a látható
+  // kártyát/sort tartja ugyanott. Nem "pattog" két abszolút scrollY között.
   restoreNivoScrollSnapshot(snapshot);
 
   window.requestAnimationFrame(() => {
@@ -4775,19 +4892,176 @@ function restoreNivoScrollSnapshotAfterRender(snapshot: NivoScrollSnapshot): voi
   });
 
   window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 0);
-  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 80);
+  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 40);
+  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 100);
   window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 180);
-  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 320);
 }
 
 const NIVO_BACKGROUND_REFRESH_MS = 10 * 1000;
 
+let nivoBackgroundRefreshSequence = 0;
+let nivoBackgroundRefreshCleanup: (() => void) | null = null;
+
+function installNivoRefreshScrollStabilizer(
+  getSnapshot: () => NivoScrollSnapshot,
+  setSnapshot: (snapshot: NivoScrollSnapshot) => void,
+  token: number
+): () => void {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return () => {};
+  }
+
+  let restoreInProgress = false;
+  let userIntentAt = 0;
+  let captureTimer: number | null = null;
+  let finalRestoreTimer: number | null = null;
+
+  const isCurrent = () => token === nivoBackgroundRefreshSequence;
+
+  const restore = () => {
+    if (!isCurrent()) return;
+
+    // Ha a felhasználó éppen kézzel görget, nem harcolunk ellene.
+    if (performance.now() - userIntentAt < 140) return;
+
+    restoreInProgress = true;
+    try {
+      restoreNivoScrollSnapshot(getSnapshot());
+    } finally {
+      window.setTimeout(() => {
+        restoreInProgress = false;
+      }, 0);
+    }
+  };
+
+  const captureUserPosition = () => {
+    if (!isCurrent()) return;
+    if (captureTimer !== null) window.clearTimeout(captureTimer);
+
+    // A wheel/touch/keyboard görgetés lefutása után az ÚJ felhasználói
+    // pozíció lesz a védett pozíció.
+    captureTimer = window.setTimeout(() => {
+      if (!isCurrent()) return;
+      setSnapshot(captureNivoScrollSnapshot());
+    }, 40);
+  };
+
+  const markUserIntent = () => {
+    userIntentAt = performance.now();
+    captureUserPosition();
+  };
+
+  const handleKeyDown = (event: KeyboardEvent) => {
+    const scrollKeys = new Set([
+      "ArrowUp",
+      "ArrowDown",
+      "PageUp",
+      "PageDown",
+      "Home",
+      "End",
+      " ",
+    ]);
+    if (scrollKeys.has(event.key)) markUserIntent();
+  };
+
+  const handleScroll = () => {
+    if (restoreInProgress) return;
+    if (performance.now() - userIntentAt < 300) {
+      captureUserPosition();
+    }
+  };
+
+  const mutationObserver = new MutationObserver(() => {
+    // MutationObserver a DOM módosítása után, még a következő festés előtt
+    // fut le, ezért itt lehet a frissítés okozta elmozdulást látható villanás
+    // nélkül korrigálni.
+    restore();
+  });
+
+  mutationObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+
+  const resizeObserver = typeof ResizeObserver !== "undefined"
+    ? new ResizeObserver(() => restore())
+    : null;
+
+  getSnapshot().anchors.forEach(({ element }) => {
+    if (element.isConnected) {
+      try {
+        resizeObserver?.observe(element);
+      } catch {
+        // Nem minden elem figyelhető minden böngészőben; ettől a
+        // MutationObserver + RAF védelem még működik.
+      }
+    }
+  });
+
+  window.addEventListener("wheel", markUserIntent, { passive: true });
+  window.addEventListener("touchmove", markUserIntent, { passive: true });
+  window.addEventListener("pointerdown", markUserIntent, { passive: true });
+  window.addEventListener("keydown", handleKeyDown, true);
+  window.addEventListener("scroll", handleScroll, true);
+
+  // Biztonsági végső korrekció a késői layout/font/React commitok után.
+  finalRestoreTimer = window.setTimeout(() => restore(), 260);
+
+  return () => {
+    mutationObserver.disconnect();
+    resizeObserver?.disconnect();
+
+    if (captureTimer !== null) window.clearTimeout(captureTimer);
+    if (finalRestoreTimer !== null) window.clearTimeout(finalRestoreTimer);
+
+    window.removeEventListener("wheel", markUserIntent);
+    window.removeEventListener("touchmove", markUserIntent);
+    window.removeEventListener("pointerdown", markUserIntent);
+    window.removeEventListener("keydown", handleKeyDown, true);
+    window.removeEventListener("scroll", handleScroll, true);
+  };
+}
+
 async function runNivoBackgroundRefresh(task: () => void | Promise<void>): Promise<void> {
-  const snapshot = captureNivoScrollSnapshot();
+  const token = ++nivoBackgroundRefreshSequence;
+
+  // Egyszerre mindig csak a legfrissebb háttérfrissítés védje a scrollt.
+  // Realtime + 10 mp-es frissítés így nem tud két külön pozíció között
+  // "versenyezni".
+  nivoBackgroundRefreshCleanup?.();
+  nivoBackgroundRefreshCleanup = null;
+
+  let snapshot = captureNivoScrollSnapshot();
+
+  const cleanup = installNivoRefreshScrollStabilizer(
+    () => snapshot,
+    (nextSnapshot) => {
+      snapshot = nextSnapshot;
+    },
+    token
+  );
+
+  nivoBackgroundRefreshCleanup = cleanup;
+
   try {
     await task();
   } finally {
+    if (token !== nivoBackgroundRefreshSequence) return;
+
     restoreNivoScrollSnapshotAfterRender(snapshot);
+
+    // Rövid ideig a React commit után is védjük a látható kártyát/sort,
+    // majd a stabilizálót teljesen lekapcsoljuk.
+    window.setTimeout(() => {
+      if (token !== nivoBackgroundRefreshSequence) return;
+      restoreNivoScrollSnapshot(snapshot);
+      cleanup();
+
+      if (nivoBackgroundRefreshCleanup === cleanup) {
+        nivoBackgroundRefreshCleanup = null;
+      }
+    }, 420);
   }
 }
 
