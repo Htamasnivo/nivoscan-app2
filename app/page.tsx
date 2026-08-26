@@ -13256,19 +13256,51 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                     ? [productionRow!.startWorkerName ? `Indító: ${productionRow!.startWorkerName}` : "", productionRow!.endWorkerName ? `Befejező: ${productionRow!.endWorkerName}` : "", productionRow!.startedAt ? `START: ${formatDateTime(productionRow!.startedAt)}` : "", productionRow!.endedAt ? `END: ${formatDateTime(productionRow!.endedAt)}` : ""].filter(Boolean).join(" | ")
                                     : String(value ?? "");
                           const isNormalProductionTable = !isPriorityTable && !isScrapTable && !isBacklogTable;
+                          const isCsolezerNormalProductionTable =
+                            isNormalProductionTable
+                            && normalizeLooseText(data.stationName) === normalizeLooseText("Csolezer");
+
                           const forceNormalStartedRow = isNormalProductionTable && status === "in-progress";
                           const forceNormalDoneRow = isNormalProductionTable && status === "done";
+                          const forceCsolezerWaitingRow = isCsolezerNormalProductionTable && status === "waiting";
 
+                          // Csőlézer – csak a SIMA termelési kártyán:
+                          // a teljes sor a kártyához beállított saját állapotszíneket használja.
+                          // Így a Profi szerkesztő "Kész / Folyamatban / Várakozik háttér"
+                          // színei ténylegesen megjelennek, nem a korábbi hardcoded pasztell színek.
+                          // A más munkaállomás állapot-oszlopai lent továbbra is külön ágon
+                          // maradnak, ezért megtartják a saját státuszszínüket.
                           const forcedNormalRowBackground = forceNormalDoneRow
-                            ? "#86efac"
+                            ? (
+                                isCsolezerNormalProductionTable
+                                  ? theme.doneBackground
+                                  : "#86efac"
+                              )
                             : forceNormalStartedRow
-                              ? "#fde68a"
-                              : "";
+                              ? (
+                                  isCsolezerNormalProductionTable
+                                    ? theme.inProgressBackground
+                                    : "#fde68a"
+                                )
+                              : forceCsolezerWaitingRow
+                                ? theme.waitingBackground
+                                : "";
+
                           const forcedNormalRowText = forceNormalDoneRow
-                            ? "#14532d"
+                            ? (
+                                isCsolezerNormalProductionTable
+                                  ? theme.doneText
+                                  : "#14532d"
+                              )
                             : forceNormalStartedRow
-                              ? "#713f12"
-                              : "";
+                              ? (
+                                  isCsolezerNormalProductionTable
+                                    ? theme.inProgressText
+                                    : "#713f12"
+                                )
+                              : forceCsolezerWaitingRow
+                                ? theme.waitingText
+                                : "";
 
                           const forceScrapStartedRow = isScrapTable && status === "in-progress";
                           const forcedScrapRowBackground = forceScrapStartedRow ? "#fde68a" : "";
