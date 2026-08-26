@@ -1480,6 +1480,7 @@ const PRODUCTION_CARD_CROSS_STATION_STATUS_STATIONS = [
   { stationName: "Csomagolas", label: "Csomagolás" },
   { stationName: "Foliazo", label: "Fóliázó" },
   { stationName: "Fenyezo", label: "Fényező" },
+  { stationName: "Raktár", label: "Raktár" },
 ] as const;
 
 function getProductionCardCrossStationStatusFieldId(stationName: string): string {
@@ -1716,6 +1717,15 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "fa_szine_belul", label: "fa színe belül", dataType: "text" },
     { key: "beepites_datuma", label: "beépítés dátuma", dataType: "date" },
     { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
+    { key: "statusz", label: "Státusz", dataType: "text" },
+  ],
+  raktar: [
+    { key: "sorszam", label: "sorszam", dataType: "text" },
+    { key: "gyartasi_szam", label: "gyártási szám", dataType: "text" },
+    { key: "megnevezes", label: "megnevezes", dataType: "text" },
+    { key: "mennyiseg", label: "mennyiseg", dataType: "integer" },
+    { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
+    { key: "tipus", label: "tipus", dataType: "text" },
     { key: "statusz", label: "Státusz", dataType: "text" },
   ],
 };
