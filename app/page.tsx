@@ -1536,6 +1536,21 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
     { key: "statusz", label: "Státusz", dataType: "text" },
   ],
+  kezi_szinter: [
+    { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
+    { key: "gyartasi_szam", label: "gyártási szám", dataType: "text" },
+    { key: "szin", label: "szín", dataType: "text" },
+    { key: "rsz", label: "rsz", dataType: "text" },
+    { key: "tokozat_szine", label: "tokozat színe", dataType: "text" },
+    { key: "takaro_kivul", label: "takaró kívül", dataType: "text" },
+    { key: "takaro_belul", label: "takaró belül", dataType: "text" },
+    { key: "tipus", label: "típus", dataType: "text" },
+    { key: "takaro", label: "takaró", dataType: "text" },
+    { key: "osszefogo_lemez", label: "összefogó lemez", dataType: "text" },
+    { key: "beszereles_datuma", label: "beszerelés dátuma", dataType: "date" },
+    { key: "megjegyzes", label: "megjegyzés", dataType: "text" },
+    { key: "statusz", label: "Státusz", dataType: "text" },
+  ],
   asztalos: [
     { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
     { key: "gyartasi_szam", label: "gyártási szám", dataType: "text" },
@@ -2533,7 +2548,7 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
   // Ezeknél a kártyáknál az Excel üzleti mezői a mestermezők. A kötelező
   // rendszermezők (Állapot, Indító dolgozó, Befejező dolgozó, Eltelt idő)
   // minden normál termelési kártyán automatikusan hozzáadódnak és nem rejthetők el.
-  const excelExactCardStations = new Set(["szinter", "lezerhegesztes", "csomagolas", "foliazo", "fenyezo"]);
+  const excelExactCardStations = new Set(["szinter", "kezi_szinter", "lezerhegesztes", "csomagolas", "foliazo", "fenyezo"]);
   if (excelExactCardStations.has(normalizePlanColumnName(stationName))) {
     return Array.from(new Set([...planFieldIds, ...PRODUCTION_CARD_REQUIRED_FIELD_IDS]));
   }
@@ -2811,11 +2826,13 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
   const theme = cloneProductionMonitorTheme(PRODUCTION_MONITOR_THEME_PRESETS["industrial-night"].theme);
   const table = createDefaultProductionMonitorTable(`${cleanStationName} termelési kártya`, "card-table-default", theme);
   table.dataSource = "production-plan";
-  const isSzinterExcelSchema = normalizePlanColumnName(cleanStationName) === "szinter";
-  table.fieldOrder = isSzinterExcelSchema
+  const usesSzinterExcelSchema = ["szinter", "kezi_szinter"].includes(
+    normalizePlanColumnName(cleanStationName)
+  );
+  table.fieldOrder = usesSzinterExcelSchema
     ? [...getProductionCardFieldIdsForTable(table, cleanStationName)]
     : [...PRODUCTION_CARD_FIELD_IDS];
-  table.hiddenFieldIds = isSzinterExcelSchema ? [] : [PRODUCTION_CARD_DATE_FIELD_ID];
+  table.hiddenFieldIds = usesSzinterExcelSchema ? [] : [PRODUCTION_CARD_DATE_FIELD_ID];
   table.fieldStyles = {
     [PRODUCTION_CARD_ORDER_FIELD_ID]: {
       ...normalizeProductionMonitorFieldStyle(null),
