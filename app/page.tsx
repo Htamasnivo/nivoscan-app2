@@ -4204,6 +4204,18 @@ function buildReproductionStatusLabel(
 }
 
 
+function getTwoPartCompletionPercent(
+  firstPartReady: boolean,
+  secondPartReady: boolean
+): 0 | 50 | 100 {
+  // A készültséget KIZÁRÓLAG a két valóban készre jelentett rész határozza meg.
+  // Semmilyen selejtjelölés nem növeli a százalékot.
+  if (firstPartReady && secondPartReady) return 100;
+  if (firstPartReady || secondPartReady) return 50;
+  return 0;
+}
+
+
 type DoorCompletionSnapshot = {
   isDoorWorkflow: boolean;
   tokKesz: boolean;
@@ -4261,7 +4273,7 @@ function resolveDoorCompletionSnapshot(logs: WorkLogRow[]): DoorCompletionSnapsh
 
   const tokKesz = doorLogs.some((log) => log.tok_kesz === true);
   const nyiloKesz = doorLogs.some((log) => log.nyilo_kesz === true);
-  const completionPercent: 0 | 50 | 100 = tokKesz && nyiloKesz ? 100 : tokKesz || nyiloKesz ? 50 : 0;
+  const completionPercent = getTwoPartCompletionPercent(tokKesz, nyiloKesz);
 
   const latestTokLog = [...doorLogs]
     .filter((log) => log.tok_kesz === true)
@@ -4338,7 +4350,7 @@ function resolvePanelCompletionSnapshot(logs: WorkLogRow[]): PanelCompletionSnap
 
   const ajtolapokKesz = panelLogs.some((log) => log.ajtolapok_kesz === true);
   const toklecKesz = panelLogs.some((log) => log.toklec_kesz === true);
-  const completionPercent: 0 | 50 | 100 = ajtolapokKesz && toklecKesz ? 100 : ajtolapokKesz || toklecKesz ? 50 : 0;
+  const completionPercent = getTwoPartCompletionPercent(ajtolapokKesz, toklecKesz);
 
   const latestAjtolapLog = [...panelLogs].filter((log) => log.ajtolapok_kesz === true).at(-1);
   const latestToklecLog = [...panelLogs].filter((log) => log.toklec_kesz === true).at(-1);
@@ -4366,6 +4378,30 @@ function buildPanelCompletionStatusLabel(snapshot: PanelCompletionSnapshot): str
 }
 
 function isFullyCompletedEndLog(log: WorkLogRow): boolean {
+  const hasDoorCompletionData =
+    log.tok_kesz !== null && log.tok_kesz !== undefined
+    || log.nyilo_kesz !== null && log.nyilo_kesz !== undefined
+    || Boolean(log.tok_kesz_at || log.nyilo_kesz_at);
+
+  if (hasDoorCompletionData) {
+    return getTwoPartCompletionPercent(
+      log.tok_kesz === true,
+      log.nyilo_kesz === true
+    ) >= 100;
+  }
+
+  const hasPanelCompletionData =
+    log.ajtolapok_kesz !== null && log.ajtolapok_kesz !== undefined
+    || log.toklec_kesz !== null && log.toklec_kesz !== undefined
+    || Boolean(log.ajtolapok_kesz_at || log.toklec_kesz_at);
+
+  if (hasPanelCompletionData) {
+    return getTwoPartCompletionPercent(
+      log.ajtolapok_kesz === true,
+      log.toklec_kesz === true
+    ) >= 100;
+  }
+
   const completionValue = log.reszleges_keszultseg;
   if (completionValue === null || completionValue === undefined) return true;
   return Number(completionValue) >= 100;
@@ -24628,7 +24664,7 @@ body {
       const nextNyilo = previous.nyiloKesz || state.nyiloKesz;
       const newlyTok = !previous.tokKesz && nextTok;
       const newlyNyilo = !previous.nyiloKesz && nextNyilo;
-      const nextPercent: 0 | 50 | 100 = nextTok && nextNyilo ? 100 : nextTok || nextNyilo ? 50 : 0;
+      const nextPercent = getTwoPartCompletionPercent(nextTok, nextNyilo);
       const note = String(endOrderNotes[order] || "").trim();
       const hasScrap = state.outerScrap || state.innerScrap || state.toklecScrap;
 
@@ -24906,7 +24942,7 @@ body {
       const nextToklec = previous.toklecKesz || state.toklecKesz;
       const newlyAjtolapok = !previous.ajtolapokKesz && nextAjtolapok;
       const newlyToklec = !previous.toklecKesz && nextToklec;
-      const nextPercent: 0 | 50 | 100 = nextAjtolapok && nextToklec ? 100 : nextAjtolapok || nextToklec ? 50 : 0;
+      const nextPercent = getTwoPartCompletionPercent(nextAjtolapok, nextToklec);
       const note = String(endOrderNotes[order] || "").trim();
       const hasScrap = state.outerScrap || state.innerScrap || state.toklecScrap;
       if (state.toklecScrap && !note) {
@@ -26631,11 +26667,10 @@ body {
         : { ...EMPTY_DOOR_COMPLETION_SNAPSHOT };
       const cumulativeTokKesz = isDoorTwoPartEnd ? storedDoorCompletion.tokKesz || requestedTokKesz : false;
       const cumulativeNyiloKesz = isDoorTwoPartEnd ? storedDoorCompletion.nyiloKesz || requestedNyiloKesz : false;
-      const doorCompletionPercent: 0 | 50 | 100 = cumulativeTokKesz && cumulativeNyiloKesz
-        ? 100
-        : cumulativeTokKesz || cumulativeNyiloKesz
-          ? 50
-          : 0;
+      const doorCompletionPercent = getTwoPartCompletionPercent(
+        cumulativeTokKesz,
+        cumulativeNyiloKesz
+      );
       const nowCompletesTok = isDoorTwoPartEnd && cumulativeTokKesz && !storedDoorCompletion.tokKesz;
       const nowCompletesNyilo = isDoorTwoPartEnd && cumulativeNyiloKesz && !storedDoorCompletion.nyiloKesz;
       const finalTokWorkerName = storedDoorCompletion.tokKeszWorkerName || (nowCompletesTok ? activeWorker["Teljes nev"] : "");
@@ -26652,11 +26687,10 @@ body {
       const cumulativePanelToklecKesz = isPanelTwoPartEnd
         ? storedPanelCompletion.toklecKesz || requestedPanelToklecKesz
         : false;
-      const panelCompletionPercent: 0 | 50 | 100 = cumulativeAjtolapokKesz && cumulativePanelToklecKesz
-        ? 100
-        : cumulativeAjtolapokKesz || cumulativePanelToklecKesz
-          ? 50
-          : 0;
+      const panelCompletionPercent = getTwoPartCompletionPercent(
+        cumulativeAjtolapokKesz,
+        cumulativePanelToklecKesz
+      );
       const nowCompletesAjtolapok = isPanelTwoPartEnd && cumulativeAjtolapokKesz && !storedPanelCompletion.ajtolapokKesz;
       const nowCompletesPanelToklec = isPanelTwoPartEnd && cumulativePanelToklecKesz && !storedPanelCompletion.toklecKesz;
       const finalAjtolapokWorkerName = storedPanelCompletion.ajtolapokKeszWorkerName || (nowCompletesAjtolapok ? activeWorker["Teljes nev"] : "");
@@ -28915,7 +28949,7 @@ body {
                             const order = String(rawOrder);
                             if (isEventFiveBatchWorker()) {
                               const state = endEventFiveOrderStateMap[order] || { ...EMPTY_EVENT_FIVE_BATCH_ORDER_STATE };
-                              const percent = state.tokKesz && state.nyiloKesz ? 100 : state.tokKesz || state.nyiloKesz ? 50 : 0;
+                              const percent = getTwoPartCompletionPercent(state.tokKesz, state.nyiloKesz);
 
                               const setOrderState = (patch: Partial<EventFiveBatchOrderState>) => {
                                 setEndEventFiveOrderStateMap((current) => ({
@@ -29014,7 +29048,7 @@ body {
 
                             if (isEventSixBatchWorker()) {
                               const state = endEventSixOrderStateMap[order] || { ...EMPTY_EVENT_SIX_BATCH_ORDER_STATE };
-                              const percent = state.ajtolapokKesz && state.toklecKesz ? 100 : state.ajtolapokKesz || state.toklecKesz ? 50 : 0;
+                              const percent = getTwoPartCompletionPercent(state.ajtolapokKesz, state.toklecKesz);
                               const setOrderState = (patch: Partial<EventSixBatchOrderState>) => {
                                 setEndEventSixOrderStateMap((current) => ({
                                   ...current,
