@@ -4740,6 +4740,8 @@ function restoreNivoScrollSnapshotAfterRender(snapshot: NivoScrollSnapshot): voi
 
   window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 0);
   window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 80);
+  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 180);
+  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 320);
 }
 
 const NIVO_BACKGROUND_REFRESH_MS = 10 * 1000;
@@ -5768,6 +5770,27 @@ function buildDashboardData(
 }
 
 
+type EventFiveBatchOrderState = {
+  tokKesz: boolean;
+  nyiloKesz: boolean;
+  tokLocked: boolean;
+  nyiloLocked: boolean;
+  outerScrap: boolean;
+  innerScrap: boolean;
+  toklecScrap: boolean;
+};
+
+const EMPTY_EVENT_FIVE_BATCH_ORDER_STATE: EventFiveBatchOrderState = {
+  tokKesz: false,
+  nyiloKesz: false,
+  tokLocked: false,
+  nyiloLocked: false,
+  outerScrap: false,
+  innerScrap: false,
+  toklecScrap: false,
+};
+
+
 type EventSixBatchOrderState = {
   ajtolapokKesz: boolean;
   toklecKesz: boolean;
@@ -5841,6 +5864,7 @@ export default function Page() {
   const [activeBatchInput, setActiveBatchInput] = useState("");
   const [endBatchCommandInput, setEndBatchCommandInput] = useState("");
   const [endReadyMap, setEndReadyMap] = useState<Record<string, boolean>>({});
+  const [endEventFiveOrderStateMap, setEndEventFiveOrderStateMap] = useState<Record<string, EventFiveBatchOrderState>>({});
   const [endEventSixOrderStateMap, setEndEventSixOrderStateMap] = useState<Record<string, EventSixBatchOrderState>>({});
   const [endOrderNotes, setEndOrderNotes] = useState<Record<string, string>>({});
   const [endBatchNote, setEndBatchNote] = useState("");
@@ -6048,6 +6072,13 @@ export default function Page() {
   const [nyiloKesz, setNyiloKesz] = useState(false);
   const [tokKeszLocked, setTokKeszLocked] = useState(false);
   const [nyiloKeszLocked, setNyiloKeszLocked] = useState(false);
+
+  // 6-os egyedi mód: Ajtólapok + Tokléc külön részjelentése.
+  const [panelAjtolapokKesz, setPanelAjtolapokKesz] = useState(false);
+  const [panelToklecKesz, setPanelToklecKesz] = useState(false);
+  const [panelAjtolapokLocked, setPanelAjtolapokLocked] = useState(false);
+  const [panelToklecLocked, setPanelToklecLocked] = useState(false);
+
   const [endDarab, setEndDarab] = useState("");
   const [endSzal, setEndSzal] = useState("");
 
@@ -11128,11 +11159,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           latestEnd.reproductionNumber
         ),
         startWorkerName: startForCompletedCycle?.workerName || latestEnd.startWorkerName || "",
-        endWorkerName: latestEnd.workerName,
+        endWorkerName: fullyCompleted ? latestEnd.workerName : "",
         startedAt: panelSnapshot.isPanelWorkflow
           ? latestEnd.startedAt || startForCompletedCycle?.startedAt || null
           : startForCompletedCycle?.startedAt || latestEnd.startedAt || null,
-        endedAt: latestEnd.endedAt,
+        // Részjelentésnél a munka még fut, ezért az Eltelt idő nem fagyhat
+        // be a részmentés END időpontjára.
+        endedAt: fullyCompleted ? latestEnd.endedAt : null,
         isReproduction: latestEnd.isReproduction,
         reproductionNumber: latestEnd.reproductionNumber,
         doorWorkflow: doorSnapshot.isDoorWorkflow,
@@ -20669,6 +20702,10 @@ START: ${formatDateTime(startAt)}`
     setNyiloKesz(false);
     setTokKeszLocked(false);
     setNyiloKeszLocked(false);
+    setPanelAjtolapokKesz(false);
+    setPanelToklecKesz(false);
+    setPanelAjtolapokLocked(false);
+    setPanelToklecLocked(false);
     setEndNote("");
     setEndDarab("");
     setEndSzal("");
@@ -20679,6 +20716,7 @@ START: ${formatDateTime(startAt)}`
     setActiveBatchInput("");
     setEndBatchCommandInput("");
     setEndReadyMap({});
+    setEndEventFiveOrderStateMap({});
     setEndEventSixOrderStateMap({});
     setEndOrderNotes({});
     setEndBatchNote("");
@@ -21824,7 +21862,10 @@ body {
 
   function isWorkerKotegMode(worker: Worker): boolean {
     const mode = Number(getWorkerEsemenyKotegValue(worker));
-    return mode === 2 || mode === 3 || mode === 6;
+    // 5-ös módban a dolgozó minden alkalommal választhat:
+    // Egyedi rendelés VAGY Köteg.
+    // 6-os módban kizárólag egyedi rendelés engedélyezett.
+    return mode === 2 || mode === 3 || mode === 5;
   }
 
   function buildStructuredNote(baseNote: string | null | undefined, metadata: Record<string, unknown>): string | null {
@@ -21897,6 +21938,10 @@ body {
     setNyiloKesz(false);
     setTokKeszLocked(false);
     setNyiloKeszLocked(false);
+    setPanelAjtolapokKesz(false);
+    setPanelToklecKesz(false);
+    setPanelAjtolapokLocked(false);
+    setPanelToklecLocked(false);
     setEndDarab("");
     setEndSzal("");
     setShowIncompleteBatches(false);
@@ -21907,27 +21952,31 @@ body {
     setOrderTypeScanError("");
     orderTypeLatestValueRef.current = selectedCode;
     setOrderTypeInput(selectedCode);
-    setWorkflowMode(useBatchMode ? "batch" : "single");
+    setWorkflowMode(koteg === 5 ? null : useBatchMode ? "batch" : "single");
+    if (koteg === 5) {
+      setOrderTypeInput("");
+      orderTypeLatestValueRef.current = "";
+    }
     if (koteg === 2) {
       setWorkflowMode("batch");
       setOrderTypeInput("TYPE-KOTEG");
       orderTypeLatestValueRef.current = "TYPE-KOTEG";
     }
     if (koteg === 6) {
-      setWorkflowMode("batch");
-      setOrderTypeInput("TYPE-KOTEG");
-      orderTypeLatestValueRef.current = "TYPE-KOTEG";
+      setWorkflowMode("single");
+      setOrderTypeInput("TYPE-RENDELES");
+      orderTypeLatestValueRef.current = "TYPE-RENDELES";
       setFlowStage("order-scan");
       setStep(5);
       setMessage({
         type: "success",
-        text: `Sikeres azonosítás: ${worker["Teljes nev"]}. 6-os kötegmód aktív: Ajtólapok + Tokléc külön, rendelésenként jelenthető készre.`,
+        text: `Sikeres azonosítás: ${worker["Teljes nev"]}. 6-os egyedi mód aktív: Ajtólapok + Tokléc külön részjelentéssel. Olvasd be a rendelésszámot.`,
       });
-      window.setTimeout(() => focusAndSelectInput(orderInputRef), 0);
+      window.setTimeout(() => focusAndSelectInput(orderInputRef, { preventScroll: true }), 0);
       return;
     }
 
-    if (koteg === 1 || koteg === 4 || koteg === 5) {
+    if (koteg === 1 || koteg === 4) {
       setWorkflowMode("single");
       setOrderTypeInput("TYPE-RENDELES");
       orderTypeLatestValueRef.current = "TYPE-RENDELES";
@@ -21951,9 +22000,11 @@ body {
     setStep(4);
     setMessage({
       type: "success",
-      text: useBatchMode
-        ? `Sikeres azonosítás: ${worker["Teljes nev"]}. Válaszd ki, hogy köteg rendelést vagy egyedi rendelést szeretnél rögzíteni.`
-        : `Sikeres azonosítás: ${worker["Teljes nev"]}. Automatikus mód: Egyedi rendelés. Olvasd be a rendelésszámot; START nélkül azonnal mentésre kerül.`,
+      text: koteg === 5
+        ? `Sikeres azonosítás: ${worker["Teljes nev"]}. 5-ös Tok + Nyíló mód: válaszd ki, hogy egyedi rendelést vagy köteg rendelést szeretnél rögzíteni.`
+        : useBatchMode
+          ? `Sikeres azonosítás: ${worker["Teljes nev"]}. Válaszd ki, hogy köteg rendelést vagy egyedi rendelést szeretnél rögzíteni.`
+          : `Sikeres azonosítás: ${worker["Teljes nev"]}. Automatikus mód: Egyedi rendelés. Olvasd be a rendelésszámot; START nélkül azonnal mentésre kerül.`,
     });
     window.setTimeout(() => {
       focusAndSelectInput(orderTypeInputRef);
@@ -21973,6 +22024,10 @@ body {
     setNyiloKesz(false);
     setTokKeszLocked(false);
     setNyiloKeszLocked(false);
+    setPanelAjtolapokKesz(false);
+    setPanelToklecKesz(false);
+    setPanelAjtolapokLocked(false);
+    setPanelToklecLocked(false);
     setEndDarab("");
     setEndSzal("");
     setWorkflowMode(null);
@@ -22051,6 +22106,10 @@ body {
     setNyiloKesz(false);
     setTokKeszLocked(false);
     setNyiloKeszLocked(false);
+    setPanelAjtolapokKesz(false);
+    setPanelToklecKesz(false);
+    setPanelAjtolapokLocked(false);
+    setPanelToklecLocked(false);
     setEndNote("");
     setEndDarab("");
     setEndSzal("");
@@ -22120,6 +22179,10 @@ body {
     setNyiloKesz(false);
     setTokKeszLocked(false);
     setNyiloKeszLocked(false);
+    setPanelAjtolapokKesz(false);
+    setPanelToklecKesz(false);
+    setPanelAjtolapokLocked(false);
+    setPanelToklecLocked(false);
     setEndNote("");
     setEndDarab("");
     setEndSzal("");
@@ -22171,6 +22234,12 @@ body {
   }
 
   function handleOrderTypeSelection(mode: WorkflowMode): void {
+    if (activeWorker && Number(getWorkerEsemenyKotegValue(activeWorker)) === 6 && mode !== "single") {
+      setOrderTypeScanError("A 6-os esemény csak egyedi rendelésként jelenthető.");
+      setMessage({ type: "error", text: "A 6-os eseménynél köteg mód nem használható. Csak egyedi rendelés engedélyezett." });
+      return;
+    }
+
     if (activeWorker && isManagementDashboardWorker(activeWorker)) {
       setTerminalView("management");
       setWorkflowMode(null);
@@ -22205,7 +22274,14 @@ body {
       setOrderNumber("");
       setFlowStage("order-scan");
       setStep(5);
-      setMessage({ type: "info", text: "Egyedi rendelés mód aktív. Olvasd be a rendelésszámot; START nélkül azonnal mentésre kerül." });
+      setMessage({
+        type: "info",
+        text: workerEventKoteg === 5
+          ? "5-ös egyedi mód aktív. Olvasd be a rendelésszámot; az END-nél a Tok és Nyíló külön részjelenthető."
+          : workerEventKoteg === 6
+            ? "6-os egyedi mód aktív. Olvasd be a rendelésszámot; az END-nél az Ajtólapok és Tokléc külön részjelenthető."
+            : "Egyedi rendelés mód aktív. Olvasd be a rendelésszámot; START nélkül azonnal mentésre kerül.",
+      });
       window.setTimeout(() => focusAndSelectInput(orderInputRef), 0);
       return;
     }
@@ -22229,7 +22305,12 @@ body {
     setSelectedBatchOperation(null);
     setFlowStage("order-scan");
     setStep(5);
-    setMessage({ type: "info", text: "Köteg rendelés mód aktív. Olvasd egymás után a rendelésszámokat. A pontos START kód véglegesíti és menti a köteget." });
+    setMessage({
+      type: "info",
+      text: workerEventKoteg === 5
+        ? "5-ös Tok + Nyíló kötegmód aktív. Olvasd egymás után a rendeléseket. START-tal létrejön a köteg; END-nél rendelésenként külön jelölhető a Tok/Nyíló készültség."
+        : "Köteg rendelés mód aktív. Olvasd egymás után a rendelésszámokat. A pontos START kód véglegesíti és menti a köteget.",
+    });
   }
 
   async function handleBatchOperationSelection(operation: BatchOperationCode): Promise<void> {
@@ -22412,6 +22493,10 @@ body {
     setNyiloKesz(false);
     setTokKeszLocked(false);
     setNyiloKeszLocked(false);
+    setPanelAjtolapokKesz(false);
+    setPanelToklecKesz(false);
+    setPanelAjtolapokLocked(false);
+    setPanelToklecLocked(false);
       setEndNote("");
       setEndDarab("");
       setEndSzal("");
@@ -22422,19 +22507,6 @@ body {
       setTerminalView("scanner");
 
       if (workerEventKoteg === 6) {
-        setWorkflowMode("batch");
-        setPendingAction("START");
-        setBatchCode("");
-        setBatchOrders([]);
-        setBatchOrderProductionMeta({});
-        setFlowStage("order-scan");
-        setStep(5);
-        setMessage({ type: "success", text: `${matchedEvent.label} esemény beolvasva. 6-os kötegmód aktív; olvasd be a köteg rendeléseit, majd START-tal indítsd.` });
-        window.setTimeout(() => focusAndSelectInput(orderInputRef), 0);
-        return;
-      }
-
-      if (workerEventKoteg === 4 || workerEventKoteg === 5) {
         setWorkflowMode("single");
         setPendingAction("START");
         setBatchCode("");
@@ -22442,9 +22514,35 @@ body {
         setBatchOrderProductionMeta({});
         setFlowStage("order-scan");
         setStep(5);
-        setMessage({ type: "success", text: workerEventKoteg === 5
-          ? `${matchedEvent.label} esemény beolvasva. Tok + nyíló kétlépcsős egyedi mód aktív; olvasd be a rendelésszámot.`
-          : `${matchedEvent.label} esemény beolvasva. Fóliázó / lap-selejt mód aktív; olvasd be a rendelésszámot.` });
+        setMessage({ type: "success", text: `${matchedEvent.label} esemény beolvasva. 6-os egyedi Ajtólapok + Tokléc mód aktív; olvasd be a rendelésszámot.` });
+        window.setTimeout(() => focusAndSelectInput(orderInputRef, { preventScroll: true }), 0);
+        return;
+      }
+
+      if (workerEventKoteg === 5) {
+        setWorkflowMode(null);
+        setPendingAction("START");
+        setBatchCode("");
+        setBatchOrders([]);
+        setBatchOrderProductionMeta({});
+        setOrderTypeInput("");
+        orderTypeLatestValueRef.current = "";
+        setFlowStage("batch-selection");
+        setStep(4);
+        setMessage({ type: "success", text: `${matchedEvent.label} esemény beolvasva. Válaszd ki az Egyedi rendelés vagy Köteg létrehozása módot.` });
+        window.setTimeout(() => focusAndSelectInput(orderTypeInputRef, { preventScroll: true }), 0);
+        return;
+      }
+
+      if (workerEventKoteg === 4) {
+        setWorkflowMode("single");
+        setPendingAction("START");
+        setBatchCode("");
+        setBatchOrders([]);
+        setBatchOrderProductionMeta({});
+        setFlowStage("order-scan");
+        setStep(5);
+        setMessage({ type: "success", text: `${matchedEvent.label} esemény beolvasva. Fóliázó / lap-selejt mód aktív; olvasd be a rendelésszámot.` });
         return;
       }
 
@@ -22517,7 +22615,18 @@ body {
     return !!worker && (mode === 4 || mode === 5 || mode === 6);
   }
 
+  function isEventFiveBatchWorker(worker: Worker | null = activeWorker): boolean {
+    return !!worker && Number(getWorkerEsemenyKotegValue(worker)) === 5;
+  }
+
   function isEventSixBatchWorker(worker: Worker | null = activeWorker): boolean {
+    // A 6-os mód mostantól kizárólag egyedi rendelés.
+    // A régi batch feldolgozó kód kompatibilitásként bent marad, de új 6-os
+    // folyamatból nem érhető el.
+    return false;
+  }
+
+  function isPanelTwoPartWorker(worker: Worker | null = activeWorker): boolean {
     return !!worker && Number(getWorkerEsemenyKotegValue(worker)) === 6;
   }
 
@@ -24075,6 +24184,7 @@ body {
     setActiveBatchInput("");
     setEndBatchCommandInput("");
     setEndReadyMap({});
+    setEndEventFiveOrderStateMap({});
     setEndEventSixOrderStateMap({});
     setEndOrderNotes({});
     setEndBatchNote("");
@@ -24105,6 +24215,7 @@ body {
     setActiveBatchInput("");
     setEndBatchCommandInput("");
     setEndReadyMap({});
+    setEndEventFiveOrderStateMap({});
     setEndEventSixOrderStateMap({});
     setEndOrderNotes({});
     setEndBatchNote("");
@@ -24171,12 +24282,26 @@ body {
     const orders = normalizeProductionBatchOrders(batch.order_ids);
     const readyMap: Record<string, boolean> = {};
     const notes: Record<string, string> = {};
+    const eventFiveMap: Record<string, EventFiveBatchOrderState> = {};
     const eventSixMap: Record<string, EventSixBatchOrderState> = {};
+    const eventFiveMode = isEventFiveBatchWorker();
     const eventSixMode = isEventSixBatchWorker();
 
     for (const order of orders) {
       readyMap[order] = false;
       notes[order] = "";
+
+      if (eventFiveMode) {
+        const snapshot = await fetchDoorCompletionStateForOrder(order, batch.machine_id || getCurrentMachineIdForInsert());
+        eventFiveMap[order] = {
+          ...EMPTY_EVENT_FIVE_BATCH_ORDER_STATE,
+          tokKesz: snapshot.tokKesz,
+          nyiloKesz: snapshot.nyiloKesz,
+          tokLocked: snapshot.tokKesz,
+          nyiloLocked: snapshot.nyiloKesz,
+        };
+      }
+
       if (eventSixMode) {
         const snapshot = await fetchPanelCompletionStateForOrder(order, batch.machine_id || getCurrentMachineIdForInsert());
         eventSixMap[order] = {
@@ -24190,6 +24315,7 @@ body {
     }
     setSelectedEndBatch({ ...batch, order_ids: orders });
     setEndReadyMap(readyMap);
+    setEndEventFiveOrderStateMap(eventFiveMap);
     setEndEventSixOrderStateMap(eventSixMap);
     setEndOrderNotes(notes);
     setEndBatchNote("");
@@ -24197,9 +24323,14 @@ body {
     setEndSzal("");
     setEndBatchCommandInput("");
     setFlowStage("end-batch-detail");
-    setMessage({ type: "info", text: eventSixMode
-      ? `Köteg kiválasztva: ${batch.batch_code}. Rendelésenként jelöld az Ajtólapok és/vagy Tokléc készültségét, szükség esetén a selejtet, majd END-del ments.`
-      : `Köteg kiválasztva: ${batch.batch_code} (${getBatchOperationStatusLabel(batch)}). Jelöld készre a tételeket, majd olvasd be az END kódot.` });
+    setMessage({
+      type: "info",
+      text: eventFiveMode
+        ? `Köteg kiválasztva: ${batch.batch_code}. Rendelésenként külön jelöld a Tok és/vagy Nyíló készültségét, szükség esetén a selejtet, majd END-del ments.`
+        : eventSixMode
+          ? `Köteg kiválasztva: ${batch.batch_code}. Rendelésenként jelöld az Ajtólapok és/vagy Tokléc készültségét, szükség esetén a selejtet, majd END-del ments.`
+          : `Köteg kiválasztva: ${batch.batch_code} (${getBatchOperationStatusLabel(batch)}). Jelöld készre a tételeket, majd olvasd be az END kódot.`,
+    });
     window.setTimeout(() => focusAndSelectInput(endBatchCommandInputRef), 0);
   }
 
@@ -24224,6 +24355,23 @@ body {
 
   function markAllEndOrdersReady(): Record<string, boolean> | null {
     if (!selectedEndBatch) return null;
+
+    if (isEventFiveBatchWorker()) {
+      setEndEventFiveOrderStateMap((current) => {
+        const next = { ...current };
+        selectedEndBatch.order_ids.forEach((rawOrder) => {
+          const order = String(rawOrder).trim();
+          if (!order) return;
+          const state = next[order] || { ...EMPTY_EVENT_FIVE_BATCH_ORDER_STATE };
+          next[order] = { ...state, tokKesz: true, nyiloKesz: true };
+        });
+        return next;
+      });
+      setEndBatchCommandInput("");
+      setMessage({ type: "success", text: "ALL-READY rögzítve: minden rendelésnél Tok + Nyíló kész. END-del véglegesíthető." });
+      window.setTimeout(() => focusAndSelectInput(endBatchCommandInputRef, { preventScroll: true }), 0);
+      return {};
+    }
 
     if (isEventSixBatchWorker()) {
       setEndEventSixOrderStateMap((current) => {
@@ -24423,6 +24571,285 @@ body {
       });
     } catch (error) {
       console.error("SUPABASE HIBA transferReadyCuttingOrdersToMilling:", error);
+      setMessage({ type: "error", text: normalizeError(error) });
+    } finally {
+      setBusy(false);
+      window.setTimeout(() => {
+        batchFinalizeInFlightRef.current = false;
+      }, 320);
+    }
+  }
+
+
+  async function finalizeEventFiveEndBatch(): Promise<void> {
+    if (batchFinalizeInFlightRef.current) return;
+    if (!supabase || !activeWorker || !selectedEndBatch) {
+      setMessage({ type: "error", text: "Nincs kiválasztott dolgozó vagy köteg." });
+      return;
+    }
+
+    const allOrders = selectedEndBatch.order_ids.map((order) => String(order).trim()).filter(Boolean);
+    if (allOrders.length === 0) {
+      setMessage({ type: "error", text: "A kötegben nincs lejelenthető rendelés." });
+      return;
+    }
+
+    const finalDarab = parseDarabValue(endDarab);
+    const finalSzal = parseSzalValue(endSzal);
+    if (finalDarab !== null && !Number.isFinite(finalDarab)) {
+      setMessage({ type: "error", text: "A Darab mező 0 vagy nagyobb egész szám legyen." });
+      return;
+    }
+    if (finalSzal !== null && !Number.isFinite(finalSzal)) {
+      setMessage({ type: "error", text: "A Szál mező 0 vagy nagyobb szám legyen." });
+      return;
+    }
+
+    const currentMachineId = getCurrentMachineIdForInsert();
+    const historicalByOrder: Record<string, DoorCompletionSnapshot> = {};
+    const changes: Array<{
+      order: string;
+      state: EventFiveBatchOrderState;
+      previous: DoorCompletionSnapshot;
+      nextTok: boolean;
+      nextNyilo: boolean;
+      nextPercent: 0 | 50 | 100;
+      newlyTok: boolean;
+      newlyNyilo: boolean;
+      note: string;
+    }> = [];
+
+    for (const order of allOrders) {
+      const previous = await fetchDoorCompletionStateForOrder(order, currentMachineId);
+      historicalByOrder[order] = previous;
+
+      const state = endEventFiveOrderStateMap[order] || { ...EMPTY_EVENT_FIVE_BATCH_ORDER_STATE };
+      const nextTok = previous.tokKesz || state.tokKesz;
+      const nextNyilo = previous.nyiloKesz || state.nyiloKesz;
+      const newlyTok = !previous.tokKesz && nextTok;
+      const newlyNyilo = !previous.nyiloKesz && nextNyilo;
+      const nextPercent: 0 | 50 | 100 = nextTok && nextNyilo ? 100 : nextTok || nextNyilo ? 50 : 0;
+      const note = String(endOrderNotes[order] || "").trim();
+      const hasScrap = state.outerScrap || state.innerScrap || state.toklecScrap;
+
+      if (state.toklecScrap && !note) {
+        setMessage({ type: "error", text: `${order}: Tokléc selejtnél kötelező megjegyzést írni.` });
+        return;
+      }
+
+      if (newlyTok || newlyNyilo || hasScrap || note) {
+        changes.push({
+          order,
+          state,
+          previous,
+          nextTok,
+          nextNyilo,
+          nextPercent,
+          newlyTok,
+          newlyNyilo,
+          note,
+        });
+      }
+    }
+
+    if (changes.length === 0) {
+      setMessage({ type: "error", text: "Nincs új Tok/Nyíló készültség, selejt vagy megjegyzés, amit menteni lehetne." });
+      return;
+    }
+
+    const scrapChanges = changes.filter((item) =>
+      item.state.outerScrap || item.state.innerScrap || item.state.toklecScrap
+    );
+
+    if (scrapChanges.length > 0) {
+      const summary = scrapChanges.map((item) => {
+        const parts = [
+          item.state.outerScrap ? "Külső lap" : "",
+          item.state.innerScrap ? "Belső lap" : "",
+          item.state.toklecScrap ? "Tokléc" : "",
+        ].filter(Boolean).join(" + ");
+        return `${item.order}: ${parts}`;
+      }).join("\n");
+
+      if (!window.confirm(
+        `Selejtjelölés kerül mentésre és az Asztalos selejtpótlási kártyára:\n\n${summary}\n\nBiztosan mented?`
+      )) return;
+    }
+
+    batchFinalizeInFlightRef.current = true;
+    setBusy(true);
+
+    try {
+      const nowIso = new Date().toISOString();
+      const workerNameForSave = activeWorker["Teljes nev"];
+      const batchNoteClean = endBatchNote.trim();
+      const batchStartTime = selectedEndBatch.start_time || selectedEndBatch.created_at || nowIso;
+
+      for (const item of changes) {
+        const previousPartTimes = [item.previous.tokKeszAt, item.previous.nyiloKeszAt]
+          .filter(Boolean)
+          .map((value) => String(value));
+
+        const segmentStart = previousPartTimes.length > 0
+          ? previousPartTimes.sort().at(-1)!
+          : batchStartTime;
+
+        const orderProductionMeta = getProductionMetaForOrder(selectedEndBatch.production_meta, item.order);
+        const tokAt = item.newlyTok ? nowIso : item.previous.tokKeszAt;
+        const nyiloAt = item.newlyNyilo ? nowIso : item.previous.nyiloKeszAt;
+        const tokWorker = item.newlyTok ? workerNameForSave : item.previous.tokKeszWorkerName;
+        const nyiloWorker = item.newlyNyilo ? workerNameForSave : item.previous.nyiloKeszWorkerName;
+        const segmentMinutes = Math.max(
+          0,
+          Math.round((new Date(nowIso).getTime() - new Date(segmentStart).getTime()) / 60000)
+        );
+
+        const logPayload = {
+          worker_id: activeWorker.id,
+          worker_name: workerNameForSave,
+          machine_id: currentMachineId,
+          order_number: item.order,
+          action: "END" as WorkAction,
+          created_at: nowIso,
+          batch_code: selectedEndBatch.batch_code,
+          event_name: item.nextPercent >= 100
+            ? "Tok + Nyíló 100% kész"
+            : item.nextPercent === 50
+              ? "Tok / Nyíló részmentés 50%"
+              : "Tok / Nyíló részmentés",
+          event_code: "END",
+          start_timestamp: segmentStart,
+          start_time: segmentStart,
+          end_timestamp: nowIso,
+          end_time: nowIso,
+          ujragyartas: orderProductionMeta.ujragyartas,
+          ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
+          gyartas_tipus: orderProductionMeta.gyartas_tipus,
+          gyartasi_kor: orderProductionMeta.gyartasi_kor,
+          scrap_qty: null,
+          darab: finalDarab,
+          szal: finalSzal,
+
+          kulso_lap_selejt: item.state.outerScrap,
+          belso_lap_selejt: item.state.innerScrap,
+          toklec_selejt: item.state.toklecScrap,
+
+          tok_kesz: item.nextTok,
+          nyilo_kesz: item.nextNyilo,
+          reszleges_keszultseg: item.nextPercent,
+          tok_kesz_worker_name: tokWorker || null,
+          tok_kesz_at: tokAt || null,
+          nyilo_kesz_worker_name: nyiloWorker || null,
+          nyilo_kesz_at: nyiloAt || null,
+
+          selejt_megjegyzes:
+            item.state.outerScrap || item.state.innerScrap || item.state.toklecScrap
+              ? item.note || null
+              : null,
+
+          note: buildStructuredNote(
+            [item.note, batchNoteClean].filter(Boolean).join(" | ") || null,
+            {
+              worker_name: workerNameForSave,
+              worker_id: activeWorker.id,
+              machine_id: currentMachineId,
+              event_bundle: 5,
+              original_batch_code: selectedEndBatch.batch_code,
+              original_batch_start_time: batchStartTime,
+              start_worker_name: selectedEndBatch.worker_name || null,
+              end_worker_name: workerNameForSave,
+              order_number: item.order,
+              tok_kesz: item.nextTok,
+              nyilo_kesz: item.nextNyilo,
+              reszleges_keszultseg: item.nextPercent,
+              szakasz_start_time: segmentStart,
+              szakasz_end_time: nowIso,
+              szakasz_ido_perc: segmentMinutes,
+              kulso_lap_selejt: item.state.outerScrap,
+              belso_lap_selejt: item.state.innerScrap,
+              toklec_selejt: item.state.toklecScrap,
+              order_note: item.note || null,
+              batch_note: batchNoteClean || null,
+            }
+          ),
+        };
+
+        const { data: insertedLog, error: logError } = await supabase
+          .from("work_logs")
+          .insert([logPayload])
+          .select("id, created_at")
+          .single();
+
+        if (logError) throw logError;
+
+        if (item.state.outerScrap || item.state.innerScrap || item.state.toklecScrap) {
+          await createScrapReplacementFromSheetScrap({
+            orderNumber: item.order,
+            sourceStation: currentMachineId,
+            workLogId: insertedLog?.id || `${selectedEndBatch.batch_code}-${item.order}-${Date.now()}`,
+            reportedAt: String(insertedLog?.created_at || nowIso),
+            outerScrap: item.state.outerScrap,
+            innerScrap: item.state.innerScrap,
+            toklecScrap: item.state.toklecScrap,
+            note: item.note || null,
+          });
+        }
+      }
+
+      const completionAfterSave = new Map<string, number>();
+      allOrders.forEach((order) =>
+        completionAfterSave.set(order, historicalByOrder[order]?.completionPercent || 0)
+      );
+      changes.forEach((item) => completionAfterSave.set(item.order, item.nextPercent));
+
+      const remainingOrders = allOrders.filter(
+        (order) => (completionAfterSave.get(order) || 0) < 100
+      );
+
+      if (remainingOrders.length > 0) {
+        const remainingMeta = Object.fromEntries(
+          remainingOrders.map((order) => [
+            order,
+            getProductionMetaForOrder(selectedEndBatch.production_meta, order),
+          ])
+        ) as Record<string, OrderProductionMeta>;
+
+        let updateQuery = supabase.from("production_batches").update({
+          order_ids: remainingOrders,
+          production_meta: remainingMeta,
+        });
+
+        updateQuery = selectedEndBatch.id !== undefined && selectedEndBatch.id !== null
+          ? updateQuery.eq("id", selectedEndBatch.id)
+          : updateQuery.eq("batch_code", selectedEndBatch.batch_code);
+
+        const { error: updateError } = await updateQuery;
+        if (updateError) throw updateError;
+      } else {
+        const deleteQuery = supabase.from("production_batches").delete();
+        const { error: deleteError } = selectedEndBatch.id !== undefined && selectedEndBatch.id !== null
+          ? await deleteQuery.eq("id", selectedEndBatch.id)
+          : await deleteQuery.eq("batch_code", selectedEndBatch.batch_code);
+        if (deleteError) throw deleteError;
+      }
+
+      await stopScannerAsync();
+      setScanModalOpen(false);
+      handleReset();
+
+      const partialCount = changes.filter((item) => item.nextPercent === 50).length;
+      const completedCount = changes.filter((item) => item.nextPercent === 100).length;
+
+      setMessage({
+        type: "success",
+        text: `5-ös Tok/Nyíló köteg mentve. Részmentés: ${partialCount} rendelés (50%), teljesen kész: ${completedCount} rendelés (100%).${
+          remainingOrders.length > 0
+            ? ` A kötegben ${remainingOrders.length} rendelés maradt folyamatban.`
+            : " A köteg teljesen elkészült."
+        }`,
+      });
+    } catch (error) {
+      console.error("SUPABASE HIBA finalizeEventFiveEndBatch:", error);
       setMessage({ type: "error", text: normalizeError(error) });
     } finally {
       setBusy(false);
@@ -24649,6 +25076,11 @@ body {
   }
 
   async function finalizeEndBatch(): Promise<void> {
+    if (isEventFiveBatchWorker()) {
+      await finalizeEventFiveEndBatch();
+      return;
+    }
+
     if (isEventSixBatchWorker()) {
       await finalizeEventSixEndBatch();
       return;
@@ -25354,10 +25786,16 @@ body {
     return !!(await findOpenWorkLogForOrderAtCurrentMachine(orderId));
   }
   async function routeSingleOrderToEndReporting(orderId: string): Promise<void> {
-    let completionState = { ...EMPTY_DOOR_COMPLETION_SNAPSHOT };
+    let doorCompletionState = { ...EMPTY_DOOR_COMPLETION_SNAPSHOT };
+    let panelCompletionState = { ...EMPTY_PANEL_COMPLETION_SNAPSHOT };
+
     if (isDoorTwoPartWorker(activeWorker)) {
-      completionState = await fetchDoorCompletionStateForOrder(orderId);
+      doorCompletionState = await fetchDoorCompletionStateForOrder(orderId);
     }
+    if (isPanelTwoPartWorker(activeWorker)) {
+      panelCompletionState = await fetchPanelCompletionStateForOrder(orderId);
+    }
+
     setOrderNumber(orderId);
     setWorkflowMode("single");
     setPendingAction("END");
@@ -25369,10 +25807,17 @@ body {
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
     setToklecScrap(false);
-    setTokKesz(completionState.tokKesz);
-    setNyiloKesz(completionState.nyiloKesz);
-    setTokKeszLocked(completionState.tokKesz);
-    setNyiloKeszLocked(completionState.nyiloKesz);
+
+    setTokKesz(doorCompletionState.tokKesz);
+    setNyiloKesz(doorCompletionState.nyiloKesz);
+    setTokKeszLocked(doorCompletionState.tokKesz);
+    setNyiloKeszLocked(doorCompletionState.nyiloKesz);
+
+    setPanelAjtolapokKesz(panelCompletionState.ajtolapokKesz);
+    setPanelToklecKesz(panelCompletionState.toklecKesz);
+    setPanelAjtolapokLocked(panelCompletionState.ajtolapokKesz);
+    setPanelToklecLocked(panelCompletionState.toklecKesz);
+
     setEndDarab("");
     setEndSzal("");
     setStep(6);
@@ -25380,10 +25825,12 @@ body {
       type: "info",
       text: isDoorTwoPartWorker(activeWorker)
         ? `A ${orderId} rendelés ezen az állomáson már fut. Olvasd be az END kódot, majd jelöld a Tok és/vagy Nyíló elkészültét. A korábban készre jelentett részek zárolva maradnak.`
-        : `A ${orderId} rendelés ezen az állomáson már fut. Új START helyett automatikusan a lejelentő felületre irányítottam. Olvasd be az END kódot, add meg a Darab, Szál, selejt és megjegyzés értékeket, ha szükséges, majd mentsd.`,
+        : isPanelTwoPartWorker(activeWorker)
+          ? `A ${orderId} rendelés ezen az állomáson már fut. Olvasd be az END kódot, majd jelöld az Ajtólapok és/vagy Tokléc elkészültét. A korábban készre jelentett részek zárolva maradnak.`
+          : `A ${orderId} rendelés ezen az állomáson már fut. Új START helyett automatikusan a lejelentő felületre irányítottam. Olvasd be az END kódot, add meg a Darab, Szál, selejt és megjegyzés értékeket, ha szükséges, majd mentsd.`,
     });
     window.setTimeout(() => {
-      focusAndSelectInput(actionBarcodeInputRef);
+      focusAndSelectInput(actionBarcodeInputRef, { preventScroll: true });
     }, 0);
   }
 
@@ -25415,6 +25862,7 @@ body {
       gyartasi_kor: null,
     };
     let doorCompletionForStart: DoorCompletionSnapshot = { ...EMPTY_DOOR_COMPLETION_SNAPSHOT };
+    let panelCompletionForStart: PanelCompletionSnapshot = { ...EMPTY_PANEL_COMPLETION_SNAPSHOT };
 
     setBusy(true);
     try {
@@ -25427,6 +25875,9 @@ body {
 
       if (isDoorTwoPartWorker(activeWorker)) {
         doorCompletionForStart = await fetchDoorCompletionStateForOrder(finalOrder);
+      }
+      if (isPanelTwoPartWorker(activeWorker)) {
+        panelCompletionForStart = await fetchPanelCompletionStateForOrder(finalOrder);
       }
 
       const duplicateCheck = await checkOrderAlreadyInProductionBatch(finalOrder);
@@ -25448,6 +25899,13 @@ body {
           gyartas_tipus: "egyedi",
           gyartasi_kor: null,
         };
+      } else if (isPanelTwoPartWorker(activeWorker) && panelCompletionForStart.isPanelWorkflow && panelCompletionForStart.completionPercent < 100) {
+        orderProductionMeta = {
+          ujragyartas: panelCompletionForStart.isReproduction,
+          ujragyartas_sorszam: panelCompletionForStart.reproductionNumber,
+          gyartas_tipus: "egyedi",
+          gyartasi_kor: null,
+        };
       } else {
         const productionDecision = await prepareOrderProductionMeta(finalOrder, true);
         if (!productionDecision.proceed) {
@@ -25459,6 +25917,9 @@ body {
         orderProductionMeta = productionDecision.meta;
         if (isDoorTwoPartWorker(activeWorker) && doorCompletionForStart.completionPercent >= 100) {
           doorCompletionForStart = { ...EMPTY_DOOR_COMPLETION_SNAPSHOT };
+        }
+        if (isPanelTwoPartWorker(activeWorker) && panelCompletionForStart.completionPercent >= 100) {
+          panelCompletionForStart = { ...EMPTY_PANEL_COMPLETION_SNAPSHOT };
         }
       }
     } catch (error) {
@@ -25524,11 +25985,23 @@ body {
           toklec_selejt: false,
           tok_kesz: isDoorTwoPartWorker(activeWorker) ? doorCompletionForStart.tokKesz : null,
           nyilo_kesz: isDoorTwoPartWorker(activeWorker) ? doorCompletionForStart.nyiloKesz : null,
-          reszleges_keszultseg: isDoorTwoPartWorker(activeWorker) ? doorCompletionForStart.completionPercent : null,
           tok_kesz_worker_name: isDoorTwoPartWorker(activeWorker) ? doorCompletionForStart.tokKeszWorkerName || null : null,
           tok_kesz_at: isDoorTwoPartWorker(activeWorker) ? doorCompletionForStart.tokKeszAt : null,
           nyilo_kesz_worker_name: isDoorTwoPartWorker(activeWorker) ? doorCompletionForStart.nyiloKeszWorkerName || null : null,
           nyilo_kesz_at: isDoorTwoPartWorker(activeWorker) ? doorCompletionForStart.nyiloKeszAt : null,
+
+          ajtolapok_kesz: isPanelTwoPartWorker(activeWorker) ? panelCompletionForStart.ajtolapokKesz : null,
+          toklec_kesz: isPanelTwoPartWorker(activeWorker) ? panelCompletionForStart.toklecKesz : null,
+          reszleges_keszultseg: isPanelTwoPartWorker(activeWorker)
+            ? panelCompletionForStart.completionPercent
+            : isDoorTwoPartWorker(activeWorker)
+              ? doorCompletionForStart.completionPercent
+              : null,
+          ajtolapok_kesz_worker_name: isPanelTwoPartWorker(activeWorker) ? panelCompletionForStart.ajtolapokKeszWorkerName || null : null,
+          ajtolapok_kesz_at: isPanelTwoPartWorker(activeWorker) ? panelCompletionForStart.ajtolapokKeszAt : null,
+          toklec_kesz_worker_name: isPanelTwoPartWorker(activeWorker) ? panelCompletionForStart.toklecKeszWorkerName || null : null,
+          toklec_kesz_at: isPanelTwoPartWorker(activeWorker) ? panelCompletionForStart.toklecKeszAt : null,
+
           selejt_megjegyzes: null,
           selejt_potlas: Boolean(activeToklecReplacement),
           selejt_forras_munkaallomas: activeToklecReplacement?.source_station || null,
@@ -26074,6 +26547,10 @@ body {
     const requestedTokKesz = isDoorTwoPartEnd ? tokKesz : false;
     const requestedNyiloKesz = isDoorTwoPartEnd ? nyiloKesz : false;
 
+    const isPanelTwoPartEnd = action === "END" && isPanelTwoPartWorker(activeWorker);
+    const requestedAjtolapokKesz = isPanelTwoPartEnd ? panelAjtolapokKesz : false;
+    const requestedPanelToklecKesz = isPanelTwoPartEnd ? panelToklecKesz : false;
+
     if (action === "END" && finalToklecScrap && !finalNote) {
       setMessage({ type: "error", text: "Tokléc selejt kijelölésekor a Megjegyzés kitöltése kötelező. Írd le röviden, pontosan mit kell pótolni." });
       return;
@@ -26165,6 +26642,28 @@ body {
       const finalTokCompletedAt = storedDoorCompletion.tokKeszAt || (nowCompletesTok ? nowForSave : null);
       const finalNyiloWorkerName = storedDoorCompletion.nyiloKeszWorkerName || (nowCompletesNyilo ? activeWorker["Teljes nev"] : "");
       const finalNyiloCompletedAt = storedDoorCompletion.nyiloKeszAt || (nowCompletesNyilo ? nowForSave : null);
+
+      const storedPanelCompletion = isPanelTwoPartEnd
+        ? await fetchPanelCompletionStateForOrder(finalOrderNumber, currentMachineId)
+        : { ...EMPTY_PANEL_COMPLETION_SNAPSHOT };
+      const cumulativeAjtolapokKesz = isPanelTwoPartEnd
+        ? storedPanelCompletion.ajtolapokKesz || requestedAjtolapokKesz
+        : false;
+      const cumulativePanelToklecKesz = isPanelTwoPartEnd
+        ? storedPanelCompletion.toklecKesz || requestedPanelToklecKesz
+        : false;
+      const panelCompletionPercent: 0 | 50 | 100 = cumulativeAjtolapokKesz && cumulativePanelToklecKesz
+        ? 100
+        : cumulativeAjtolapokKesz || cumulativePanelToklecKesz
+          ? 50
+          : 0;
+      const nowCompletesAjtolapok = isPanelTwoPartEnd && cumulativeAjtolapokKesz && !storedPanelCompletion.ajtolapokKesz;
+      const nowCompletesPanelToklec = isPanelTwoPartEnd && cumulativePanelToklecKesz && !storedPanelCompletion.toklecKesz;
+      const finalAjtolapokWorkerName = storedPanelCompletion.ajtolapokKeszWorkerName || (nowCompletesAjtolapok ? activeWorker["Teljes nev"] : "");
+      const finalAjtolapokCompletedAt = storedPanelCompletion.ajtolapokKeszAt || (nowCompletesAjtolapok ? nowForSave : null);
+      const finalPanelToklecWorkerName = storedPanelCompletion.toklecKeszWorkerName || (nowCompletesPanelToklec ? activeWorker["Teljes nev"] : "");
+      const finalPanelToklecCompletedAt = storedPanelCompletion.toklecKeszAt || (nowCompletesPanelToklec ? nowForSave : null);
+
       let linkedStartTime: string | null = null;
 
       const auditMetadata = {
@@ -26184,11 +26683,23 @@ body {
         toklec_selejt: finalToklecScrap,
         tok_kesz: isDoorTwoPartEnd ? cumulativeTokKesz : null,
         nyilo_kesz: isDoorTwoPartEnd ? cumulativeNyiloKesz : null,
-        reszleges_keszultseg: isDoorTwoPartEnd ? doorCompletionPercent : null,
         tok_kesz_worker_name: isDoorTwoPartEnd ? finalTokWorkerName || null : null,
         tok_kesz_at: isDoorTwoPartEnd ? finalTokCompletedAt : null,
         nyilo_kesz_worker_name: isDoorTwoPartEnd ? finalNyiloWorkerName || null : null,
         nyilo_kesz_at: isDoorTwoPartEnd ? finalNyiloCompletedAt : null,
+
+        ajtolapok_kesz: isPanelTwoPartEnd ? cumulativeAjtolapokKesz : null,
+        toklec_kesz: isPanelTwoPartEnd ? cumulativePanelToklecKesz : null,
+        reszleges_keszultseg: isPanelTwoPartEnd
+          ? panelCompletionPercent
+          : isDoorTwoPartEnd
+            ? doorCompletionPercent
+            : null,
+        ajtolapok_kesz_worker_name: isPanelTwoPartEnd ? finalAjtolapokWorkerName || null : null,
+        ajtolapok_kesz_at: isPanelTwoPartEnd ? finalAjtolapokCompletedAt : null,
+        toklec_kesz_worker_name: isPanelTwoPartEnd ? finalPanelToklecWorkerName || null : null,
+        toklec_kesz_at: isPanelTwoPartEnd ? finalPanelToklecCompletedAt : null,
+
         selejt_megjegyzes: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap ? finalNote : null,
         selejt_forras_munkaallomas: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap ? currentMachineId : activeToklecReplacement?.source_station || null,
         action,
@@ -26204,44 +26715,110 @@ body {
 
         linkedStartTime = openLog.start_time || openLog.start_timestamp || openLog.created_at || null;
 
-        const { error: updateError } = await supabase
-          .from("work_logs")
-          .update({
-            end_time: nowForSave,
+        const partialTwoPartSave =
+          (isDoorTwoPartEnd && doorCompletionPercent < 100)
+          || (isPanelTwoPartEnd && panelCompletionPercent < 100);
+
+        const endPayload = {
+          worker_id: activeWorker.id,
+          worker_name: activeWorker["Teljes nev"],
+          machine_id: currentMachineId,
+          order_number: finalOrderNumber,
+          action: "END" as WorkAction,
+          created_at: nowForSave,
+          batch_code: batchCode || null,
+          event_name: isPanelTwoPartEnd
+            ? panelCompletionPercent >= 100
+              ? "Ajtólapok + Tokléc 100% kész"
+              : "Ajtólapok / Tokléc részmentés"
+            : isDoorTwoPartEnd
+              ? doorCompletionPercent >= 100
+                ? "Tok + Nyíló 100% kész"
+                : "Tok / Nyíló részmentés"
+              : eventMetadata.event_label,
+          event_code: eventMetadata.event_code,
+          start_time: linkedStartTime,
+          start_timestamp: linkedStartTime,
+          end_time: nowForSave,
+          end_timestamp: nowForSave,
+          note: buildStructuredNote(finalNote, {
+            ...auditMetadata,
+            event_bundle: isPanelTwoPartEnd ? 6 : isDoorTwoPartEnd ? 5 : workerEventKoteg,
+            action: "END" as WorkAction,
+            start_time: linkedStartTime,
             end_timestamp: nowForSave,
-            note: buildStructuredNote(finalNote, {
-              ...auditMetadata,
-              action: "END" as WorkAction,
-              start_time: linkedStartTime,
-              end_timestamp: nowForSave,
-              end_time: nowForSave,
-              closed_by_worker_name: activeWorker["Teljes nev"],
-              closed_by_worker_id: activeWorker.id,
-              darab: finalDarab,
-              szal: finalSzal,
-            }),
-            scrap_qty: finalScrapQty,
+            end_time: nowForSave,
+            closed_by_worker_name: activeWorker["Teljes nev"],
+            closed_by_worker_id: activeWorker.id,
             darab: finalDarab,
             szal: finalSzal,
-            kulso_lap_selejt: finalOuterSheetScrap,
-            belso_lap_selejt: finalInnerSheetScrap,
-            toklec_selejt: finalToklecScrap,
-            tok_kesz: isDoorTwoPartEnd ? cumulativeTokKesz : null,
-            nyilo_kesz: isDoorTwoPartEnd ? cumulativeNyiloKesz : null,
-            reszleges_keszultseg: isDoorTwoPartEnd ? doorCompletionPercent : null,
-            tok_kesz_worker_name: isDoorTwoPartEnd ? finalTokWorkerName || null : null,
-            tok_kesz_at: isDoorTwoPartEnd ? finalTokCompletedAt : null,
-            nyilo_kesz_worker_name: isDoorTwoPartEnd ? finalNyiloWorkerName || null : null,
-            nyilo_kesz_at: isDoorTwoPartEnd ? finalNyiloCompletedAt : null,
-            selejt_megjegyzes: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap ? finalNote : null,
-            selejt_potlas: Boolean(activeToklecReplacement),
-            selejt_forras_munkaallomas: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap
-              ? currentMachineId
-              : activeToklecReplacement?.source_station || null,
-          })
-          .eq("id", openLog.id);
+            partial_save: partialTwoPartSave,
+          }),
+          scrap_qty: finalScrapQty,
+          darab: finalDarab,
+          szal: finalSzal,
+          kulso_lap_selejt: finalOuterSheetScrap,
+          belso_lap_selejt: finalInnerSheetScrap,
+          toklec_selejt: finalToklecScrap,
 
-        if (updateError) throw updateError;
+          tok_kesz: isDoorTwoPartEnd ? cumulativeTokKesz : null,
+          nyilo_kesz: isDoorTwoPartEnd ? cumulativeNyiloKesz : null,
+          tok_kesz_worker_name: isDoorTwoPartEnd ? finalTokWorkerName || null : null,
+          tok_kesz_at: isDoorTwoPartEnd ? finalTokCompletedAt : null,
+          nyilo_kesz_worker_name: isDoorTwoPartEnd ? finalNyiloWorkerName || null : null,
+          nyilo_kesz_at: isDoorTwoPartEnd ? finalNyiloCompletedAt : null,
+
+          ajtolapok_kesz: isPanelTwoPartEnd ? cumulativeAjtolapokKesz : null,
+          toklec_kesz: isPanelTwoPartEnd ? cumulativePanelToklecKesz : null,
+          reszleges_keszultseg: isPanelTwoPartEnd
+            ? panelCompletionPercent
+            : isDoorTwoPartEnd
+              ? doorCompletionPercent
+              : null,
+          ajtolapok_kesz_worker_name: isPanelTwoPartEnd ? finalAjtolapokWorkerName || null : null,
+          ajtolapok_kesz_at: isPanelTwoPartEnd ? finalAjtolapokCompletedAt : null,
+          toklec_kesz_worker_name: isPanelTwoPartEnd ? finalPanelToklecWorkerName || null : null,
+          toklec_kesz_at: isPanelTwoPartEnd ? finalPanelToklecCompletedAt : null,
+
+          selejt_megjegyzes: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap ? finalNote : null,
+          selejt_potlas: Boolean(activeToklecReplacement),
+          selejt_forras_munkaallomas: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap
+            ? currentMachineId
+            : activeToklecReplacement?.source_station || null,
+        };
+
+        if (partialTwoPartSave) {
+          // Részmentés: külön END eseményként eltároljuk az addigi időt,
+          // de az eredeti nyitott START sort NEM zárjuk le.
+          // Így a munka időszámlálója folyamatosan tovább fut a 100%-os lezárásig.
+          const { error: partialInsertError } = await supabase
+            .from("work_logs")
+            .insert([endPayload]);
+          if (partialInsertError) throw partialInsertError;
+        } else {
+          // 100% / normál END: ekkor zárjuk le ténylegesen a nyitott START sort.
+          const {
+            worker_id: _workerId,
+            worker_name: _workerName,
+            machine_id: _machineId,
+            order_number: _orderNumber,
+            action: _action,
+            created_at: _createdAt,
+            batch_code: _batchCode,
+            event_name: _eventName,
+            event_code: _eventCode,
+            start_time: _startTime,
+            start_timestamp: _startTimestamp,
+            ...updatePayload
+          } = endPayload;
+
+          const { error: updateError } = await supabase
+            .from("work_logs")
+            .update(updatePayload)
+            .eq("id", openLog.id);
+
+          if (updateError) throw updateError;
+        }
 
         if (finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap) {
           await createScrapReplacementFromSheetScrap({
@@ -26292,11 +26869,23 @@ body {
           toklec_selejt: false,
           tok_kesz: isDoorTwoPartWorker(activeWorker) ? false : null,
           nyilo_kesz: isDoorTwoPartWorker(activeWorker) ? false : null,
-          reszleges_keszultseg: isDoorTwoPartWorker(activeWorker) ? 0 : null,
           tok_kesz_worker_name: null,
           tok_kesz_at: null,
           nyilo_kesz_worker_name: null,
           nyilo_kesz_at: null,
+
+          ajtolapok_kesz: isPanelTwoPartWorker(activeWorker) ? false : null,
+          toklec_kesz: isPanelTwoPartWorker(activeWorker) ? false : null,
+          reszleges_keszultseg: isPanelTwoPartWorker(activeWorker)
+            ? 0
+            : isDoorTwoPartWorker(activeWorker)
+              ? 0
+              : null,
+          ajtolapok_kesz_worker_name: null,
+          ajtolapok_kesz_at: null,
+          toklec_kesz_worker_name: null,
+          toklec_kesz_at: null,
+
           selejt_megjegyzes: null,
           selejt_potlas: Boolean(activeToklecReplacement),
           selejt_forras_munkaallomas: activeToklecReplacement?.source_station || null,
@@ -26319,6 +26908,9 @@ body {
       const savedDoorCompletionText = isDoorTwoPartEnd
         ? ` | Ajtó készültség: ${doorCompletionPercent}% | Tok: ${cumulativeTokKesz ? "kész" : "folyamatban"} | Nyíló: ${cumulativeNyiloKesz ? "kész" : "folyamatban"}`
         : "";
+      const savedPanelCompletionText = isPanelTwoPartEnd
+        ? ` | Készültség: ${panelCompletionPercent}% | Ajtólapok: ${cumulativeAjtolapokKesz ? "kész" : "folyamatban"} | Tokléc: ${cumulativePanelToklecKesz ? "kész" : "folyamatban"}`
+        : "";
       const savedSheetScrapText = action === "END" && (finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap)
         ? ` | Selejt: ${[finalOuterSheetScrap ? "külső lap" : "", finalInnerSheetScrap ? "belső lap" : "", finalToklecScrap ? "tokléc" : ""].filter(Boolean).join(" + ")} | Asztalos pótlási kártyára továbbítva`
         : activeToklecReplacement && action === "END"
@@ -26331,7 +26923,7 @@ body {
         text:
           action === "START"
             ? `START automatikusan rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}`
-            : `END sikeresen rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}${savedDarabText}${savedSzalText}${savedScrapText}${savedDoorCompletionText}${savedSheetScrapText}${savedNoteText}`,
+            : `END sikeresen rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}${savedDarabText}${savedSzalText}${savedScrapText}${savedDoorCompletionText}${savedPanelCompletionText}${savedSheetScrapText}${savedNoteText}`,
       });
     } catch (error) {
       console.error("SUPABASE HIBA saveWorkLog:", error);
@@ -26392,6 +26984,10 @@ body {
     setNyiloKesz(false);
     setTokKeszLocked(false);
     setNyiloKeszLocked(false);
+    setPanelAjtolapokKesz(false);
+    setPanelToklecKesz(false);
+    setPanelAjtolapokLocked(false);
+    setPanelToklecLocked(false);
     setEndDarab("");
     setEndSzal("");
     setEndBarcodeConfirmed(true);
@@ -27318,11 +27914,26 @@ body {
         fontFamily: "Arial, sans-serif",
         color: "#e2e8f0",
         display: "flex",
-        alignItems: "center",
+        // A munkaállomási termelési kártya 10 mp-es/realtime frissítése
+        // megváltoztathatja a tartalom magasságát. Vertikális flex-középre
+        // igazításnál ettől a teljes oldal elmozdult. A scanneres,
+        // termelési-kártyás oldalt ezért felülről rögzítjük.
+        alignItems: terminalView === "scanner" && isUsableProductionCardStation(machineId)
+          ? "flex-start"
+          : "center",
         justifyContent: "center",
+        overflowAnchor: "none",
       }}
     >
-      <div style={{ width: "100%", maxWidth: flowStage === "dashboard" || flowStage === "carpenter-printer-settings" || flowStage === "carpenter-reprint-requests" ? "none" : (step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId) ? 1700 : 960) }}>
+      <div
+        style={{
+          width: "100%",
+          maxWidth: flowStage === "dashboard" || flowStage === "carpenter-printer-settings" || flowStage === "carpenter-reprint-requests"
+            ? "none"
+            : (step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId) ? 1700 : 960),
+          overflowAnchor: "none",
+        }}
+      >
         <h1 style={{ fontSize: 34, marginBottom: 8, color: "#f8fafc", textAlign: "center" }}>Dolgozói beléptető</h1>
         <p style={{ color: "#cbd5e1", marginBottom: 24, textAlign: "center" }}>
           Név azonosítás, jelszó ahol kell, majd egyesével jelentés vagy műhely esetén köteg létrehozás, a meglévő scanneres sebesség megtartásával
@@ -28034,7 +28645,7 @@ body {
                       marginBottom: 18,
                     }}
                   >
-                    {orderTypeCards.filter((card) => card.id !== "batch" || [2, 3, 6].includes(Number(getWorkerEsemenyKotegValue(activeWorker)))).map((card) => {
+                    {orderTypeCards.filter((card) => card.id !== "batch" || [2, 3, 5].includes(Number(getWorkerEsemenyKotegValue(activeWorker)))).map((card) => {
                       const isSelected = workflowMode === card.id;
                       const displayedTitle = workerEventKoteg === 3 && card.id === "batch" ? "Szabás köteg" : card.title;
                       const displayedDescription = workerEventKoteg === 3 && card.id === "batch"
@@ -28292,14 +28903,115 @@ body {
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 10 }}>
                           <strong>Rendelések státusza</strong>
                           <span style={{ color: "#94a3b8", fontSize: 13 }}>
-                            {isEventSixBatchWorker()
-                              ? `${selectedEndBatch.order_ids.filter((order) => { const state = endEventSixOrderStateMap[String(order)] || EMPTY_EVENT_SIX_BATCH_ORDER_STATE; return state.ajtolapokKesz && state.toklecKesz; }).length} teljes • ${selectedEndBatch.order_ids.filter((order) => { const state = endEventSixOrderStateMap[String(order)] || EMPTY_EVENT_SIX_BATCH_ORDER_STATE; return state.ajtolapokKesz !== state.toklecKesz; }).length} félkész`
-                              : `${selectedEndBatch.order_ids.filter((order) => endReadyMap[order]).length} / ${selectedEndBatch.order_ids.length} kész`}
+                            {isEventFiveBatchWorker()
+                              ? `${selectedEndBatch.order_ids.filter((order) => { const state = endEventFiveOrderStateMap[String(order)] || EMPTY_EVENT_FIVE_BATCH_ORDER_STATE; return state.tokKesz && state.nyiloKesz; }).length} teljes • ${selectedEndBatch.order_ids.filter((order) => { const state = endEventFiveOrderStateMap[String(order)] || EMPTY_EVENT_FIVE_BATCH_ORDER_STATE; return state.tokKesz !== state.nyiloKesz; }).length} félkész`
+                              : isEventSixBatchWorker()
+                                ? `${selectedEndBatch.order_ids.filter((order) => { const state = endEventSixOrderStateMap[String(order)] || EMPTY_EVENT_SIX_BATCH_ORDER_STATE; return state.ajtolapokKesz && state.toklecKesz; }).length} teljes • ${selectedEndBatch.order_ids.filter((order) => { const state = endEventSixOrderStateMap[String(order)] || EMPTY_EVENT_SIX_BATCH_ORDER_STATE; return state.ajtolapokKesz !== state.toklecKesz; }).length} félkész`
+                                : `${selectedEndBatch.order_ids.filter((order) => endReadyMap[order]).length} / ${selectedEndBatch.order_ids.length} kész`}
                           </span>
                         </div>
                         <div style={{ display: "grid", gap: 10 }}>
                           {selectedEndBatch.order_ids.map((rawOrder) => {
                             const order = String(rawOrder);
+                            if (isEventFiveBatchWorker()) {
+                              const state = endEventFiveOrderStateMap[order] || { ...EMPTY_EVENT_FIVE_BATCH_ORDER_STATE };
+                              const percent = state.tokKesz && state.nyiloKesz ? 100 : state.tokKesz || state.nyiloKesz ? 50 : 0;
+
+                              const setOrderState = (patch: Partial<EventFiveBatchOrderState>) => {
+                                setEndEventFiveOrderStateMap((current) => ({
+                                  ...current,
+                                  [order]: {
+                                    ...(current[order] || EMPTY_EVENT_FIVE_BATCH_ORDER_STATE),
+                                    ...patch,
+                                  },
+                                }));
+                              };
+
+                              return (
+                                <div
+                                  key={order}
+                                  style={{
+                                    border: `2px solid ${percent === 100 ? "#22c55e" : percent === 50 ? "#f59e0b" : "#334155"}`,
+                                    borderRadius: 12,
+                                    padding: 12,
+                                    background: percent === 100
+                                      ? "rgba(22,163,74,0.14)"
+                                      : percent === 50
+                                        ? "rgba(245,158,11,0.12)"
+                                        : "#0f172a",
+                                  }}
+                                >
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+                                    <div>
+                                      <div style={{ fontSize: 18, fontWeight: 900 }}>{order}</div>
+                                      <div style={{ color: percent === 100 ? "#86efac" : percent === 50 ? "#fbbf24" : "#94a3b8", fontSize: 13, marginTop: 3 }}>
+                                        {percent}% kész
+                                      </div>
+                                    </div>
+                                    <strong style={{ fontSize: 18, color: percent === 100 ? "#86efac" : percent === 50 ? "#fbbf24" : "#cbd5e1" }}>
+                                      {percent}%
+                                    </strong>
+                                  </div>
+
+                                  <div style={{ background: "#064e3b", border: "1px solid #22c55e", borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                                    <div style={{ fontWeight: 900, color: "#d1fae5", marginBottom: 8 }}>Készültség</div>
+                                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 8 }}>
+                                      <label style={{ display: "flex", alignItems: "center", gap: 9, padding: 10, borderRadius: 8, background: "rgba(255,255,255,0.08)", fontWeight: 800 }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={state.tokKesz}
+                                          disabled={state.tokLocked}
+                                          onChange={(e) => setOrderState({ tokKesz: e.target.checked })}
+                                        />
+                                        Tok kész {state.tokLocked ? "• mentve" : ""}
+                                      </label>
+
+                                      <label style={{ display: "flex", alignItems: "center", gap: 9, padding: 10, borderRadius: 8, background: "rgba(255,255,255,0.08)", fontWeight: 800 }}>
+                                        <input
+                                          type="checkbox"
+                                          checked={state.nyiloKesz}
+                                          disabled={state.nyiloLocked}
+                                          onChange={(e) => setOrderState({ nyiloKesz: e.target.checked })}
+                                        />
+                                        Nyíló kész {state.nyiloLocked ? "• mentve" : ""}
+                                      </label>
+                                    </div>
+                                  </div>
+
+                                  <div style={{ background: "#542600", border: "1px solid #f59e0b", borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                                    <div style={{ fontWeight: 900, color: "#fde68a", marginBottom: 8 }}>Selejt pontos megjelölése</div>
+                                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
+                                      <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 800 }}>
+                                        <input type="checkbox" checked={state.outerScrap} onChange={(e) => setOrderState({ outerScrap: e.target.checked })} />
+                                        Külső lap selejt
+                                      </label>
+                                      <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 800 }}>
+                                        <input type="checkbox" checked={state.innerScrap} onChange={(e) => setOrderState({ innerScrap: e.target.checked })} />
+                                        Belső lap selejt
+                                      </label>
+                                      <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 800 }}>
+                                        <input type="checkbox" checked={state.toklecScrap} onChange={(e) => setOrderState({ toklecScrap: e.target.checked })} />
+                                        Tokléc selejt
+                                      </label>
+                                    </div>
+                                  </div>
+
+                                  <textarea
+                                    value={endOrderNotes[order] || ""}
+                                    onChange={(e) => setEndOrderNotes((prev) => ({ ...prev, [order]: e.target.value }))}
+                                    placeholder={state.toklecScrap ? "Tokléc selejtnél kötelező megjegyzés" : "Egyedi megjegyzés ehhez a rendeléshez"}
+                                    style={{
+                                      ...textareaStyle,
+                                      minHeight: 54,
+                                      borderColor: state.toklecScrap && !(endOrderNotes[order] || "").trim()
+                                        ? "#ef4444"
+                                        : undefined,
+                                    }}
+                                  />
+                                </div>
+                              );
+                            }
+
                             if (isEventSixBatchWorker()) {
                               const state = endEventSixOrderStateMap[order] || { ...EMPTY_EVENT_SIX_BATCH_ORDER_STATE };
                               const percent = state.ajtolapokKesz && state.toklecKesz ? 100 : state.ajtolapokKesz || state.toklecKesz ? 50 : 0;
@@ -28692,7 +29404,9 @@ body {
                       {isFoilSheetScrapWorker(activeWorker)
                         ? isDoorTwoPartWorker(activeWorker)
                           ? "A fizikai szkenner Enterrel megerősíti az END kódot. Ezután jelöld a Tok és/vagy Nyíló elkészültét, ellenőrizd a selejtjelöléseket, majd mentsd az END-et."
-                          : "A fizikai szkenner Enterrel megerősíti az END kódot. Ezután ellenőrizd a lap-selejt pipákat, majd mentsd az END-et."
+                          : isPanelTwoPartWorker(activeWorker)
+                            ? "A fizikai szkenner Enterrel megerősíti az END kódot. Ezután jelöld az Ajtólapok és/vagy Tokléc elkészültét, ellenőrizd a selejtjelöléseket, majd mentsd az END-et."
+                            : "A fizikai szkenner Enterrel megerősíti az END kódot. Ezután ellenőrizd a lap-selejt pipákat, majd mentsd az END-et."
                         : "A fizikai szkenner Enterrel zárja a beolvasást; END beolvasásakor a lejelentés azonnal mentésre kerül."}
                     </div>
                   </div>
@@ -28802,6 +29516,94 @@ body {
                       </div>
                       <div style={{ marginTop: 12, padding: "9px 12px", borderRadius: 10, background: tokKesz && nyiloKesz ? "#166534" : tokKesz || nyiloKesz ? "#1d4ed8" : "#0f172a", color: "#fff", fontWeight: 900 }}>
                         Várható állapot mentés után: {tokKesz && nyiloKesz ? "100% – Kész" : tokKesz ? "50% – Tok kész, Nyíló folyamatban" : nyiloKesz ? "50% – Nyíló kész, Tok folyamatban" : "0% – csak selejt vagy megjegyzés rögzítése"}
+                      </div>
+                    </div>
+                  )}
+
+                  {isPanelTwoPartWorker(activeWorker) && (
+                    <div style={{ marginBottom: 18, padding: 16, borderRadius: 14, border: "2px solid #22c55e", background: "linear-gradient(145deg, #052e16 0%, #064e3b 100%)" }}>
+                      <div style={{ color: "#dcfce7", fontWeight: 1000, fontSize: 17, marginBottom: 6 }}>
+                        Ajtólapok / Tokléc készre jelentése
+                      </div>
+                      <div style={{ color: "#bbf7d0", fontSize: 12, marginBottom: 12 }}>
+                        Az Ajtólapok és a Tokléc külön időpontban is elkészülhet. A korábban készre jelentett rész zárolva marad. 50%-nál részidő mentődik, de az eredeti munkaidő tovább fut a 100%-os lezárásig.
+                      </div>
+
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+                        <label
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 12,
+                            padding: 14,
+                            borderRadius: 12,
+                            cursor: panelAjtolapokLocked ? "not-allowed" : "pointer",
+                            background: panelAjtolapokKesz ? "#16a34a" : "#14532d",
+                            color: "#fff",
+                            border: panelAjtolapokKesz ? "3px solid #bbf7d0" : "2px solid #4ade80",
+                            fontWeight: 900,
+                            opacity: panelAjtolapokLocked ? 0.88 : 1,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={panelAjtolapokKesz}
+                            disabled={panelAjtolapokLocked}
+                            onChange={(event) => setPanelAjtolapokKesz(panelAjtolapokLocked ? true : event.target.checked)}
+                            style={{ width: 24, height: 24, accentColor: "#16a34a" }}
+                          />
+                          Ajtólapok kész{panelAjtolapokLocked ? " – korábban rögzítve" : ""}
+                        </label>
+
+                        <label
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 12,
+                            padding: 14,
+                            borderRadius: 12,
+                            cursor: panelToklecLocked ? "not-allowed" : "pointer",
+                            background: panelToklecKesz ? "#16a34a" : "#14532d",
+                            color: "#fff",
+                            border: panelToklecKesz ? "3px solid #bbf7d0" : "2px solid #4ade80",
+                            fontWeight: 900,
+                            opacity: panelToklecLocked ? 0.88 : 1,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={panelToklecKesz}
+                            disabled={panelToklecLocked}
+                            onChange={(event) => setPanelToklecKesz(panelToklecLocked ? true : event.target.checked)}
+                            style={{ width: 24, height: 24, accentColor: "#16a34a" }}
+                          />
+                          Tokléc kész{panelToklecLocked ? " – korábban rögzítve" : ""}
+                        </label>
+                      </div>
+
+                      <div
+                        style={{
+                          marginTop: 12,
+                          padding: "9px 12px",
+                          borderRadius: 10,
+                          background: panelAjtolapokKesz && panelToklecKesz
+                            ? "#166534"
+                            : panelAjtolapokKesz || panelToklecKesz
+                              ? "#1d4ed8"
+                              : "#0f172a",
+                          color: "#fff",
+                          fontWeight: 900,
+                        }}
+                      >
+                        Várható állapot mentés után: {
+                          panelAjtolapokKesz && panelToklecKesz
+                            ? "100% – Kész"
+                            : panelAjtolapokKesz
+                              ? "50% – Ajtólapok kész, Tokléc folyamatban"
+                              : panelToklecKesz
+                                ? "50% – Tokléc kész, Ajtólapok folyamatban"
+                                : "0% – csak selejt vagy megjegyzés rögzítése"
+                        }
                       </div>
                     </div>
                   )}
