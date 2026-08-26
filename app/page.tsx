@@ -12986,6 +12986,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               ? "#713f12"
                               : "";
 
+                          const forceScrapStartedRow = isScrapTable && status === "in-progress";
+                          const forcedScrapRowBackground = forceScrapStartedRow ? "#fde68a" : "";
+                          const forcedScrapRowText = forceScrapStartedRow ? "#713f12" : "";
+
                           return (
                             <td
                               key={`${table.id}-${rowKey}-${fieldId}`}
@@ -12995,14 +12999,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                 background: isCrossStationStatusField
                                   ? (style.cellBackground || background)
                                   : (
-                                      forcedNormalRowBackground
+                                      forcedScrapRowBackground
+                                      || forcedNormalRowBackground
                                       || style.cellBackground
                                       || background
                                     ),
                                 color: isCrossStationStatusField
                                   ? (style.cellTextColor || color)
                                   : (
-                                      forcedNormalRowText
+                                      forcedScrapRowText
+                                      || forcedNormalRowText
                                       || style.cellTextColor
                                       || color
                                     ),
@@ -22737,6 +22743,15 @@ body {
       : "VARAKOZIK";
   }
 
+  function getSingleScrapReplacementPartLabel(
+    row: Pick<ScrapReplacementRow, "kulso_lap_selejt" | "belso_lap_selejt" | "toklec_selejt">
+  ): string {
+    if (row.kulso_lap_selejt && !row.belso_lap_selejt && !row.toklec_selejt) return "Külső lap";
+    if (row.belso_lap_selejt && !row.kulso_lap_selejt && !row.toklec_selejt) return "Belső lap";
+    if (row.toklec_selejt && !row.kulso_lap_selejt && !row.belso_lap_selejt) return "Tokléc";
+    return getScrapReplacementDefectLabel(row).replace(/ selejt$/i, "");
+  }
+
   function getScrapReplacementDefectLabel(row: Pick<ScrapReplacementRow, "kulso_lap_selejt" | "belso_lap_selejt" | "toklec_selejt">): string {
     const defects = [
       row.kulso_lap_selejt ? "Külső lap" : "",
@@ -22822,7 +22837,71 @@ body {
     };
   }
 
-  async function updateSingleToklecReplacement(
+
+  async function fetchOpenSingleScrapReplacement(orderNumber: string): Promise<ScrapReplacementRow | null> {
+    if (!supabase) return null;
+
+    const cleanOrderNumber = String(orderNumber || "").trim();
+    if (!cleanOrderNumber) return null;
+
+    const { data, error } = await supabase
+      .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
+      .select("id, order_number, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, megjegyzes, source_station, source_work_log_id, status, reported_by_worker_id, reported_by_worker_name, reported_at, start_worker_name, started_at, completed_at, cutting_batch_code, milling_batch_code, last_worker_name, updated_at")
+      .eq("order_number", cleanOrderNumber)
+      .neq("status", "KESZ")
+      .order("reported_at", { ascending: true })
+      .limit(100);
+
+    if (error) throw error;
+
+    const rows = ((data || []) as ScrapReplacementRow[])
+      .map((rawRow) => ({
+        ...rawRow,
+        order_number: String(rawRow.order_number || "").trim(),
+        kulso_lap_selejt: Boolean(rawRow.kulso_lap_selejt),
+        belso_lap_selejt: Boolean(rawRow.belso_lap_selejt),
+        toklec_selejt: Boolean(rawRow.toklec_selejt),
+        megjegyzes: rawRow.megjegyzes ? String(rawRow.megjegyzes) : null,
+        source_station: String(rawRow.source_station || "").trim(),
+        status: normalizeScrapReplacementStatus(rawRow.status),
+      }))
+      .filter((row) => row.kulso_lap_selejt || row.belso_lap_selejt || row.toklec_selejt);
+
+    if (rows.length === 0) return null;
+
+    // Ha valamelyik pótlást már START-olták, mindig azt folytatjuk/END-eljük.
+    const inProgress = rows
+      .filter((row) =>
+        row.status === "SZABAS_FOLYAMATBAN"
+        || row.status === "MARASRA_VAR"
+        || row.status === "MARAS_FOLYAMATBAN"
+        || Boolean(row.started_at)
+      )
+      .sort((left, right) => {
+        const leftTime = left.started_at ? new Date(left.started_at).getTime() : Number.POSITIVE_INFINITY;
+        const rightTime = right.started_at ? new Date(right.started_at).getTime() : Number.POSITIVE_INFINITY;
+        return leftTime - rightTime;
+      });
+
+    if (inProgress.length > 0) return inProgress[0];
+
+    // Új START-nál determinisztikus sorrend: Külső lap -> Belső lap -> Tokléc.
+    // A következő START automatikusan a következő még nyitott pótlást veszi.
+    const partPriority = (row: ScrapReplacementRow): number => {
+      if (row.kulso_lap_selejt && !row.belso_lap_selejt && !row.toklec_selejt) return 1;
+      if (row.belso_lap_selejt && !row.kulso_lap_selejt && !row.toklec_selejt) return 2;
+      if (row.toklec_selejt && !row.kulso_lap_selejt && !row.belso_lap_selejt) return 3;
+      return 4;
+    };
+
+    return [...rows].sort((left, right) => {
+      const priorityDifference = partPriority(left) - partPriority(right);
+      if (priorityDifference !== 0) return priorityDifference;
+      return new Date(left.reported_at).getTime() - new Date(right.reported_at).getTime();
+    })[0] || null;
+  }
+
+  async function updateSingleScrapReplacement(
     row: ScrapReplacementRow | null,
     status: "SZABAS_FOLYAMATBAN" | "KESZ",
     timestamp: string
@@ -22917,14 +22996,27 @@ body {
     };
 
     const rows: Array<Record<string, unknown>> = [];
-    if (params.outerScrap || params.innerScrap) {
+
+    // Minden selejt-típus saját pótlási rekordot kap.
+    // A kártya ezeket továbbra is rendelésenként egyetlen sorba aggregálja.
+    if (params.outerScrap) {
       rows.push({
         ...basePayload,
-        kulso_lap_selejt: params.outerScrap,
-        belso_lap_selejt: params.innerScrap,
+        kulso_lap_selejt: true,
+        belso_lap_selejt: false,
         toklec_selejt: false,
       });
     }
+
+    if (params.innerScrap) {
+      rows.push({
+        ...basePayload,
+        kulso_lap_selejt: false,
+        belso_lap_selejt: true,
+        toklec_selejt: false,
+      });
+    }
+
     if (params.toklecScrap) {
       rows.push({
         ...basePayload,
@@ -25992,8 +26084,8 @@ body {
       const nowIso = new Date().toISOString();
       const workerNameForSave = activeWorker["Teljes nev"];
       const currentMachineId = getCurrentMachineIdForInsert();
-      const activeToklecReplacement = isCarpenterStationName(currentMachineId)
-        ? await fetchOpenToklecScrapReplacement(finalOrder)
+      const activeScrapReplacement = isCarpenterStationName(currentMachineId)
+        ? await fetchOpenSingleScrapReplacement(finalOrder)
         : null;
 
       const { data: insertedSingleStartLog, error } = await supabase.from("work_logs").insert([
@@ -26057,16 +26149,16 @@ body {
           toklec_kesz_at: isPanelTwoPartWorker(activeWorker) ? panelCompletionForStart.toklecKeszAt : null,
 
           selejt_megjegyzes: null,
-          selejt_potlas: Boolean(activeToklecReplacement),
-          selejt_forras_munkaallomas: activeToklecReplacement?.source_station || null,
+          selejt_potlas: Boolean(activeScrapReplacement),
+          selejt_forras_munkaallomas: activeScrapReplacement?.source_station || null,
         },
       ])
         .select("id")
         .single();
 
       if (error) throw error;
-      if (activeToklecReplacement) {
-        await updateSingleToklecReplacement(activeToklecReplacement, "SZABAS_FOLYAMATBAN", nowIso);
+      if (activeScrapReplacement) {
+        await updateSingleScrapReplacement(activeScrapReplacement, "SZABAS_FOLYAMATBAN", nowIso);
       }
 
       let individualCuttingLabelPrintSuffix = "";
@@ -26111,8 +26203,8 @@ body {
         }
       }
 
-      const singleStartSuccessText = activeToklecReplacement
-        ? "Tokléc selejtpótlás egyedi rendelésként sikeresen elindítva."
+      const singleStartSuccessText = activeScrapReplacement
+        ? `${getSingleScrapReplacementPartLabel(activeScrapReplacement)} selejtpótlás egyedi rendelésként sikeresen elindítva.`
         : orderProductionMeta.ujragyartas
           ? `Egyedi rendelés újragyártásként sikeresen rögzítve! Újragyártás #${orderProductionMeta.ujragyartas_sorszam}`
           : orderProductionMeta.gyartas_tipus === "keszlet"
@@ -26677,8 +26769,8 @@ body {
 
       const currentMachineId = getCurrentMachineIdForInsert();
       const nowForSave = getLocalTimestampWithOffset();
-      const activeToklecReplacement = isCarpenterStationName(currentMachineId)
-        ? await fetchOpenToklecScrapReplacement(finalOrderNumber)
+      const activeScrapReplacement = isCarpenterStationName(currentMachineId)
+        ? await fetchOpenSingleScrapReplacement(finalOrderNumber)
         : null;
       const storedDoorCompletion = isDoorTwoPartEnd
         ? await fetchDoorCompletionStateForOrder(finalOrderNumber, currentMachineId)
@@ -26753,7 +26845,7 @@ body {
         toklec_kesz_at: isPanelTwoPartEnd ? finalPanelToklecCompletedAt : null,
 
         selejt_megjegyzes: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap ? finalNote : null,
-        selejt_forras_munkaallomas: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap ? currentMachineId : activeToklecReplacement?.source_station || null,
+        selejt_forras_munkaallomas: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap ? currentMachineId : activeScrapReplacement?.source_station || null,
         action,
         start_timestamp: action === "START" ? nowForSave : null,
         end_timestamp: action === "END" ? nowForSave : null,
@@ -26833,10 +26925,10 @@ body {
           toklec_kesz_at: isPanelTwoPartEnd ? finalPanelToklecCompletedAt : null,
 
           selejt_megjegyzes: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap ? finalNote : null,
-          selejt_potlas: Boolean(activeToklecReplacement),
+          selejt_potlas: Boolean(activeScrapReplacement),
           selejt_forras_munkaallomas: finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap
             ? currentMachineId
-            : activeToklecReplacement?.source_station || null,
+            : activeScrapReplacement?.source_station || null,
         };
 
         if (partialTwoPartSave) {
@@ -26885,8 +26977,8 @@ body {
           });
         }
 
-        if (activeToklecReplacement) {
-          await updateSingleToklecReplacement(activeToklecReplacement, "KESZ", nowForSave);
+        if (activeScrapReplacement) {
+          await updateSingleScrapReplacement(activeScrapReplacement, "KESZ", nowForSave);
         }
       } else {
         const payloadBase = {
@@ -26939,14 +27031,14 @@ body {
           toklec_kesz_at: null,
 
           selejt_megjegyzes: null,
-          selejt_potlas: Boolean(activeToklecReplacement),
-          selejt_forras_munkaallomas: activeToklecReplacement?.source_station || null,
+          selejt_potlas: Boolean(activeScrapReplacement),
+          selejt_forras_munkaallomas: activeScrapReplacement?.source_station || null,
         };
 
         const { error: insertError } = await supabase.from("work_logs").insert([payloadBase]);
         if (insertError) throw insertError;
-        if (activeToklecReplacement) {
-          await updateSingleToklecReplacement(activeToklecReplacement, "SZABAS_FOLYAMATBAN", nowForSave);
+        if (activeScrapReplacement) {
+          await updateSingleScrapReplacement(activeScrapReplacement, "SZABAS_FOLYAMATBAN", nowForSave);
         }
       }
 
@@ -26965,8 +27057,8 @@ body {
         : "";
       const savedSheetScrapText = action === "END" && (finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap)
         ? ` | Selejt: ${[finalOuterSheetScrap ? "külső lap" : "", finalInnerSheetScrap ? "belső lap" : "", finalToklecScrap ? "tokléc" : ""].filter(Boolean).join(" + ")} | Asztalos pótlási kártyára továbbítva`
-        : activeToklecReplacement && action === "END"
-          ? " | Tokléc pótlás készre jelentve"
+        : activeScrapReplacement && action === "END"
+          ? ` | ${getSingleScrapReplacementPartLabel(activeScrapReplacement)} pótlás készre jelentve`
           : "";
       resetAfterSave();
       setEndBarcodeConfirmed(false);
