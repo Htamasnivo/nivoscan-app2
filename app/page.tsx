@@ -607,6 +607,7 @@ type StationPlanUploadRow = {
   elkeszules_datum: string;
   tipus: string;
   adat: Record<string, unknown>;
+  excel_sorrend?: number | null;
   [key: string]: unknown;
 };
 
@@ -759,11 +760,13 @@ type ProductionMonitorData = {
 
 
 type ProductionCardPlanSourceRow = {
+  id?: string | number | null;
   sorszam?: string | number | null;
   megnevezes?: string | null;
   mennyiseg?: string | number | null;
   elkeszules_datum?: string | null;
   tipus?: string | null;
+  excel_sorrend?: string | number | null;
 };
 
 type ScrapReplacementStatus = "VARAKOZIK" | "SZABAS_FOLYAMATBAN" | "MARASRA_VAR" | "MARAS_FOLYAMATBAN" | "KESZ";
@@ -1005,6 +1008,8 @@ type ProductionCardBacklogRow = {
 type ProductionCardRow = {
   orderNumber: string;
   productName: string;
+  excelOrder: number;
+  sourceRowId: string;
   quantity: number | null;
   completionDate: string;
   productType: string;
@@ -11101,6 +11106,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const stationPlanRows: Array<{
       orderNumber: string;
       productName: string;
+      excelOrder: number;
+      sourceRowId: string;
       quantity: number | null;
       completionDate: string;
       productType: string;
@@ -11111,19 +11118,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       .from(tableName)
       .select("*")
       .eq("elkeszules_datum", dateKey)
-      .order("sorszam", { ascending: true })
+      .order("excel_sorrend", { ascending: true, nullsFirst: false })
+      .order("id", { ascending: true })
       .limit(10000);
 
     if (stationPlanResponse.error) {
       sourceErrors.push(`A(z) ${tableName} tábla nem olvasható: ${normalizeError(stationPlanResponse.error)}`);
     } else {
       stationPlanRows.push(...(((stationPlanResponse.data || []) as ProductionCardPlanSourceRow[])
-        .map((row) => {
+        .map((row, index) => {
           const raw = row as unknown as Record<string, unknown>;
           const jsonData = raw.adat && typeof raw.adat === "object" && !Array.isArray(raw.adat) ? raw.adat as Record<string, unknown> : {};
+          const parsedExcelOrder = parseSpreadsheetNumber(row.excel_sorrend);
           return {
             orderNumber: String(row.sorszam ?? "").trim(),
             productName: String(row.megnevezes ?? "").trim(),
+            excelOrder: parsedExcelOrder === null ? index + 1 : parsedExcelOrder,
+            sourceRowId: String(row.id ?? `${dateKey}-${index + 1}`),
             quantity: parseSpreadsheetNumber(row.mennyiseg),
             completionDate: String(row.elkeszules_datum ?? dateKey).slice(0, 10),
             productType: String(row.tipus ?? "").trim(),
@@ -11167,6 +11178,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const commonPlanRows: Array<{
       orderNumber: string;
       productName: string;
+      excelOrder: number;
+      sourceRowId: string;
       quantity: number | null;
       completionDate: string;
       productType: string;
@@ -11207,6 +11220,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           commonPlanRows.push({
             orderNumber,
             productName: String(item.product_name || "").trim(),
+            excelOrder: 1000000 + Math.max(0, Number(item.sequence_number || 0)),
+            sourceRowId: `common-${commonPlan?.id || "plan"}-${item.sequence_number || 0}-${orderNumber}`,
             quantity: item.planned_quantity === null || item.planned_quantity === undefined
               ? null
               : Number(item.planned_quantity),
@@ -11257,15 +11272,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       }
     }
 
-    const mergedPlanRows = new Map<string, {
-      orderNumber: string;
-      productName: string;
-      quantity: number | null;
-      completionDate: string;
-      productType: string;
-      planData: Record<string, unknown>;
-    }>();
-
     const productionCardPlanRowKey = (row: {
       orderNumber: string;
       productName: string;
@@ -11274,14 +11280,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       normalizeLooseText(row.productName),
     ].join("|");
 
-    stationPlanRows.forEach((row) => mergedPlanRows.set(productionCardPlanRowKey(row), row));
+    // A saját *_terv tábla az Excel 1:1 sorrendjét képviseli.
+    // A duplikált Excel-sorokat sem vonjuk össze.
+    const planRows = [...stationPlanRows];
+    const stationPlanKeys = new Set(stationPlanRows.map(productionCardPlanRowKey));
+
+    // A közös terv csak fallback: ami nincs a munkaállomási Excelben, az kerül mögé.
     commonPlanRows.forEach((row) => {
-      const key = productionCardPlanRowKey(row);
-      if (!mergedPlanRows.has(key)) mergedPlanRows.set(key, row);
+      if (!stationPlanKeys.has(productionCardPlanRowKey(row))) {
+        planRows.push(row);
+      }
     });
 
-    const planRows = Array.from(mergedPlanRows.values())
-      .sort((left, right) => left.orderNumber.localeCompare(right.orderNumber, "hu", { numeric: true }));
+    planRows.sort((left, right) => {
+      const orderDifference = left.excelOrder - right.excelOrder;
+      if (orderDifference !== 0) return orderDifference;
+      return left.sourceRowId.localeCompare(right.sourceRowId, "hu", { numeric: true });
+    });
 
     const orderNumbers = Array.from(new Set(planRows.map((row) => row.orderNumber)));
     const logs: WorkLogRow[] = [];
@@ -12106,14 +12121,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             ? backlogRows
             : data.rows;
 
-      // A termelési kártyákon KÉSZ sor nem maradhat látható.
-      // Ez minden kártyatípusra érvényes: normál, lemaradás,
-      // selejtpótlás és prioritási kártya.
+      // Normál napi termelési kártya: a KÉSZ sor is megmarad.
+      // Prioritás / Selejtpótlás / Lemaradások: a kész sor továbbra is eltűnik.
       const sourceRows = rawSourceRows.filter((rawRow) => {
         if (isPriorityTable) return (rawRow as ProductionCardPriorityRow).status !== "done";
         if (isScrapTable) return getScrapReplacementCardStatus(rawRow as ScrapReplacementRow) !== "done";
         if (isBacklogTable) return (rawRow as ProductionCardBacklogRow).status !== "done";
-        return (rawRow as ProductionCardRow).status !== "done";
+        return true;
       });
 
       if (isPriorityTable && sourceRows.length === 0) {
@@ -12253,7 +12267,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     const scrapRow = isScrapTable ? rawRow as ScrapReplacementRow : null;
                     const backlogRow = isBacklogTable ? rawRow as ProductionCardBacklogRow : null;
                     const status = priorityRow ? priorityRow.status : scrapRow ? getScrapReplacementCardStatus(scrapRow) : backlogRow ? backlogRow.status : productionRow!.status;
-                    const rowKey = priorityRow ? priorityRow.id : scrapRow ? String(scrapRow.id) : backlogRow ? backlogRow.id : `${productionRow!.orderNumber}-${rowIndex}`;
+                    const rowKey = priorityRow
+                      ? priorityRow.id
+                      : scrapRow
+                        ? String(scrapRow.id)
+                        : backlogRow
+                          ? backlogRow.id
+                          : `${productionRow!.sourceRowId}-${productionRow!.excelOrder}-${rowIndex}`;
                     return (
                       <tr key={`${table.id}-${rowKey}`}>
                         {visibleFieldIds.map((fieldId) => {
@@ -12303,9 +12323,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                 : fieldId === PRODUCTION_CARD_STATUS_FIELD_ID
                                   ? [productionRow!.startWorkerName ? `Indító: ${productionRow!.startWorkerName}` : "", productionRow!.endWorkerName ? `Befejező: ${productionRow!.endWorkerName}` : "", productionRow!.startedAt ? `START: ${formatDateTime(productionRow!.startedAt)}` : "", productionRow!.endedAt ? `END: ${formatDateTime(productionRow!.endedAt)}` : ""].filter(Boolean).join(" | ")
                                   : String(value ?? "");
-                          const forceRunningRowColor = status === "in-progress";
-                          const runningRowBackground = "#bbf7d0";
-                          const runningRowText = "#14532d";
+                          const isNormalProductionTable = !isPriorityTable && !isScrapTable && !isBacklogTable;
+                          const forceNormalStartedRow = isNormalProductionTable && status === "in-progress";
+                          const forceNormalDoneRow = isNormalProductionTable && status === "done";
+
+                          const forcedNormalRowBackground = forceNormalDoneRow
+                            ? "#86efac"
+                            : forceNormalStartedRow
+                              ? "#fde68a"
+                              : "";
+                          const forcedNormalRowText = forceNormalDoneRow
+                            ? "#14532d"
+                            : forceNormalStartedRow
+                              ? "#713f12"
+                              : "";
 
                           return (
                             <td
@@ -12313,14 +12344,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               title={title}
                               style={{
                                 padding: `${Math.max(2, Math.round(theme.cellPadding * zoomRatio))}px 5px`,
-                                // START után az EGÉSZ sor halványzöld.
-                                // A kártya saját színei várakozó állapotban változatlanok.
-                                background: forceRunningRowColor
-                                  ? runningRowBackground
-                                  : style.cellBackground || background,
-                                color: forceRunningRowColor
-                                  ? runningRowText
-                                  : style.cellTextColor || color,
+                                background: forcedNormalRowBackground
+                                  || style.cellBackground
+                                  || background,
+                                color: forcedNormalRowText
+                                  || style.cellTextColor
+                                  || color,
                                 borderBottom: `1px solid ${theme.borderColor}`,
                                 borderRight: `1px solid ${theme.borderColor}`,
                                 textAlign: style.textAlign,
@@ -16471,6 +16500,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       parsedRows.push({
         adat,
         ...normalizedValues,
+        excel_sorrend: index + 1,
         // A kompatibilitási mezőket a végén írjuk rá, hogy a hiányzó Excel-oszlop ne tudja nullra felülírni őket.
         sorszam,
         megnevezes,
@@ -16652,7 +16682,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       }
       if (existing_id === null || existing_id === undefined || existing_id === "") throw new Error(`${stationName}: hiányzik a frissítendő tervsor azonosítója.`);
       if (action === "add") {
-        const { error } = await supabase.from(tableName).update({ mennyiseg: row.mennyiseg, source_file: row.source_file || null, updated_at: nowIso }).eq("id", existing_id);
+        const { error } = await supabase.from(tableName).update({
+          mennyiseg: row.mennyiseg,
+          excel_sorrend: row.excel_sorrend ?? null,
+          source_file: row.source_file || null,
+          updated_at: nowIso,
+        }).eq("id", existing_id);
         if (error) throw error;
       } else {
         const payload = { ...row, updated_at: nowIso };
