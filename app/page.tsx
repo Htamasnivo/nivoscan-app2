@@ -1029,6 +1029,12 @@ type ProductionCardRow = {
   tokKeszAt: string | null;
   nyiloKeszWorkerName: string;
   nyiloKeszAt: string | null;
+
+  // A többi normál termelési kártya állapota ugyanahhoz a
+  // gyártási szám + megnevezés párhoz. Ez csak plusz oszlopadat,
+  // a jelenlegi kártya saját *_terv sorait nem módosítja.
+  crossStationStatuses: Record<string, ProductionMonitorStatus>;
+
   planData: Record<string, unknown>;
 };
 
@@ -1436,6 +1442,52 @@ const PRODUCTION_CARD_END_WORKER_FIELD_ID = "__card_end_worker__";
 const PRODUCTION_CARD_ELAPSED_FIELD_ID = "__card_elapsed_time__";
 const PRODUCTION_CARD_TOK_FIELD_ID = "__card_tok_completed__";
 const PRODUCTION_CARD_NYILO_FIELD_ID = "__card_nyilo_completed__";
+const PRODUCTION_CARD_CROSS_STATION_STATUS_PREFIX = "__card_cross_station_status__:";
+
+const PRODUCTION_CARD_CROSS_STATION_STATUS_STATIONS = [
+  { stationName: "Csolezer", label: "Csőlézer" },
+  { stationName: "Osszeallitas", label: "Összeállítás" },
+  { stationName: "Lakatos", label: "Lakatos" },
+  { stationName: "Szinter", label: "Szinter" },
+  { stationName: "Kézi szinter", label: "Kézi szinter" },
+  { stationName: "Asztalos", label: "Asztalos" },
+  { stationName: "Szereles", label: "Szerelés" },
+  { stationName: "PrimaPower", label: "PrimaPower" },
+  { stationName: "Lézerhegesztés", label: "Lézerhegesztés" },
+  { stationName: "Csomagolas", label: "Csomagolás" },
+  { stationName: "Foliazo", label: "Fóliázó" },
+  { stationName: "Fenyezo", label: "Fényező" },
+] as const;
+
+function getProductionCardCrossStationStatusFieldId(stationName: string): string {
+  return `${PRODUCTION_CARD_CROSS_STATION_STATUS_PREFIX}${stationName}`;
+}
+
+function isProductionCardCrossStationStatusField(fieldId: string): boolean {
+  return fieldId.startsWith(PRODUCTION_CARD_CROSS_STATION_STATUS_PREFIX);
+}
+
+function getProductionCardCrossStationNameFromFieldId(fieldId: string): string {
+  return isProductionCardCrossStationStatusField(fieldId)
+    ? fieldId.slice(PRODUCTION_CARD_CROSS_STATION_STATUS_PREFIX.length)
+    : "";
+}
+
+function getProductionCardCrossStationStatusFields(stationName: string): string[] {
+  const currentNormalized = normalizeLooseText(stationName);
+  return PRODUCTION_CARD_CROSS_STATION_STATUS_STATIONS
+    .filter((station) => normalizeLooseText(station.stationName) !== currentNormalized)
+    .map((station) => getProductionCardCrossStationStatusFieldId(station.stationName));
+}
+
+function getProductionCardCrossStationStatusLabel(stationName: string): string {
+  const normalized = normalizeLooseText(stationName);
+  const match = PRODUCTION_CARD_CROSS_STATION_STATUS_STATIONS.find(
+    (station) => normalizeLooseText(station.stationName) === normalized
+  );
+  return `${match?.label || stationName} állapot`;
+}
+
 const PRODUCTION_CARD_FIELD_IDS = [
   PRODUCTION_CARD_ORDER_FIELD_ID,
   PRODUCTION_CARD_PRODUCT_FIELD_ID,
@@ -2553,15 +2605,30 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
   // Ezeknél a kártyáknál az Excel üzleti mezői a mestermezők. A kötelező
   // rendszermezők (Állapot, Indító dolgozó, Befejező dolgozó, Eltelt idő)
   // minden normál termelési kártyán automatikusan hozzáadódnak és nem rejthetők el.
+  const crossStationStatusFieldIds = getProductionCardCrossStationStatusFields(stationName);
+
   const excelExactCardStations = new Set(["szinter", "kezi_szinter", "lezerhegesztes", "csomagolas", "foliazo", "fenyezo"]);
   if (excelExactCardStations.has(normalizePlanColumnName(stationName))) {
-    return Array.from(new Set([...planFieldIds, ...PRODUCTION_CARD_REQUIRED_FIELD_IDS]));
+    return Array.from(new Set([
+      ...planFieldIds,
+      ...PRODUCTION_CARD_REQUIRED_FIELD_IDS,
+      ...crossStationStatusFieldIds,
+    ]));
   }
 
-  return Array.from(new Set([...planFieldIds, ...PRODUCTION_CARD_FIELD_IDS]));
+  return Array.from(new Set([
+    ...planFieldIds,
+    ...PRODUCTION_CARD_FIELD_IDS,
+    ...crossStationStatusFieldIds,
+  ]));
 }
 
 function getProductionCardFieldLabel(fieldId: string): string {
+  if (isProductionCardCrossStationStatusField(fieldId)) {
+    return getProductionCardCrossStationStatusLabel(
+      getProductionCardCrossStationNameFromFieldId(fieldId)
+    );
+  }
   if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
     return getStationPlanFieldLabel(fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length));
   }
@@ -2834,10 +2901,22 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
   const usesSzinterExcelSchema = ["szinter", "kezi_szinter"].includes(
     normalizePlanColumnName(cleanStationName)
   );
+  const allProductionCardFieldIds = [...getProductionCardFieldIdsForTable(table, cleanStationName)];
+  const crossStationStatusFieldIds = allProductionCardFieldIds.filter(
+    isProductionCardCrossStationStatusField
+  );
+
   table.fieldOrder = usesSzinterExcelSchema
-    ? [...getProductionCardFieldIdsForTable(table, cleanStationName)]
-    : [...PRODUCTION_CARD_FIELD_IDS];
-  table.hiddenFieldIds = usesSzinterExcelSchema ? [] : [PRODUCTION_CARD_DATE_FIELD_ID];
+    ? allProductionCardFieldIds
+    : [
+        ...PRODUCTION_CARD_FIELD_IDS,
+        ...crossStationStatusFieldIds,
+      ];
+
+  table.hiddenFieldIds = Array.from(new Set([
+    ...(usesSzinterExcelSchema ? [] : [PRODUCTION_CARD_DATE_FIELD_ID]),
+    ...crossStationStatusFieldIds,
+  ]));
   table.fieldStyles = {
     [PRODUCTION_CARD_ORDER_FIELD_ID]: {
       ...normalizeProductionMonitorFieldStyle(null),
@@ -2987,9 +3066,14 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
           ...table.fieldOrder.filter((fieldId) => validFieldSet.has(fieldId)),
           ...validFields.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
         ]));
-        const newlyAddedOptionalElapsedFields = [
+        const newlyAddedOptionalFields = [
           PRODUCTION_CARD_SCRAP_ELAPSED_FIELD_ID,
           PRODUCTION_CARD_BACKLOG_ELAPSED_FIELD_ID,
+          ...(
+            dataSource === "production-plan"
+              ? validFields.filter(isProductionCardCrossStationStatusField)
+              : []
+          ),
         ].filter((fieldId) =>
           validFieldSet.has(fieldId)
           && !table.fieldOrder.includes(fieldId)
@@ -3000,7 +3084,7 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
             validFieldSet.has(fieldId)
             && !(dataSource === "production-plan" && isRequiredProductionCardField(fieldId))
           ),
-          ...newlyAddedOptionalElapsedFields,
+          ...newlyAddedOptionalFields,
         ]));
         return {
           ...table,
@@ -10537,6 +10621,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getProductionCardFieldValue(row: ProductionCardRow, fieldId: string): string | number {
+    if (isProductionCardCrossStationStatusField(fieldId)) {
+      const stationName = getProductionCardCrossStationNameFromFieldId(fieldId);
+      const status = row.crossStationStatuses?.[stationName];
+      if (!status) return "–";
+      if (status === "done") return "Kész";
+      if (status === "in-progress") return "Folyamatban";
+      if (status === "waiting") return "Várakozik";
+      return "–";
+    }
+
     if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
       const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
       const value = row.planData?.[key];
@@ -11502,6 +11596,162 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       });
     }
 
+    // ==========================================================
+    // TÖBBI TERMELÉSI KÁRTYA ÁLLAPOTA
+    //
+    // A jelenlegi kártya saját planRows listája változatlan marad.
+    // Másik állomás csak akkor ad státuszt, ha a saját *_terv táblájában
+    // ugyanaz a sorszám/gyártási szám + megnevezés pár valóban szerepel.
+    // ==========================================================
+    const crossStationStatusesByPlanKey = new Map<string, Record<string, ProductionMonitorStatus>>();
+    planRows.forEach((planRow) => {
+      crossStationStatusesByPlanKey.set(productionCardPlanRowKey(planRow), {});
+    });
+
+    const otherProductionCardStations = PRODUCTION_CARD_CROSS_STATION_STATUS_STATIONS
+      .map((station) => station.stationName)
+      .filter(
+        (station) => normalizeLooseText(station) !== normalizeLooseText(cleanStationName)
+      );
+
+    if (planRows.length > 0 && orderNumbers.length > 0) {
+      for (const otherStationName of otherProductionCardStations) {
+        const otherTableName = buildStationPlanTableName(otherStationName);
+        const matchingPlanKeys = new Set<string>();
+        const matchingOrderNumbers = new Set<string>();
+
+        // A sorszam kompatibilitási mező minden *_terv táblában a
+        // gyártási számot/rendelésszámot hordozza.
+        for (let index = 0; index < orderNumbers.length; index += 100) {
+          const chunk = orderNumbers.slice(index, index + 100);
+
+          const { data: otherPlanData, error: otherPlanError } = await supabase
+            .from(otherTableName)
+            .select("sorszam, megnevezes")
+            .in("sorszam", chunk)
+            .limit(10000);
+
+          if (otherPlanError) {
+            // Egy hiányzó/átmenetileg nem olvasható másik állomási tábla
+            // nem döntheti össze a jelenlegi termelési kártyát.
+            console.warn(
+              `A(z) ${otherTableName} kereszt-állapothoz nem olvasható:`,
+              otherPlanError
+            );
+            continue;
+          }
+
+          ((otherPlanData || []) as Array<{ sorszam?: unknown; megnevezes?: unknown }>).forEach((row) => {
+            const otherOrderNumber = String(row.sorszam ?? "").trim();
+            const otherProductName = String(row.megnevezes ?? "").trim();
+            if (!otherOrderNumber) return;
+
+            const key = productionCardPlanRowKey({
+              orderNumber: otherOrderNumber,
+              productName: otherProductName,
+            });
+
+            if (!crossStationStatusesByPlanKey.has(key)) return;
+
+            matchingPlanKeys.add(key);
+            matchingOrderNumbers.add(otherOrderNumber);
+          });
+        }
+
+        if (matchingPlanKeys.size === 0 || matchingOrderNumbers.size === 0) {
+          continue;
+        }
+
+        const otherLogs: WorkLogRow[] = [];
+        const otherOrderNumberList = Array.from(matchingOrderNumbers);
+
+        for (let index = 0; index < otherOrderNumberList.length; index += 100) {
+          const chunk = otherOrderNumberList.slice(index, index + 100);
+          const { data: otherLogData, error: otherLogError } = await supabase
+            .from("work_logs")
+            .select(selectColumns)
+            .in("order_number", chunk)
+            .eq("machine_id", otherStationName)
+            .order("created_at", { ascending: true })
+            .limit(10000);
+
+          if (otherLogError) {
+            console.warn(
+              `A(z) ${otherStationName} work_logs kereszt-állapothoz nem olvasható:`,
+              otherLogError
+            );
+            continue;
+          }
+
+          otherLogs.push(...(((otherLogData || []) as WorkLogRow[]).map((log) => ({
+            ...log,
+            worker_name: log.worker_name
+              || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"]
+              || null,
+          }))));
+        }
+
+        const otherBatchStarts: ProductionBatchRow[] = [];
+        const { data: otherBatchData, error: otherBatchError } = await supabase
+          .from("production_batches")
+          .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta, operation_code, operation_status")
+          .eq("machine_id", otherStationName)
+          .not("start_time", "is", null)
+          .limit(10000);
+
+        if (!otherBatchError) {
+          const matchingOrderSet = new Set(
+            otherOrderNumberList.map((orderNumber) => normalizeLooseText(orderNumber))
+          );
+
+          otherBatchStarts.push(...(((otherBatchData || []) as ProductionBatchRow[]).filter((batch) =>
+            Array.isArray(batch.order_ids)
+            && batch.order_ids.some((orderId) =>
+              matchingOrderSet.has(normalizeLooseText(String(orderId)))
+            )
+          )));
+        } else {
+          console.warn(
+            `A(z) ${otherStationName} production_batches kereszt-állapothoz nem olvasható:`,
+            otherBatchError
+          );
+        }
+
+        matchingPlanKeys.forEach((key) => {
+          const currentPlanRow = planRows.find(
+            (planRow) => productionCardPlanRowKey(planRow) === key
+          );
+          if (!currentPlanRow) return;
+
+          const stationLogs = otherLogs.filter(
+            (log) =>
+              normalizeLooseText(log.order_number)
+              === normalizeLooseText(currentPlanRow.orderNumber)
+          );
+
+          const stationBatchStarts = otherBatchStarts.filter(
+            (batch) =>
+              Array.isArray(batch.order_ids)
+              && batch.order_ids.some(
+                (orderId) =>
+                  normalizeLooseText(String(orderId))
+                  === normalizeLooseText(currentPlanRow.orderNumber)
+              )
+          );
+
+          const stationStatus = resolveProductionCardWorkers(
+            stationLogs,
+            stationBatchStarts,
+            currentPlanRow.orderNumber
+          ).status;
+
+          const currentStatuses = crossStationStatusesByPlanKey.get(key) || {};
+          currentStatuses[otherStationName] = stationStatus;
+          crossStationStatusesByPlanKey.set(key, currentStatuses);
+        });
+      }
+    }
+
     const rows: ProductionCardRow[] = planRows.map((planRow) => {
       const rowLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(planRow.orderNumber));
       const rowBatchStarts = batchStarts.filter((batch) =>
@@ -11509,7 +11759,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(planRow.orderNumber))
       );
       const status = resolveProductionCardWorkers(rowLogs, rowBatchStarts, planRow.orderNumber);
-      return { ...planRow, ...status };
+      return {
+        ...planRow,
+        ...status,
+        crossStationStatuses:
+          crossStationStatusesByPlanKey.get(productionCardPlanRowKey(planRow)) || {},
+      };
     });
 
     return {
@@ -11960,7 +12215,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const table = createDefaultProductionMonitorTable(tableName, `card-table-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, productionCardProfile.theme);
     table.dataSource = "production-plan";
     table.fieldOrder = [...getProductionCardFieldIdsForTable(table, productionCardAdminStation)];
-    table.hiddenFieldIds = [PRODUCTION_CARD_DATE_FIELD_ID].filter((fieldId) => !isRequiredProductionCardField(fieldId));
+    table.hiddenFieldIds = Array.from(new Set([
+      ...[PRODUCTION_CARD_DATE_FIELD_ID].filter((fieldId) => !isRequiredProductionCardField(fieldId)),
+      ...table.fieldOrder.filter(isProductionCardCrossStationStatusField),
+    ]));
     updateProductionCardProfile((profile) => ({
       ...profile,
       themePresetId: "custom",
@@ -12280,11 +12538,37 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                           const style = getProductionCardFieldStyle(fieldId, table);
                           const cellBold = resolveProductionMonitorTriState(style.cellBold, theme.cellBold);
                           const cellItalic = resolveProductionMonitorTriState(style.cellItalic, theme.cellItalic);
+                          const isCrossStationStatusField =
+                            Boolean(productionRow)
+                            && isProductionCardCrossStationStatusField(fieldId);
+                          const crossStationName = isCrossStationStatusField
+                            ? getProductionCardCrossStationNameFromFieldId(fieldId)
+                            : "";
+                          const crossStationStatus = isCrossStationStatusField
+                            ? productionRow!.crossStationStatuses?.[crossStationName]
+                            : undefined;
+
                           const isStatus = fieldId === PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID;
                           const isOrder = fieldId === PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID;
                           let background = isOrder ? theme.orderCellBackground : theme.waitingBackground;
                           let color = isOrder ? theme.orderCellText : theme.waitingText;
-                          if (isPriorityTable || isScrapTable || isBacklogTable || isStatus) {
+
+                          if (isCrossStationStatusField) {
+                            if (crossStationStatus === "done") {
+                              background = theme.doneBackground;
+                              color = theme.doneText;
+                            } else if (crossStationStatus === "in-progress") {
+                              background = theme.inProgressBackground;
+                              color = theme.inProgressText;
+                            } else if (crossStationStatus === "waiting") {
+                              background = theme.waitingBackground;
+                              color = theme.waitingText;
+                            } else {
+                              // Nem szerepel a másik állomás *_terv táblájában.
+                              background = theme.orderCellBackground;
+                              color = theme.orderCellText;
+                            }
+                          } else if (isPriorityTable || isScrapTable || isBacklogTable || isStatus) {
                             if (status === "done") { background = theme.doneBackground; color = theme.doneText; }
                             if (status === "in-progress") { background = theme.inProgressBackground; color = theme.inProgressText; }
                             if (status === "waiting") { background = theme.waitingBackground; color = theme.waitingText; }
@@ -12320,9 +12604,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               ? [scrapRow.started_at ? `Indítás: ${formatDateTime(scrapRow.started_at)}` : "", scrapRow.completed_at ? `Kész: ${formatDateTime(scrapRow.completed_at)}` : "", scrapRow.last_worker_name ? `Dolgozó: ${scrapRow.last_worker_name}` : ""].filter(Boolean).join(" | ")
                               : backlogRow
                                 ? [backlogRow.startedAt ? `Indítás: ${formatDateTime(backlogRow.startedAt)}` : "", backlogRow.endedAt ? `Utolsó END: ${formatDateTime(backlogRow.endedAt)}` : "", `Teljesítve: ${backlogRow.completedQuantity}/${backlogRow.plannedQuantity}`].filter(Boolean).join(" | ")
-                                : fieldId === PRODUCTION_CARD_STATUS_FIELD_ID
-                                  ? [productionRow!.startWorkerName ? `Indító: ${productionRow!.startWorkerName}` : "", productionRow!.endWorkerName ? `Befejező: ${productionRow!.endWorkerName}` : "", productionRow!.startedAt ? `START: ${formatDateTime(productionRow!.startedAt)}` : "", productionRow!.endedAt ? `END: ${formatDateTime(productionRow!.endedAt)}` : ""].filter(Boolean).join(" | ")
-                                  : String(value ?? "");
+                                : isProductionCardCrossStationStatusField(fieldId)
+                                  ? `${getProductionCardCrossStationStatusLabel(getProductionCardCrossStationNameFromFieldId(fieldId))}: ${String(value ?? "–")}`
+                                  : fieldId === PRODUCTION_CARD_STATUS_FIELD_ID
+                                    ? [productionRow!.startWorkerName ? `Indító: ${productionRow!.startWorkerName}` : "", productionRow!.endWorkerName ? `Befejező: ${productionRow!.endWorkerName}` : "", productionRow!.startedAt ? `START: ${formatDateTime(productionRow!.startedAt)}` : "", productionRow!.endedAt ? `END: ${formatDateTime(productionRow!.endedAt)}` : ""].filter(Boolean).join(" | ")
+                                    : String(value ?? "");
                           const isNormalProductionTable = !isPriorityTable && !isScrapTable && !isBacklogTable;
                           const forceNormalStartedRow = isNormalProductionTable && status === "in-progress";
                           const forceNormalDoneRow = isNormalProductionTable && status === "done";
@@ -12344,12 +12630,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               title={title}
                               style={{
                                 padding: `${Math.max(2, Math.round(theme.cellPadding * zoomRatio))}px 5px`,
-                                background: forcedNormalRowBackground
-                                  || style.cellBackground
-                                  || background,
-                                color: forcedNormalRowText
-                                  || style.cellTextColor
-                                  || color,
+                                background: isCrossStationStatusField
+                                  ? (style.cellBackground || background)
+                                  : (
+                                      forcedNormalRowBackground
+                                      || style.cellBackground
+                                      || background
+                                    ),
+                                color: isCrossStationStatusField
+                                  ? (style.cellTextColor || color)
+                                  : (
+                                      forcedNormalRowText
+                                      || style.cellTextColor
+                                      || color
+                                    ),
                                 borderBottom: `1px solid ${theme.borderColor}`,
                                 borderRight: `1px solid ${theme.borderColor}`,
                                 textAlign: style.textAlign,
