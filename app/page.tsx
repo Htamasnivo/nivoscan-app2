@@ -5861,6 +5861,31 @@ function NivoPersistentProductionCardScrollContainer({
   const containerRef = useRef<HTMLDivElement>(null);
   const pointerScrollingRef = useRef(false);
   const captureRafRef = useRef<number | null>(null);
+  const lastUserScrollAtRef = useRef(0);
+  const ignoreProgrammaticScrollUntilRef = useRef(0);
+
+  const markUserScrollIntent = () => {
+    lastUserScrollAtRef.current = performance.now();
+  };
+
+  const userIsActivelyScrolling = () =>
+    performance.now() - lastUserScrollAtRef.current < 500;
+
+  const rememberPixelsImmediately = () => {
+    const container = containerRef.current;
+    if (!container || nivoPersistentProductionCardRestoreDepth > 0) return;
+
+    // FONTOS:
+    // a scroll event pillanatában AZONNAL mentjük az új pixelpozíciót és
+    // eldobjuk a régi sor-horgonyt. Így ha ugyanebben a pillanatban érkezik
+    // egy React/realtime render, nem tudja a régi horgony visszarántani a listát.
+    nivoPersistentProductionCardScrollState.set(scrollKey, {
+      scrollTop: container.scrollTop,
+      scrollLeft: container.scrollLeft,
+      innerAnchor: null,
+      fallbackAnchors: [],
+    });
+  };
 
   const scheduleUserPositionCapture = () => {
     if (captureRafRef.current !== null) {
@@ -5871,15 +5896,20 @@ function NivoPersistentProductionCardScrollContainer({
       captureRafRef.current = null;
       const container = containerRef.current;
       if (!container) return;
+
+      // A RAF-ban már a böngésző tényleges új scrollTop értéke látszik.
       rememberNivoPersistentProductionCardScroll(scrollKey, container);
     });
   };
 
   const beginPointerScroll = () => {
+    markUserScrollIntent();
     pointerScrollingRef.current = true;
 
     const finish = () => {
       pointerScrollingRef.current = false;
+      markUserScrollIntent();
+      rememberPixelsImmediately();
       scheduleUserPositionCapture();
       window.removeEventListener("pointerup", finish, true);
       window.removeEventListener("pointercancel", finish, true);
@@ -5889,60 +5919,48 @@ function NivoPersistentProductionCardScrollContainer({
     window.addEventListener("pointercancel", finish, true);
   };
 
-  // MINDEN React render után, még a böngésző paint előtt:
-  // a felhasználó utolsó saját scrollpozícióját állítjuk vissza.
+  const restoreWithoutCreatingUserScroll = (container: HTMLDivElement) => {
+    if (userIsActivelyScrolling()) return;
+
+    // A scrollTop programozott módosítása Chrome-ban külön scroll eventet
+    // generálhat. Rövid ideig ezt kifejezetten programozott scrollnak jelöljük,
+    // hogy az onScroll ne mentse vissza "felhasználói" pozícióként.
+    ignoreProgrammaticScrollUntilRef.current = performance.now() + 80;
+    restoreNivoPersistentProductionCardScroll(scrollKey, container);
+  };
+
+  // React commit után csak akkor korrigálunk, ha a felhasználó NEM görget.
+  // A korábbi 40/120/260 ms-os kényszerített restore-ok okozhatták azt,
+  // hogy egy frissítés vagy más render közvetlenül visszarántotta a scrollbar-t.
   useLayoutEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
+    if (!container || userIsActivelyScrolling()) return;
 
-    restoreNivoPersistentProductionCardScroll(scrollKey, container);
+    restoreWithoutCreatingUserScroll(container);
 
     const raf1 = window.requestAnimationFrame(() => {
       const current = containerRef.current;
-      if (!current) return;
-
-      restoreNivoPersistentProductionCardScroll(scrollKey, current);
-
-      window.requestAnimationFrame(() => {
-        const latest = containerRef.current;
-        if (latest) restoreNivoPersistentProductionCardScroll(scrollKey, latest);
-      });
+      if (!current || userIsActivelyScrolling()) return;
+      restoreWithoutCreatingUserScroll(current);
     });
-
-    const timer40 = window.setTimeout(() => {
-      const current = containerRef.current;
-      if (current) restoreNivoPersistentProductionCardScroll(scrollKey, current);
-    }, 40);
-
-    const timer120 = window.setTimeout(() => {
-      const current = containerRef.current;
-      if (current) restoreNivoPersistentProductionCardScroll(scrollKey, current);
-    }, 120);
-
-    const timer260 = window.setTimeout(() => {
-      const current = containerRef.current;
-      if (current) restoreNivoPersistentProductionCardScroll(scrollKey, current);
-    }, 260);
 
     return () => {
       window.cancelAnimationFrame(raf1);
-      window.clearTimeout(timer40);
-      window.clearTimeout(timer120);
-      window.clearTimeout(timer260);
     };
   });
 
-  // Ha a táblázat mérete változik (új sor / eltűnő sor / sor-magasság),
-  // ugyanaz a konkrét rendelés marad a belső viewport ugyanazon pontján.
+  // Sor hozzáadása/eltűnése vagy méretváltozás esetén megtartjuk a konkrét sort,
+  // de SOHA nem avatkozunk bele aktív felhasználói görgetés közben.
   useEffect(() => {
     const container = containerRef.current;
     if (!container || typeof ResizeObserver === "undefined") return;
 
     const observer = new ResizeObserver(() => {
-      if (pointerScrollingRef.current) return;
+      if (pointerScrollingRef.current || userIsActivelyScrolling()) return;
+
       const current = containerRef.current;
       if (current) {
-        restoreNivoPersistentProductionCardScroll(scrollKey, current);
+        restoreWithoutCreatingUserScroll(current);
       }
     });
 
@@ -5954,6 +5972,14 @@ function NivoPersistentProductionCardScrollContainer({
     return () => observer.disconnect();
   }, [scrollKey]);
 
+  useEffect(() => {
+    return () => {
+      if (captureRafRef.current !== null) {
+        window.cancelAnimationFrame(captureRafRef.current);
+      }
+    };
+  }, []);
+
   return (
     <div
       ref={containerRef}
@@ -5961,18 +5987,33 @@ function NivoPersistentProductionCardScrollContainer({
       data-nivo-persistent-scroll="true"
       style={style}
       onWheelCapture={() => {
-        // A wheel esemény a tényleges scroll előtt jön, ezért a következő RAF
-        // menti a már megváltozott felhasználói pozíciót.
+        markUserScrollIntent();
+
+        // A wheel esemény még a scrollTop változása előtt érkezik.
+        // Az onScroll azonnal elmenti az új pixelértéket, a RAF pedig utána
+        // frissíti a konkrét sor-horgonyt.
         scheduleUserPositionCapture();
       }}
-      onTouchMoveCapture={scheduleUserPositionCapture}
+      onTouchMoveCapture={() => {
+        markUserScrollIntent();
+        scheduleUserPositionCapture();
+      }}
       onPointerDownCapture={beginPointerScroll}
       onScrollCapture={() => {
-        // Scrollbar húzás közben folyamatosan a felhasználó új pozícióját mentjük.
-        // Programozott/browseres frissítési scroll nem írhatja felül a registryt.
-        if (pointerScrollingRef.current && nivoPersistentProductionCardRestoreDepth === 0) {
-          scheduleUserPositionCapture();
+        // Ez a lényegi javítás:
+        // minden TÉNYLEGES felhasználói scrollnál azonnal az új pozíció lesz
+        // az igazság. Nem csak scrollbar-húzáskor mentünk, hanem wheel,
+        // touchpad, billentyűzet és egérgörgő esetén is.
+        if (
+          nivoPersistentProductionCardRestoreDepth > 0
+          || performance.now() < ignoreProgrammaticScrollUntilRef.current
+        ) {
+          return;
         }
+
+        markUserScrollIntent();
+        rememberPixelsImmediately();
+        scheduleUserPositionCapture();
       }}
       onKeyDownCapture={(event) => {
         const target = event.target as HTMLElement | null;
@@ -5993,6 +6034,7 @@ function NivoPersistentProductionCardScrollContainer({
             || event.key === " "
           )
         ) {
+          markUserScrollIntent();
           scheduleUserPositionCapture();
         }
       }}
