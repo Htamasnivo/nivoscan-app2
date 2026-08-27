@@ -20436,9 +20436,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   async function syncDailyProductionPlanToStationTables(
     planId: string | number,
     dateKey: string,
-    touchedStations: string[]
+    touchedStations: string[],
+    sourceRows: ProductionPlanUploadRow[] = []
   ): Promise<{ syncedStations: string[]; failedStations: string[] }> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    // FONTOS:
+    // A kézi termelési terv mentése SOHA többé nem cseréli le az adott napi
+    // teljes *_terv tartalmát.
+    //
+    // Korábban a replace_machine_plan RPC csak az alapmezőkkel
+    // (sorszam/megnevezes/mennyiseg/dátum/típus) újraépítette a napi táblát.
+    // Emiatt az Excelből érkező valódi mezők (rsz, szín, beépítés dátuma,
+    // műveleti adatok stb.) NULL-ra/üresre kerültek.
+    //
+    // Most kizárólag a kézzel hozzáadott HIÁNYZÓ sort tesszük hozzá az
+    // adott munkaállomás saját *_terv táblájához. Meglévő sort nem törlünk,
+    // nem cserélünk le és az Excel-mezőit nem írjuk felül.
+
+    const manualRows = sourceRows.filter((row) => row.source === "manual");
+
+    // Ha a hívás régebbi helyről sourceRows nélkül történne, biztonsági okból
+    // semmit nem írunk a munkaállomási táblákba. A központi terv ettől még
+    // rendben elmenthető.
+    if (manualRows.length === 0) {
+      return { syncedStations: [], failedStations: [] };
+    }
 
     const normalizedStationMap = new Map<string, string>();
     touchedStations.forEach((station) => {
@@ -20448,14 +20471,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         normalizedStationMap.set(normalizedStation, cleanStation);
       }
     });
-    const stationNames = Array.from(normalizedStationMap.values());
-    if (stationNames.length === 0) return { syncedStations: [], failedStations: [] };
 
+    const stationNames = Array.from(normalizedStationMap.values());
+    if (stationNames.length === 0) {
+      return { syncedStations: [], failedStations: [] };
+    }
+
+    // A központi tervből a mentés UTÁNI mennyiséget olvassuk vissza.
+    // Így a "meglévő mennyiséghez hozzáadom" eset is helyes marad.
     let itemResponse = await supabase
       .from("production_plan_items")
       .select("id, plan_id, order_number, sequence_number, planned_quantity, product_name, required_stations, created_at")
       .eq("plan_id", planId)
       .order("sequence_number", { ascending: true });
+
     if (itemResponse.error && isMissingRequiredStationsColumnError(itemResponse.error)) {
       itemResponse = await supabase
         .from("production_plan_items")
@@ -20463,14 +20492,24 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         .eq("plan_id", planId)
         .order("sequence_number", { ascending: true });
     }
+
     if (itemResponse.error) throw itemResponse.error;
 
-    const planItems = ((itemResponse.data || []) as ProductionPlanItemRow[]).map((item) => ({
+    const allPlanItems = ((itemResponse.data || []) as ProductionPlanItemRow[]).map((item) => ({
       ...item,
       required_stations: Array.isArray(item.required_stations)
         ? item.required_stations.map((station) => String(station || "").trim()).filter(Boolean)
         : [],
     }));
+
+    // Csak azok a rendelések kerülhetnek *_terv szinkronba, amelyeket ebben
+    // a mentésben valóban kézzel adtak hozzá.
+    const manualSourceKeys = new Set(
+      manualRows.map((row) => [
+        normalizeLooseText(row.orderNumber),
+        normalizeLooseText(row.productName),
+      ].join("|"))
+    );
 
     const syncedStations: string[] = [];
     const failedStations: string[] = [];
@@ -20478,59 +20517,191 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     for (const stationName of stationNames) {
       try {
         const tableName = buildStationPlanTableName(stationName);
+        const normalizedStationName = normalizeLooseText(stationName);
+
+        // Minden oszlopot beolvasunk, de SOHA nem írjuk vissza a meglévő
+        // Excel-sorokat. Ez kizárja, hogy egy kézi sor lenullázza a többi mezőt.
         const existingResponse = await supabase
           .from(tableName)
-          .select("sorszam, megnevezes, mennyiseg, elkeszules_datum, tipus")
+          .select("*")
           .eq("elkeszules_datum", dateKey)
+          .order("excel_sorrend", { ascending: true, nullsFirst: false })
+          .order("id", { ascending: true })
           .limit(10000);
 
-        let existingRows: StationPlanUploadRow[] = [];
         if (existingResponse.error) {
           const errorText = normalizeError(existingResponse.error).toLowerCase();
-          const tableDoesNotExist = errorText.includes("does not exist") || (errorText.includes("relation") && errorText.includes("not exist"));
-          if (!tableDoesNotExist) throw existingResponse.error;
-        } else {
-          existingRows = ((existingResponse.data || []) as ProductionCardPlanSourceRow[])
-            .map((row) => ({
-              sorszam: String(row.sorszam ?? "").trim(),
-              megnevezes: String(row.megnevezes ?? "").trim(),
-              mennyiseg: Math.max(0, Math.trunc(parseSpreadsheetNumber(row.mennyiseg) || 0)),
-              elkeszules_datum: String(row.elkeszules_datum ?? dateKey).slice(0, 10),
-              tipus: String(row.tipus ?? "").trim() || "Kézi rögzítés",
-              adat: {},
-            }))
-            .filter((row) => Boolean(row.sorszam));
+          const tableDoesNotExist =
+            errorText.includes("does not exist")
+            || (errorText.includes("relation") && errorText.includes("not exist"));
+
+          if (tableDoesNotExist) {
+            throw new Error(`A(z) ${tableName} tábla nem létezik.`);
+          }
+
+          throw existingResponse.error;
         }
 
-        const stationPlanItems = planItems.filter((item) => {
-          const requiredStations = Array.isArray(item.required_stations) ? item.required_stations : [];
+        const existingRows = (existingResponse.data || []) as Array<Record<string, unknown>>;
+
+        const existingByExactKey = new Map<string, Array<Record<string, unknown>>>();
+        const existingByOrderKey = new Map<string, Array<Record<string, unknown>>>();
+
+        existingRows.forEach((row) => {
+          const orderNumber = String(row.sorszam ?? "").trim();
+          const productName = String(row.megnevezes ?? "").trim();
+          if (!orderNumber) return;
+
+          const orderKey = normalizeLooseText(orderNumber);
+          const exactKey = [
+            orderKey,
+            normalizeLooseText(productName),
+          ].join("|");
+
+          const exactRows = existingByExactKey.get(exactKey) || [];
+          exactRows.push(row);
+          existingByExactKey.set(exactKey, exactRows);
+
+          const orderRows = existingByOrderKey.get(orderKey) || [];
+          orderRows.push(row);
+          existingByOrderKey.set(orderKey, orderRows);
+        });
+
+        let nextExcelOrder = existingRows.reduce((highest, row) => {
+          const value = parseSpreadsheetNumber(row.excel_sorrend);
+          return value === null ? highest : Math.max(highest, value);
+        }, 0) + 1;
+
+        const relevantPlanItems = allPlanItems.filter((item) => {
+          const orderNumber = String(item.order_number || "").trim();
+          const productName = String(item.product_name || "").trim();
+          if (!orderNumber) return false;
+
+          const itemKey = [
+            normalizeLooseText(orderNumber),
+            normalizeLooseText(productName),
+          ].join("|");
+
+          // Ez a konkrét rendelés ebben a mentésben kézzel lett hozzáadva.
+          if (!manualSourceKeys.has(itemKey)) return false;
+
+          const requiredStations = Array.isArray(item.required_stations)
+            ? item.required_stations
+            : [];
+
+          // Régi adatbázisnál required_stations hiányozhatott.
+          // Ilyenkor csak azokat az állomásokat kezeljük, amelyeket a kézi
+          // előnézetben ténylegesen kipipáltak.
+          if (requiredStations.length === 0) {
+            return manualRows.some((row) =>
+              normalizeLooseText(row.orderNumber) === normalizeLooseText(orderNumber)
+              && normalizeLooseText(row.productName) === normalizeLooseText(productName)
+              && row.requiredStations.some(
+                (requiredStation) =>
+                  normalizeLooseText(requiredStation) === normalizedStationName
+              )
+            );
+          }
+
           return requiredStations.some(
-            (requiredStation) => normalizeLooseText(requiredStation) === normalizeLooseText(stationName)
+            (requiredStation) =>
+              normalizeLooseText(requiredStation) === normalizedStationName
           );
         });
-        const commonPlanOrderKeys = new Set(stationPlanItems.map((item) => normalizeLooseText(item.order_number)));
-        const preservedExternalRows = existingRows.filter(
-          (row) => !commonPlanOrderKeys.has(normalizeLooseText(row.sorszam))
-        );
-        const commonPlanRows: StationPlanUploadRow[] = stationPlanItems.map((item) => ({
-          sorszam: String(item.order_number || "").trim(),
-          megnevezes: String(item.product_name || item.order_number || "").trim(),
-          mennyiseg: Math.max(0, Math.trunc(Number(item.planned_quantity) || 0)),
-          elkeszules_datum: dateKey,
-          tipus: "Kézi rögzítés",
-          adat: {},
-        }));
-        const payloadRows = [...preservedExternalRows, ...commonPlanRows].filter((row) => Boolean(row.sorszam));
-        if (payloadRows.length === 0) continue;
 
-        const { error: replaceError } = await supabase.rpc("replace_machine_plan", {
-          p_station_name: stationName,
-          p_rows: payloadRows,
-        });
-        if (replaceError) throw replaceError;
+        const insertedRowsForDynamicSync: Array<Record<string, unknown>> = [];
+
+        for (const item of relevantPlanItems) {
+          const orderNumber = String(item.order_number || "").trim();
+          const productName = String(item.product_name || item.order_number || "").trim();
+          if (!orderNumber) continue;
+
+          const orderKey = normalizeLooseText(orderNumber);
+          const exactKey = [
+            orderKey,
+            normalizeLooseText(productName),
+          ].join("|");
+
+          const exactExistingRows = existingByExactKey.get(exactKey) || [];
+
+          // Ha nincs megnevezés, egyetlen azonos rendelési számú meglévő sor
+          // is ugyanennek tekinthető. Ha több külön termék van ugyanazzal a
+          // rendelési számmal, nem találgatunk.
+          const sameOrderRows = existingByOrderKey.get(orderKey) || [];
+          const blankNameCanUseUniqueOrder =
+            !normalizeLooseText(productName)
+            && sameOrderRows.length === 1;
+
+          if (exactExistingRows.length > 0 || blankNameCanUseUniqueOrder) {
+            // Meglévő *_terv sorhoz NEM nyúlunk.
+            // Az összes Excelből érkező üzleti adat változatlan marad.
+            continue;
+          }
+
+          const quantity = item.planned_quantity === null || item.planned_quantity === undefined
+            ? 0
+            : Math.max(0, Math.trunc(Number(item.planned_quantity) || 0));
+
+          const manualPayload: Record<string, unknown> = {
+            sorszam: orderNumber,
+            megnevezes: productName,
+            mennyiseg: quantity,
+            elkeszules_datum: dateKey,
+            tipus: "Kézi rögzítés",
+            excel_sorrend: nextExcelOrder,
+          };
+
+          // CSAK egy új minimál sort INSERT-elünk.
+          // Nincs DELETE / replace / teljes napi terv újraépítés.
+          const { data: insertedData, error: insertError } = await supabase
+            .from(tableName)
+            .insert([manualPayload])
+            .select("*")
+            .single();
+
+          if (insertError) throw insertError;
+
+          const insertedRow =
+            insertedData && typeof insertedData === "object"
+              ? insertedData as Record<string, unknown>
+              : manualPayload;
+
+          const insertedExactRows = existingByExactKey.get(exactKey) || [];
+          insertedExactRows.push(insertedRow);
+          existingByExactKey.set(exactKey, insertedExactRows);
+
+          const insertedOrderRows = existingByOrderKey.get(orderKey) || [];
+          insertedOrderRows.push(insertedRow);
+          existingByOrderKey.set(orderKey, insertedOrderRows);
+
+          insertedRowsForDynamicSync.push({
+            ...manualPayload,
+            adat: {
+              ...manualPayload,
+              source: "manual",
+            },
+          });
+
+          nextExcelOrder += 1;
+        }
+
+        // A központi dinamikus termelesi_terv kompatibilitási táblába is
+        // csak az új kézi sorokat tesszük be. Ez sem módosítja a *_terv
+        // meglévő Excel-adatait.
+        if (insertedRowsForDynamicSync.length > 0) {
+          await syncDynamicProductionPlanRows(
+            stationName,
+            insertedRowsForDynamicSync,
+            "Kézi rögzítés"
+          );
+        }
+
         syncedStations.push(stationName);
       } catch (error) {
-        console.error(`A(z) ${stationName} munkaállomás napi tervének szinkronizálása sikertelen:`, error);
+        console.error(
+          `A(z) ${stationName} munkaállomás kézi tervsorának szinkronizálása sikertelen:`,
+          error
+        );
         failedStations.push(`${stationName}: ${normalizeError(error)}`);
       }
     }
@@ -20785,7 +20956,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const stationSyncResult = await syncDailyProductionPlanToStationTables(
         plan.id,
         productionPlanDate,
-        Array.from(touchedStations)
+        Array.from(touchedStations),
+        cleanRows
       );
 
       setProductionPlanPreview([]);
