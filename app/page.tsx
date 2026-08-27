@@ -15892,12 +15892,31 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   function TerminalProductionCardPanel(): React.JSX.Element | null {
     if (!isUsableProductionCardStation(machineId)) return null;
+
+    // A videón látható LEGKÜLSŐ jobb oldali scrollbar nem a táblázaté,
+    // hanem ennek a teljes termelési-kártya panelnek a saját overflow scrollja.
+    // Ezt külön, a belső táblázat scrolljától teljesen független pixelpozícióval
+    // tartjuk meg. A két scroll-réteg így soha nem írhatja felül egymást.
     return (
-      <aside style={{ minWidth: 0, position: "sticky", top: 18, alignSelf: "start", maxHeight: "calc(100vh - 36px)", overflow: "auto", borderRadius: 18, border: "1px solid #334155", boxShadow: "0 18px 45px rgba(0,0,0,0.28)" }}>
+      <NivoPersistentProductionCardScrollContainer
+        scrollKey={`terminal-production-card-outer:${normalizeLooseText(machineId)}`}
+        style={{
+          minWidth: 0,
+          position: "sticky",
+          top: 18,
+          alignSelf: "start",
+          maxHeight: "calc(100vh - 36px)",
+          overflowX: "hidden",
+          overflowY: "auto",
+          borderRadius: 18,
+          border: "1px solid #334155",
+          boxShadow: "0 18px 45px rgba(0,0,0,0.28)",
+        }}
+      >
         {loadingTerminalProductionCard && !terminalProductionCardData.lastUpdatedAt ? (
           <div style={{ background: "#0f172a", color: "#cbd5e1", padding: 28, textAlign: "center" }}>Termelési kártya betöltése...</div>
         ) : renderProductionCardDisplay(terminalProductionCardProfile, terminalProductionCardData, { compact: true })}
-      </aside>
+      </NivoPersistentProductionCardScrollContainer>
     );
   }
 
