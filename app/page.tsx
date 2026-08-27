@@ -1776,10 +1776,16 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "statusz", label: "Státusz", dataType: "text" },
   ],
   fenyezo: [
-    { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
+    // Fényező: a teljes ismert üzleti séma.
+    // A három korábban hiányzó alapmező (sorszam, megnevezes, mennyiseg)
+    // is része a Profi szerkesztőnek.
+    { key: "sorszam", label: "sorszám", dataType: "text" },
     { key: "gyartasi_szam", label: "gyártási szám", dataType: "text" },
+    { key: "megnevezes", label: "megnevezés", dataType: "text" },
+    { key: "mennyiseg", label: "mennyiség", dataType: "integer" },
+    { key: "elkeszules_datum", label: "elkészülés dátuma", dataType: "date" },
     { key: "rsz", label: "rsz", dataType: "text" },
-    { key: "tipus", label: "tipus", dataType: "text" },
+    { key: "tipus", label: "típus", dataType: "text" },
     { key: "uveges", label: "üveges", dataType: "text" },
     { key: "kulso_lap", label: "külső lap", dataType: "text" },
     { key: "fa_szine_kivul", label: "fa színe kívül", dataType: "text" },
@@ -1811,9 +1817,98 @@ function normalizePlanColumnName(value: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
+const FENYEZO_TECHNICAL_PLAN_FIELD_KEYS = new Set([
+  "id",
+  "excel_sorrend",
+  "source_file",
+  "adat",
+  "imported_at",
+  "created_at",
+  "updated_at",
+]);
+
+const FENYEZO_DISCOVERED_BUSINESS_FIELD_KEYS = new Set<string>();
+
+function isFenyezoBusinessPlanFieldKey(fieldKey: string): boolean {
+  const key = String(fieldKey || "").trim();
+  if (!key) return false;
+  if (key.startsWith("_")) return false;
+  return !FENYEZO_TECHNICAL_PLAN_FIELD_KEYS.has(key);
+}
+
+function inferFenyezoPlanFieldDataType(fieldKey: string): StationPlanFieldDataType {
+  const normalized = normalizePlanColumnName(fieldKey);
+  if (
+    normalized.includes("datum")
+    || normalized.endsWith("_date")
+    || normalized === "date"
+  ) {
+    return "date";
+  }
+  if (
+    normalized === "mennyiseg"
+    || normalized.endsWith("_mennyiseg")
+    || normalized.endsWith("_darab")
+  ) {
+    return "integer";
+  }
+  return "text";
+}
+
+function humanizeFenyezoPlanFieldLabel(fieldKey: string): string {
+  const known = STATION_PLAN_FIELD_DEFINITIONS.fenyezo?.find((field) => field.key === fieldKey);
+  if (known) return known.label;
+  return String(fieldKey || "")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function registerFenyezoBusinessPlanFields(rows: Array<Record<string, unknown>>): void {
+  rows.forEach((row) => {
+    Object.keys(row || {}).forEach((fieldKey) => {
+      if (isFenyezoBusinessPlanFieldKey(fieldKey)) {
+        FENYEZO_DISCOVERED_BUSINESS_FIELD_KEYS.add(fieldKey);
+      }
+    });
+
+    // Ha az importált Excel eredeti mezői az "adat" JSON-ban is szerepelnek,
+    // azokat is üzleti mezőként felismerjük.
+    const jsonData = row?.adat;
+    if (jsonData && typeof jsonData === "object" && !Array.isArray(jsonData)) {
+      Object.keys(jsonData as Record<string, unknown>).forEach((fieldKey) => {
+        if (isFenyezoBusinessPlanFieldKey(fieldKey)) {
+          FENYEZO_DISCOVERED_BUSINESS_FIELD_KEYS.add(fieldKey);
+        }
+      });
+    }
+  });
+}
+
 function getStationPlanFieldDefinitions(stationName: string | null | undefined): StationPlanFieldDefinition[] {
   const key = normalizePlanColumnName(String(stationName || ""));
-  return STATION_PLAN_FIELD_DEFINITIONS[key] || STATION_PLAN_BASE_FIELD_DEFINITIONS;
+  const baseDefinitions = STATION_PLAN_FIELD_DEFINITIONS[key] || STATION_PLAN_BASE_FIELD_DEFINITIONS;
+
+  // FONTOS: csak a Fényező kap dinamikus mezőfelismerést.
+  // Más munkaállomás jelenlegi működése változatlan marad.
+  if (key !== "fenyezo") return baseDefinitions;
+
+  const definitionsByKey = new Map<string, StationPlanFieldDefinition>(
+    baseDefinitions.map((field) => [field.key, field])
+  );
+
+  FENYEZO_DISCOVERED_BUSINESS_FIELD_KEYS.forEach((fieldKey) => {
+    if (!isFenyezoBusinessPlanFieldKey(fieldKey)) return;
+    if (definitionsByKey.has(fieldKey)) return;
+
+    definitionsByKey.set(fieldKey, {
+      key: fieldKey,
+      label: humanizeFenyezoPlanFieldLabel(fieldKey),
+      dataType: inferFenyezoPlanFieldDataType(fieldKey),
+    });
+  });
+
+  return Array.from(definitionsByKey.values());
 }
 
 function getStationPlanExtraFieldDefinitions(stationName: string | null | undefined): StationPlanFieldDefinition[] {
@@ -1825,6 +1920,11 @@ function getStationPlanFieldLabel(fieldKey: string): string {
     const field = definitions.find((item) => item.key === fieldKey);
     if (field) return field.label;
   }
+
+  if (FENYEZO_DISCOVERED_BUSINESS_FIELD_KEYS.has(fieldKey)) {
+    return humanizeFenyezoPlanFieldLabel(fieldKey);
+  }
+
   return fieldKey.replace(/_/g, " ");
 }
 
@@ -12131,6 +12231,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (stationPlanResponse.error) {
       sourceErrors.push(`A(z) ${tableName} tábla nem olvasható: ${normalizeError(stationPlanResponse.error)}`);
     } else {
+      if (normalizePlanColumnName(cleanStationName) === "fenyezo") {
+        registerFenyezoBusinessPlanFields(
+          (stationPlanResponse.data || []) as Array<Record<string, unknown>>
+        );
+      }
+
       stationPlanRows.push(...(((stationPlanResponse.data || []) as ProductionCardPlanSourceRow[])
         .map((row, index) => {
           const raw = row as unknown as Record<string, unknown>;
@@ -12401,6 +12507,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (overduePlanError) {
       sourceErrors.push(`A lemaradási kártya nem olvasható: ${normalizeError(overduePlanError)}`);
     } else {
+      if (normalizePlanColumnName(cleanStationName) === "fenyezo") {
+        registerFenyezoBusinessPlanFields(
+          (overduePlanData || []) as Array<Record<string, unknown>>
+        );
+      }
+
       const overdueSourceRows = ((overduePlanData || []) as Array<ProductionCardPlanSourceRow & { id?: number | string | null }>)
         .map((row, index) => {
           const raw = row as unknown as Record<string, unknown>;
