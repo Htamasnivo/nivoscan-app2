@@ -4996,22 +4996,99 @@ function isEditableInputElement(element: Element | null): boolean {
   return tagName === "input" || tagName === "textarea" || Boolean((element as HTMLElement).isContentEditable);
 }
 
+type NivoScrollAnchorLocator =
+  | { kind: "selector"; selector: string }
+  | { kind: "text"; tagName: string; text: string };
+
 type NivoScrollAnchor = {
-  element: HTMLElement;
+  element: HTMLElement | null;
+  locator: NivoScrollAnchorLocator | null;
   top: number;
   left: number;
+};
+
+type NivoScrollableSnapshot = {
+  element: HTMLElement | null;
+  locator: NivoScrollAnchorLocator | null;
+  scrollTop: number;
+  scrollLeft: number;
 };
 
 type NivoScrollSnapshot = {
   windowX: number;
   windowY: number;
-  ancestors: Array<{
-    element: HTMLElement;
-    scrollTop: number;
-    scrollLeft: number;
-  }>;
+  ancestors: NivoScrollableSnapshot[];
   anchors: NivoScrollAnchor[];
 };
+
+function normalizeNivoAnchorText(value: string): string {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 260);
+}
+
+function escapeNivoAttributeValue(value: string): string {
+  return String(value || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"');
+}
+
+function createNivoElementLocator(element: HTMLElement): NivoScrollAnchorLocator | null {
+  const nivoAnchor = element.getAttribute("data-nivo-scroll-anchor");
+  if (nivoAnchor) {
+    return {
+      kind: "selector",
+      selector: `[data-nivo-scroll-anchor="${escapeNivoAttributeValue(nivoAnchor)}"]`,
+    };
+  }
+
+  const officeWindow = element.getAttribute("data-office-window");
+  if (officeWindow) {
+    return {
+      kind: "selector",
+      selector: `[data-office-window="${escapeNivoAttributeValue(officeWindow)}"]`,
+    };
+  }
+
+  if (element.id) {
+    return {
+      kind: "selector",
+      selector: `#${typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(element.id) : element.id}`,
+    };
+  }
+
+  const tagName = element.tagName.toLowerCase();
+  if (tagName === "tr" || tagName === "section" || tagName === "article") {
+    const textValue = normalizeNivoAnchorText(element.textContent || "");
+    if (textValue.length >= 3) {
+      return {
+        kind: "text",
+        tagName,
+        text: textValue,
+      };
+    }
+  }
+
+  return null;
+}
+
+function resolveNivoElementLocator(locator: NivoScrollAnchorLocator | null): HTMLElement | null {
+  if (!locator || typeof document === "undefined") return null;
+
+  if (locator.kind === "selector") {
+    try {
+      return document.querySelector(locator.selector) as HTMLElement | null;
+    } catch {
+      return null;
+    }
+  }
+
+  const candidates = Array.from(document.querySelectorAll<HTMLElement>(locator.tagName));
+  return candidates.find((candidate) =>
+    normalizeNivoAnchorText(candidate.textContent || "") === locator.text
+  ) || null;
+}
 
 function isNivoUsableScrollAnchor(element: HTMLElement): boolean {
   if (typeof window === "undefined") return false;
@@ -5019,12 +5096,11 @@ function isNivoUsableScrollAnchor(element: HTMLElement): boolean {
   if (element === document.body || element === document.documentElement) return false;
 
   const rect = element.getBoundingClientRect();
-  if (rect.width < 40 || rect.height < 14) return false;
+  if (rect.width < 30 || rect.height < 10) return false;
   if (rect.bottom <= 0 || rect.top >= window.innerHeight) return false;
 
   const style = window.getComputedStyle(element);
-  if (style.position === "fixed" || style.position === "sticky") return false;
-  if (style.display === "none" || style.visibility === "hidden") return false;
+  if (style.position === "fixed" || style.display === "none" || style.visibility === "hidden") return false;
 
   return true;
 }
@@ -5034,20 +5110,20 @@ function collectNivoViewportAnchors(): NivoScrollAnchor[] {
 
   const found: HTMLElement[] = [];
   const seen = new Set<HTMLElement>();
-  const viewportWidth = Math.max(1, window.innerWidth);
-  const viewportHeight = Math.max(1, window.innerHeight);
+  const width = Math.max(1, window.innerWidth);
+  const height = Math.max(1, window.innerHeight);
 
-  // Több képernyőpontból keresünk stabilan látható elemet.
-  // Így táblázatnál tipikusan a látható sor, kártyánál a kártya egyik
-  // belső/ős eleme lesz a horgony.
+  // A felső-középső látható tartalom kap elsőbbséget, így például egy
+  // termelési kártya sora ugyanazon a képernyőmagasságon marad.
   const samplePoints = [
-    [0.50, 0.22],
-    [0.35, 0.28],
-    [0.65, 0.28],
-    [0.50, 0.42],
-    [0.25, 0.50],
-    [0.75, 0.50],
-    [0.50, 0.68],
+    [0.50, 0.16],
+    [0.30, 0.20],
+    [0.70, 0.20],
+    [0.50, 0.30],
+    [0.25, 0.42],
+    [0.75, 0.42],
+    [0.50, 0.58],
+    [0.50, 0.74],
   ];
 
   const addCandidate = (candidate: HTMLElement | null) => {
@@ -5058,113 +5134,137 @@ function collectNivoViewportAnchors(): NivoScrollAnchor[] {
 
   samplePoints.forEach(([xRatio, yRatio]) => {
     const pointElement = document.elementFromPoint(
-      Math.round(viewportWidth * xRatio),
-      Math.round(viewportHeight * yRatio)
+      Math.round(width * xRatio),
+      Math.round(height * yRatio)
     ) as HTMLElement | null;
 
     if (!pointElement) return;
 
-    // Először a szemantikailag stabil sor/kártya jellegű őst keressük.
-    const semantic = pointElement.closest(
-      '[data-nivo-scroll-anchor], tr, [role="row"], article, section'
-    ) as HTMLElement | null;
-    addCandidate(semantic);
+    // Először az explicit stabil horgonyokat és a táblázatsort keressük.
+    addCandidate(pointElement.closest("[data-nivo-scroll-anchor]") as HTMLElement | null);
+    addCandidate(pointElement.closest("[data-office-window]") as HTMLElement | null);
+    addCandidate(pointElement.closest("tr") as HTMLElement | null);
+    addCandidate(pointElement.closest("section") as HTMLElement | null);
+    addCandidate(pointElement.closest("article") as HTMLElement | null);
 
-    // Utána több DOM-szintet is eltárolunk. React frissítésnél gyakran
-    // legalább az egyik ugyanaz a DOM node marad.
     let current: HTMLElement | null = pointElement;
     let depth = 0;
-    while (current && depth < 7) {
+    while (current && depth < 5) {
       addCandidate(current);
       current = current.parentElement;
       depth += 1;
     }
   });
 
-  return found.slice(0, 24).map((element) => {
+  return found.slice(0, 30).map((element) => {
     const rect = element.getBoundingClientRect();
     return {
       element,
+      locator: createNivoElementLocator(element),
       top: rect.top,
       left: rect.left,
     };
   });
 }
 
-function captureNivoScrollSnapshot(target?: HTMLElement | null): NivoScrollSnapshot {
-  const ancestors: NivoScrollSnapshot["ancestors"] = [];
+function collectNivoScrollableAncestors(elements: Array<HTMLElement | null>): NivoScrollableSnapshot[] {
+  if (typeof window === "undefined") return [];
 
-  if (typeof window !== "undefined" && !target) {
-    document.querySelectorAll<HTMLElement>("body *").forEach((element) => {
-      const style = window.getComputedStyle(element);
-      const canScrollY = /(auto|scroll|overlay)/.test(style.overflowY) && element.scrollHeight > element.clientHeight;
-      const canScrollX = /(auto|scroll|overlay)/.test(style.overflowX) && element.scrollWidth > element.clientWidth;
+  const result: NivoScrollableSnapshot[] = [];
+  const seen = new Set<HTMLElement>();
 
-      if ((canScrollY || canScrollX) && (element.scrollTop !== 0 || element.scrollLeft !== 0)) {
-        ancestors.push({
-          element,
-          scrollTop: element.scrollTop,
-          scrollLeft: element.scrollLeft,
-        });
-      }
+  const addScrollable = (element: HTMLElement | null) => {
+    if (!element || seen.has(element)) return;
+    seen.add(element);
+
+    const style = window.getComputedStyle(element);
+    const scrollableY =
+      /(auto|scroll|overlay)/.test(style.overflowY)
+      && element.scrollHeight > element.clientHeight;
+    const scrollableX =
+      /(auto|scroll|overlay)/.test(style.overflowX)
+      && element.scrollWidth > element.clientWidth;
+
+    if (!scrollableY && !scrollableX) return;
+
+    result.push({
+      element,
+      locator: createNivoElementLocator(element),
+      scrollTop: element.scrollTop,
+      scrollLeft: element.scrollLeft,
     });
-  }
+  };
 
-  if (typeof window !== "undefined" && target) {
-    let parent = target.parentElement;
-
-    while (parent) {
-      const style = window.getComputedStyle(parent);
-      const canScrollY =
-        /(auto|scroll|overlay)/.test(style.overflowY)
-        && parent.scrollHeight > parent.clientHeight;
-      const canScrollX =
-        /(auto|scroll|overlay)/.test(style.overflowX)
-        && parent.scrollWidth > parent.clientWidth;
-
-      if (canScrollY || canScrollX) {
-        ancestors.push({
-          element: parent,
-          scrollTop: parent.scrollTop,
-          scrollLeft: parent.scrollLeft,
-        });
-      }
-
-      parent = parent.parentElement;
+  elements.forEach((startElement) => {
+    let current = startElement;
+    while (current) {
+      addScrollable(current);
+      current = current.parentElement;
     }
+  });
+
+  return result;
+}
+
+function captureNivoScrollSnapshot(target?: HTMLElement | null): NivoScrollSnapshot {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return { windowX: 0, windowY: 0, ancestors: [], anchors: [] };
   }
+
+  const anchors = target ? [] : collectNivoViewportAnchors();
+  const activeElement = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
+
+  const ancestorSources = target
+    ? [target, activeElement]
+    : [
+        activeElement,
+        ...anchors.map((anchor) => anchor.element),
+      ];
 
   return {
-    windowX: typeof window !== "undefined" ? window.scrollX : 0,
-    windowY: typeof window !== "undefined" ? window.scrollY : 0,
-    ancestors,
-    anchors: target ? [] : collectNivoViewportAnchors(),
+    windowX: window.scrollX,
+    windowY: window.scrollY,
+    ancestors: collectNivoScrollableAncestors(ancestorSources),
+    anchors,
   };
+}
+
+function resolveNivoAnchorElement(anchor: NivoScrollAnchor): HTMLElement | null {
+  if (anchor.element?.isConnected) return anchor.element;
+  return resolveNivoElementLocator(anchor.locator);
+}
+
+function resolveNivoScrollableElement(snapshot: NivoScrollableSnapshot): HTMLElement | null {
+  if (snapshot.element?.isConnected) return snapshot.element;
+  return resolveNivoElementLocator(snapshot.locator);
 }
 
 function restoreNivoScrollSnapshot(snapshot: NivoScrollSnapshot): void {
   if (typeof window === "undefined") return;
 
-  // A belső görgethető elemeket továbbra is a saját scroll pozíciójukra
-  // tesszük vissza.
-  snapshot.ancestors.forEach(({ element, scrollTop, scrollLeft }) => {
-    if (!element.isConnected) return;
-    if (element.scrollTop !== scrollTop) element.scrollTop = scrollTop;
-    if (element.scrollLeft !== scrollLeft) element.scrollLeft = scrollLeft;
+  snapshot.ancestors.forEach((entry) => {
+    const element = resolveNivoScrollableElement(entry);
+    if (!element) return;
+
+    if (Math.abs(element.scrollTop - entry.scrollTop) > 0.5) {
+      element.scrollTop = entry.scrollTop;
+    }
+    if (Math.abs(element.scrollLeft - entry.scrollLeft) > 0.5) {
+      element.scrollLeft = entry.scrollLeft;
+    }
   });
 
-  // Elsődlegesen NEM a régi scrollY-t erőltetjük vissza.
-  // A képernyőn korábban látható konkrét DOM elemet tartjuk ugyanazon
-  // képernyőmagasságban. Ha fölötte kártya/sor jelenik meg vagy tűnik el,
-  // ettől a felhasználó nézete nem mozdul el.
-  const connectedAnchor = snapshot.anchors.find(({ element }) =>
-    isNivoUsableScrollAnchor(element)
-  );
+  // A konkrét látható kártya/sor az elsődleges horgony.
+  // Ha React lecserélte a DOM node-ot, locator alapján megkeressük az új node-ot.
+  for (const anchor of snapshot.anchors) {
+    const element = resolveNivoAnchorElement(anchor);
+    if (!element || !isNivoUsableScrollAnchor(element)) continue;
 
-  if (connectedAnchor) {
-    const rect = connectedAnchor.element.getBoundingClientRect();
-    const deltaY = rect.top - connectedAnchor.top;
-    const deltaX = rect.left - connectedAnchor.left;
+    const rect = element.getBoundingClientRect();
+    const deltaY = rect.top - anchor.top;
+    const deltaX = rect.left - anchor.left;
 
     if (Math.abs(deltaY) > 0.5 || Math.abs(deltaX) > 0.5) {
       window.scrollBy({
@@ -5176,9 +5276,9 @@ function restoreNivoScrollSnapshot(snapshot: NivoScrollSnapshot): void {
     return;
   }
 
-  // Ha React teljesen lecserélte a látható DOM-részt, csak akkor használjuk
-  // a hagyományos abszolút pozíciót tartalékként.
-  if (window.scrollX !== snapshot.windowX || window.scrollY !== snapshot.windowY) {
+  // Csak akkor esünk vissza abszolút pozícióra, ha semmilyen stabil
+  // látható horgonyt nem lehetett újra megtalálni.
+  if (Math.abs(window.scrollX - snapshot.windowX) > 0.5 || Math.abs(window.scrollY - snapshot.windowY) > 0.5) {
     window.scrollTo({
       left: snapshot.windowX,
       top: snapshot.windowY,
@@ -5190,189 +5290,228 @@ function restoreNivoScrollSnapshot(snapshot: NivoScrollSnapshot): void {
 function restoreNivoScrollSnapshotAfterRender(snapshot: NivoScrollSnapshot): void {
   if (typeof window === "undefined") return;
 
-  // A horgony-alapú visszaállítás minden fázisban ugyanazt a látható
-  // kártyát/sort tartja ugyanott. Nem "pattog" két abszolút scrollY között.
   restoreNivoScrollSnapshot(snapshot);
 
   window.requestAnimationFrame(() => {
     restoreNivoScrollSnapshot(snapshot);
-
-    window.requestAnimationFrame(() => {
-      restoreNivoScrollSnapshot(snapshot);
-    });
+    window.requestAnimationFrame(() => restoreNivoScrollSnapshot(snapshot));
   });
 
   window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 0);
-  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 40);
-  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 100);
-  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 180);
+  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 32);
+  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 80);
+  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 160);
+  window.setTimeout(() => restoreNivoScrollSnapshot(snapshot), 280);
 }
 
 const NIVO_BACKGROUND_REFRESH_MS = 10 * 1000;
 
-let nivoBackgroundRefreshSequence = 0;
-let nivoBackgroundRefreshCleanup: (() => void) | null = null;
+// A háttérfrissítések globálisan sorosítva futnak.
+// Realtime + 10 mp-es timer így SOHA nem tud két egymással versenyző
+// React frissítést és két külön scroll-visszaállítást indítani.
+let nivoBackgroundRefreshRunning = false;
+let nivoBackgroundRefreshDepth = 0;
+let nivoBackgroundRefreshPendingTask: (() => void | Promise<void>) | null = null;
+
+function isNivoBackgroundRefreshRunning(): boolean {
+  return nivoBackgroundRefreshDepth > 0;
+}
 
 function installNivoRefreshScrollStabilizer(
   getSnapshot: () => NivoScrollSnapshot,
-  setSnapshot: (snapshot: NivoScrollSnapshot) => void,
-  token: number
+  setSnapshot: (snapshot: NivoScrollSnapshot) => void
 ): () => void {
   if (typeof window === "undefined" || typeof document === "undefined") {
     return () => {};
   }
 
-  let restoreInProgress = false;
-  let userIntentAt = 0;
+  let programmaticRestore = false;
+  let userIntentAt = -10000;
   let captureTimer: number | null = null;
-  let finalRestoreTimer: number | null = null;
+  let restoreTimer: number | null = null;
+  let rafId: number | null = null;
 
-  const isCurrent = () => token === nivoBackgroundRefreshSequence;
+  const html = document.documentElement;
+  const body = document.body;
+  const previousHtmlOverflowAnchor = html.style.overflowAnchor;
+  const previousBodyOverflowAnchor = body.style.overflowAnchor;
+  const previousHtmlScrollBehavior = html.style.scrollBehavior;
+  const previousBodyScrollBehavior = body.style.scrollBehavior;
+
+  // A böngésző saját scroll-anchoringja ne harcoljon a program
+  // stabil horgonyával.
+  html.style.overflowAnchor = "none";
+  body.style.overflowAnchor = "none";
+  html.style.scrollBehavior = "auto";
+  body.style.scrollBehavior = "auto";
+
+  const userIsActivelyScrolling = () => performance.now() - userIntentAt < 220;
 
   const restore = () => {
-    if (!isCurrent()) return;
+    if (userIsActivelyScrolling()) return;
 
-    // Ha a felhasználó éppen kézzel görget, nem harcolunk ellene.
-    if (performance.now() - userIntentAt < 140) return;
-
-    restoreInProgress = true;
+    programmaticRestore = true;
     try {
       restoreNivoScrollSnapshot(getSnapshot());
     } finally {
-      window.setTimeout(() => {
-        restoreInProgress = false;
-      }, 0);
+      queueMicrotask(() => {
+        programmaticRestore = false;
+      });
     }
   };
 
-  const captureUserPosition = () => {
-    if (!isCurrent()) return;
-    if (captureTimer !== null) window.clearTimeout(captureTimer);
+  const scheduleRestore = () => {
+    if (userIsActivelyScrolling()) return;
+    if (rafId !== null) window.cancelAnimationFrame(rafId);
+    rafId = window.requestAnimationFrame(() => {
+      rafId = null;
+      restore();
+    });
+  };
 
-    // A wheel/touch/keyboard görgetés lefutása után az ÚJ felhasználói
-    // pozíció lesz a védett pozíció.
+  const captureCurrentUserPosition = () => {
+    if (captureTimer !== null) window.clearTimeout(captureTimer);
     captureTimer = window.setTimeout(() => {
-      if (!isCurrent()) return;
       setSnapshot(captureNivoScrollSnapshot());
-    }, 40);
+    }, 45);
   };
 
   const markUserIntent = () => {
     userIntentAt = performance.now();
-    captureUserPosition();
+    captureCurrentUserPosition();
   };
 
   const handleKeyDown = (event: KeyboardEvent) => {
-    const scrollKeys = new Set([
-      "ArrowUp",
-      "ArrowDown",
-      "PageUp",
-      "PageDown",
-      "Home",
-      "End",
-      " ",
-    ]);
-    if (scrollKeys.has(event.key)) markUserIntent();
-  };
-
-  const handleScroll = () => {
-    if (restoreInProgress) return;
-    if (performance.now() - userIntentAt < 300) {
-      captureUserPosition();
+    if (
+      event.key === "ArrowUp"
+      || event.key === "ArrowDown"
+      || event.key === "PageUp"
+      || event.key === "PageDown"
+      || event.key === "Home"
+      || event.key === "End"
+      || event.key === " "
+    ) {
+      markUserIntent();
     }
   };
 
+  const handleScroll = () => {
+    if (programmaticRestore) return;
+    if (userIsActivelyScrolling()) captureCurrentUserPosition();
+  };
+
   const mutationObserver = new MutationObserver(() => {
-    // MutationObserver a DOM módosítása után, még a következő festés előtt
-    // fut le, ezért itt lehet a frissítés okozta elmozdulást látható villanás
-    // nélkül korrigálni.
+    // MutationObserver a React DOM módosítása után, még a következő paint előtt
+    // fut le. Itt tartjuk a látható kártyát/sort ugyanazon a helyen.
     restore();
+    scheduleRestore();
   });
 
   mutationObserver.observe(document.body, {
     childList: true,
     subtree: true,
     characterData: true,
+    attributes: false,
   });
 
   const resizeObserver = typeof ResizeObserver !== "undefined"
-    ? new ResizeObserver(() => restore())
+    ? new ResizeObserver(() => {
+        restore();
+        scheduleRestore();
+      })
     : null;
 
-  getSnapshot().anchors.forEach(({ element }) => {
-    if (element.isConnected) {
-      try {
-        resizeObserver?.observe(element);
-      } catch {
-        // Nem minden elem figyelhető minden böngészőben; ettől a
-        // MutationObserver + RAF védelem még működik.
-      }
+  getSnapshot().anchors.forEach((anchor) => {
+    const element = resolveNivoAnchorElement(anchor);
+    if (!element) return;
+    try {
+      resizeObserver?.observe(element);
+    } catch {
+      // A MutationObserver + RAF stabilizálás önmagában is működik.
     }
   });
 
-  window.addEventListener("wheel", markUserIntent, { passive: true });
-  window.addEventListener("touchmove", markUserIntent, { passive: true });
-  window.addEventListener("pointerdown", markUserIntent, { passive: true });
+  window.addEventListener("wheel", markUserIntent, { passive: true, capture: true });
+  window.addEventListener("touchmove", markUserIntent, { passive: true, capture: true });
+  window.addEventListener("pointerdown", markUserIntent, { passive: true, capture: true });
   window.addEventListener("keydown", handleKeyDown, true);
   window.addEventListener("scroll", handleScroll, true);
 
-  // Biztonsági végső korrekció a késői layout/font/React commitok után.
-  finalRestoreTimer = window.setTimeout(() => restore(), 260);
+  restoreTimer = window.setTimeout(() => restore(), 500);
 
   return () => {
     mutationObserver.disconnect();
     resizeObserver?.disconnect();
 
     if (captureTimer !== null) window.clearTimeout(captureTimer);
-    if (finalRestoreTimer !== null) window.clearTimeout(finalRestoreTimer);
+    if (restoreTimer !== null) window.clearTimeout(restoreTimer);
+    if (rafId !== null) window.cancelAnimationFrame(rafId);
 
-    window.removeEventListener("wheel", markUserIntent);
-    window.removeEventListener("touchmove", markUserIntent);
-    window.removeEventListener("pointerdown", markUserIntent);
+    window.removeEventListener("wheel", markUserIntent, true);
+    window.removeEventListener("touchmove", markUserIntent, true);
+    window.removeEventListener("pointerdown", markUserIntent, true);
     window.removeEventListener("keydown", handleKeyDown, true);
     window.removeEventListener("scroll", handleScroll, true);
+
+    html.style.overflowAnchor = previousHtmlOverflowAnchor;
+    body.style.overflowAnchor = previousBodyOverflowAnchor;
+    html.style.scrollBehavior = previousHtmlScrollBehavior;
+    body.style.scrollBehavior = previousBodyScrollBehavior;
   };
 }
 
-async function runNivoBackgroundRefresh(task: () => void | Promise<void>): Promise<void> {
-  const token = ++nivoBackgroundRefreshSequence;
+async function waitForNivoReactPaints(): Promise<void> {
+  if (typeof window === "undefined") return;
+  await new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve());
+    });
+  });
+}
 
-  // Egyszerre mindig csak a legfrissebb háttérfrissítés védje a scrollt.
-  // Realtime + 10 mp-es frissítés így nem tud két külön pozíció között
-  // "versenyezni".
-  nivoBackgroundRefreshCleanup?.();
-  nivoBackgroundRefreshCleanup = null;
+async function runNivoBackgroundRefresh(task: () => void | Promise<void>): Promise<void> {
+  // Ha egy realtime esemény beérkezik egy már futó 10 mp-es frissítés közben,
+  // nem indítunk párhuzamos frissítést. Csak a legutolsó kérést tartjuk meg.
+  if (nivoBackgroundRefreshRunning) {
+    nivoBackgroundRefreshPendingTask = task;
+    return;
+  }
+
+  nivoBackgroundRefreshRunning = true;
+  nivoBackgroundRefreshDepth += 1;
 
   let snapshot = captureNivoScrollSnapshot();
-
   const cleanup = installNivoRefreshScrollStabilizer(
     () => snapshot,
     (nextSnapshot) => {
       snapshot = nextSnapshot;
-    },
-    token
+    }
   );
-
-  nivoBackgroundRefreshCleanup = cleanup;
 
   try {
     await task();
-  } finally {
-    if (token !== nivoBackgroundRefreshSequence) return;
 
+    // A React state update tényleges DOM commitját is megvárjuk, nem csak az
+    // adatlekérés Promise végét.
+    await waitForNivoReactPaints();
     restoreNivoScrollSnapshotAfterRender(snapshot);
 
-    // Rövid ideig a React commit után is védjük a látható kártyát/sort,
-    // majd a stabilizálót teljesen lekapcsoljuk.
-    window.setTimeout(() => {
-      if (token !== nivoBackgroundRefreshSequence) return;
-      restoreNivoScrollSnapshot(snapshot);
-      cleanup();
+    // Késői betű/layout változás esetére még rövid ideig védjük a nézetet.
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 360));
+    restoreNivoScrollSnapshot(snapshot);
+  } finally {
+    cleanup();
+    nivoBackgroundRefreshDepth = Math.max(0, nivoBackgroundRefreshDepth - 1);
+    nivoBackgroundRefreshRunning = false;
 
-      if (nivoBackgroundRefreshCleanup === cleanup) {
-        nivoBackgroundRefreshCleanup = null;
-      }
-    }, 420);
+    const pendingTask = nivoBackgroundRefreshPendingTask;
+    nivoBackgroundRefreshPendingTask = null;
+
+    if (pendingTask) {
+      queueMicrotask(() => {
+        void runNivoBackgroundRefresh(pendingTask);
+      });
+    }
   }
 }
 
@@ -5393,6 +5532,11 @@ function focusAndSelectInput(
   const shouldPreventScroll = options?.preventScroll !== false;
 
   const focusAction = () => {
+    // Háttérfrissítés közben a már aktív mezőhöz nem nyúlunk, és új mezőre
+    // sem fókuszálunk. A scanner-fókusz a frissítés után a meglévő
+    // focus-keeperrel automatikusan helyreáll, scrollmozgatás nélkül.
+    if (isNivoBackgroundRefreshRunning()) return;
+
     const activeElement = document.activeElement;
     const targetInput = ref.current;
     if (!targetInput) return;
@@ -6797,7 +6941,9 @@ export default function Page() {
     // START után az Eltelt idő élőben növekszik minden termelési kártyán.
     // A kijelzés perc alapú; 10 másodperces, észrevétlen háttérfrissítés.
     const intervalId = window.setInterval(() => {
-      setProductionCardElapsedTick((value) => value + 1);
+      void runNivoBackgroundRefresh(() => {
+        setProductionCardElapsedTick((value) => value + 1);
+      });
     }, NIVO_BACKGROUND_REFRESH_MS);
 
     return () => window.clearInterval(intervalId);
@@ -12857,23 +13003,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   async function loadProductionCardData(stationName = productionCardAdminStation, dateKey = productionCardDate): Promise<void> {
     if (!stationName || !dateKey) return;
-    setLoadingProductionCard(true);
+    const backgroundRefresh = isNivoBackgroundRefreshRunning();
+    if (!backgroundRefresh) setLoadingProductionCard(true);
     try {
       setProductionCardData(await fetchProductionCardData(stationName, dateKey));
     } catch (error) {
       console.error("A termelési kártya adatainak betöltése sikertelen:", error);
-      setProductionCardData({
-        stationName,
-        dateKey,
-        tableName: buildStationPlanTableName(stationName),
-        rows: [],
-        priorityRows: [],
-        lastUpdatedAt: new Date().toISOString(),
-        errorMessage: normalizeError(error),
-      });
-      setMessage({ type: "error", text: `A termelési kártya betöltése sikertelen: ${normalizeError(error)}` });
+      if (!backgroundRefresh) {
+        setProductionCardData({
+          stationName,
+          dateKey,
+          tableName: buildStationPlanTableName(stationName),
+          rows: [],
+          priorityRows: [],
+          lastUpdatedAt: new Date().toISOString(),
+          errorMessage: normalizeError(error),
+        });
+        setMessage({ type: "error", text: `A termelési kártya betöltése sikertelen: ${normalizeError(error)}` });
+      }
     } finally {
-      setLoadingProductionCard(false);
+      if (!backgroundRefresh) setLoadingProductionCard(false);
     }
   }
 
@@ -12881,7 +13030,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const cleanStationName = String(stationName || "").trim();
     if (!isUsableProductionCardStation(cleanStationName)) return;
     const today = getLocalDateKey(new Date());
-    setLoadingTerminalProductionCard(true);
+    const backgroundRefresh = isNivoBackgroundRefreshRunning();
+    if (!backgroundRefresh) setLoadingTerminalProductionCard(true);
     try {
       const [settingsResult, dataResult] = await Promise.all([
         fetchProductionCardProfileForStation(cleanStationName),
@@ -12891,18 +13041,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       setTerminalProductionCardData(dataResult);
     } catch (error) {
       console.error("A munkaállomási termelési kártya betöltése sikertelen:", error);
-      setTerminalProductionCardProfile(createDefaultProductionCardProfile(cleanStationName));
-      setTerminalProductionCardData({
-        stationName: cleanStationName,
-        dateKey: today,
-        tableName: buildStationPlanTableName(cleanStationName),
-        rows: [],
-        priorityRows: [],
-        lastUpdatedAt: new Date().toISOString(),
-        errorMessage: normalizeError(error),
-      });
+      if (!backgroundRefresh) {
+        setTerminalProductionCardProfile(createDefaultProductionCardProfile(cleanStationName));
+        setTerminalProductionCardData({
+          stationName: cleanStationName,
+          dateKey: today,
+          tableName: buildStationPlanTableName(cleanStationName),
+          rows: [],
+          priorityRows: [],
+          lastUpdatedAt: new Date().toISOString(),
+          errorMessage: normalizeError(error),
+        });
+      }
     } finally {
-      setLoadingTerminalProductionCard(false);
+      if (!backgroundRefresh) setLoadingTerminalProductionCard(false);
     }
   }
 
@@ -13478,6 +13630,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return (
         <section
           key={table.id}
+          data-nivo-scroll-anchor={`production-card-table:${normalizeLooseText(data.stationName)}:${table.id}`}
           onClick={() => editable && switchProductionCardTable(table.id)}
           style={{
             background: theme.tablePanelBackground,
@@ -13625,7 +13778,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     const executiveWorkers = executiveReport ? getExecutiveReportWorkersForStation(data.stationName) : [];
 
                     return (
-                      <tr key={`${table.id}-${rowKey}`}>
+                      <tr
+                        key={`${table.id}-${rowKey}`}
+                        data-nivo-scroll-anchor={`production-card-row:${normalizeLooseText(data.stationName)}:${table.id}:${rowKey}`}
+                      >
                         {executiveReport && executiveDescriptor && executiveSelection && (
                           <td style={{ padding: 8, background: executiveSelection.selected ? "#172554" : "#0f172a", color: "#f8fafc", borderBottom: `1px solid ${theme.borderColor}`, borderRight: `2px solid ${theme.borderColor}`, verticalAlign: "top" }}>
                             {executiveDescriptor.status === "done" ? (
@@ -14132,7 +14288,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return;
     }
 
-    setLoadingExecutiveReport(true);
+    const backgroundRefresh = isNivoBackgroundRefreshRunning();
+    if (!backgroundRefresh) setLoadingExecutiveReport(true);
     try {
       const [profileResult, dataResult] = await Promise.all([
         fetchExecutiveReportProfileForStation(cleanStation),
@@ -14143,9 +14300,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       setExecutiveReportData(dataResult);
     } catch (error) {
       console.error("Vezetői jelentés betöltési hiba:", error);
-      setMessage({ type: "error", text: `A Vezetői jelentés betöltése sikertelen: ${normalizeError(error)}` });
+      if (!backgroundRefresh) {
+        setMessage({ type: "error", text: `A Vezetői jelentés betöltése sikertelen: ${normalizeError(error)}` });
+      }
     } finally {
-      setLoadingExecutiveReport(false);
+      if (!backgroundRefresh) setLoadingExecutiveReport(false);
     }
   }
 
@@ -18316,7 +18475,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     selectedStation = reproductionReportSelectedStation
   ): Promise<void> {
     if (!supabase) return;
-    setLoadingReproductionReport(true);
+    const backgroundRefresh = isNivoBackgroundRefreshRunning();
+    if (!backgroundRefresh) setLoadingReproductionReport(true);
     try {
       const range = getReproductionReportDateRange(filterMode, dateKey, dateToKey);
 
@@ -18512,12 +18672,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       });
     } catch (error) {
       console.error("SUPABASE HIBA loadReproductionReport:", error);
-      setMessage({
-        type: "error",
-        text: `Az újragyártási riport betöltése sikertelen. Részletek: ${normalizeError(error)}`,
-      });
+      if (!backgroundRefresh) {
+        setMessage({
+          type: "error",
+          text: `Az újragyártási riport betöltése sikertelen. Részletek: ${normalizeError(error)}`,
+        });
+      }
     } finally {
-      setLoadingReproductionReport(false);
+      if (!backgroundRefresh) setLoadingReproductionReport(false);
     }
   }
 
@@ -20463,16 +20625,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     dateToKey = productionMonitorDateTo
   ): Promise<void> {
     if (!supabase || !dateKey || !dateToKey) return;
-    setLoadingProductionMonitor(true);
+    const backgroundRefresh = isNivoBackgroundRefreshRunning();
+    if (!backgroundRefresh) setLoadingProductionMonitor(true);
     try {
       const data = await fetchProductionMonitorData(dateKey, planStatusFilter, dateToKey);
       setProductionMonitorData(data);
     } catch (error) {
       console.error("SUPABASE HIBA loadProductionMonitor:", error);
-      setProductionMonitorData({ plan: null, stations: [], rows: [], logs: [], lastUpdatedAt: new Date().toISOString() });
-      setMessage({ type: "error", text: `A termelési monitor betöltése sikertelen. Futtasd le a mellékelt Supabase SQL-t. Részletek: ${normalizeError(error)}` });
+      if (!backgroundRefresh) {
+        setProductionMonitorData({ plan: null, stations: [], rows: [], logs: [], lastUpdatedAt: new Date().toISOString() });
+        setMessage({ type: "error", text: `A termelési monitor betöltése sikertelen. Futtasd le a mellékelt Supabase SQL-t. Részletek: ${normalizeError(error)}` });
+      }
     } finally {
-      setLoadingProductionMonitor(false);
+      if (!backgroundRefresh) setLoadingProductionMonitor(false);
     }
   }
 
@@ -21121,34 +21286,38 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     dateToKey = dashboardDateTo,
     orderFilters: string[] = dashboardOrderFiltersRef.current
   ): Promise<void> {
+    const backgroundRefresh = isNivoBackgroundRefreshRunning();
     if (!supabase) {
-      setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
+      if (!backgroundRefresh) setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
       return;
     }
-    setLoadingDashboard(true);
+    if (!backgroundRefresh) setLoadingDashboard(true);
     try {
       const range = getDashboardDateRange(filterMode, dateKey, dateToKey);
       const nextDashboardData = await fetchDashboardData(range, orderFilters);
       setDashboardData(nextDashboardData);
-      setTerminalView("management");
-      setWorkflowMode(null);
-      setPendingAction(null);
-      setOrderNumber("");
-      setOrderTypeInput("");
-      orderTypeLatestValueRef.current = "";
-      setFlowStage("dashboard");
-      setStep(7);
-      setMessage({
-        type: "success",
-        text: orderFilters.some((value) => Boolean(normalizeDashboardOrderSearch(value)))
-          ? "Rendelésszám keresés betöltve a teljes work_logs táblából – a dátum és a nézet nem korlátozza."
-          : `Vezetői műszerfal betöltve: ${range.label}`,
-      });
+
+      if (!backgroundRefresh) {
+        setTerminalView("management");
+        setWorkflowMode(null);
+        setPendingAction(null);
+        setOrderNumber("");
+        setOrderTypeInput("");
+        orderTypeLatestValueRef.current = "";
+        setFlowStage("dashboard");
+        setStep(7);
+        setMessage({
+          type: "success",
+          text: orderFilters.some((value) => Boolean(normalizeDashboardOrderSearch(value)))
+            ? "Rendelésszám keresés betöltve a teljes work_logs táblából – a dátum és a nézet nem korlátozza."
+            : `Vezetői műszerfal betöltve: ${range.label}`,
+        });
+      }
     } catch (error) {
       console.error("SUPABASE HIBA loadManagementDashboardView:", error);
-      setMessage({ type: "error", text: normalizeError(error) });
+      if (!backgroundRefresh) setMessage({ type: "error", text: normalizeError(error) });
     } finally {
-      setLoadingDashboard(false);
+      if (!backgroundRefresh) setLoadingDashboard(false);
     }
   }
 
@@ -22297,11 +22466,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   async function loadStatisticsView(): Promise<void> {
+    const backgroundRefresh = isNivoBackgroundRefreshRunning();
     if (!supabase) {
-      setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
+      if (!backgroundRefresh) setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
       return;
     }
-    setLoadingStats(true);
+    if (!backgroundRefresh) setLoadingStats(true);
     try {
       const { data, error } = await supabase
         .from("work_logs")
@@ -22313,24 +22483,27 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       setRawWorkLogs(logs);
       const rows = buildOrderStatistics(logs, workers);
       setStatsRows(rows);
-      setExpandedOrders(
-        rows.slice(0, 5).reduce<Record<string, boolean>>((acc, row) => {
-          acc[row.orderNumber] = true;
-          return acc;
-        }, {})
-      );
-      setStep(5);
-      setMessage({
-        type: "success",
-        text: rows.length
-          ? "Statisztika betöltve. A rendelési út munkakörönként és időtartammal visszakövethető."
-          : "Még nincs megjeleníthető adat a statisztikához.",
-      });
+
+      if (!backgroundRefresh) {
+        setExpandedOrders(
+          rows.slice(0, 5).reduce<Record<string, boolean>>((acc, row) => {
+            acc[row.orderNumber] = true;
+            return acc;
+          }, {})
+        );
+        setStep(5);
+        setMessage({
+          type: "success",
+          text: rows.length
+            ? "Statisztika betöltve. A rendelési út munkakörönként és időtartammal visszakövethető."
+            : "Még nincs megjeleníthető adat a statisztikához.",
+        });
+      }
     } catch (error) {
       console.error("SUPABASE HIBA loadStatisticsView:", error);
-      setMessage({ type: "error", text: normalizeError(error) });
+      if (!backgroundRefresh) setMessage({ type: "error", text: normalizeError(error) });
     } finally {
-      setLoadingStats(false);
+      if (!backgroundRefresh) setLoadingStats(false);
     }
   }
 
