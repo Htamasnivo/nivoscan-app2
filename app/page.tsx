@@ -166,6 +166,7 @@ type UiMessage = {
 };
 
 type WorkLogRow = {
+  id?: number | string | null;
   worker_id: number;
   order_number: string;
   action: WorkAction;
@@ -207,6 +208,15 @@ type WorkLogRow = {
   selejt_megjegyzes?: string | null;
   selejt_potlas?: boolean | null;
   selejt_forras_munkaallomas?: string | null;
+
+  // Vezetői jelentés auditmezők.
+  vezetoi_lejelentes?: boolean | null;
+  vezetoi_lejelento_id?: number | string | null;
+  vezetoi_lejelento_nev?: string | null;
+  vezetoi_lejelentes_tipusa?: "vezetoi" | "dolgozoi" | "egyeb" | string | null;
+  vezetoi_cel_dolgozo_id?: number | string | null;
+  vezetoi_cel_dolgozo_nev?: string | null;
+  vezetoi_megjegyzes?: string | null;
 
   // Csak a vezetői műszerfal számításához használt kliensoldali segédmezők.
   // Supabase-ba NEM kerülnek visszaírásra.
@@ -338,7 +348,7 @@ type DashboardData = {
 };
 
 type DashboardFilterMode = "daily" | "weekly" | "monthly" | "custom";
-type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "reproduction-report" | "label-printer" | "report-delivery";
+type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "reproduction-report" | "label-printer" | "executive-report" | "report-delivery";
 type OfficePageKey = ManagementSection;
 type OfficeThemePresetGroup = "base" | "neon" | "matte";
 type OfficeThemePresetId =
@@ -518,11 +528,11 @@ function createDefaultOfficeThemeMap(): Record<OfficePageKey, OfficeThemeConfig>
   const base = OFFICE_THEME_PRESETS["industrial-night"].theme;
   return {
     dashboard: cloneOfficeTheme(base), "production-plan": cloneOfficeTheme(base), "production-monitor": cloneOfficeTheme(base),
-    "production-card": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base),
+    "production-card": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "executive-report": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base),
   };
 }
 function createDefaultOfficeThemePresetMap(): Record<OfficePageKey, OfficeThemePresetId> {
-  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "reproduction-report":"industrial-night", "label-printer":"industrial-night", "report-delivery":"industrial-night" };
+  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "reproduction-report":"industrial-night", "label-printer":"industrial-night", "executive-report":"industrial-night", "report-delivery":"industrial-night" };
 }
 
 const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]> = {
@@ -548,6 +558,12 @@ const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]>
   "label-printer": [
     { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Címkenyomtató fejléc" }, { id:"station", label:"Munkaállomás választó" }, { id:"printer", label:"Nyomtató és kalibráció" },
     { id:"template", label:"Sablon és verziók" }, { id:"tools", label:"Szerkesztő eszköztár" }, { id:"canvas", label:"Címkevászon" }, { id:"properties", label:"Elem tulajdonságok" }, { id:"preview", label:"Nyomtatási előnézet" },
+  ],
+  "executive-report": [
+    { id:"navigation", label:"Felső menüsor" },
+    { id:"header", label:"Vezetői jelentés fejléc és szűrők" },
+    { id:"cards", label:"Termelési kártyák" },
+    { id:"commit", label:"Készre könyvelés" },
   ],
   "report-delivery": [
     { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Riportküldési fejléc" }, { id:"active-profiles", label:"Aktív automatikus riportok" }, { id:"footer-info", label:"Alsó információs panel" },
@@ -1069,6 +1085,30 @@ type ProductionCardData = {
   backlogRows?: ProductionCardBacklogRow[];
   lastUpdatedAt: string;
   errorMessage: string;
+};
+
+type ExecutiveReportMode = "vezetoi" | "dolgozoi" | "egyeb";
+type ExecutiveReportRowKind = "production-plan" | "priority" | "scrap-replacement" | "backlog";
+
+type ExecutiveReportRowDescriptor = {
+  key: string;
+  kind: ExecutiveReportRowKind;
+  stationName: string;
+  orderNumber: string;
+  sourceId: string;
+  priorityOrderId?: string | null;
+  status: ProductionMonitorStatus;
+  startWorkerName: string;
+  startedAt: string | null;
+  doorWorkflow: boolean;
+  panelWorkflow: boolean;
+};
+
+type ExecutiveReportSelection = ExecutiveReportRowDescriptor & {
+  selected: boolean;
+  mode: ExecutiveReportMode;
+  workerId: string;
+  note: string;
 };
 
 type ProductionCardStationSettingsRow = {
@@ -6295,6 +6335,24 @@ export default function Page() {
   const [terminalProductionCardProfile, setTerminalProductionCardProfile] = useState<ProductionMonitorProfile>(() => createDefaultProductionCardProfile());
   const [loadingTerminalProductionCard, setLoadingTerminalProductionCard] = useState(false);
 
+  const [executiveReportStation, setExecutiveReportStation] = useState("");
+  const [executiveReportDateFrom, setExecutiveReportDateFrom] = useState(getLocalDateKey(new Date()));
+  const [executiveReportDateTo, setExecutiveReportDateTo] = useState(getLocalDateKey(new Date()));
+  const [executiveReportData, setExecutiveReportData] = useState<ProductionCardData>({
+    stationName: "",
+    dateKey: getLocalDateKey(new Date()),
+    tableName: "",
+    rows: [],
+    priorityRows: [],
+    scrapReplacementRows: [],
+    backlogRows: [],
+    lastUpdatedAt: "",
+    errorMessage: "",
+  });
+  const [executiveReportProfile, setExecutiveReportProfile] = useState<ProductionMonitorProfile>(() => createDefaultProductionCardProfile());
+  const [executiveReportSelections, setExecutiveReportSelections] = useState<Record<string, ExecutiveReportSelection>>({});
+  const [loadingExecutiveReport, setLoadingExecutiveReport] = useState(false);
+  const [savingExecutiveReport, setSavingExecutiveReport] = useState(false);
 
   const [carpenterPrinterTab, setCarpenterPrinterTab] = useState<"printer" | "templates">("printer");
   const [windowsPrinters, setWindowsPrinters] = useState<string[]>([]);
@@ -9154,7 +9212,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function ManagementNavigation(): React.JSX.Element {
     const items: Array<{ id: ManagementSection; label: string }> = [
       { id:"dashboard", label:"Vezetői műszerfal" }, { id:"production-plan", label:"Termelés tervezése" }, { id:"production-monitor", label:"Termelési monitor" },
-      { id:"production-card", label:"Termelési kártya" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"report-delivery", label:"Riport küldések" },
+      { id:"production-card", label:"Termelési kártya" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" },
     ];
     const currentTheme = getOfficeTheme(managementSection);
     const selectedWindowKey = officeThemeScope === "__page__" ? null : officeThemeScope;
@@ -9197,6 +9255,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               else if (item.id === "production-card") { const stations = getOrderedDashboardStations(); const nextStation = productionCardAdminStation || stations[0] || ""; if (nextStation && nextStation !== productionCardAdminStation) setProductionCardAdminStation(nextStation); if (nextStation) { void loadProductionCardSettingsForStation(nextStation); void loadProductionCardData(nextStation, productionCardDate); } }
               else if (item.id === "reproduction-report") void loadReproductionReport(reproductionReportFilterMode, reproductionReportDate, reproductionReportDateTo, reproductionReportSelectedStation);
               else if (item.id === "label-printer") { const stations = getOrderedDashboardStations(); const preferred = stations.find((station) => normalizeLooseText(station) === normalizeLooseText("Asztalos")) || officeLabelPrinterStation || stations[0] || "Asztalos"; setOfficeLabelPrinterStation(preferred); setCarpenterPrinterTab("printer"); void loadCarpenterPrinterSettings(preferred); }
+              else if (item.id === "executive-report") {
+                const stations = getOrderedDashboardStations();
+                const nextStation = executiveReportStation || stations[0] || "";
+                if (nextStation && nextStation !== executiveReportStation) setExecutiveReportStation(nextStation);
+                if (nextStation) void loadExecutiveReportView(nextStation, executiveReportDateFrom, executiveReportDateTo);
+              }
               else if (item.id === "report-delivery") void loadReportDeliveryProfiles();
             }} style={{ border:active ? `1px solid ${currentTheme.accentColor}` : "1px solid transparent", background:active ? currentTheme.navActiveBackground : "transparent", color:active ? currentTheme.textColor : currentTheme.navText, borderRadius:Math.max(4,currentTheme.borderRadius-5), padding:"10px 14px", fontWeight:800, cursor:"pointer", fontFamily:currentTheme.fontFamily }}>{item.label}</button>;
           })}
@@ -11379,15 +11443,28 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const startLogCandidates = logs
       .filter((log) => Boolean(log.start_time || log.start_timestamp) || String(log.action || "").toUpperCase() === "START")
-      .map((log) => ({
-        workerName: String(log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || "").trim(),
-        eventAt: String(log.start_time || log.start_timestamp || log.created_at || ""),
-        startedAt: String(log.start_time || log.start_timestamp || log.created_at || ""),
-        isReproduction: log.ujragyartas === true,
-        reproductionNumber: Number(log.ujragyartas_sorszam) > 0 ? Number(log.ujragyartas_sorszam) : null,
-        statusLabel: "Folyamatban",
-        isBatchState: false,
-      }))
+      .map((log) => {
+        const metadata = getStructuredNoteMetadata(log.note);
+        const executiveLog = metadata.vezetoi_lejelentes === true;
+        return {
+          workerName: String(
+            executiveLog
+              ? metadata.start_worker_name
+                || log.worker_name
+                || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"]
+                || ""
+              : log.worker_name
+                || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"]
+                || ""
+          ).trim(),
+          eventAt: String(log.start_time || log.start_timestamp || log.created_at || ""),
+          startedAt: String(log.start_time || log.start_timestamp || log.created_at || ""),
+          isReproduction: log.ujragyartas === true,
+          reproductionNumber: Number(log.ujragyartas_sorszam) > 0 ? Number(log.ujragyartas_sorszam) : null,
+          statusLabel: "Folyamatban",
+          isBatchState: false,
+        };
+      })
       .filter((item) => Boolean(item.eventAt));
 
     const batchStartCandidates = productionBatchStarts
@@ -12984,10 +13061,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function renderProductionCardDisplay(
     profile: ProductionMonitorProfile,
     data: ProductionCardData,
-    options: { compact?: boolean; editable?: boolean } = {}
+    options: { compact?: boolean; editable?: boolean; executiveReport?: boolean } = {}
   ): React.JSX.Element {
     const compact = Boolean(options.compact);
     const editable = Boolean(options.editable);
+    const executiveReport = Boolean(options.executiveReport);
     const safeProfile = normalizeProductionCardProfile(profile, data.stationName);
     const zoomRatio = safeProfile.zoomPercent / 100;
     const profileTheme = safeProfile.theme;
@@ -13112,13 +13190,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           ) : visibleFieldIds.length === 0 ? (
             <div style={{ color: theme.subtitleText, padding: 20, textAlign: "center" }}>Minden mező el van rejtve.</div>
           ) : (
-            <div style={{ overflowX: "hidden", overflowY: "auto", maxHeight: compact ? 520 : 650 }}>
-              <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "separate", borderSpacing: 0, fontFamily: theme.fontFamily }}>
+            <div style={{ overflowX: executiveReport ? "auto" : "hidden", overflowY: "auto", maxHeight: compact ? 520 : 650 }}>
+              <table style={{ width: "100%", minWidth: executiveReport ? 1450 : undefined, tableLayout: "fixed", borderCollapse: "separate", borderSpacing: 0, fontFamily: theme.fontFamily }}>
                 <colgroup>
+                  {executiveReport && <col style={{ width: 390 }} />}
                   {visibleFieldIds.map((fieldId) => <col key={`${table.id}-${fieldId}`} style={{ width: `${(Math.max(0.25, fieldWeights[fieldId] || 1) / totalWeight) * 100}%` }} />)}
                 </colgroup>
                 <thead style={{ position: "sticky", top: 0, zIndex: 4 }}>
                   <tr>
+                    {executiveReport && (
+                      <th style={{ padding: `${Math.max(2, Math.round(theme.headerPadding * zoomRatio))}px 8px`, background: theme.tableHeaderBackground, color: theme.tableHeaderText, borderBottom: `2px solid ${theme.borderColor}`, borderRight: `1px solid ${theme.borderColor}`, textAlign: "left", fontSize: headerFontSize, fontWeight: 900 }}>
+                        Vezetői lejelentés
+                      </th>
+                    )}
                     {visibleFieldIds.map((fieldId) => {
                       const style = getProductionCardFieldStyle(fieldId, table);
                       const headerBold = resolveProductionMonitorTriState(style.headerBold, theme.headerBold);
@@ -13178,8 +13262,42 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                         : backlogRow
                           ? backlogRow.id
                           : `${productionRow!.sourceRowId}-${productionRow!.excelOrder}-${rowIndex}`;
+                    const executiveDescriptor = executiveReport
+                      ? getExecutiveReportDescriptor(table.dataSource, rawRow as ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow, data.stationName, rowIndex)
+                      : null;
+                    const executiveSelection = executiveDescriptor ? getExecutiveReportSelection(executiveDescriptor) : null;
+                    const executiveWorkers = executiveReport ? getExecutiveReportWorkersForStation(data.stationName) : [];
+
                     return (
                       <tr key={`${table.id}-${rowKey}`}>
+                        {executiveReport && executiveDescriptor && executiveSelection && (
+                          <td style={{ padding: 8, background: executiveSelection.selected ? "#172554" : "#0f172a", color: "#f8fafc", borderBottom: `1px solid ${theme.borderColor}`, borderRight: `2px solid ${theme.borderColor}`, verticalAlign: "top" }}>
+                            {executiveDescriptor.status === "done" ? (
+                              <div style={{ color: "#86efac", fontWeight: 900, padding: 6 }}>Már kész</div>
+                            ) : (
+                              <div style={{ display: "grid", gap: 7 }}>
+                                <label style={{ display: "flex", alignItems: "center", gap: 9, fontWeight: 900, cursor: "pointer" }}>
+                                  <input type="checkbox" checked={executiveSelection.selected} onChange={(event) => updateExecutiveReportSelection(executiveDescriptor, { selected: event.target.checked })} style={{ width: 20, height: 20 }} />
+                                  Kijelölés
+                                </label>
+                                <select value={executiveSelection.mode} onChange={(event) => updateExecutiveReportSelection(executiveDescriptor, { mode: event.target.value as ExecutiveReportMode, workerId: event.target.value === "dolgozoi" ? executiveSelection.workerId : "" })} style={{ width: "100%", minHeight: 34, borderRadius: 7, border: "1px solid #475569", background: "#111827", color: "#f8fafc", padding: "5px 7px" }}>
+                                  <option value="vezetoi">Vezetői</option>
+                                  <option value="dolgozoi">Dolgozói</option>
+                                  <option value="egyeb">Egyéb</option>
+                                </select>
+                                {executiveSelection.mode === "dolgozoi" && (
+                                  <select value={executiveSelection.workerId} onChange={(event) => updateExecutiveReportSelection(executiveDescriptor, { workerId: event.target.value })} style={{ width: "100%", minHeight: 34, borderRadius: 7, border: "1px solid #475569", background: "#111827", color: "#f8fafc", padding: "5px 7px" }}>
+                                    <option value="">Dolgozó kiválasztása</option>
+                                    {executiveWorkers.map((worker) => <option key={worker.id} value={String(worker.id)}>{worker["Teljes nev"]}</option>)}
+                                  </select>
+                                )}
+                                {executiveSelection.mode === "egyeb" && (
+                                  <input type="text" value={executiveSelection.note} onChange={(event) => updateExecutiveReportSelection(executiveDescriptor, { note: event.target.value })} placeholder="Kötelező indoklás" style={{ width: "100%", minHeight: 34, boxSizing: "border-box", borderRadius: 7, border: executiveSelection.note.trim() ? "1px solid #475569" : "1px solid #ef4444", background: "#111827", color: "#f8fafc", padding: "5px 7px" }} />
+                                )}
+                              </div>
+                            )}
+                          </td>
+                        )}
                         {visibleFieldIds.map((fieldId) => {
                           const style = getProductionCardFieldStyle(fieldId, table);
                           const cellBold = resolveProductionMonitorTriState(style.cellBold, theme.cellBold);
@@ -13380,6 +13498,655 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       </div>
     );
   }
+
+
+  function getExecutiveReportWorkersForStation(stationName = executiveReportStation): Worker[] {
+    const key = normalizeLooseText(stationName);
+    if (!key) return [];
+    return workers
+      .filter((worker) => normalizeLooseText(getWorkerStation(worker)) === key)
+      .sort((a, b) => String(a["Teljes nev"] || "").localeCompare(String(b["Teljes nev"] || ""), "hu"));
+  }
+
+  function getExecutiveReportDateKeys(dateFrom: string, dateTo: string): string[] {
+    if (!dateFrom || !dateTo || dateFrom > dateTo) return [];
+    const cursor = new Date(`${dateFrom}T12:00:00`);
+    const end = new Date(`${dateTo}T12:00:00`);
+    const result: string[] = [];
+    while (cursor.getTime() <= end.getTime() && result.length < 1000) {
+      result.push(getLocalDateKey(cursor));
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return result;
+  }
+
+  function combineExecutiveReportProductionCardData(
+    stationName: string,
+    dateFrom: string,
+    dateTo: string,
+    chunks: ProductionCardData[]
+  ): ProductionCardData {
+    const normal = new Map<string, ProductionCardRow>();
+    const priority = new Map<string, ProductionCardPriorityRow>();
+    const scrap = new Map<string, ScrapReplacementRow>();
+    const backlog = new Map<string, ProductionCardBacklogRow>();
+    const errors = new Set<string>();
+
+    chunks.forEach((chunk) => {
+      chunk.rows.forEach((row) => normal.set(`${row.completionDate}|${row.sourceRowId}|${row.excelOrder}`, row));
+      (chunk.priorityRows || []).forEach((row) => priority.set(String(row.id), row));
+      (chunk.scrapReplacementRows || []).forEach((row) => scrap.set(String(row.id || normalizeLooseText(row.order_number)), row));
+      (chunk.backlogRows || []).forEach((row) => backlog.set(`${row.completionDate}|${row.id}`, row));
+      if (chunk.errorMessage) errors.add(chunk.errorMessage);
+    });
+
+    const rows = Array.from(normal.values()).sort((a, b) => {
+      const dateDiff = a.completionDate.localeCompare(b.completionDate);
+      if (dateDiff) return dateDiff;
+      const excelDiff = a.excelOrder - b.excelOrder;
+      if (excelDiff) return excelDiff;
+      return a.sourceRowId.localeCompare(b.sourceRowId, "hu", { numeric: true });
+    });
+
+    return {
+      stationName,
+      dateKey: dateFrom === dateTo ? dateFrom : `${dateFrom} – ${dateTo}`,
+      tableName: buildStationPlanTableName(stationName),
+      rows,
+      priorityRows: Array.from(priority.values()),
+      scrapReplacementRows: Array.from(scrap.values()),
+      backlogRows: Array.from(backlog.values()),
+      lastUpdatedAt: new Date().toISOString(),
+      errorMessage: Array.from(errors).join(" | "),
+    };
+  }
+
+  async function fetchExecutiveReportProductionCardData(
+    stationName: string,
+    dateFrom: string,
+    dateTo: string
+  ): Promise<ProductionCardData> {
+    const cleanStation = String(stationName || "").trim();
+    const dates = getExecutiveReportDateKeys(dateFrom, dateTo);
+    if (!cleanStation || dates.length === 0) {
+      return {
+        stationName: cleanStation,
+        dateKey: dateFrom === dateTo ? dateFrom : `${dateFrom} – ${dateTo}`,
+        tableName: buildStationPlanTableName(cleanStation),
+        rows: [],
+        priorityRows: [],
+        scrapReplacementRows: [],
+        backlogRows: [],
+        lastUpdatedAt: new Date().toISOString(),
+        errorMessage: dateFrom > dateTo ? "A Dátumtól nem lehet későbbi, mint a Dátumig." : "",
+      };
+    }
+
+    const chunks: ProductionCardData[] = [];
+    for (const day of dates) {
+      chunks.push(await fetchProductionCardData(cleanStation, day));
+    }
+    return combineExecutiveReportProductionCardData(cleanStation, dateFrom, dateTo, chunks);
+  }
+
+  async function loadExecutiveReportView(
+    stationName = executiveReportStation,
+    dateFrom = executiveReportDateFrom,
+    dateTo = executiveReportDateTo
+  ): Promise<void> {
+    const cleanStation = String(stationName || "").trim();
+    if (!cleanStation || !dateFrom || !dateTo) return;
+    if (dateFrom > dateTo) {
+      setMessage({ type: "error", text: "A Vezetői jelentésnél a Dátumtól nem lehet későbbi, mint a Dátumig." });
+      return;
+    }
+
+    setLoadingExecutiveReport(true);
+    try {
+      const [profileResult, dataResult] = await Promise.all([
+        fetchProductionCardProfileForStation(cleanStation),
+        fetchExecutiveReportProductionCardData(cleanStation, dateFrom, dateTo),
+      ]);
+      setExecutiveReportProfile(profileResult.profile);
+      setExecutiveReportData(dataResult);
+    } catch (error) {
+      console.error("Vezetői jelentés betöltési hiba:", error);
+      setMessage({ type: "error", text: `A Vezetői jelentés betöltése sikertelen: ${normalizeError(error)}` });
+    } finally {
+      setLoadingExecutiveReport(false);
+    }
+  }
+
+  function getExecutiveReportDescriptor(
+    dataSource: ProductionCardTableDataSource | undefined,
+    rawRow: ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
+    stationName: string,
+    rowIndex: number
+  ): ExecutiveReportRowDescriptor {
+    if (dataSource === "priority") {
+      const row = rawRow as ProductionCardPriorityRow;
+      return {
+        key: `priority|${normalizeLooseText(stationName)}|${row.id}`,
+        kind: "priority",
+        stationName,
+        orderNumber: row.orderNumber,
+        sourceId: String(row.id),
+        priorityOrderId: row.priorityOrderId,
+        status: row.status,
+        startWorkerName: row.startWorkerName,
+        startedAt: row.startedAt,
+        doorWorkflow: false,
+        panelWorkflow: false,
+      };
+    }
+
+    if (dataSource === "scrap-replacement") {
+      const row = rawRow as ScrapReplacementRow;
+      return {
+        key: `scrap|${normalizeLooseText(stationName)}|${String(row.id)}`,
+        kind: "scrap-replacement",
+        stationName,
+        orderNumber: row.order_number,
+        sourceId: String(row.id),
+        priorityOrderId: null,
+        status: getScrapReplacementCardStatus(row),
+        startWorkerName: String(row.start_worker_name || "").trim(),
+        startedAt: row.started_at || null,
+        doorWorkflow: false,
+        panelWorkflow: false,
+      };
+    }
+
+    if (dataSource === "backlog") {
+      const row = rawRow as ProductionCardBacklogRow;
+      return {
+        key: `backlog|${normalizeLooseText(stationName)}|${row.id}|${rowIndex}`,
+        kind: "backlog",
+        stationName,
+        orderNumber: row.orderNumber,
+        sourceId: String(row.id),
+        priorityOrderId: null,
+        status: row.status,
+        startWorkerName: row.startWorkerName,
+        startedAt: row.startedAt,
+        doorWorkflow: row.doorWorkflow,
+        panelWorkflow: false,
+      };
+    }
+
+    const row = rawRow as ProductionCardRow;
+    return {
+      key: `plan|${normalizeLooseText(stationName)}|${row.sourceRowId}|${row.completionDate}|${rowIndex}`,
+      kind: "production-plan",
+      stationName,
+      orderNumber: row.orderNumber,
+      sourceId: row.sourceRowId,
+      priorityOrderId: null,
+      status: row.status,
+      startWorkerName: row.startWorkerName,
+      startedAt: row.startedAt,
+      doorWorkflow: row.doorWorkflow,
+      panelWorkflow: row.panelWorkflow,
+    };
+  }
+
+  function getExecutiveReportSelection(descriptor: ExecutiveReportRowDescriptor): ExecutiveReportSelection {
+    return executiveReportSelections[descriptor.key] || {
+      ...descriptor,
+      selected: false,
+      mode: "vezetoi",
+      workerId: "",
+      note: "",
+    };
+  }
+
+  function updateExecutiveReportSelection(
+    descriptor: ExecutiveReportRowDescriptor,
+    patch: Partial<ExecutiveReportSelection>
+  ): void {
+    setExecutiveReportSelections((current) => {
+      const old = current[descriptor.key] || {
+        ...descriptor,
+        selected: false,
+        mode: "vezetoi" as ExecutiveReportMode,
+        workerId: "",
+        note: "",
+      };
+      return {
+        ...current,
+        [descriptor.key]: {
+          ...old,
+          ...descriptor,
+          ...patch,
+        },
+      };
+    });
+  }
+
+  async function removeExecutiveReportedOrderFromProductionBatches(
+    stationName: string,
+    orderNumber: string
+  ): Promise<void> {
+    if (!supabase) return;
+
+    const { data, error } = await supabase
+      .from("production_batches")
+      .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta, operation_code, operation_status")
+      .eq("machine_id", stationName)
+      .limit(10000);
+    if (error) throw error;
+
+    const orderKey = normalizeLooseText(orderNumber);
+
+    for (const batch of (data || []) as ProductionBatchRow[]) {
+      const orders = Array.isArray(batch.order_ids)
+        ? batch.order_ids.map((value) => String(value || "").trim()).filter(Boolean)
+        : [];
+      if (!orders.some((value) => normalizeLooseText(value) === orderKey)) continue;
+
+      const remaining = orders.filter((value) => normalizeLooseText(value) !== orderKey);
+      if (remaining.length === 0) {
+        const { error: deleteError } = await supabase
+          .from("production_batches")
+          .delete()
+          .eq("id", batch.id as string | number);
+        if (deleteError) throw deleteError;
+      } else {
+        const nextMeta = batch.production_meta && typeof batch.production_meta === "object"
+          ? Object.fromEntries(Object.entries(batch.production_meta).filter(([key]) => normalizeLooseText(key) !== orderKey))
+          : batch.production_meta || null;
+        const { error: updateError } = await supabase
+          .from("production_batches")
+          .update({ order_ids: remaining, production_meta: nextMeta })
+          .eq("id", batch.id as string | number);
+        if (updateError) throw updateError;
+      }
+    }
+  }
+
+  async function finalizeExecutiveReportPriorityCard(
+    selection: ExecutiveReportSelection,
+    workerNameForSave: string,
+    nowIso: string
+  ): Promise<void> {
+    if (!supabase || selection.kind !== "priority") return;
+
+    const { error } = await supabase
+      .from(PRIORITY_ORDER_STATIONS_TABLE)
+      .update({
+        status: "KESZ",
+        started_at: selection.startedAt || nowIso,
+        ended_at: nowIso,
+        start_worker_name: selection.startWorkerName || workerNameForSave,
+        end_worker_name: workerNameForSave,
+        updated_at: nowIso,
+      })
+      .eq("id", selection.sourceId);
+    if (error) throw error;
+
+    if (!selection.priorityOrderId) return;
+
+    const { data: allStations, error: stationsError } = await supabase
+      .from(PRIORITY_ORDER_STATIONS_TABLE)
+      .select("id, status")
+      .eq("priority_order_id", selection.priorityOrderId)
+      .limit(1000);
+    if (stationsError) throw stationsError;
+
+    const allDone = (allStations || []).length > 0
+      && (allStations || []).every((row: { status?: string | null }) => String(row.status || "").toUpperCase() === "KESZ");
+
+    if (allDone) {
+      const { error: orderError } = await supabase
+        .from(PRIORITY_ORDERS_TABLE)
+        .update({ is_active: false, completed_at: nowIso, updated_at: nowIso })
+        .eq("id", selection.priorityOrderId);
+      if (orderError) throw orderError;
+    }
+  }
+
+  async function finalizeExecutiveReportScrapCard(
+    selection: ExecutiveReportSelection,
+    workerNameForSave: string,
+    nowIso: string
+  ): Promise<void> {
+    if (!supabase || selection.kind !== "scrap-replacement") return;
+
+    const { error } = await supabase
+      .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
+      .update({
+        status: "KESZ",
+        completed_at: nowIso,
+        last_worker_name: workerNameForSave,
+        updated_at: nowIso,
+      })
+      .eq("order_number", selection.orderNumber)
+      .neq("status", "KESZ");
+    if (error) throw error;
+  }
+
+  async function saveOneExecutiveReportCompletion(selection: ExecutiveReportSelection): Promise<void> {
+    if (!supabase || !activeWorker) throw new Error("Nincs aktív irodai felhasználó.");
+
+    const leaderId = activeWorker.id;
+    const leaderName = String(activeWorker["Teljes nev"] || "").trim();
+    let effectiveWorker = activeWorker;
+
+    if (selection.mode === "dolgozoi") {
+      const chosen = workers.find((worker) => String(worker.id) === String(selection.workerId));
+      if (!chosen) throw new Error(`${selection.orderNumber}: válassz dolgozót.`);
+      if (normalizeLooseText(getWorkerStation(chosen)) !== normalizeLooseText(selection.stationName)) {
+        throw new Error(`${selection.orderNumber}: a kiválasztott dolgozó nem ehhez a munkaállomáshoz tartozik.`);
+      }
+      effectiveWorker = chosen;
+    }
+
+    if (selection.mode === "egyeb" && !selection.note.trim()) {
+      throw new Error(`${selection.orderNumber}: az Egyéb lejelentéshez kötelező az indoklás.`);
+    }
+
+    const effectiveWorkerId = effectiveWorker.id;
+    const effectiveWorkerName = String(effectiveWorker["Teljes nev"] || "").trim();
+    const nowIso = new Date().toISOString();
+
+    const { data: rawLogs, error: logError } = await supabase
+      .from("work_logs")
+      .select("id, worker_id, worker_name, order_number, action, created_at, note, start_timestamp, end_timestamp, start_time, end_time, machine_id, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at")
+      .eq("order_number", selection.orderNumber)
+      .eq("machine_id", selection.stationName)
+      .order("created_at", { ascending: true })
+      .limit(10000);
+    if (logError) throw logError;
+
+    const logs = (rawLogs || []) as WorkLogRow[];
+    const openStart = [...logs]
+      .filter((log) => Boolean(log.start_time || log.start_timestamp) && !Boolean(log.end_time || log.end_timestamp))
+      .sort((a, b) =>
+        new Date(String(a.start_time || a.start_timestamp || a.created_at)).getTime()
+        - new Date(String(b.start_time || b.start_timestamp || b.created_at)).getTime()
+      )
+      .at(-1) || null;
+
+    const door = resolveDoorCompletionSnapshot(logs);
+    const panel = resolvePanelCompletionSnapshot(logs);
+    const oldMetadata = openStart ? getStructuredNoteMetadata(openStart.note) : {};
+    const originalStartWorker = openStart
+      ? String(
+          oldMetadata.start_worker_name
+          || openStart.worker_name
+          || workers.find((worker) => Number(worker.id) === Number(openStart.worker_id))?.["Teljes nev"]
+          || selection.startWorkerName
+          || ""
+        ).trim()
+      : effectiveWorkerName;
+    const originalStartTime = openStart
+      ? String(openStart.start_time || openStart.start_timestamp || openStart.created_at || nowIso)
+      : nowIso;
+    const oldVisibleNote = openStart ? getNoteBeforeContext(openStart.note) : "";
+    const reason = selection.mode === "egyeb" ? selection.note.trim() : "";
+    const visibleNote = [oldVisibleNote, reason].filter(Boolean).join(" | ");
+
+    const metadata: Record<string, unknown> = {
+      vezetoi_lejelentes: true,
+      vezetoi_lejelentes_tipusa: selection.mode,
+      vezetoi_lejelento_id: leaderId,
+      vezetoi_lejelento_nev: leaderName,
+      vezetoi_cel_dolgozo_id: effectiveWorkerId,
+      vezetoi_cel_dolgozo_nev: effectiveWorkerName,
+      vezetoi_megjegyzes: reason || null,
+      start_worker_name: originalStartWorker,
+      start_time: originalStartTime,
+      closed_by_worker_id: effectiveWorkerId,
+      closed_by_worker_name: effectiveWorkerName,
+      end_time: nowIso,
+      end_timestamp: nowIso,
+      machine_id: selection.stationName,
+      order_number: selection.orderNumber,
+      source_card: selection.kind,
+    };
+
+    const twoPart: Record<string, unknown> = {};
+    if (selection.doorWorkflow || door.isDoorWorkflow) {
+      twoPart.tok_kesz = true;
+      twoPart.nyilo_kesz = true;
+      twoPart.reszleges_keszultseg = 100;
+      twoPart.tok_kesz_worker_name = door.tokKeszWorkerName || effectiveWorkerName;
+      twoPart.tok_kesz_at = door.tokKeszAt || nowIso;
+      twoPart.nyilo_kesz_worker_name = door.nyiloKeszWorkerName || effectiveWorkerName;
+      twoPart.nyilo_kesz_at = door.nyiloKeszAt || nowIso;
+    }
+    if (selection.panelWorkflow || panel.isPanelWorkflow) {
+      twoPart.ajtolapok_kesz = true;
+      twoPart.toklec_kesz = true;
+      twoPart.reszleges_keszultseg = 100;
+      twoPart.ajtolapok_kesz_worker_name = panel.ajtolapokKeszWorkerName || effectiveWorkerName;
+      twoPart.ajtolapok_kesz_at = panel.ajtolapokKeszAt || nowIso;
+      twoPart.toklec_kesz_worker_name = panel.toklecKeszWorkerName || effectiveWorkerName;
+      twoPart.toklec_kesz_at = panel.toklecKeszAt || nowIso;
+    }
+
+    const audit = {
+      vezetoi_lejelentes: true,
+      vezetoi_lejelento_id: leaderId,
+      vezetoi_lejelento_nev: leaderName,
+      vezetoi_lejelentes_tipusa: selection.mode,
+      vezetoi_cel_dolgozo_id: effectiveWorkerId,
+      vezetoi_cel_dolgozo_nev: effectiveWorkerName,
+      vezetoi_megjegyzes: reason || null,
+    };
+
+    if (openStart?.id !== null && openStart?.id !== undefined) {
+      const { error } = await supabase
+        .from("work_logs")
+        .update({
+          worker_id: effectiveWorkerId,
+          worker_name: effectiveWorkerName,
+          end_time: nowIso,
+          end_timestamp: nowIso,
+          event_name: `Vezetői készre könyvelés – ${selection.mode}`,
+          event_code: "VEZETOI_KESZ",
+          note: buildStructuredNote(visibleNote, metadata),
+          ...audit,
+          ...twoPart,
+        })
+        .eq("id", openStart.id);
+      if (error) throw error;
+    } else {
+      const { error } = await supabase
+        .from("work_logs")
+        .insert([{
+          worker_id: effectiveWorkerId,
+          worker_name: effectiveWorkerName,
+          machine_id: selection.stationName,
+          order_number: selection.orderNumber,
+          action: "END",
+          created_at: nowIso,
+          start_time: nowIso,
+          start_timestamp: nowIso,
+          end_time: nowIso,
+          end_timestamp: nowIso,
+          event_name: `Vezetői készre könyvelés – ${selection.mode}`,
+          event_code: "VEZETOI_KESZ",
+          note: buildStructuredNote(visibleNote, metadata),
+          scrap_qty: null,
+          darab: null,
+          szal: null,
+          selejt_potlas: selection.kind === "scrap-replacement",
+          selejt_forras_munkaallomas: selection.kind === "scrap-replacement" ? selection.stationName : null,
+          ...audit,
+          ...twoPart,
+        }]);
+      if (error) throw error;
+    }
+
+    await removeExecutiveReportedOrderFromProductionBatches(selection.stationName, selection.orderNumber);
+    await finalizeExecutiveReportPriorityCard(selection, effectiveWorkerName, nowIso);
+    await finalizeExecutiveReportScrapCard(selection, effectiveWorkerName, nowIso);
+  }
+
+  async function saveExecutiveReportSelections(): Promise<void> {
+    const selected = Object.values(executiveReportSelections).filter((row) => row.selected);
+    if (selected.length === 0) {
+      setMessage({ type: "error", text: "Jelölj ki legalább egy rendelést." });
+      return;
+    }
+
+    for (const row of selected) {
+      if (row.mode === "dolgozoi" && !row.workerId) {
+        setMessage({ type: "error", text: `${row.orderNumber}: a Dolgozói opciónál válassz dolgozót.` });
+        return;
+      }
+      if (row.mode === "egyeb" && !row.note.trim()) {
+        setMessage({ type: "error", text: `${row.orderNumber}: az Egyéb opciónál kötelező az indoklás.` });
+        return;
+      }
+    }
+
+    if (!window.confirm(`${selected.length} kijelölt sor készre könyvelése következik.\n\nBiztosan folytatod?`)) return;
+
+    setSavingExecutiveReport(true);
+    try {
+      const firstByOrder = new Map<string, ExecutiveReportSelection>();
+      selected.forEach((row) => {
+        const key = `${normalizeLooseText(row.stationName)}|${normalizeLooseText(row.orderNumber)}`;
+        if (!firstByOrder.has(key)) firstByOrder.set(key, row);
+      });
+
+      const processed = new Set<string>();
+      for (const row of selected) {
+        const key = `${normalizeLooseText(row.stationName)}|${normalizeLooseText(row.orderNumber)}`;
+        if (!processed.has(key)) {
+          await saveOneExecutiveReportCompletion(firstByOrder.get(key) || row);
+          processed.add(key);
+        } else {
+          const effective = row.mode === "dolgozoi"
+            ? workers.find((worker) => String(worker.id) === String(row.workerId)) || activeWorker
+            : activeWorker;
+          const workerName = String(effective?.["Teljes nev"] || "").trim();
+          const nowIso = new Date().toISOString();
+          await finalizeExecutiveReportPriorityCard(row, workerName, nowIso);
+          await finalizeExecutiveReportScrapCard(row, workerName, nowIso);
+        }
+      }
+
+      setExecutiveReportSelections({});
+      await loadExecutiveReportView(executiveReportStation, executiveReportDateFrom, executiveReportDateTo);
+      if (productionCardAdminStation) void loadProductionCardData(productionCardAdminStation, productionCardDate);
+      void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
+
+      setMessage({ type: "success", text: `${processed.size} rendelés sikeresen készre könyvelve vezetői jelentéssel.` });
+    } catch (error) {
+      console.error("Vezetői készre könyvelési hiba:", error);
+      setMessage({ type: "error", text: `A vezetői készre könyvelés sikertelen: ${normalizeError(error)}` });
+    } finally {
+      setSavingExecutiveReport(false);
+    }
+  }
+
+  function ExecutiveReportAdmin(): React.JSX.Element {
+    const theme = getOfficeTheme("executive-report");
+    const stations = getOrderedDashboardStations();
+    const stationWorkers = getExecutiveReportWorkersForStation(executiveReportStation);
+    const selectedCount = Object.values(executiveReportSelections).filter((row) => row.selected).length;
+
+    const panel: React.CSSProperties = {
+      background: theme.panelBackground,
+      color: theme.textColor,
+      border: `${theme.borderWidth}px solid ${theme.borderColor}`,
+      borderRadius: theme.borderRadius,
+      padding: theme.padding,
+      boxShadow: `0 10px ${theme.shadowBlur}px rgba(0,0,0,${theme.shadowOpacity})`,
+    };
+    const control: React.CSSProperties = {
+      minHeight: theme.fieldHeight,
+      padding: "8px 10px",
+      borderRadius: Math.max(6, theme.borderRadius - 4),
+      border: `1px solid ${theme.borderColor}`,
+      background: theme.inputBackground,
+      color: theme.inputText,
+      fontFamily: theme.fontFamily,
+      boxSizing: "border-box",
+    };
+
+    return (
+      <div style={{ minHeight: "100vh", background: theme.pageBackground, color: theme.textColor, fontFamily: theme.fontFamily, padding: 18 }}>
+        <ManagementNavigation />
+
+        <div data-office-window="executive-report:header" style={{ ...panel, marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 14, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ color: theme.accentColor, fontSize: 12, fontWeight: 900, letterSpacing: 1, textTransform: "uppercase" }}>NÍVÓ</div>
+              <h2 style={{ margin: "4px 0 0", fontSize: theme.titleFontSize }}>Vezetői jelentés</h2>
+              <div style={{ color: theme.mutedText, marginTop: 5 }}>A kiválasztott munkaállomás dolgozói termelési kártyái jelennek meg.</div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(220px,1fr) minmax(155px,.7fr) minmax(155px,.7fr)", gap: 10, minWidth: 560, flex: "1 1 650px" }}>
+              <label style={{ display: "grid", gap: 5, fontWeight: 800 }}>
+                <span>Munkaállomás</span>
+                <select value={executiveReportStation} onChange={(event) => { setExecutiveReportStation(event.target.value); setExecutiveReportSelections({}); }} style={control}>
+                  <option value="">Válassz munkaállomást</option>
+                  {stations.map((station) => <option key={station} value={station}>{station}</option>)}
+                </select>
+              </label>
+              <label style={{ display: "grid", gap: 5, fontWeight: 800 }}>
+                <span>Dátumtól</span>
+                <input type="date" value={executiveReportDateFrom} max={executiveReportDateTo || undefined} onChange={(event) => { setExecutiveReportDateFrom(event.target.value); setExecutiveReportSelections({}); }} style={control} />
+              </label>
+              <label style={{ display: "grid", gap: 5, fontWeight: 800 }}>
+                <span>Dátumig</span>
+                <input type="date" value={executiveReportDateTo} min={executiveReportDateFrom || undefined} onChange={(event) => { setExecutiveReportDateTo(event.target.value); setExecutiveReportSelections({}); }} style={control} />
+              </label>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 12, color: theme.mutedText, fontSize: 12 }}>
+            <span>Belépett irodai felhasználó: <strong style={{ color: theme.textColor }}>{activeWorker?.["Teljes nev"] || "–"}</strong></span>
+            <span>Kijelölt sorok: <strong style={{ color: selectedCount ? theme.activeColor : theme.textColor }}>{selectedCount}</strong></span>
+            <span>Állomási dolgozók: <strong style={{ color: theme.textColor }}>{stationWorkers.length}</strong></span>
+          </div>
+        </div>
+
+        <div data-office-window="executive-report:cards">
+          {!executiveReportStation ? (
+            <div style={{ ...panel, textAlign: "center", padding: 28, color: theme.mutedText }}>Válassz munkaállomást.</div>
+          ) : loadingExecutiveReport && !executiveReportData.lastUpdatedAt ? (
+            <div style={{ ...panel, textAlign: "center", padding: 28, color: theme.mutedText }}>Termelési kártyák betöltése...</div>
+          ) : (
+            renderProductionCardDisplay(executiveReportProfile, executiveReportData, { executiveReport: true })
+          )}
+        </div>
+
+        <div data-office-window="executive-report:commit" style={{ ...panel, marginTop: 16 }}>
+          <div style={{ marginBottom: 10, color: theme.mutedText, lineHeight: 1.55 }}>
+            <strong style={{ color: theme.textColor }}>Vezetői</strong>: a belépett irodai felhasználóra könyvel.
+            {" · "}
+            <strong style={{ color: theme.textColor }}>Dolgozói</strong>: az adott munkaállomás kiválasztott dolgozójára könyvel, és külön menti a vezetői beavatkozást.
+            {" · "}
+            <strong style={{ color: theme.textColor }}>Egyéb</strong>: kötelező indoklással könyvel.
+          </div>
+          <button
+            type="button"
+            onClick={() => void saveExecutiveReportSelections()}
+            disabled={savingExecutiveReport || selectedCount === 0}
+            style={{
+              minHeight: 48,
+              padding: "10px 18px",
+              borderRadius: Math.max(8, theme.borderRadius - 3),
+              border: `2px solid ${theme.accentColor}`,
+              background: savingExecutiveReport || selectedCount === 0 ? theme.secondaryButtonBackground : theme.primaryButtonBackground,
+              color: theme.buttonText,
+              fontWeight: 1000,
+              cursor: savingExecutiveReport || selectedCount === 0 ? "not-allowed" : "pointer",
+              opacity: savingExecutiveReport || selectedCount === 0 ? .65 : 1,
+            }}
+          >
+            {savingExecutiveReport ? "Készre könyvelés..." : `Készre könyvelés${selectedCount ? ` (${selectedCount})` : ""}`}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
 
   function ProductionCardAdmin(): React.JSX.Element {
     const officeTheme = getOfficeTheme("production-card");
@@ -14972,6 +15739,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (managementSection === "production-card") return ProductionCardAdmin();
     if (managementSection === "reproduction-report") return ReproductionReportAdmin();
     if (managementSection === "label-printer") return OfficeLabelPrinterAdmin();
+    if (managementSection === "executive-report") return ExecutiveReportAdmin();
     if (managementSection === "report-delivery") return ReportDeliveryAdmin();
 
     const dashboardRange = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
@@ -16419,6 +17187,48 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     void loadProductionCardSettingsForStation(productionCardAdminStation);
     void loadProductionCardData(productionCardAdminStation, productionCardDate);
   }, [activeWorker?.id, terminalView, flowStage, managementSection, productionCardAdminStation, supabase]);
+
+
+  useEffect(() => {
+    const stations = getOrderedDashboardStations();
+    if (!executiveReportStation && stations.length > 0) setExecutiveReportStation(stations[0]);
+  }, [machineIdRows, machineOptions, executiveReportStation]);
+
+  useEffect(() => {
+    if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
+    if (terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "executive-report") return;
+    if (!executiveReportStation) return;
+    void loadExecutiveReportView(executiveReportStation, executiveReportDateFrom, executiveReportDateTo);
+  }, [activeWorker?.id, terminalView, flowStage, managementSection, executiveReportStation, executiveReportDateFrom, executiveReportDateTo, supabase]);
+
+  useEffect(() => {
+    if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
+    if (terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "executive-report") return;
+    if (!executiveReportStation) return;
+    const intervalId = window.setInterval(() => {
+      void runNivoBackgroundRefresh(() => loadExecutiveReportView(executiveReportStation, executiveReportDateFrom, executiveReportDateTo));
+    }, NIVO_BACKGROUND_REFRESH_MS);
+    return () => window.clearInterval(intervalId);
+  }, [activeWorker?.id, terminalView, flowStage, managementSection, executiveReportStation, executiveReportDateFrom, executiveReportDateTo]);
+
+  useEffect(() => {
+    if (!supabase || managementSection !== "executive-report" || !executiveReportStation) return;
+    const tableName = buildStationPlanTableName(executiveReportStation);
+    const refresh = () => void runNivoBackgroundRefresh(() => loadExecutiveReportView(executiveReportStation, executiveReportDateFrom, executiveReportDateTo));
+    const channel = supabase
+      .channel(`executive-report-${normalizeLooseText(executiveReportStation)}-${executiveReportDateFrom}-${executiveReportDateTo}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "production_plans" }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: PRIORITY_ORDERS_TABLE }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: PRIORITY_ORDER_STATIONS_TABLE }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: CARPENTER_SCRAP_REPLACEMENT_TABLE }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: PRODUCTION_CARD_SETTINGS_TABLE }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: tableName }, refresh)
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [supabase, managementSection, executiveReportStation, executiveReportDateFrom, executiveReportDateTo]);
 
   useEffect(() => {
     if (managementSection !== "production-plan") return;
