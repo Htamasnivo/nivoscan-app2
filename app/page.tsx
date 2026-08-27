@@ -12985,94 +12985,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         .filter((row) => Boolean(row.orderNumber))));
     }
 
-    let commonPlan: ProductionPlanRow | null = null;
-    let commonPlanResponse = await supabase
-      .from("production_plans")
-      .select("id, plan_date, name, is_active, uploaded_by, created_at")
-      .eq("plan_date", dateKey)
-      .eq("is_active", true)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (commonPlanResponse.error) {
-      sourceErrors.push(`A közös aktív termelési terv nem olvasható: ${normalizeError(commonPlanResponse.error)}`);
-    } else {
-      commonPlan = (commonPlanResponse.data as ProductionPlanRow | null) || null;
-    }
-
-    if (!commonPlan) {
-      commonPlanResponse = await supabase
-        .from("production_plans")
-        .select("id, plan_date, name, is_active, uploaded_by, created_at")
-        .eq("plan_date", dateKey)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (commonPlanResponse.error) {
-        sourceErrors.push(`A közös termelési terv nem olvasható: ${normalizeError(commonPlanResponse.error)}`);
-      } else {
-        commonPlan = (commonPlanResponse.data as ProductionPlanRow | null) || null;
-      }
-    }
-
-    const commonPlanRows: Array<{
-      orderNumber: string;
-      productName: string;
-      excelOrder: number;
-      sourceRowId: string;
-      quantity: number | null;
-      completionDate: string;
-      productType: string;
-      planData: Record<string, unknown>;
-    }> = [];
-
-    if (commonPlan) {
-      let itemResponse = await supabase
-        .from("production_plan_items")
-        .select("plan_id, order_number, sequence_number, planned_quantity, product_name, required_stations")
-        .eq("plan_id", commonPlan.id)
-        .order("sequence_number", { ascending: true })
-        .limit(10000);
-
-      if (itemResponse.error && isMissingRequiredStationsColumnError(itemResponse.error)) {
-        itemResponse = await supabase
-          .from("production_plan_items")
-          .select("plan_id, order_number, sequence_number, planned_quantity, product_name")
-          .eq("plan_id", commonPlan.id)
-          .order("sequence_number", { ascending: true })
-          .limit(10000);
-      }
-
-      if (itemResponse.error) {
-        sourceErrors.push(`A közös termelési terv tételei nem olvashatók: ${normalizeError(itemResponse.error)}`);
-      } else {
-        ((itemResponse.data || []) as ProductionPlanItemRow[]).forEach((item) => {
-          const orderNumber = String(item.order_number || "").trim();
-          if (!orderNumber) return;
-          const requiredStations = Array.isArray(item.required_stations)
-            ? item.required_stations.map((station) => String(station || "").trim()).filter(Boolean)
-            : [];
-          const belongsToStation = requiredStations.length === 0 || requiredStations.some(
-            (requiredStation) => normalizeLooseText(requiredStation) === normalizeLooseText(cleanStationName)
-          );
-          if (!belongsToStation) return;
-
-          commonPlanRows.push({
-            orderNumber,
-            productName: String(item.product_name || "").trim(),
-            excelOrder: 1000000 + Math.max(0, Number(item.sequence_number || 0)),
-            sourceRowId: `common-${commonPlan?.id || "plan"}-${item.sequence_number || 0}-${orderNumber}`,
-            quantity: item.planned_quantity === null || item.planned_quantity === undefined
-              ? null
-              : Number(item.planned_quantity),
-            completionDate: dateKey,
-            productType: String(commonPlan?.name || "Közös termelési terv").trim(),
-            planData: {},
-          });
-        });
-      }
-    }
+    // ==========================================================
+    // NORMÁL TERMELÉSI KÁRTYA – EGYETLEN ADATFORRÁS
+    //
+    // A normál termelési kártya sorai és üzleti adatai KIZÁRÓLAG az
+    // adott munkaállomás saját *_terv táblájából jönnek.
+    //
+    // A production_plans / production_plan_items többé NEM lehet
+    // fallback sorforrás, mert egy kézzel felvitt központi tervsor
+    // korábban üres planData-val bekerülhetett a kártyára, és ugyanazt
+    // a rendelést úgy mutathatta, mintha az rsz/szín/stb. hiányozna.
+    //
+    // A kézi sor mentése külön gondoskodik arról, hogy a sor bekerüljön
+    // a megfelelő *_terv táblába. Ha onnan törlöd, a kártyáról is eltűnik.
+    // ==========================================================
 
     const scrapReplacementRows: ScrapReplacementRow[] = [];
     if (isCarpenterStationName(cleanStationName)) {
@@ -13172,16 +13098,116 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       normalizeLooseText(row.productName),
     ].join("|");
 
-    // A saját *_terv tábla az Excel 1:1 sorrendjét képviseli.
-    // A duplikált Excel-sorokat sem vonjuk össze.
-    const planRows = [...stationPlanRows];
-    const stationPlanKeys = new Set(stationPlanRows.map(productionCardPlanRowKey));
+    // A saját *_terv tábla az egyetlen sorforrás.
+    //
+    // Valódi Excel-duplikátumokat továbbra sem vonunk össze.
+    // Egy kézzel felvitt MINIMÁL sor viszont nem fedheti el ugyanannak
+    // a rendelésnek a később/korábban meglévő részletes Excel-sorát.
+    const isManualStationPlanRow = (row: typeof stationPlanRows[number]): boolean => {
+      const sourceValue = normalizeLooseText(
+        String(
+          row.planData?.source_file
+          ?? (
+            row.planData?.adat
+            && typeof row.planData.adat === "object"
+            && !Array.isArray(row.planData.adat)
+              ? (row.planData.adat as Record<string, unknown>).source
+              : ""
+          )
+          ?? ""
+        )
+      );
 
-    // A közös terv csak fallback: ami nincs a munkaállomási Excelben, az kerül mögé.
-    commonPlanRows.forEach((row) => {
-      if (!stationPlanKeys.has(productionCardPlanRowKey(row))) {
-        planRows.push(row);
+      const typeValue = normalizeLooseText(
+        String(row.planData?.tipus ?? row.productType ?? "")
+      );
+
+      return sourceValue === "manual"
+        || sourceValue.includes("kezi")
+        || typeValue === normalizeLooseText("Kézi rögzítés");
+    };
+
+    const getStationPlanBusinessDataScore = (
+      row: typeof stationPlanRows[number]
+    ): number => {
+      const technicalKeys = new Set([
+        "id",
+        "excel_sorrend",
+        "source_file",
+        "adat",
+        "imported_at",
+        "created_at",
+        "updated_at",
+      ]);
+
+      const directScore = Object.entries(row.planData || {}).reduce(
+        (score, [key, value]) => {
+          if (technicalKeys.has(key)) return score;
+          return hasProductionCardPlanValue(value) ? score + 1 : score;
+        },
+        0
+      );
+
+      const nestedData =
+        row.planData?.adat
+        && typeof row.planData.adat === "object"
+        && !Array.isArray(row.planData.adat)
+          ? row.planData.adat as Record<string, unknown>
+          : null;
+
+      const nestedScore = nestedData
+        ? Object.entries(nestedData).reduce(
+            (score, [key, value]) => {
+              if (technicalKeys.has(key)) return score;
+              return hasProductionCardPlanValue(value) ? score + 1 : score;
+            },
+            0
+          )
+        : 0;
+
+      return directScore + nestedScore;
+    };
+
+    const exactStationPlanKey = (
+      row: typeof stationPlanRows[number]
+    ): string => [
+      normalizeLooseText(row.orderNumber),
+      normalizeLooseText(row.productName),
+      row.completionDate,
+    ].join("|");
+
+    const detailedRowsByExactKey = new Map<
+      string,
+      Array<typeof stationPlanRows[number]>
+    >();
+
+    stationPlanRows.forEach((row) => {
+      if (isManualStationPlanRow(row)) return;
+      const key = exactStationPlanKey(row);
+      const group = detailedRowsByExactKey.get(key) || [];
+      group.push(row);
+      detailedRowsByExactKey.set(key, group);
+    });
+
+    const planRows = stationPlanRows.filter((row) => {
+      if (!isManualStationPlanRow(row)) return true;
+
+      const exactDetailedRows =
+        detailedRowsByExactKey.get(exactStationPlanKey(row)) || [];
+
+      if (exactDetailedRows.length === 0) {
+        // Ha a kézi sor az egyetlen saját *_terv sor, természetesen látszik.
+        return true;
       }
+
+      const manualScore = getStationPlanBusinessDataScore(row);
+      const bestDetailedScore = Math.max(
+        ...exactDetailedRows.map(getStationPlanBusinessDataScore)
+      );
+
+      // Ha van részletesebb Excel/import sor ugyanarra a kulcsra,
+      // a kártya azt használja, a minimál kézi sort nem mutatjuk duplán.
+      return manualScore >= bestDetailedScore;
     });
 
     planRows.sort((left, right) => {
