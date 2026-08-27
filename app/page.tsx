@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import JsBarcode from "jsbarcode";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
@@ -5151,6 +5151,12 @@ function collectNivoViewportAnchors(): NivoScrollAnchor[] {
 
   const addCandidate = (candidate: HTMLElement | null) => {
     if (!candidate || seen.has(candidate) || !isNivoUsableScrollAnchor(candidate)) return;
+
+    // A termelési kártya belső görgetése külön scroll-tartomány.
+    // Ha innen választanánk window-horgonyt, a belső scroll elmozdulását
+    // a rendszer tévesen teljes oldal-elmozdulásnak érzékelné.
+    if (candidate.closest('[data-nivo-persistent-scroll="true"]')) return;
+
     seen.add(candidate);
     found.push(candidate);
   };
@@ -5326,6 +5332,11 @@ function collectNivoScrollableAncestors(elements: Array<HTMLElement | null>): Ni
 
   const addScrollable = (element: HTMLElement | null) => {
     if (!element || seen.has(element) || !isNivoRelevantScrollableElement(element)) return;
+
+    // Ezt a scroll-konténert a NivoPersistentProductionCardScrollContainer
+    // kezeli. Két külön restore-rendszer nem nyúlhat ugyanahhoz az elemhez.
+    if (element.getAttribute("data-nivo-persistent-scroll") === "true") return;
+
     seen.add(element);
     result.push(createNivoScrollableSnapshot(element));
   };
@@ -5706,6 +5717,291 @@ async function runNivoBackgroundRefresh(task: () => void | Promise<void>): Promi
     }
   }
 }
+
+
+type NivoPersistentProductionCardScrollState = {
+  scrollTop: number;
+  scrollLeft: number;
+  innerAnchor: NivoInnerScrollAnchorCandidate | null;
+  fallbackAnchors: NivoInnerScrollAnchorCandidate[];
+};
+
+const nivoPersistentProductionCardScrollState = new Map<
+  string,
+  NivoPersistentProductionCardScrollState
+>();
+
+let nivoPersistentProductionCardRestoreDepth = 0;
+
+function rememberNivoPersistentProductionCardScroll(
+  scrollKey: string,
+  container: HTMLElement
+): void {
+  if (!scrollKey || nivoPersistentProductionCardRestoreDepth > 0) return;
+
+  const inner = captureNivoInnerScrollAnchor(container);
+
+  nivoPersistentProductionCardScrollState.set(scrollKey, {
+    scrollTop: container.scrollTop,
+    scrollLeft: container.scrollLeft,
+    innerAnchor: inner.innerAnchor,
+    fallbackAnchors: inner.fallbackAnchors,
+  });
+}
+
+function restoreNivoPersistentProductionCardScroll(
+  scrollKey: string,
+  container: HTMLElement
+): void {
+  const saved = nivoPersistentProductionCardScrollState.get(scrollKey);
+  if (!saved) return;
+
+  const containerRect = container.getBoundingClientRect();
+
+  const candidateSnapshots = [
+    ...(saved.innerAnchor ? [saved.innerAnchor] : []),
+    ...saved.fallbackAnchors,
+  ];
+
+  let foundVerticalAnchor = false;
+  let foundHorizontalAnchor = false;
+
+  nivoPersistentProductionCardRestoreDepth += 1;
+
+  try {
+    for (let candidateIndex = 0; candidateIndex < candidateSnapshots.length; candidateIndex += 1) {
+      const snapshot = candidateSnapshots[candidateIndex];
+      const candidate =
+        snapshot.element?.isConnected
+          ? snapshot.element
+          : resolveNivoElementLocator(snapshot.locator);
+
+      if (!candidate || !container.contains(candidate)) continue;
+
+      const candidateRect = candidate.getBoundingClientRect();
+
+      // Ha az eredeti sor még megvan, pontosan az eredeti relatív helyét tartjuk.
+      // Ha eltűnt, az első legközelebbi megmaradó fallback sort AZ EREDETI
+      // sor képernyőhelyére tesszük, nem a fallback régi helyére.
+      const desiredRelativeTop =
+        saved.innerAnchor?.relativeTop
+        ?? snapshot.relativeTop;
+
+      const desiredRelativeLeft =
+        saved.innerAnchor?.relativeLeft
+        ?? snapshot.relativeLeft;
+
+      const currentRelativeTop = candidateRect.top - containerRect.top;
+      const currentRelativeLeft = candidateRect.left - containerRect.left;
+
+      const deltaY = currentRelativeTop - desiredRelativeTop;
+      const deltaX = currentRelativeLeft - desiredRelativeLeft;
+
+      if (container.scrollHeight > container.clientHeight + 1) {
+        if (Math.abs(deltaY) > 0.5) {
+          container.scrollTop += deltaY;
+        }
+        foundVerticalAnchor = true;
+      }
+
+      if (container.scrollWidth > container.clientWidth + 1) {
+        if (Math.abs(deltaX) > 0.5) {
+          container.scrollLeft += deltaX;
+        }
+        foundHorizontalAnchor = true;
+      }
+
+      break;
+    }
+
+    // Csak akkor használjuk a pixelpozíciót, ha a konkrét sor és az összes
+    // környező fallback sor ténylegesen eltűnt.
+    if (
+      !foundVerticalAnchor
+      && container.scrollHeight > container.clientHeight + 1
+      && Math.abs(container.scrollTop - saved.scrollTop) > 0.5
+    ) {
+      container.scrollTop = Math.min(
+        saved.scrollTop,
+        Math.max(0, container.scrollHeight - container.clientHeight)
+      );
+    }
+
+    if (
+      !foundHorizontalAnchor
+      && container.scrollWidth > container.clientWidth + 1
+      && Math.abs(container.scrollLeft - saved.scrollLeft) > 0.5
+    ) {
+      container.scrollLeft = Math.min(
+        saved.scrollLeft,
+        Math.max(0, container.scrollWidth - container.clientWidth)
+      );
+    }
+  } finally {
+    queueMicrotask(() => {
+      nivoPersistentProductionCardRestoreDepth = Math.max(
+        0,
+        nivoPersistentProductionCardRestoreDepth - 1
+      );
+    });
+  }
+}
+
+type NivoPersistentProductionCardScrollContainerProps = {
+  scrollKey: string;
+  style: React.CSSProperties;
+  children: React.ReactNode;
+};
+
+function NivoPersistentProductionCardScrollContainer({
+  scrollKey,
+  style,
+  children,
+}: NivoPersistentProductionCardScrollContainerProps): React.JSX.Element {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const pointerScrollingRef = useRef(false);
+  const captureRafRef = useRef<number | null>(null);
+
+  const scheduleUserPositionCapture = () => {
+    if (captureRafRef.current !== null) {
+      window.cancelAnimationFrame(captureRafRef.current);
+    }
+
+    captureRafRef.current = window.requestAnimationFrame(() => {
+      captureRafRef.current = null;
+      const container = containerRef.current;
+      if (!container) return;
+      rememberNivoPersistentProductionCardScroll(scrollKey, container);
+    });
+  };
+
+  const beginPointerScroll = () => {
+    pointerScrollingRef.current = true;
+
+    const finish = () => {
+      pointerScrollingRef.current = false;
+      scheduleUserPositionCapture();
+      window.removeEventListener("pointerup", finish, true);
+      window.removeEventListener("pointercancel", finish, true);
+    };
+
+    window.addEventListener("pointerup", finish, true);
+    window.addEventListener("pointercancel", finish, true);
+  };
+
+  // MINDEN React render után, még a böngésző paint előtt:
+  // a felhasználó utolsó saját scrollpozícióját állítjuk vissza.
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    restoreNivoPersistentProductionCardScroll(scrollKey, container);
+
+    const raf1 = window.requestAnimationFrame(() => {
+      const current = containerRef.current;
+      if (!current) return;
+
+      restoreNivoPersistentProductionCardScroll(scrollKey, current);
+
+      window.requestAnimationFrame(() => {
+        const latest = containerRef.current;
+        if (latest) restoreNivoPersistentProductionCardScroll(scrollKey, latest);
+      });
+    });
+
+    const timer40 = window.setTimeout(() => {
+      const current = containerRef.current;
+      if (current) restoreNivoPersistentProductionCardScroll(scrollKey, current);
+    }, 40);
+
+    const timer120 = window.setTimeout(() => {
+      const current = containerRef.current;
+      if (current) restoreNivoPersistentProductionCardScroll(scrollKey, current);
+    }, 120);
+
+    const timer260 = window.setTimeout(() => {
+      const current = containerRef.current;
+      if (current) restoreNivoPersistentProductionCardScroll(scrollKey, current);
+    }, 260);
+
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      window.clearTimeout(timer40);
+      window.clearTimeout(timer120);
+      window.clearTimeout(timer260);
+    };
+  });
+
+  // Ha a táblázat mérete változik (új sor / eltűnő sor / sor-magasság),
+  // ugyanaz a konkrét rendelés marad a belső viewport ugyanazon pontján.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(() => {
+      if (pointerScrollingRef.current) return;
+      const current = containerRef.current;
+      if (current) {
+        restoreNivoPersistentProductionCardScroll(scrollKey, current);
+      }
+    });
+
+    observer.observe(container);
+
+    const table = container.querySelector("table");
+    if (table instanceof HTMLElement) observer.observe(table);
+
+    return () => observer.disconnect();
+  }, [scrollKey]);
+
+  return (
+    <div
+      ref={containerRef}
+      data-nivo-scroll-container={scrollKey}
+      data-nivo-persistent-scroll="true"
+      style={style}
+      onWheelCapture={() => {
+        // A wheel esemény a tényleges scroll előtt jön, ezért a következő RAF
+        // menti a már megváltozott felhasználói pozíciót.
+        scheduleUserPositionCapture();
+      }}
+      onTouchMoveCapture={scheduleUserPositionCapture}
+      onPointerDownCapture={beginPointerScroll}
+      onScrollCapture={() => {
+        // Scrollbar húzás közben folyamatosan a felhasználó új pozícióját mentjük.
+        // Programozott/browseres frissítési scroll nem írhatja felül a registryt.
+        if (pointerScrollingRef.current && nivoPersistentProductionCardRestoreDepth === 0) {
+          scheduleUserPositionCapture();
+        }
+      }}
+      onKeyDownCapture={(event) => {
+        const target = event.target as HTMLElement | null;
+        const isEditableControl =
+          target instanceof HTMLInputElement
+          || target instanceof HTMLTextAreaElement
+          || target instanceof HTMLSelectElement;
+
+        if (
+          !isEditableControl
+          && (
+            event.key === "ArrowUp"
+            || event.key === "ArrowDown"
+            || event.key === "PageUp"
+            || event.key === "PageDown"
+            || event.key === "Home"
+            || event.key === "End"
+            || event.key === " "
+          )
+        ) {
+          scheduleUserPositionCapture();
+        }
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 
 function focusAndSelectInput(
   ref: React.RefObject<HTMLInputElement | null>,
@@ -13891,9 +14187,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           ) : visibleFieldIds.length === 0 ? (
             <div style={{ color: theme.subtitleText, padding: 20, textAlign: "center" }}>Minden mező el van rejtve.</div>
           ) : (
-            <div
-              data-nivo-scroll-container={`production-card-scroll:${normalizeLooseText(data.stationName)}:${table.id}`}
-              style={{ overflowX: executiveReport ? "auto" : "hidden", overflowY: "auto", maxHeight: compact ? 520 : 650 }}
+            <NivoPersistentProductionCardScrollContainer
+              scrollKey={`production-card-scroll:${normalizeLooseText(data.stationName)}:${table.id}:${data.dateKey}`}
+              style={{
+                overflowX: executiveReport ? "auto" : "hidden",
+                overflowY: "auto",
+                maxHeight: compact ? 520 : 650,
+              }}
             >
               <table style={{ width: "100%", minWidth: executiveReport ? 1450 : undefined, tableLayout: "fixed", borderCollapse: "separate", borderSpacing: 0, fontFamily: theme.fontFamily }}>
                 <colgroup>
@@ -13965,7 +14265,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                         ? String(scrapRow.id)
                         : backlogRow
                           ? backlogRow.id
-                          : `${productionRow!.sourceRowId}-${productionRow!.excelOrder}-${rowIndex}`;
+                          : [
+                              productionRow!.completionDate,
+                              productionRow!.sourceRowId,
+                              productionRow!.excelOrder,
+                              normalizeLooseText(productionRow!.orderNumber),
+                            ].join("|");
                     const executiveDescriptor = executiveReport
                       ? getExecutiveReportDescriptor(table.dataSource, rawRow as ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow, data.stationName, rowIndex)
                       : null;
@@ -14164,7 +14469,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   })}
                 </tbody>
               </table>
-            </div>
+            </NivoPersistentProductionCardScrollContainer>
           )}
         </section>
       );
