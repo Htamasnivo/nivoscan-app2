@@ -1491,6 +1491,7 @@ const PRODUCTION_MONITOR_PROFILES_STORAGE_KEY = "nivo-production-monitor-profile
 const PRODUCTION_MONITOR_LEGACY_PROFILES_STORAGE_KEY = "nivo-production-monitor-profiles-v1";
 const PRODUCTION_MONITOR_SETTINGS_TABLE = "production_monitor_user_settings";
 const PRODUCTION_CARD_SETTINGS_TABLE = "production_card_station_settings";
+const EXECUTIVE_REPORT_SETTINGS_TABLE = "executive_report_station_settings";
 const CARPENTER_SCRAP_REPLACEMENT_TABLE = "asztalos_selejt_potlas";
 const PRODUCTION_CARD_ORDER_FIELD_ID = "__card_order_number__";
 const PRODUCTION_CARD_PRODUCT_FIELD_ID = "__card_product_name__";
@@ -6353,6 +6354,11 @@ export default function Page() {
   const [executiveReportSelections, setExecutiveReportSelections] = useState<Record<string, ExecutiveReportSelection>>({});
   const [loadingExecutiveReport, setLoadingExecutiveReport] = useState(false);
   const [savingExecutiveReport, setSavingExecutiveReport] = useState(false);
+  const [executiveReportEditMode, setExecutiveReportEditMode] = useState(false);
+  const [executiveReportEditorTab, setExecutiveReportEditorTab] = useState<"layout" | "typography" | "colors" | "field">("layout");
+  const [executiveReportSelectedFieldId, setExecutiveReportSelectedFieldId] = useState(PRODUCTION_CARD_ORDER_FIELD_ID);
+  const [executiveReportLastSavedAt, setExecutiveReportLastSavedAt] = useState("");
+  const [savingExecutiveReportSettings, setSavingExecutiveReportSettings] = useState(false);
 
   const [carpenterPrinterTab, setCarpenterPrinterTab] = useState<"printer" | "templates">("printer");
   const [windowsPrinters, setWindowsPrinters] = useState<string[]>([]);
@@ -13105,12 +13111,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       // Normál napi termelési kártya: a KÉSZ sor is megmarad.
       // Prioritás / Selejtpótlás / Lemaradások: a kész sor továbbra is eltűnik.
-      const sourceRows = rawSourceRows.filter((rawRow) => {
-        if (isPriorityTable) return (rawRow as ProductionCardPriorityRow).status !== "done";
-        if (isScrapTable) return getScrapReplacementCardStatus(rawRow as ScrapReplacementRow) !== "done";
-        if (isBacklogTable) return (rawRow as ProductionCardBacklogRow).status !== "done";
-        return true;
-      });
+      const sourceRows = isPriorityTable
+        ? rawSourceRows.filter((rawRow) => (rawRow as ProductionCardPriorityRow).status !== "done")
+        : isScrapTable
+          ? rawSourceRows.filter((rawRow) => getScrapReplacementCardStatus(rawRow as ScrapReplacementRow) !== "done")
+          : isBacklogTable
+            ? rawSourceRows.filter((rawRow) => (rawRow as ProductionCardBacklogRow).status !== "done")
+            : [...data.rows];
+      // FONTOS: minden munkaállomás SIMA termelési kártyáján a KÉSZ sor
+      // mindig látható marad. Csak a Prioritás / Selejtpótlás / Lemaradás
+      // rendszerkártyákról tűnik el a kész sor.
 
       if (isPriorityTable && sourceRows.length === 0) {
         return <React.Fragment key={table.id} />;
@@ -13374,49 +13384,27 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                     ? [productionRow!.startWorkerName ? `Indító: ${productionRow!.startWorkerName}` : "", productionRow!.endWorkerName ? `Befejező: ${productionRow!.endWorkerName}` : "", productionRow!.startedAt ? `START: ${formatDateTime(productionRow!.startedAt)}` : "", productionRow!.endedAt ? `END: ${formatDateTime(productionRow!.endedAt)}` : ""].filter(Boolean).join(" | ")
                                     : String(value ?? "");
                           const isNormalProductionTable = !isPriorityTable && !isScrapTable && !isBacklogTable;
-                          const isCsolezerNormalProductionTable =
-                            isNormalProductionTable
-                            && normalizeLooseText(data.stationName) === normalizeLooseText("Csolezer");
-
                           const forceNormalStartedRow = isNormalProductionTable && status === "in-progress";
                           const forceNormalDoneRow = isNormalProductionTable && status === "done";
-                          const forceCsolezerWaitingRow = isCsolezerNormalProductionTable && status === "waiting";
+                          const forceNormalWaitingRow = isNormalProductionTable && status === "waiting";
 
-                          // Csőlézer – csak a SIMA termelési kártyán:
-                          // a teljes sor a kártyához beállított saját állapotszíneket használja.
-                          // Így a Profi szerkesztő "Kész / Folyamatban / Várakozik háttér"
-                          // színei ténylegesen megjelennek, nem a korábbi hardcoded pasztell színek.
-                          // A más munkaállomás állapot-oszlopai lent továbbra is külön ágon
-                          // maradnak, ezért megtartják a saját státuszszínüket.
+                          // MINDEN normál termelési kártyán ugyanaz az állapotszabály:
+                          // Várakozik = saját várakozó szín, START = saját folyamatban szín,
+                          // END/Kész = saját kész (zöld) szín. A teljes sor kapja a színt.
+                          // Más munkaállomás állapot-oszlopai külön ágon maradnak.
                           const forcedNormalRowBackground = forceNormalDoneRow
-                            ? (
-                                isCsolezerNormalProductionTable
-                                  ? theme.doneBackground
-                                  : "#86efac"
-                              )
+                            ? theme.doneBackground
                             : forceNormalStartedRow
-                              ? (
-                                  isCsolezerNormalProductionTable
-                                    ? theme.inProgressBackground
-                                    : "#fde68a"
-                                )
-                              : forceCsolezerWaitingRow
+                              ? theme.inProgressBackground
+                              : forceNormalWaitingRow
                                 ? theme.waitingBackground
                                 : "";
 
                           const forcedNormalRowText = forceNormalDoneRow
-                            ? (
-                                isCsolezerNormalProductionTable
-                                  ? theme.doneText
-                                  : "#14532d"
-                              )
+                            ? theme.doneText
                             : forceNormalStartedRow
-                              ? (
-                                  isCsolezerNormalProductionTable
-                                    ? theme.inProgressText
-                                    : "#713f12"
-                                )
-                              : forceCsolezerWaitingRow
+                              ? theme.inProgressText
+                              : forceNormalWaitingRow
                                 ? theme.waitingText
                                 : "";
 
@@ -13500,12 +13488,196 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
 
-  function getExecutiveReportWorkersForStation(stationName = executiveReportStation): Worker[] {
-    const key = normalizeLooseText(stationName);
-    if (!key) return [];
-    return workers
-      .filter((worker) => normalizeLooseText(getWorkerStation(worker)) === key)
-      .sort((a, b) => String(a["Teljes nev"] || "").localeCompare(String(b["Teljes nev"] || ""), "hu"));
+  function getExecutiveReportWorkersForStation(_stationName = executiveReportStation): Worker[] {
+    // Vezetői jelentés / Dolgozói mód: mindig a TELJES workers lista jelenik meg,
+    // munkaállomástól függetlenül, magyar ABC sorrendben.
+    return [...workers].sort((a, b) =>
+      String(a["Teljes nev"] || "").localeCompare(String(b["Teljes nev"] || ""), "hu", { sensitivity: "base" })
+    );
+  }
+
+  async function fetchExecutiveReportProfileForStation(
+    stationName: string
+  ): Promise<{ profile: ProductionMonitorProfile; updatedAt: string; inheritedFromProductionCard: boolean }> {
+    const cleanStation = String(stationName || "").trim();
+    if (!cleanStation) {
+      return {
+        profile: createDefaultProductionCardProfile(),
+        updatedAt: "",
+        inheritedFromProductionCard: true,
+      };
+    }
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    const { data, error } = await supabase
+      .from(EXECUTIVE_REPORT_SETTINGS_TABLE)
+      .select("station_name, settings, updated_by, updated_at")
+      .eq("station_name", cleanStation)
+      .maybeSingle();
+
+    if (!error && data) {
+      const row = data as ProductionCardStationSettingsRow;
+      return {
+        profile: normalizeProductionCardProfile(row.settings, cleanStation),
+        updatedAt: row.updated_at || "",
+        inheritedFromProductionCard: false,
+      };
+    }
+
+    // Ha ehhez az állomáshoz még nincs külön vezetői profil, az alapérték
+    // PONTOSAN a jelenlegi dolgozói termelési kártya beállítása.
+    // Ettől még a két profil később teljesen külön mentődik.
+    const productionProfile = await fetchProductionCardProfileForStation(cleanStation);
+    return {
+      profile: normalizeProductionCardProfile(
+        JSON.parse(JSON.stringify(productionProfile.profile)) as ProductionMonitorProfile,
+        cleanStation
+      ),
+      updatedAt: "",
+      inheritedFromProductionCard: true,
+    };
+  }
+
+  async function saveExecutiveReportProfile(showFeedback = true): Promise<void> {
+    const stationName = String(executiveReportStation || "").trim();
+    if (!stationName || !supabase) return;
+
+    setSavingExecutiveReportSettings(true);
+    try {
+      const safeProfile = normalizeProductionCardProfile(
+        sanitizeProductionCardProfile(executiveReportProfile),
+        stationName
+      );
+      const savedAt = new Date().toISOString();
+      const { error } = await supabase
+        .from(EXECUTIVE_REPORT_SETTINGS_TABLE)
+        .upsert({
+          station_name: stationName,
+          settings: safeProfile,
+          updated_by: String(activeWorker?.["Teljes nev"] || "").trim() || null,
+          updated_at: savedAt,
+        }, { onConflict: "station_name" });
+      if (error) throw error;
+      setExecutiveReportProfile(safeProfile);
+      setExecutiveReportLastSavedAt(savedAt);
+      if (showFeedback) {
+        setMessage({ type: "success", text: `A(z) „${stationName}” Vezetői jelentés Profi beállítása elmentve.` });
+      }
+    } catch (error) {
+      console.error("A Vezetői jelentés Profi beállításainak mentése sikertelen:", error);
+      if (showFeedback) {
+        setMessage({ type: "error", text: `A Vezetői jelentés Profi beállításainak mentése sikertelen: ${normalizeError(error)}` });
+      }
+    } finally {
+      setSavingExecutiveReportSettings(false);
+    }
+  }
+
+  async function resetExecutiveReportProfileToProductionCard(): Promise<void> {
+    const stationName = String(executiveReportStation || "").trim();
+    if (!stationName) return;
+    try {
+      const base = await fetchProductionCardProfileForStation(stationName);
+      const nextProfile = normalizeProductionCardProfile(
+        JSON.parse(JSON.stringify(base.profile)) as ProductionMonitorProfile,
+        stationName
+      );
+      setExecutiveReportProfile(nextProfile);
+      setExecutiveReportSelectedFieldId(PRODUCTION_CARD_ORDER_FIELD_ID);
+      setMessage({ type: "success", text: "A Vezetői jelentés szerkesztője átvette az aktuális dolgozói termelési kártya beállításait. Mentés után ez lesz a külön vezetői profil." });
+    } catch (error) {
+      setMessage({ type: "error", text: `A dolgozói kártyabeállítás átvétele sikertelen: ${normalizeError(error)}` });
+    }
+  }
+
+  function getExecutiveReportActiveTable(profile = executiveReportProfile): ProductionMonitorTableConfig {
+    return profile.tables.find((table) => table.id === profile.activeTableId)
+      || profile.tables.find((table) => table.dataSource === "production-plan")
+      || profile.tables[0]
+      || createDefaultProductionMonitorTable("Termelési kártya", "executive-card-default", profile.theme);
+  }
+
+  function updateExecutiveReportProfile(
+    updater: (profile: ProductionMonitorProfile) => ProductionMonitorProfile
+  ): void {
+    setExecutiveReportProfile((current) =>
+      normalizeProductionCardProfile(
+        sanitizeProductionCardProfile(updater(current)),
+        executiveReportStation || current.name || "Munkaállomás"
+      )
+    );
+  }
+
+  function updateExecutiveReportActiveTable(
+    updater: (table: ProductionMonitorTableConfig) => ProductionMonitorTableConfig
+  ): void {
+    updateExecutiveReportProfile((profile) => {
+      const active = getExecutiveReportActiveTable(profile);
+      return {
+        ...profile,
+        themePresetId: "custom",
+        activeTableId: active.id,
+        tables: profile.tables.map((table) => table.id === active.id ? updater(table) : table),
+      };
+    });
+  }
+
+  function updateExecutiveReportProfileTheme(patch: Partial<ProductionMonitorTheme>): void {
+    updateExecutiveReportProfile((profile) => ({
+      ...profile,
+      themePresetId: "custom",
+      theme: normalizeProductionMonitorTheme({ ...profile.theme, ...patch }),
+    }));
+  }
+
+  function updateExecutiveReportTableTheme(patch: Partial<ProductionMonitorTheme>): void {
+    updateExecutiveReportActiveTable((table) => ({
+      ...table,
+      theme: normalizeProductionMonitorTheme({ ...table.theme, ...patch }),
+    }));
+  }
+
+  function updateExecutiveReportFieldStyle(fieldId: string, patch: Partial<ProductionMonitorFieldStyle>): void {
+    updateExecutiveReportActiveTable((table) => {
+      const currentStyle = normalizeProductionMonitorFieldStyle(table.fieldStyles?.[fieldId]);
+      return {
+        ...table,
+        fieldStyles: {
+          ...table.fieldStyles,
+          [fieldId]: sanitizeProductionCardFieldStyle(
+            normalizeProductionMonitorFieldStyle({ ...currentStyle, ...patch }),
+            table.theme
+          ),
+        },
+      };
+    });
+  }
+
+  function toggleExecutiveReportField(fieldId: string): void {
+    updateExecutiveReportActiveTable((table) => {
+      const required = table.dataSource === "production-plan" && isRequiredProductionCardField(fieldId);
+      if (required) return table;
+      const hidden = new Set(table.hiddenFieldIds);
+      if (hidden.has(fieldId)) hidden.delete(fieldId);
+      else hidden.add(fieldId);
+      return { ...table, hiddenFieldIds: Array.from(hidden) };
+    });
+  }
+
+  function moveExecutiveReportField(fieldId: string, direction: -1 | 1): void {
+    updateExecutiveReportActiveTable((table) => {
+      const valid = [...getProductionCardFieldIdsForTable(table, executiveReportStation)];
+      const order = [
+        ...table.fieldOrder.filter((id) => valid.includes(id)),
+        ...valid.filter((id) => !table.fieldOrder.includes(id)),
+      ];
+      const currentIndex = order.indexOf(fieldId);
+      const targetIndex = currentIndex + direction;
+      if (currentIndex < 0 || targetIndex < 0 || targetIndex >= order.length) return table;
+      const next = [...order];
+      [next[currentIndex], next[targetIndex]] = [next[targetIndex], next[currentIndex]];
+      return { ...table, fieldOrder: next };
+    });
   }
 
   function getExecutiveReportDateKeys(dateFrom: string, dateTo: string): string[] {
@@ -13604,10 +13776,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     setLoadingExecutiveReport(true);
     try {
       const [profileResult, dataResult] = await Promise.all([
-        fetchProductionCardProfileForStation(cleanStation),
+        fetchExecutiveReportProfileForStation(cleanStation),
         fetchExecutiveReportProductionCardData(cleanStation, dateFrom, dateTo),
       ]);
       setExecutiveReportProfile(profileResult.profile);
+      setExecutiveReportLastSavedAt(profileResult.updatedAt);
       setExecutiveReportData(dataResult);
     } catch (error) {
       console.error("Vezetői jelentés betöltési hiba:", error);
@@ -13835,9 +14008,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (selection.mode === "dolgozoi") {
       const chosen = workers.find((worker) => String(worker.id) === String(selection.workerId));
       if (!chosen) throw new Error(`${selection.orderNumber}: válassz dolgozót.`);
-      if (normalizeLooseText(getWorkerStation(chosen)) !== normalizeLooseText(selection.stationName)) {
-        throw new Error(`${selection.orderNumber}: a kiválasztott dolgozó nem ehhez a munkaállomáshoz tartozik.`);
-      }
+      // Vezetői jelentésben szándékosan bármely workers rekord kiválasztható,
+      // miközben a machine_id továbbra is a jelentett termelési kártya munkaállomása.
       effectiveWorker = chosen;
     }
 
@@ -14102,9 +14274,158 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 12, color: theme.mutedText, fontSize: 12 }}>
             <span>Belépett irodai felhasználó: <strong style={{ color: theme.textColor }}>{activeWorker?.["Teljes nev"] || "–"}</strong></span>
             <span>Kijelölt sorok: <strong style={{ color: selectedCount ? theme.activeColor : theme.textColor }}>{selectedCount}</strong></span>
-            <span>Állomási dolgozók: <strong style={{ color: theme.textColor }}>{stationWorkers.length}</strong></span>
+            <span>Teljes dolgozói lista: <strong style={{ color: theme.textColor }}>{stationWorkers.length}</strong></span>
+            <span>Vezetői Profi profil: <strong style={{ color: theme.textColor }}>{executiveReportLastSavedAt ? `külön mentve · ${formatDateTime(executiveReportLastSavedAt)}` : "a dolgozói kártya jelenlegi beállítása"}</strong></span>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+            <button type="button" onClick={() => setExecutiveReportEditMode((value) => !value)} style={{ ...buttonSecondary, background: executiveReportEditMode ? theme.primaryButtonBackground : theme.secondaryButtonBackground, color: theme.buttonText }}>
+              {executiveReportEditMode ? "Profi szerkesztő bezárása" : "Profi szerkesztő"}
+            </button>
+            <button type="button" onClick={() => void saveExecutiveReportProfile(true)} disabled={!executiveReportStation || savingExecutiveReportSettings} style={buttonPrimary}>
+              {savingExecutiveReportSettings ? "Mentés..." : "Vezetői megjelenés mentése"}
+            </button>
           </div>
         </div>
+
+        {executiveReportEditMode && (() => {
+          const activeTable = getExecutiveReportActiveTable();
+          const profileTheme = sanitizeProductionCardTheme(executiveReportProfile.theme);
+          const tableTheme = sanitizeProductionCardTheme(activeTable.theme);
+          const allFields = [...getProductionCardFieldIdsForTable(activeTable, executiveReportStation)];
+          const orderedFields = [
+            ...activeTable.fieldOrder.filter((fieldId) => allFields.includes(fieldId)),
+            ...allFields.filter((fieldId) => !activeTable.fieldOrder.includes(fieldId)),
+          ];
+          const selectedFieldId = allFields.includes(executiveReportSelectedFieldId)
+            ? executiveReportSelectedFieldId
+            : allFields[0] || PRODUCTION_CARD_ORDER_FIELD_ID;
+          const selectedFieldStyle = normalizeProductionMonitorFieldStyle(activeTable.fieldStyles?.[selectedFieldId]);
+          const editorLabel: React.CSSProperties = { display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "#334155" };
+          const editorControl: React.CSSProperties = { width: "100%", boxSizing: "border-box", border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 9px", background: "#fff", color: "#0f172a" };
+          const editorSection: React.CSSProperties = { border: "1px solid #cbd5e1", borderRadius: 12, padding: 14, background: "#f8fafc", color: "#0f172a" };
+          const renderExecColor = (label: string, value: string, onChange: (value: string) => void) => (
+            <label style={editorLabel}>
+              <span>{label}</span>
+              <span style={{ display: "grid", gridTemplateColumns: "44px 1fr", gap: 7 }}>
+                <input type="color" value={/^#[0-9a-fA-F]{6}$/.test(value) ? value : "#ffffff"} onChange={(event) => onChange(event.target.value)} style={{ width: 44, height: 38, border: "1px solid #cbd5e1", borderRadius: 8, padding: 2 }} />
+                <input value={value} onChange={(event) => onChange(event.target.value)} maxLength={32} style={editorControl} />
+              </span>
+            </label>
+          );
+
+          return (
+            <div data-office-window="executive-report:editor" style={{ ...panel, marginBottom: 16, background: profileTheme.editorBackground, border: `2px solid ${profileTheme.accentColor}`, color: "#0f172a" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+                <div>
+                  <strong style={{ fontSize: 20 }}>Profi vezetői kártyaszerkesztő</strong>
+                  <div style={{ color: "#64748b", fontSize: 12, marginTop: 3 }}>Külön mentődik munkaállomásonként. Első használatkor a dolgozói termelési kártya aktuális beállítását örökli.</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button type="button" onClick={() => void resetExecutiveReportProfileToProductionCard()} style={buttonSecondary}>Dolgozói beállítás átvétele</button>
+                  <button type="button" onClick={() => void saveExecutiveReportProfile(true)} style={buttonPrimary}>Mentés</button>
+                </div>
+              </div>
+
+              <div style={{ ...editorSection, marginBottom: 12 }}>
+                <label style={editorLabel}>
+                  <span>Szerkesztett kártya</span>
+                  <select value={activeTable.id} onChange={(event) => updateExecutiveReportProfile((profile) => ({ ...profile, activeTableId: event.target.value }))} style={editorControl}>
+                    {executiveReportProfile.tables.map((table) => <option key={table.id} value={table.id}>{table.name}</option>)}
+                  </select>
+                </label>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                {(["layout", "typography", "colors", "field"] as const).map((tab) => (
+                  <button key={tab} type="button" onClick={() => setExecutiveReportEditorTab(tab)} style={executiveReportEditorTab === tab ? buttonPrimary : buttonSecondary}>
+                    {tab === "layout" ? "Elrendezés" : tab === "typography" ? "Tipográfia" : tab === "colors" ? "Színek" : "Mező formázása"}
+                  </button>
+                ))}
+              </div>
+
+              {executiveReportEditorTab === "layout" && (
+                <div style={{ display: "grid", gap: 8 }}>
+                  {orderedFields.map((fieldId, index) => {
+                    const hidden = activeTable.hiddenFieldIds.includes(fieldId);
+                    const required = activeTable.dataSource === "production-plan" && isRequiredProductionCardField(fieldId);
+                    const style = normalizeProductionMonitorFieldStyle(activeTable.fieldStyles?.[fieldId]);
+                    return (
+                      <div key={fieldId} style={{ ...editorSection, padding: 9, display: "grid", gridTemplateColumns: "32px minmax(190px,1fr) 80px 42px 42px", gap: 8, alignItems: "center", background: hidden ? "#e5e7eb" : "#ffffff" }}>
+                        <input type="checkbox" checked={!hidden} disabled={required} onChange={() => toggleExecutiveReportField(fieldId)} />
+                        <div style={{ fontWeight: 800 }}>{getProductionCardFieldLabel(fieldId)}{required ? " · kötelező" : ""}</div>
+                        <input type="number" min={0.25} max={8} step={0.25} value={style.widthWeight} onChange={(event) => updateExecutiveReportFieldStyle(fieldId, { widthWeight: Number(event.target.value) })} title="Oszlopszélesség" style={editorControl} />
+                        <button type="button" disabled={index === 0} onClick={() => moveExecutiveReportField(fieldId, -1)} style={buttonSecondary}>↑</button>
+                        <button type="button" disabled={index === orderedFields.length - 1} onClick={() => moveExecutiveReportField(fieldId, 1)} style={buttonSecondary}>↓</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {executiveReportEditorTab === "typography" && (
+                <div style={{ ...editorSection, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 12 }}>
+                  <label style={editorLabel}><span>Betűtípus</span><select value={tableTheme.fontFamily} onChange={(event) => updateExecutiveReportTableTheme({ fontFamily: event.target.value })} style={editorControl}><option value="Inter, Arial, sans-serif">Inter / Arial</option><option value="Arial, sans-serif">Arial</option><option value="Verdana, sans-serif">Verdana</option><option value="Tahoma, sans-serif">Tahoma</option><option value="Trebuchet MS, sans-serif">Trebuchet MS</option><option value="Georgia, serif">Georgia</option><option value="Courier New, monospace">Courier New</option></select></label>
+                  <label style={editorLabel}><span>Nagyítás (%)</span><input type="number" min={50} max={180} value={executiveReportProfile.zoomPercent} onChange={(event) => updateExecutiveReportProfile((profile) => ({ ...profile, zoomPercent: Number(event.target.value) }))} style={editorControl} /></label>
+                  <label style={editorLabel}><span>Felső cím betűmérete</span><input type="number" min={10} max={72} value={profileTheme.titleFontSize} onChange={(event) => updateExecutiveReportProfileTheme({ titleFontSize: Number(event.target.value) })} style={editorControl} /></label>
+                  <label style={editorLabel}><span>Alap betűméret</span><input type="number" min={7} max={36} value={tableTheme.baseFontSize} onChange={(event) => updateExecutiveReportTableTheme({ baseFontSize: Number(event.target.value) })} style={editorControl} /></label>
+                  <label style={editorLabel}><span>Kártyacím betűmérete</span><input type="number" min={8} max={48} value={tableTheme.tableTitleFontSize} onChange={(event) => updateExecutiveReportTableTheme({ tableTitleFontSize: Number(event.target.value) })} style={editorControl} /></label>
+                  <label style={editorLabel}><span>Fejléc betűmérete</span><input type="number" min={0} max={36} value={tableTheme.headerFontSize} onChange={(event) => updateExecutiveReportTableTheme({ headerFontSize: Number(event.target.value) })} style={editorControl} /></label>
+                  <label style={editorLabel}><span>Cella betűmérete</span><input type="number" min={0} max={36} value={tableTheme.cellFontSize} onChange={(event) => updateExecutiveReportTableTheme({ cellFontSize: Number(event.target.value) })} style={editorControl} /></label>
+                  <label style={{ ...editorLabel, display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={profileTheme.titleBold} onChange={(event) => updateExecutiveReportProfileTheme({ titleBold: event.target.checked })} />Felső cím félkövér</label>
+                  <label style={{ ...editorLabel, display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={profileTheme.titleItalic} onChange={(event) => updateExecutiveReportProfileTheme({ titleItalic: event.target.checked })} />Felső cím dőlt</label>
+                  <label style={{ ...editorLabel, display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={tableTheme.tableTitleBold} onChange={(event) => updateExecutiveReportTableTheme({ tableTitleBold: event.target.checked })} />Kártyacím félkövér</label>
+                  <label style={{ ...editorLabel, display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={tableTheme.tableTitleItalic} onChange={(event) => updateExecutiveReportTableTheme({ tableTitleItalic: event.target.checked })} />Kártyacím dőlt</label>
+                  <label style={{ ...editorLabel, display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={tableTheme.headerBold} onChange={(event) => updateExecutiveReportTableTheme({ headerBold: event.target.checked })} />Fejléc félkövér</label>
+                  <label style={{ ...editorLabel, display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={tableTheme.headerItalic} onChange={(event) => updateExecutiveReportTableTheme({ headerItalic: event.target.checked })} />Fejléc dőlt</label>
+                  <label style={{ ...editorLabel, display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={tableTheme.cellBold} onChange={(event) => updateExecutiveReportTableTheme({ cellBold: event.target.checked })} />Cellák félkövérek</label>
+                  <label style={{ ...editorLabel, display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={tableTheme.cellItalic} onChange={(event) => updateExecutiveReportTableTheme({ cellItalic: event.target.checked })} />Cellák dőltek</label>
+                  <label style={{ ...editorLabel, display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={profileTheme.showHeader} onChange={(event) => updateExecutiveReportProfileTheme({ showHeader: event.target.checked })} />Felső fejléc látható</label>
+                  <label style={{ ...editorLabel, display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={profileTheme.showSummaryCards} onChange={(event) => updateExecutiveReportProfileTheme({ showSummaryCards: event.target.checked })} />Összesítő kártyák láthatók</label>
+                </div>
+              )}
+
+              {executiveReportEditorTab === "colors" && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 12 }}>
+                  {renderExecColor("Teljes kártya háttere", profileTheme.pageBackground, (value) => updateExecutiveReportProfileTheme({ pageBackground: value }))}
+                  {renderExecColor("Felső panel háttere", profileTheme.headerPanelBackground, (value) => updateExecutiveReportProfileTheme({ headerPanelBackground: value }))}
+                  {renderExecColor("Felső panel szövege", profileTheme.headerPanelText, (value) => updateExecutiveReportProfileTheme({ headerPanelText: value }))}
+                  {renderExecColor("Kiemelő szín", profileTheme.accentColor, (value) => updateExecutiveReportProfileTheme({ accentColor: value }))}
+                  {renderExecColor("Táblázat háttere", tableTheme.tablePanelBackground, (value) => updateExecutiveReportTableTheme({ tablePanelBackground: value }))}
+                  {renderExecColor("Kártyacím szövege", tableTheme.tableTitleText, (value) => updateExecutiveReportTableTheme({ tableTitleText: value }))}
+                  {renderExecColor("Táblafejléc háttere", tableTheme.tableHeaderBackground, (value) => updateExecutiveReportTableTheme({ tableHeaderBackground: value }))}
+                  {renderExecColor("Táblafejléc szövege", tableTheme.tableHeaderText, (value) => updateExecutiveReportTableTheme({ tableHeaderText: value }))}
+                  {renderExecColor("Kész háttér", tableTheme.doneBackground, (value) => updateExecutiveReportTableTheme({ doneBackground: value }))}
+                  {renderExecColor("Kész szöveg", tableTheme.doneText, (value) => updateExecutiveReportTableTheme({ doneText: value }))}
+                  {renderExecColor("Folyamatban háttér", tableTheme.inProgressBackground, (value) => updateExecutiveReportTableTheme({ inProgressBackground: value }))}
+                  {renderExecColor("Folyamatban szöveg", tableTheme.inProgressText, (value) => updateExecutiveReportTableTheme({ inProgressText: value }))}
+                  {renderExecColor("Várakozik háttér", tableTheme.waitingBackground, (value) => updateExecutiveReportTableTheme({ waitingBackground: value }))}
+                  {renderExecColor("Várakozik szöveg", tableTheme.waitingText, (value) => updateExecutiveReportTableTheme({ waitingText: value }))}
+                  {renderExecColor("Rácsvonalak", tableTheme.borderColor, (value) => updateExecutiveReportTableTheme({ borderColor: value }))}
+                </div>
+              )}
+
+              {executiveReportEditorTab === "field" && (
+                <div style={{ display: "grid", gap: 12 }}>
+                  <label style={editorLabel}><span>Formázandó mező</span><select value={selectedFieldId} onChange={(event) => setExecutiveReportSelectedFieldId(event.target.value)} style={editorControl}>{allFields.map((fieldId) => <option key={fieldId} value={fieldId}>{getProductionCardFieldLabel(fieldId)}</option>)}</select></label>
+                  <div style={{ ...editorSection, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 12 }}>
+                    <label style={editorLabel}><span>Oszlopszélesség</span><input type="number" min={0.25} max={8} step={0.25} value={selectedFieldStyle.widthWeight} onChange={(event) => updateExecutiveReportFieldStyle(selectedFieldId, { widthWeight: Number(event.target.value) })} style={editorControl} /></label>
+                    <label style={editorLabel}><span>Igazítás</span><select value={selectedFieldStyle.textAlign} onChange={(event) => updateExecutiveReportFieldStyle(selectedFieldId, { textAlign: event.target.value as ProductionMonitorTextAlign })} style={editorControl}><option value="left">Balra</option><option value="center">Középre</option><option value="right">Jobbra</option></select></label>
+                    {([ ["Fejléc félkövér", "headerBold"], ["Fejléc dőlt", "headerItalic"], ["Cella félkövér", "cellBold"], ["Cella dőlt", "cellItalic"] ] as const).map(([label, key]) => (
+                      <label key={key} style={editorLabel}><span>{label}</span><select value={selectedFieldStyle[key]} onChange={(event) => updateExecutiveReportFieldStyle(selectedFieldId, { [key]: event.target.value as ProductionMonitorTriState } as Partial<ProductionMonitorFieldStyle>)} style={editorControl}><option value="inherit">Globális</option><option value="yes">Igen</option><option value="no">Nem</option></select></label>
+                    ))}
+                  </div>
+                  <div style={{ ...editorSection, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 12 }}>
+                    {renderExecColor("Egyedi fejléc háttér", selectedFieldStyle.headerBackground || tableTheme.tableHeaderBackground, (value) => updateExecutiveReportFieldStyle(selectedFieldId, { headerBackground: value }))}
+                    {renderExecColor("Egyedi fejléc szöveg", selectedFieldStyle.headerTextColor || tableTheme.tableHeaderText, (value) => updateExecutiveReportFieldStyle(selectedFieldId, { headerTextColor: value }))}
+                    {renderExecColor("Egyedi cellaháttér", selectedFieldStyle.cellBackground || tableTheme.waitingBackground, (value) => updateExecutiveReportFieldStyle(selectedFieldId, { cellBackground: value }))}
+                    {renderExecColor("Egyedi cellaszöveg", selectedFieldStyle.cellTextColor || tableTheme.waitingText, (value) => updateExecutiveReportFieldStyle(selectedFieldId, { cellTextColor: value }))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         <div data-office-window="executive-report:cards">
           {!executiveReportStation ? (
@@ -14120,7 +14441,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           <div style={{ marginBottom: 10, color: theme.mutedText, lineHeight: 1.55 }}>
             <strong style={{ color: theme.textColor }}>Vezetői</strong>: a belépett irodai felhasználóra könyvel.
             {" · "}
-            <strong style={{ color: theme.textColor }}>Dolgozói</strong>: az adott munkaállomás kiválasztott dolgozójára könyvel, és külön menti a vezetői beavatkozást.
+            <strong style={{ color: theme.textColor }}>Dolgozói</strong>: a teljes dolgozói listából kiválasztott személyre könyvel, és külön menti a vezetői beavatkozást.
             {" · "}
             <strong style={{ color: theme.textColor }}>Egyéb</strong>: kötelező indoklással könyvel.
           </div>
