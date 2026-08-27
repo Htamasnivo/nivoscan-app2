@@ -5007,11 +5007,26 @@ type NivoScrollAnchor = {
   left: number;
 };
 
+type NivoInnerScrollAnchorCandidate = {
+  element: HTMLElement | null;
+  locator: NivoScrollAnchorLocator | null;
+  relativeTop: number;
+  relativeLeft: number;
+};
+
 type NivoScrollableSnapshot = {
   element: HTMLElement | null;
   locator: NivoScrollAnchorLocator | null;
   scrollTop: number;
   scrollLeft: number;
+
+  // A belső görgethető panelen belül éppen látható konkrét sor/kártya.
+  innerAnchor: NivoInnerScrollAnchorCandidate | null;
+
+  // Ha az éppen nézett sor frissítés miatt ténylegesen eltűnik
+  // (pl. selejtpótlás / prioritás END), a hozzá legközelebbi
+  // még létező sorok sorrendben.
+  fallbackAnchors: NivoInnerScrollAnchorCandidate[];
 };
 
 type NivoScrollSnapshot = {
@@ -5035,6 +5050,14 @@ function escapeNivoAttributeValue(value: string): string {
 }
 
 function createNivoElementLocator(element: HTMLElement): NivoScrollAnchorLocator | null {
+  const nivoScrollContainer = element.getAttribute("data-nivo-scroll-container");
+  if (nivoScrollContainer) {
+    return {
+      kind: "selector",
+      selector: `[data-nivo-scroll-container="${escapeNivoAttributeValue(nivoScrollContainer)}"]`,
+    };
+  }
+
   const nivoAnchor = element.getAttribute("data-nivo-scroll-anchor");
   if (nivoAnchor) {
     return {
@@ -5167,34 +5190,147 @@ function collectNivoViewportAnchors(): NivoScrollAnchor[] {
   });
 }
 
+function getNivoInnerAnchorCandidates(container: HTMLElement): HTMLElement[] {
+  const explicit = Array.from(
+    container.querySelectorAll<HTMLElement>("[data-nivo-scroll-anchor]")
+  );
+
+  if (explicit.length > 0) return explicit;
+
+  // Általános fallback olyan táblák/panelek számára, amelyek még nem kaptak
+  // explicit NÍVÓ scroll-anchor attribútumot.
+  const rows = Array.from(
+    container.querySelectorAll<HTMLElement>('tr, [role="row"], article, section')
+  ).filter((element) => element !== container);
+
+  return rows;
+}
+
+function captureNivoInnerScrollAnchor(
+  container: HTMLElement
+): {
+  innerAnchor: NivoInnerScrollAnchorCandidate | null;
+  fallbackAnchors: NivoInnerScrollAnchorCandidate[];
+} {
+  const containerRect = container.getBoundingClientRect();
+  const candidates = getNivoInnerAnchorCandidates(container);
+
+  if (candidates.length === 0) {
+    return { innerAnchor: null, fallbackAnchors: [] };
+  }
+
+  const visibleTop = containerRect.top + 1;
+  const visibleBottom = containerRect.bottom - 1;
+
+  const candidateRects = candidates.map((element, index) => ({
+    element,
+    index,
+    rect: element.getBoundingClientRect(),
+  }));
+
+  // Elsődleges horgony: a belső viewport tetejéhez legközelebb lévő,
+  // ténylegesen látható sor/kártya.
+  const visibleCandidates = candidateRects
+    .filter(({ rect }) => rect.bottom > visibleTop && rect.top < visibleBottom)
+    .sort((left, right) => {
+      const leftDistance = Math.abs(left.rect.top - visibleTop);
+      const rightDistance = Math.abs(right.rect.top - visibleTop);
+      return leftDistance - rightDistance;
+    });
+
+  const selected = visibleCandidates[0];
+  if (!selected) {
+    return { innerAnchor: null, fallbackAnchors: [] };
+  }
+
+  const toSnapshot = (
+    element: HTMLElement,
+    rect: DOMRect
+  ): NivoInnerScrollAnchorCandidate => ({
+    element,
+    locator: createNivoElementLocator(element),
+    relativeTop: rect.top - containerRect.top,
+    relativeLeft: rect.left - containerRect.left,
+  });
+
+  const innerAnchor = toSnapshot(selected.element, selected.rect);
+
+  // Ha az eredeti sor eltűnik, előbb a közvetlen következő, majd az előző,
+  // aztán fokozatosan távolabbi sor lesz a fallback.
+  const fallbackAnchors: NivoInnerScrollAnchorCandidate[] = [];
+  const used = new Set<HTMLElement>([selected.element]);
+
+  for (let distance = 1; distance <= 8; distance += 1) {
+    const next = candidateRects[selected.index + distance];
+    const previous = candidateRects[selected.index - distance];
+
+    [next, previous].forEach((candidate) => {
+      if (!candidate || used.has(candidate.element)) return;
+      used.add(candidate.element);
+      fallbackAnchors.push(toSnapshot(candidate.element, candidate.rect));
+    });
+  }
+
+  return {
+    innerAnchor,
+    fallbackAnchors,
+  };
+}
+
+function isNivoScrollableElement(element: HTMLElement): boolean {
+  if (typeof window === "undefined") return false;
+
+  const style = window.getComputedStyle(element);
+  const scrollableY =
+    /(auto|scroll|overlay)/.test(style.overflowY)
+    && element.scrollHeight > element.clientHeight + 1;
+  const scrollableX =
+    /(auto|scroll|overlay)/.test(style.overflowX)
+    && element.scrollWidth > element.clientWidth + 1;
+
+  return scrollableY || scrollableX;
+}
+
+function isNivoRelevantScrollableElement(element: HTMLElement): boolean {
+  if (!isNivoScrollableElement(element)) return false;
+
+  // A már elgörgetett belső panelt akkor is védjük, ha éppen részben kilóg
+  // a window viewportból.
+  if (element.scrollTop !== 0 || element.scrollLeft !== 0) return true;
+
+  const rect = element.getBoundingClientRect();
+  return rect.bottom > 0
+    && rect.top < window.innerHeight
+    && rect.right > 0
+    && rect.left < window.innerWidth;
+}
+
+function createNivoScrollableSnapshot(element: HTMLElement): NivoScrollableSnapshot {
+  const inner = captureNivoInnerScrollAnchor(element);
+
+  return {
+    element,
+    locator: createNivoElementLocator(element),
+    scrollTop: element.scrollTop,
+    scrollLeft: element.scrollLeft,
+    innerAnchor: inner.innerAnchor,
+    fallbackAnchors: inner.fallbackAnchors,
+  };
+}
+
 function collectNivoScrollableAncestors(elements: Array<HTMLElement | null>): NivoScrollableSnapshot[] {
-  if (typeof window === "undefined") return [];
+  if (typeof window === "undefined" || typeof document === "undefined") return [];
 
   const result: NivoScrollableSnapshot[] = [];
   const seen = new Set<HTMLElement>();
 
   const addScrollable = (element: HTMLElement | null) => {
-    if (!element || seen.has(element)) return;
+    if (!element || seen.has(element) || !isNivoRelevantScrollableElement(element)) return;
     seen.add(element);
-
-    const style = window.getComputedStyle(element);
-    const scrollableY =
-      /(auto|scroll|overlay)/.test(style.overflowY)
-      && element.scrollHeight > element.clientHeight;
-    const scrollableX =
-      /(auto|scroll|overlay)/.test(style.overflowX)
-      && element.scrollWidth > element.clientWidth;
-
-    if (!scrollableY && !scrollableX) return;
-
-    result.push({
-      element,
-      locator: createNivoElementLocator(element),
-      scrollTop: element.scrollTop,
-      scrollLeft: element.scrollLeft,
-    });
+    result.push(createNivoScrollableSnapshot(element));
   };
 
+  // 1. A látható horgonyok / aktív input összes görgethető őse.
   elements.forEach((startElement) => {
     let current = startElement;
     while (current) {
@@ -5202,6 +5338,22 @@ function collectNivoScrollableAncestors(elements: Array<HTMLElement | null>): Ni
       current = current.parentElement;
     }
   });
+
+  // 2. Minden explicit NÍVÓ belső scroll-konténer.
+  document
+    .querySelectorAll<HTMLElement>("[data-nivo-scroll-container]")
+    .forEach(addScrollable);
+
+  // 3. Globális biztonsági háló: minden olyan belső overflow-panel,
+  // amely látható vagy már el van görgetve. Ettől a javítás nem csak
+  // a termelési kártyára, hanem monitorokra, riportokra és más
+  // görgethető panelekre is működik.
+  document
+    .querySelectorAll<HTMLElement>("body *")
+    .forEach((element) => {
+      if (seen.has(element)) return;
+      addScrollable(element);
+    });
 
   return result;
 }
@@ -5245,19 +5397,61 @@ function restoreNivoScrollSnapshot(snapshot: NivoScrollSnapshot): void {
   if (typeof window === "undefined") return;
 
   snapshot.ancestors.forEach((entry) => {
-    const element = resolveNivoScrollableElement(entry);
-    if (!element) return;
+    const container = resolveNivoScrollableElement(entry);
+    if (!container) return;
 
-    if (Math.abs(element.scrollTop - entry.scrollTop) > 0.5) {
-      element.scrollTop = entry.scrollTop;
+    const containerRect = container.getBoundingClientRect();
+
+    const candidateSnapshots = [
+      ...(entry.innerAnchor ? [entry.innerAnchor] : []),
+      ...entry.fallbackAnchors,
+    ];
+
+    let verticalAnchorRestored = false;
+    let horizontalAnchorRestored = false;
+
+    for (const candidateSnapshot of candidateSnapshots) {
+      const candidate =
+        candidateSnapshot.element?.isConnected
+          ? candidateSnapshot.element
+          : resolveNivoElementLocator(candidateSnapshot.locator);
+
+      if (!candidate || !container.contains(candidate)) continue;
+
+      const candidateRect = candidate.getBoundingClientRect();
+      const currentRelativeTop = candidateRect.top - containerRect.top;
+      const currentRelativeLeft = candidateRect.left - containerRect.left;
+
+      const deltaY = currentRelativeTop - candidateSnapshot.relativeTop;
+      const deltaX = currentRelativeLeft - candidateSnapshot.relativeLeft;
+
+      // A konkrét sor marad ugyanazon a belső képernyőmagasságon.
+      if (Math.abs(deltaY) > 0.5 && container.scrollHeight > container.clientHeight + 1) {
+        container.scrollTop += deltaY;
+      }
+      verticalAnchorRestored = true;
+
+      if (Math.abs(deltaX) > 0.5 && container.scrollWidth > container.clientWidth + 1) {
+        container.scrollLeft += deltaX;
+      }
+      horizontalAnchorRestored = true;
+
+      break;
     }
-    if (Math.abs(element.scrollLeft - entry.scrollLeft) > 0.5) {
-      element.scrollLeft = entry.scrollLeft;
+
+    // Ha sem az eredeti sor, sem a környező fallback sorok nem léteznek,
+    // csak akkor használjuk a régi pixelpozíciót.
+    if (!verticalAnchorRestored && Math.abs(container.scrollTop - entry.scrollTop) > 0.5) {
+      container.scrollTop = entry.scrollTop;
+    }
+
+    if (!horizontalAnchorRestored && Math.abs(container.scrollLeft - entry.scrollLeft) > 0.5) {
+      container.scrollLeft = entry.scrollLeft;
     }
   });
 
-  // A konkrét látható kártya/sor az elsődleges horgony.
-  // Ha React lecserélte a DOM node-ot, locator alapján megkeressük az új node-ot.
+  // A teljes oldal window-scrollja továbbra is konkrét látható kártyához/sorhoz
+  // kötődik, tehát a belső scroll javítása nem rontja el a külső pozíciót.
   for (const anchor of snapshot.anchors) {
     const element = resolveNivoAnchorElement(anchor);
     if (!element || !isNivoUsableScrollAnchor(element)) continue;
@@ -5276,8 +5470,6 @@ function restoreNivoScrollSnapshot(snapshot: NivoScrollSnapshot): void {
     return;
   }
 
-  // Csak akkor esünk vissza abszolút pozícióra, ha semmilyen stabil
-  // látható horgonyt nem lehetett újra megtalálni.
   if (Math.abs(window.scrollX - snapshot.windowX) > 0.5 || Math.abs(window.scrollY - snapshot.windowY) > 0.5) {
     window.scrollTo({
       left: snapshot.windowX,
@@ -13699,7 +13891,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           ) : visibleFieldIds.length === 0 ? (
             <div style={{ color: theme.subtitleText, padding: 20, textAlign: "center" }}>Minden mező el van rejtve.</div>
           ) : (
-            <div style={{ overflowX: executiveReport ? "auto" : "hidden", overflowY: "auto", maxHeight: compact ? 520 : 650 }}>
+            <div
+              data-nivo-scroll-container={`production-card-scroll:${normalizeLooseText(data.stationName)}:${table.id}`}
+              style={{ overflowX: executiveReport ? "auto" : "hidden", overflowY: "auto", maxHeight: compact ? 520 : 650 }}
+            >
               <table style={{ width: "100%", minWidth: executiveReport ? 1450 : undefined, tableLayout: "fixed", borderCollapse: "separate", borderSpacing: 0, fontFamily: theme.fontFamily }}>
                 <colgroup>
                   {executiveReport && <col style={{ width: 390 }} />}
