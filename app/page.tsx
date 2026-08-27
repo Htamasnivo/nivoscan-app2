@@ -12156,6 +12156,69 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return formatDuration(Math.max(0, Math.round((endMs - startMs) / 60000)));
   }
 
+  function hasProductionCardPlanValue(value: unknown): boolean {
+    if (value === null || value === undefined) return false;
+    if (typeof value === "string") return value.trim() !== "";
+    if (typeof value === "number") return Number.isFinite(value);
+    return true;
+  }
+
+  function getProductionCardPlanValue(
+    planData: Record<string, unknown> | null | undefined,
+    fieldKey: string
+  ): unknown {
+    if (!planData) return null;
+
+    const normalizedWantedKey = normalizePlanColumnName(fieldKey);
+    if (!normalizedWantedKey) return null;
+
+    // 1. A *_terv saját közvetlen, nem üres oszlopa az elsődleges.
+    const directExactValue = planData[fieldKey];
+    if (hasProductionCardPlanValue(directExactValue)) {
+      return directExactValue;
+    }
+
+    for (const [rawKey, rawValue] of Object.entries(planData)) {
+      if (rawKey === "adat") continue;
+      if (
+        normalizePlanColumnName(rawKey) === normalizedWantedKey
+        && hasProductionCardPlanValue(rawValue)
+      ) {
+        return rawValue;
+      }
+    }
+
+    // 2. Régebbi/importált sorok kompatibilitása:
+    // az eredeti Excel teljes sora az "adat" JSON-ban is megvan.
+    // Ha a fizikai oszlop NULL, onnan visszük tovább az adatot.
+    const nestedData =
+      planData.adat
+      && typeof planData.adat === "object"
+      && !Array.isArray(planData.adat)
+        ? planData.adat as Record<string, unknown>
+        : null;
+
+    if (nestedData) {
+      const nestedExactValue = nestedData[fieldKey];
+      if (hasProductionCardPlanValue(nestedExactValue)) {
+        return nestedExactValue;
+      }
+
+      for (const [rawKey, rawValue] of Object.entries(nestedData)) {
+        if (
+          normalizePlanColumnName(rawKey) === normalizedWantedKey
+          && hasProductionCardPlanValue(rawValue)
+        ) {
+          return rawValue;
+        }
+      }
+    }
+
+    // 3. Ha tényleg nincs adat a saját *_terv sorban, üres marad.
+    // A render ezt "–"-ként jeleníti meg.
+    return null;
+  }
+
   function getProductionCardFieldValue(row: ProductionCardRow, fieldId: string): string | number {
     if (isProductionCardCrossStationStatusField(fieldId)) {
       const stationName = getProductionCardCrossStationNameFromFieldId(fieldId);
@@ -12169,7 +12232,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
       const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
-      const value = row.planData?.[key];
+
+      // A normál termelési kártya adatmezője KIZÁRÓLAG a saját *_terv
+      // sorából származó planData-ból kerül feloldásra.
+      const value = getProductionCardPlanValue(row.planData, key);
+
       if (value === null || value === undefined) return "";
       if (key === "normaido") return formatExcelDuration(value);
       if (typeof value === "object") return JSON.stringify(value);
@@ -12255,7 +12322,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function getBacklogCardFieldValue(row: ProductionCardBacklogRow, fieldId: string): string | number {
     if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
       const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
-      const value = row.planData?.[key];
+      const value = getProductionCardPlanValue(row.planData, key);
       if (value === null || value === undefined) return "";
       if (key === "normaido") return formatExcelDuration(value);
       if (typeof value === "object") return JSON.stringify(value);
@@ -12905,7 +12972,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             quantity: parseSpreadsheetNumber(row.mennyiseg),
             completionDate: String(row.elkeszules_datum ?? dateKey).slice(0, 10),
             productType: String(row.tipus ?? "").trim(),
-            planData: { ...jsonData, ...raw },
+            planData: {
+              ...jsonData,
+              ...raw,
+              // A nyers "adat" JSON-t is megtartjuk, hogy a megjelenítő
+              // régebbi/importált soroknál abból is fel tudja oldani
+              // az rsz/szín/stb. mezőket.
+              adat: jsonData,
+            },
           };
         })
         .filter((row) => Boolean(row.orderNumber))));
@@ -13186,7 +13260,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             // Pontosan az eredeti tervsor adatai maradnak a lemaradáshoz kötve.
             // Ha a sor 2026-08-19-i tervből maradt vissza, akkor a 2026-08-19-i
             // *_terv sor mezőit visszük tovább, nem a mai tervből keresünk hozzá adatot.
-            planData: { ...jsonData, ...raw },
+            planData: {
+              ...jsonData,
+              ...raw,
+              adat: jsonData,
+            },
           };
         })
         .filter((row) => row.orderNumber && row.completionDate);
