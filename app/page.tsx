@@ -17684,14 +17684,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   </select>
                 </label>
 
-                <button
-                  type="button"
-                  onClick={() => void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo)}
-                  disabled={atvetelLoading}
-                  style={buttonPrimary}
-                >
-                  {atvetelLoading ? "Frissítés..." : "Frissítés"}
-                </button>
+                <div style={{ display: "grid", gap: 8 }}>
+                  <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>
+                    Kijelentkezés
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo)}
+                    disabled={atvetelLoading}
+                    style={buttonPrimary}
+                  >
+                    {atvetelLoading ? "Frissítés..." : "Frissítés"}
+                  </button>
+                </div>
               </div>
             </div>
           </section>
