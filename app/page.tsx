@@ -4397,6 +4397,16 @@ function buildStationPlanTableName(stationName: string): string {
   return `${identityKey || "munkaallomas"}_terv`;
 }
 
+function getExactProductionCardPlanTableName(stationName: string): string {
+  const identityKey = getStationPlanIdentityKey(stationName);
+
+  // Nincs fuzzy/fallback egyezés ennél a két állomásnál.
+  if (identityKey === "szinter") return "szinter_terv";
+  if (identityKey === "kezi_szinter") return "kezi_szinter_terv";
+
+  return buildStationPlanTableName(stationName);
+}
+
 function isStockProductionType(value: string | null | undefined): boolean {
   return normalizeLooseText(String(value || "")) === "keszlet";
 }
@@ -7257,6 +7267,16 @@ export default function Page() {
   const terminalProductionCardLoadSequenceRef = useRef(0);
   const executiveReportLoadSequenceRef = useRef(0);
 
+  // Mindig az AKTUÁLISAN kiválasztott állomást/dátumot tárolják.
+  // Egy régi realtime/timer callback csak akkor írhat állapotot,
+  // ha még mindig ehhez az állomáshoz tartozik.
+  const productionCardAdminStationLatestRef = useRef("");
+  const productionCardDateLatestRef = useRef("");
+  const terminalMachineLatestRef = useRef("");
+  const executiveReportStationLatestRef = useRef("");
+  const executiveReportDateFromLatestRef = useRef("");
+  const executiveReportDateToLatestRef = useRef("");
+
   const [terminalProductionCardData, setTerminalProductionCardData] = useState<ProductionCardData>({
     stationName: "",
     dateKey: getLocalDateKey(new Date()),
@@ -7294,6 +7314,14 @@ export default function Page() {
   const [executiveReportSelectedFieldId, setExecutiveReportSelectedFieldId] = useState(PRODUCTION_CARD_ORDER_FIELD_ID);
   const [executiveReportLastSavedAt, setExecutiveReportLastSavedAt] = useState("");
   const [savingExecutiveReportSettings, setSavingExecutiveReportSettings] = useState(false);
+
+  // Renderenként frissülő "source of truth" a régi async callbackok ellen.
+  productionCardAdminStationLatestRef.current = productionCardAdminStation;
+  productionCardDateLatestRef.current = productionCardDate;
+  terminalMachineLatestRef.current = machineId;
+  executiveReportStationLatestRef.current = executiveReportStation;
+  executiveReportDateFromLatestRef.current = executiveReportDateFrom;
+  executiveReportDateToLatestRef.current = executiveReportDateTo;
 
   const [carpenterPrinterTab, setCarpenterPrinterTab] = useState<"printer" | "templates">("printer");
   const [windowsPrinters, setWindowsPrinters] = useState<string[]>([]);
@@ -12814,7 +12842,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     try {
       const result = await fetchProductionCardProfileForStation(cleanStationName);
 
-      if (requestSequence !== productionCardSettingsLoadSequenceRef.current) return;
+      if (
+        requestSequence !== productionCardSettingsLoadSequenceRef.current
+        || getStationPlanIdentityKey(cleanStationName)
+          !== getStationPlanIdentityKey(productionCardAdminStationLatestRef.current)
+      ) return;
 
       setProductionCardProfile(result.profile);
       const activeTable = result.profile.tables.find((table) => table.id === result.profile.activeTableId) || result.profile.tables[0];
@@ -12827,7 +12859,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       setProductionCardLastSavedAt(result.updatedAt);
       productionCardLastSavedPayloadRef.current = JSON.stringify(result.profile);
     } catch (error) {
-      if (requestSequence !== productionCardSettingsLoadSequenceRef.current) return;
+      if (
+        requestSequence !== productionCardSettingsLoadSequenceRef.current
+        || getStationPlanIdentityKey(cleanStationName)
+          !== getStationPlanIdentityKey(productionCardAdminStationLatestRef.current)
+      ) return;
 
       console.error("A termelési kártya beállításainak betöltése sikertelen:", error);
       const fallback = createDefaultProductionCardProfile(cleanStationName);
@@ -12838,7 +12874,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         text: `A termelési kártya beállításainak betöltése sikertelen. Futtasd le a mellékelt SQL-t. Részletek: ${normalizeError(error)}`,
       });
     } finally {
-      if (requestSequence === productionCardSettingsLoadSequenceRef.current) {
+      if (
+        requestSequence === productionCardSettingsLoadSequenceRef.current
+        && getStationPlanIdentityKey(cleanStationName)
+          === getStationPlanIdentityKey(productionCardAdminStationLatestRef.current)
+      ) {
         setProductionCardLayoutLoaded(true);
       }
     }
@@ -12960,7 +13000,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   async function fetchProductionCardData(stationName: string, dateKey: string): Promise<ProductionCardData> {
     const cleanStationName = String(stationName || "").trim();
-    const tableName = buildStationPlanTableName(cleanStationName);
+
+    // A normál termelési kártya sorforrása:
+    //   Szinter      -> public.szinter_terv
+    //   Kézi szinter -> public.kezi_szinter_terv
+    const tableName = getExactProductionCardPlanTableName(cleanStationName);
     const priorityRows = await fetchPriorityRowsForStation(cleanStationName);
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     if (!cleanStationName || !dateKey) {
@@ -13663,12 +13707,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     try {
       const result = await fetchProductionCardData(cleanStationName, dateKey);
 
-      // Csak a LEGUTOLJÁRA kért állomás eredménye kerülhet képernyőre.
-      if (requestSequence !== productionCardDataLoadSequenceRef.current) return;
+      const stillCurrent =
+        requestSequence === productionCardDataLoadSequenceRef.current
+        && getStationPlanIdentityKey(cleanStationName)
+          === getStationPlanIdentityKey(productionCardAdminStationLatestRef.current)
+        && dateKey === productionCardDateLatestRef.current;
+
+      if (!stillCurrent) return;
 
       setProductionCardData(result);
     } catch (error) {
-      if (requestSequence !== productionCardDataLoadSequenceRef.current) return;
+      const stillCurrent =
+        requestSequence === productionCardDataLoadSequenceRef.current
+        && getStationPlanIdentityKey(cleanStationName)
+          === getStationPlanIdentityKey(productionCardAdminStationLatestRef.current)
+        && dateKey === productionCardDateLatestRef.current;
+
+      if (!stillCurrent) return;
 
       console.error("A termelési kártya adatainak betöltése sikertelen:", error);
       if (!backgroundRefresh) {
@@ -13686,6 +13741,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     } finally {
       if (
         requestSequence === productionCardDataLoadSequenceRef.current
+        && getStationPlanIdentityKey(cleanStationName)
+          === getStationPlanIdentityKey(productionCardAdminStationLatestRef.current)
+        && dateKey === productionCardDateLatestRef.current
         && !backgroundRefresh
       ) {
         setLoadingProductionCard(false);
@@ -13709,12 +13767,22 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         fetchProductionCardData(cleanStationName, today),
       ]);
 
-      if (requestSequence !== terminalProductionCardLoadSequenceRef.current) return;
+      const stillCurrent =
+        requestSequence === terminalProductionCardLoadSequenceRef.current
+        && getStationPlanIdentityKey(cleanStationName)
+          === getStationPlanIdentityKey(terminalMachineLatestRef.current);
+
+      if (!stillCurrent) return;
 
       setTerminalProductionCardProfile(settingsResult.profile);
       setTerminalProductionCardData(dataResult);
     } catch (error) {
-      if (requestSequence !== terminalProductionCardLoadSequenceRef.current) return;
+      const stillCurrent =
+        requestSequence === terminalProductionCardLoadSequenceRef.current
+        && getStationPlanIdentityKey(cleanStationName)
+          === getStationPlanIdentityKey(terminalMachineLatestRef.current);
+
+      if (!stillCurrent) return;
 
       console.error("A munkaállomási termelési kártya betöltése sikertelen:", error);
       if (!backgroundRefresh) {
@@ -13732,6 +13800,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     } finally {
       if (
         requestSequence === terminalProductionCardLoadSequenceRef.current
+        && getStationPlanIdentityKey(cleanStationName)
+          === getStationPlanIdentityKey(terminalMachineLatestRef.current)
         && !backgroundRefresh
       ) {
         setLoadingTerminalProductionCard(false);
@@ -14991,13 +15061,27 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         fetchExecutiveReportProfileForStation(cleanStation),
         fetchExecutiveReportProductionCardData(cleanStation, dateFrom, dateTo),
       ]);
-      if (requestSequence !== executiveReportLoadSequenceRef.current) return;
+      const stillCurrent =
+        requestSequence === executiveReportLoadSequenceRef.current
+        && getStationPlanIdentityKey(cleanStation)
+          === getStationPlanIdentityKey(executiveReportStationLatestRef.current)
+        && dateFrom === executiveReportDateFromLatestRef.current
+        && dateTo === executiveReportDateToLatestRef.current;
+
+      if (!stillCurrent) return;
 
       setExecutiveReportProfile(profileResult.profile);
       setExecutiveReportLastSavedAt(profileResult.updatedAt);
       setExecutiveReportData(dataResult);
     } catch (error) {
-      if (requestSequence !== executiveReportLoadSequenceRef.current) return;
+      const stillCurrent =
+        requestSequence === executiveReportLoadSequenceRef.current
+        && getStationPlanIdentityKey(cleanStation)
+          === getStationPlanIdentityKey(executiveReportStationLatestRef.current)
+        && dateFrom === executiveReportDateFromLatestRef.current
+        && dateTo === executiveReportDateToLatestRef.current;
+
+      if (!stillCurrent) return;
 
       console.error("Vezetői jelentés betöltési hiba:", error);
       if (!backgroundRefresh) {
@@ -15006,6 +15090,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     } finally {
       if (
         requestSequence === executiveReportLoadSequenceRef.current
+        && getStationPlanIdentityKey(cleanStation)
+          === getStationPlanIdentityKey(executiveReportStationLatestRef.current)
+        && dateFrom === executiveReportDateFromLatestRef.current
+        && dateTo === executiveReportDateToLatestRef.current
         && !backgroundRefresh
       ) {
         setLoadingExecutiveReport(false);
@@ -15730,7 +15818,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <div style={{ color: profileTheme.subtitleText, fontSize: 12, marginTop: 4 }}>Mentve: {productionCardLastSavedAt ? formatDateTime(productionCardLastSavedAt) : "még nincs mentés"}</div>
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-              <select value={productionCardAdminStation} onChange={(event) => setProductionCardAdminStation(event.target.value)} style={{ ...fieldStyle, width: 240, background: "#fff", color: "#111827" }}>
+              <select
+                value={productionCardAdminStation}
+                onChange={(event) => {
+                  const nextStation = event.target.value;
+
+                  productionCardAdminStationLatestRef.current = nextStation;
+                  productionCardDataLoadSequenceRef.current += 1;
+                  productionCardSettingsLoadSequenceRef.current += 1;
+
+                  setProductionCardAdminStation(nextStation);
+                }}
+                style={{ ...fieldStyle, width: 240, background: "#fff", color: "#111827" }}
+              >
                 <option value="">-- válassz munkaállomást --</option>
                 {stations.map((station) => <option key={station} value={station}>{station}</option>)}
               </select>
@@ -18776,7 +18876,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   useEffect(() => {
     if (!supabase || managementSection !== "executive-report" || !executiveReportStation) return;
-    const tableName = buildStationPlanTableName(executiveReportStation);
+    const tableName = getExactProductionCardPlanTableName(executiveReportStation);
     const refresh = () => void runNivoBackgroundRefresh(() => loadExecutiveReportView(executiveReportStation, executiveReportDateFrom, executiveReportDateTo));
     const channel = supabase
       .channel(`executive-report-${normalizeLooseText(executiveReportStation)}-${executiveReportDateFrom}-${executiveReportDateTo}`)
@@ -18853,7 +18953,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   useEffect(() => {
     if (!supabase || managementSection !== "production-card" || !productionCardAdminStation) return;
-    const tableName = buildStationPlanTableName(productionCardAdminStation);
+    const tableName = getExactProductionCardPlanTableName(productionCardAdminStation);
     const refresh = () => void runNivoBackgroundRefresh(() => loadProductionCardData(productionCardAdminStation, productionCardDate));
     const channel = supabase
       .channel(`production-card-admin-${normalizeLooseText(productionCardAdminStation)}-${productionCardDate}`)
@@ -18881,7 +18981,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!supabase || !isUsableProductionCardStation(machineId)) return;
     if (activeWorker && isManagementDashboardWorker(activeWorker)) return;
     const today = getLocalDateKey(new Date());
-    const tableName = buildStationPlanTableName(machineId);
+    const tableName = getExactProductionCardPlanTableName(machineId);
     const refreshData = () => void runNivoBackgroundRefresh(() => loadTerminalProductionCard(machineId));
     const channel = supabase
       .channel(`production-card-terminal-${normalizeLooseText(machineId)}-${today}`)
