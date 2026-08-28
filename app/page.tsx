@@ -1807,6 +1807,14 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
 };
 
 const PRODUCTION_CARD_PLAN_FIELD_PREFIX = "__plan_field__:";
+const PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID =
+  `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}kiszallitasi_datum`;
+const STATION_PLAN_KISZALLITASI_DATUM_FIELD: StationPlanFieldDefinition = {
+  key: "kiszallitasi_datum",
+  label: "Kiszállítási dátum",
+  dataType: "date",
+};
+
 const LABEL_ASSETS_BUCKET = "label-assets";
 const LABEL_ASSETS_TABLE = "label_assets";
 const LABEL_IMAGE_MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -1907,24 +1915,32 @@ function getStationPlanFieldDefinitions(stationName: string | null | undefined):
   const key = getStationPlanIdentityKey(stationName);
   const baseDefinitions = STATION_PLAN_FIELD_DEFINITIONS[key] || STATION_PLAN_BASE_FIELD_DEFINITIONS;
 
-  // FONTOS: csak a Fényező kap dinamikus mezőfelismerést.
-  // Más munkaállomás jelenlegi működése változatlan marad.
-  if (key !== "fenyezo") return baseDefinitions;
-
   const definitionsByKey = new Map<string, StationPlanFieldDefinition>(
     baseDefinitions.map((field) => [field.key, field])
   );
 
-  FENYEZO_DISCOVERED_BUSINESS_FIELD_KEYS.forEach((fieldKey) => {
-    if (!isFenyezoBusinessPlanFieldKey(fieldKey)) return;
-    if (definitionsByKey.has(fieldKey)) return;
+  // A Kiszállítási dátum minden munkaállomási *_terv közös, opcionális üzleti mezője.
+  // Nem kötelező kitölteni, de minden Excel-sémában és a Profi szerkesztőben elérhető.
+  if (!definitionsByKey.has(STATION_PLAN_KISZALLITASI_DATUM_FIELD.key)) {
+    definitionsByKey.set(
+      STATION_PLAN_KISZALLITASI_DATUM_FIELD.key,
+      STATION_PLAN_KISZALLITASI_DATUM_FIELD
+    );
+  }
 
-    definitionsByKey.set(fieldKey, {
-      key: fieldKey,
-      label: humanizeFenyezoPlanFieldLabel(fieldKey),
-      dataType: inferFenyezoPlanFieldDataType(fieldKey),
+  // Csak a Fényező kap további dinamikus mezőfelismerést.
+  if (key === "fenyezo") {
+    FENYEZO_DISCOVERED_BUSINESS_FIELD_KEYS.forEach((fieldKey) => {
+      if (!isFenyezoBusinessPlanFieldKey(fieldKey)) return;
+      if (definitionsByKey.has(fieldKey)) return;
+
+      definitionsByKey.set(fieldKey, {
+        key: fieldKey,
+        label: humanizeFenyezoPlanFieldLabel(fieldKey),
+        dataType: inferFenyezoPlanFieldDataType(fieldKey),
+      });
     });
-  });
+  }
 
   return Array.from(definitionsByKey.values());
 }
@@ -1934,6 +1950,8 @@ function getStationPlanExtraFieldDefinitions(stationName: string | null | undefi
 }
 
 function getStationPlanFieldLabel(fieldKey: string): string {
+  if (fieldKey === "kiszallitasi_datum") return "Kiszállítási dátum";
+
   for (const definitions of Object.values(STATION_PLAN_FIELD_DEFINITIONS)) {
     const field = definitions.find((item) => item.key === fieldKey);
     if (field) return field.label;
@@ -3162,6 +3180,7 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
     PRODUCTION_CARD_KULSO_LAP_KESZ_FIELD_ID,
     PRODUCTION_CARD_BELSO_LAP_KESZ_FIELD_ID,
     PRODUCTION_CARD_LAP_TOKLEC_KESZ_FIELD_ID,
+    PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID,
     ...crossStationStatusFieldIds,
   ]));
   table.fieldStyles = {
@@ -3321,6 +3340,7 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
           PRODUCTION_CARD_KULSO_LAP_KESZ_FIELD_ID,
           PRODUCTION_CARD_BELSO_LAP_KESZ_FIELD_ID,
           PRODUCTION_CARD_LAP_TOKLEC_KESZ_FIELD_ID,
+          PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID,
           ...(
             dataSource === "production-plan"
               ? validFields.filter(isProductionCardCrossStationStatusField)
@@ -7185,6 +7205,7 @@ export default function Page() {
   const [loadingStationPlanFile, setLoadingStationPlanFile] = useState("");
   const [uploadingStationPlans, setUploadingStationPlans] = useState(false);
   const [productionPlanWorkbookFile, setProductionPlanWorkbookFile] = useState<File | null>(null);
+  const [productionPlanExportStations, setProductionPlanExportStations] = useState<string[]>([]);
   const [refreshingProductionPlanWorkbook, setRefreshingProductionPlanWorkbook] = useState(false);
 
   // Prioritási kártya admin / Excel workflow.
@@ -10654,89 +10675,110 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
 
     const selectedStations = machineOptions.filter((station) =>
-      prioritySelectedStations.some((selected) => normalizeLooseText(selected) === normalizeLooseText(station))
+      prioritySelectedStations.some(
+        (selected) => normalizeLooseText(selected) === normalizeLooseText(station)
+      )
     );
 
     if (selectedStations.length === 0) {
-      setMessage({ type: "error", text: "A prioritási Excel exportálása előtt válassz ki legalább egy munkaállomást." });
+      setMessage({
+        type: "error",
+        text: "A prioritási Excel exportálása előtt válassz ki legalább egy munkaállomást.",
+      });
       return;
     }
 
     setExportingPriorityWorkbook(true);
+
     try {
-      const definitions = getPrioritySelectedStationUnionDefinitions(selectedStations);
-      const { data: session, error: sessionError } = await supabase
-        .from(PRIORITY_IMPORT_SESSIONS_TABLE)
-        .insert([{
-          station_names: selectedStations,
-          field_keys: definitions.map((field) => field.key),
-          field_labels: definitions.map((field) => field.label),
-          exported_by_worker_id: activeWorker?.id ?? null,
-          exported_by_worker_name: activeWorker?.["Teljes nev"] || null,
-        }])
-        .select("id, station_names, field_keys, field_labels")
-        .single();
-
-      if (sessionError) throw sessionError;
-      const sessionId = String((session as { id?: string } | null)?.id || "").trim();
-      if (!sessionId) throw new Error("A prioritási Excel exportazonosítója nem jött létre.");
-
       const XLSX = await waitForXlsx();
-      const headers = [
-        PRIORITY_TEMPLATE_SESSION_HEADER,
-        PRIORITY_TEMPLATE_ORDER_HEADER,
-        ...definitions.map((field) => field.label),
-        PRIORITY_TEMPLATE_REASON_HEADER,
-      ];
+      const today = getLocalDateKey(new Date());
 
-      // Több prioritási rendelés egyszerre feltölthető.
-      // Az első adat sor egy TELJESEN kitöltött minta. A visszaimportáló logika
-      // automatikusan kihagyja, tehát akkor sem hoz létre prioritást, ha bent marad.
-      const rows: Array<Array<string | number>> = [
-        headers,
-        [
-          sessionId,
-          "MINTA – NEM IMPORTÁLÓDIK",
-          ...definitions.map((field) => getPriorityTemplateSampleValue(field)),
-          "MINTA – ide írd le, miért kell prioritásba tenni a rendelést",
-        ],
-      ];
+      for (const stationName of selectedStations) {
+        // Minden kijelölt állomás külön prioritási Excel fájlt kap.
+        const definitions = getStationPlanFieldDefinitions(stationName);
 
-      // A mintasor után 99 üres kitölthető sor marad.
-      for (let index = 0; index < 99; index += 1) {
-        rows.push([
-          sessionId,
-          "",
-          ...definitions.map(() => ""),
-          "",
-        ]);
+        const { data: session, error: sessionError } = await supabase
+          .from(PRIORITY_IMPORT_SESSIONS_TABLE)
+          .insert([{
+            station_names: [stationName],
+            field_keys: definitions.map((field) => field.key),
+            field_labels: definitions.map((field) => field.label),
+            exported_by_worker_id: activeWorker?.id ?? null,
+            exported_by_worker_name: activeWorker?.["Teljes nev"] || null,
+          }])
+          .select("id, station_names, field_keys, field_labels")
+          .single();
+
+        if (sessionError) throw sessionError;
+
+        const sessionId = String((session as { id?: string } | null)?.id || "").trim();
+        if (!sessionId) {
+          throw new Error(`${stationName}: a prioritási Excel exportazonosítója nem jött létre.`);
+        }
+
+        const headers = [
+          PRIORITY_TEMPLATE_SESSION_HEADER,
+          PRIORITY_TEMPLATE_ORDER_HEADER,
+          ...definitions.map((field) => field.label),
+          PRIORITY_TEMPLATE_REASON_HEADER,
+        ];
+
+        const rows: Array<Array<string | number>> = [
+          headers,
+          [
+            sessionId,
+            "MINTA – NEM IMPORTÁLÓDIK",
+            ...definitions.map((field) => getPriorityTemplateSampleValue(field)),
+            "MINTA – ide írd le, miért kell prioritásba tenni a rendelést",
+          ],
+        ];
+
+        for (let index = 0; index < 99; index += 1) {
+          rows.push([
+            sessionId,
+            "",
+            ...definitions.map(() => ""),
+            "",
+          ]);
+        }
+
+        const worksheet = XLSX.utils.aoa_to_sheet(rows) as Record<string, unknown>;
+        (worksheet as any)["!cols"] = [
+          { hidden: true, width: 2 },
+          { width: 24 },
+          ...definitions.map((field) => ({
+            width: Math.max(13, Math.min(30, field.label.length + 4)),
+          })),
+          { width: 42 },
+        ];
+
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, stationName);
+
+        const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+        const safeStationName = normalizePlanColumnName(stationName) || "munkaallomas";
+
+        downloadBlob(
+          `Prioritasi_${safeStationName}_${today}.xlsx`,
+          new Blob([output], {
+            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          }),
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
       }
-
-      const worksheet = XLSX.utils.aoa_to_sheet(rows) as Record<string, unknown>;
-      (worksheet as any)["!cols"] = [
-        { hidden: true, width: 2 },
-        { width: 24 },
-        ...definitions.map((field) => ({ width: Math.max(13, Math.min(30, field.label.length + 4)) })),
-        { width: 42 },
-      ];
-
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Prioritasi_rendelesek");
-      const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
-      downloadBlob(
-        `Prioritasi_rendelesek_${getLocalDateKey(new Date())}.xlsx`,
-        new Blob([output], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-      );
 
       setPriorityLastExportAt(new Date().toISOString());
       setMessage({
         type: "success",
-        text: `A prioritási Excel elkészült. Kijelölt munkaállomások: ${selectedStations.join(", ")}. A fájl kitöltése után ugyanitt töltsd vissza.`,
+        text: `${selectedStations.length} külön prioritási Excel elkészült: ${selectedStations.join(", ")}. Minden fájl csak a saját munkaállomás mezőit és hozzárendelését tartalmazza.`,
       });
     } catch (error) {
       console.error("Prioritási Excel export hiba:", error);
-      setMessage({ type: "error", text: `A prioritási Excel exportálása sikertelen: ${normalizeError(error)}` });
+      setMessage({
+        type: "error",
+        text: `A prioritási Excel exportálása sikertelen: ${normalizeError(error)}`,
+      });
     } finally {
       setExportingPriorityWorkbook(false);
     }
@@ -10867,7 +10909,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       for (const incoming of parsedOrders) {
         const { data: existingRows, error: existingError } = await supabase
           .from(PRIORITY_ORDERS_TABLE)
-          .select("id, order_number, is_active, completed_at")
+          .select("id, order_number, is_active, completed_at, data")
           .ilike("order_number", incoming.orderNumber)
           .limit(1);
         if (existingError) throw existingError;
@@ -10877,6 +10919,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           order_number?: string | null;
           is_active?: boolean | null;
           completed_at?: string | null;
+          data?: Record<string, unknown> | null;
         } | null;
 
         let priorityOrderId = "";
@@ -10888,7 +10931,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             .insert([{
               order_number: incoming.orderNumber,
               priority_reason: incoming.reason || null,
-              data: incoming.data,
+              data: {
+                ...(
+                  existing?.data
+                  && typeof existing.data === "object"
+                  && !Array.isArray(existing.data)
+                    ? existing.data
+                    : {}
+                ),
+                ...incoming.data,
+              },
               import_session_id: sessionId,
               source_file: selectedFile.name,
               is_active: true,
@@ -10907,7 +10959,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             .update({
               order_number: incoming.orderNumber,
               priority_reason: incoming.reason || null,
-              data: incoming.data,
+              // Munkaállomásonként külön prioritási Excel esetén az új fájl
+              // nem törölheti a korábban más állomásból beimportált mezőket.
+              data: {
+                ...(
+                  existing?.data
+                  && typeof existing.data === "object"
+                  && !Array.isArray(existing.data)
+                    ? existing.data
+                    : {}
+                ),
+                ...incoming.data,
+              },
               import_session_id: sessionId,
               source_file: selectedFile.name,
               is_active: true,
@@ -10941,17 +11004,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             .eq("priority_order_id", priorityOrderId);
           if (deleteResetError) throw deleteResetError;
         } else if (wasActive) {
-          const selectedKeys = new Set(stationNames.map(normalizeLooseText));
-          const removeIds = existingStations
-            .filter((station) => !selectedKeys.has(normalizeLooseText(station.station_name)))
-            .map((station) => station.id);
-          if (removeIds.length > 0) {
-            const { error: removeError } = await supabase
-              .from(PRIORITY_ORDER_STATIONS_TABLE)
-              .delete()
-              .in("id", removeIds);
-            if (removeError) throw removeError;
-          }
+          // Az új munkaállomásonkénti prioritási Excel import NEM törölheti
+          // a korábban már ugyanahhoz a rendeléshez felvett más állomásokat.
+          // A most feltöltött fájl kizárólag a saját állomását egészíti ki.
         }
 
         const currentStationKeys = wasActive
@@ -11050,7 +11105,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={{ fontSize: 13, color: officeTheme.accentColor, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Irodai modul</div>
             <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: officeTheme.textColor }}>Termelés tervezése</h2>
             <div style={{ color: officeTheme.mutedText, maxWidth: 900, lineHeight: 1.5 }}>
-              A közös XLSX-fájlt közvetlenül erről a számítógépről töltheted fel. A program a fájl összes munkaállomási munkafülét feldolgozza, miközben a kézi tervkiegészítés továbbra is használható.
+              Munkaállomásonként külön Excel-sablont exportálhatsz és tölthetsz vissza. A feltöltött fájl kizárólag annak a munkaállomásnak a saját _terv tábláját módosítja, amelynek a munkafüle a fájlban szerepel.
             </div>
           </div>
           <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
@@ -11061,14 +11116,52 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={sectionHeaderStyle}>
               <div style={sectionNumberStyle}>1</div>
               <div>
-                <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Közös XLSX termelési terv feltöltése</h3>
+                <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Munkaállomási XLSX termelési tervek</h3>
                 <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13, lineHeight: 1.45 }}>
-                  Tallózd ki a közös Excel-fájlt a számítógépedről. A munkafülek neve egyezzen a machine_id tábla name értékeivel; minden sor a megfelelő <code style={{ color: "#7dd3fc" }}>_terv</code> táblába és a központi termelesi_terv táblába kerül.
+                  Pipáld ki a kívánt munkaállomásokat. Minden kijelölt állomáshoz külön Excel készül a saját <code style={{ color: "#7dd3fc" }}>_terv</code> mezőivel. Visszatöltéskor a munkafül neve alapján kizárólag a megfelelő _terv tábla frissül.
                 </div>
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) auto auto", gap: 12, alignItems: "end", padding: 16, borderRadius: 13, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}` }}>
+            <div style={{ padding: 14, borderRadius: 13, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}`, marginBottom: 12 }}>
+              <div style={{ color: officeTheme.textColor, fontWeight: 900, marginBottom: 10 }}>Exportálandó munkaállomások</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
+                {availableProductionStations.map((station) => {
+                  const checked = productionPlanExportStations.some(
+                    (selected) => normalizeLooseText(selected) === normalizeLooseText(station)
+                  );
+                  return (
+                    <label
+                      key={`production-export-${station}`}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "9px 10px",
+                        borderRadius: 10,
+                        border: checked ? `2px solid ${officeTheme.accentColor}` : `1px solid ${officeTheme.borderColor}`,
+                        background: checked ? officeTheme.navActiveBackground : officeTheme.panelBackground,
+                        color: officeTheme.textColor,
+                        fontWeight: 800,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleProductionPlanExportStation(station)}
+                      />
+                      <span>{station}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ marginTop: 10, color: officeTheme.mutedText, fontSize: 12 }}>
+                Kiválasztva: {productionPlanExportStations.length > 0 ? productionPlanExportStations.join(", ") : "nincs munkaállomás"}
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) auto auto auto", gap: 12, alignItems: "end", padding: 16, borderRadius: 13, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}` }}>
               <div>
                 <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 800 }}>Feltöltendő XLSX fájl</label>
                 <input
@@ -11087,16 +11180,24 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <div style={{ marginTop: 7, color: productionPlanWorkbookFile ? "#4ade80" : officeTheme.mutedText, fontSize: 12, lineHeight: 1.45 }}>
                   {productionPlanWorkbookFile
                     ? `Kiválasztva: ${productionPlanWorkbookFile.name}`
-                    : "Válaszd ki a napi termelési terv .xlsx fájlt. A fájl közvetlenül a böngészőből kerül beolvasásra; nincs szükség szerveres elérési útra."}
+                    : "Válaszd ki valamelyik exportált munkaállomási .xlsx fájlt. A munkafül neve dönti el, melyik _terv tábla frissül."}
                 </div>
               </div>
               <button
                 type="button"
                 onClick={downloadProductionPlanTemplate}
-                disabled={availableProductionStations.length === 0 || refreshingProductionPlanWorkbook}
+                disabled={productionPlanExportStations.length === 0 || refreshingProductionPlanWorkbook}
                 style={buttonSecondary}
               >
                 Minta Excel letöltése
+              </button>
+              <button
+                type="button"
+                onClick={downloadProductionPlanTemplateWithData}
+                disabled={productionPlanExportStations.length === 0 || refreshingProductionPlanWorkbook}
+                style={buttonSecondary}
+              >
+                Minta Excel letöltése adatokkal
               </button>
               <button
                 type="button"
@@ -11133,7 +11234,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0, color: "#67e8f9", fontSize: 21 }}>Prioritási kártya</h3>
                 <div style={{ marginTop: 4, color: "#e9d5ff", fontSize: 13, lineHeight: 1.5 }}>
-                  Válaszd ki azokat a munkaállomásokat, ahol a sürgős rendelésnek meg kell jelennie. Az export az érintett <code style={{ color: "#67e8f9" }}>_terv</code> táblák mezőinek unióját készíti el egyetlen munkafülesen. A visszatöltött rendelés minden más termelési kártya előtt jelenik meg, és az adott állomásról automatikusan eltűnik, amikor START → END alapján elkészül.
+                  Válaszd ki azokat a munkaállomásokat, ahol a sürgős rendelésnek meg kell jelennie. Minden kijelölt munkaállomáshoz külön prioritási Excel készül, kizárólag a saját <code style={{ color: "#67e8f9" }}>_terv</code> mezőivel. A fájl visszatöltése csak ahhoz az állomáshoz ad prioritást; más állomások korábbi prioritási hozzárendelése nem törlődik.
                 </div>
               </div>
             </div>
@@ -11189,7 +11290,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   style={{ ...fieldStyle, width: "100%", boxSizing: "border-box", padding: "10px 12px" }}
                 />
                 <div style={{ marginTop: 7, color: priorityWorkbookFile ? "#67e8f9" : "#c4b5fd", fontSize: 12 }}>
-                  {priorityWorkbookFile ? `Kiválasztva: ${priorityWorkbookFile.name}` : "Előbb exportáld a sablont a kijelölt állomásokkal, töltsd ki, majd töltsd vissza."}
+                  {priorityWorkbookFile ? `Kiválasztva: ${priorityWorkbookFile.name}` : "Minden kijelölt állomáshoz külön Excel készül. Töltsd ki, majd egyesével töltsd vissza őket."}
                 </div>
               </div>
 
@@ -11259,375 +11360,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             </div>
           </section>
 
-          <section data-office-window="production-plan:plan-basics" style={{ ...sectionCardStyle }}>
-            <div style={sectionHeaderStyle}>
-              <div style={sectionNumberStyle}>3</div>
-              <div>
-                <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Terv alapadatai</h3>
-                <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13, lineHeight: 1.45 }}>
-                  Válaszd ki, melyik napra készüljön a terv, majd adj neki könnyen felismerhető nevet.
-                </div>
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
-              <div>
-                <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 700 }}>Gyártás tervezett dátuma</label>
-                <input
-                  type="date"
-                  value={productionPlanDate}
-                  onChange={(event) => {
-                    const nextDate = event.target.value;
-                    setProductionPlanDate(nextDate);
-                    void loadProductionPlans(nextDate);
-                  }}
-                  style={fieldStyle}
-                />
-              </div>
-              <div>
-                <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 700 }}>Terv neve</label>
-                <input
-                  type="text"
-                  value={productionPlanName}
-                  onChange={(event) => setProductionPlanName(event.target.value)}
-                  maxLength={250}
-                  autoComplete="off"
-                  style={fieldStyle}
-                />
-                <div style={{ marginTop: 6, color: officeTheme.mutedText, fontSize: 12, textAlign: "right" }}>{productionPlanName.length}/250 karakter</div>
-              </div>
-            </div>
-          </section>
-
-          <section data-office-window="production-plan:product-card" style={{ ...sectionCardStyle }}>
-            <div style={sectionHeaderStyle}>
-              <div style={sectionNumberStyle}>4</div>
-              <div>
-                <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Termelési kártya</h3>
-                <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13, lineHeight: 1.45 }}>
-                  Add meg a gyártandó termék adatait, majd pipáld ki a machine_id tábla alapján azokat a munkaállomásokat, amelyeken a terméknek végig kell haladnia.
-                </div>
-              </div>
-            </div>
-
-            <div style={{ marginBottom: 12, color: officeTheme.textColor, fontSize: 15, fontWeight: 850 }}>
-              Gyártandó termék hozzáadása egyesével
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 1.15fr) minmax(180px, 0.65fr) minmax(300px, 1.5fr)", gap: 14, alignItems: "start" }}>
-              <div>
-                <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 700 }}>Sorszám</label>
-                <input
-                  type="text"
-                  value={manualProductionOrderNumber}
-                  onChange={(event) => setManualProductionOrderNumber(event.target.value)}
-                  onKeyDown={(event) => { if (event.key === "Enter") addManualProductionPlanRow(); }}
-                  maxLength={250}
-                  autoComplete="off"
-                  placeholder="Például: R260722217"
-                  style={fieldStyle}
-                />
-                <div style={{ marginTop: 6, color: officeTheme.mutedText, fontSize: 12, textAlign: "right" }}>{manualProductionOrderNumber.length}/250 karakter</div>
-              </div>
-
-              <div>
-                <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 700 }}>Tervezett darab</label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  value={manualProductionQuantity}
-                  onChange={(event) => setManualProductionQuantity(event.target.value.replace(/\D/g, "").slice(0, 10))}
-                  onKeyDown={(event) => { if (event.key === "Enter") addManualProductionPlanRow(); }}
-                  maxLength={10}
-                  autoComplete="off"
-                  placeholder="Darab"
-                  style={fieldStyle}
-                />
-                <div style={{ marginTop: 6, color: officeTheme.mutedText, fontSize: 12 }}>Csak egész szám adható meg.</div>
-              </div>
-
-              <div>
-                <label style={{ display: "block", marginBottom: 8, color: officeTheme.mutedText, fontWeight: 700 }}>Megnevezés</label>
-                <input
-                  type="text"
-                  value={manualProductionProductName}
-                  onChange={(event) => setManualProductionProductName(event.target.value)}
-                  onKeyDown={(event) => { if (event.key === "Enter") addManualProductionPlanRow(); }}
-                  maxLength={250}
-                  autoComplete="off"
-                  placeholder="Gyártandó termék megnevezése"
-                  style={fieldStyle}
-                />
-                <div style={{ marginTop: 6, color: officeTheme.mutedText, fontSize: 12, textAlign: "right" }}>{manualProductionProductName.length}/250 karakter</div>
-              </div>
-            </div>
-
-            <div style={{ marginTop: 18, padding: 16, borderRadius: 14, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}` }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
-                <div>
-                  <div style={{ color: officeTheme.textColor, fontWeight: 850 }}>Munkaállomások kiválasztása</div>
-                  <div style={{ marginTop: 3, color: officeTheme.mutedText, fontSize: 12 }}>
-                    A lista közvetlenül a Supabase machine_id tábla name oszlopából töltődik be.
-                  </div>
-                </div>
-                {availableProductionStations.length > 0 && (
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <button
-                      type="button"
-                      onClick={() => setManualProductionStations([...availableProductionStations])}
-                      style={{ ...buttonSecondary, padding: "8px 11px" }}
-                    >
-                      Mind kijelölése
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setManualProductionStations([])}
-                      style={{ ...buttonSecondary, padding: "8px 11px" }}
-                    >
-                      Kijelölés törlése
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {availableProductionStations.length === 0 ? (
-                <div style={{ padding: 14, borderRadius: 10, background: officeTheme.panelAltBackground, border: `1px dashed ${officeTheme.borderColor}`, color: "#fca5a5" }}>
-                  Nem található választható munkaállomás. Ellenőrizd a Supabase machine_id tábla name oszlopát.
-                </div>
-              ) : (
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-                  {availableProductionStations.map((station) => {
-                    const checked = manualProductionStations.some(
-                      (selected) => normalizeLooseText(selected) === normalizeLooseText(station)
-                    );
-                    return (
-                      <label
-                        key={station}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 10,
-                          padding: "12px 13px",
-                          borderRadius: 11,
-                          border: checked ? "1px solid #38bdf8" : "1px solid #334155",
-                          background: checked ? "#0c4a6e" : "#111827",
-                          color: checked ? "#e0f2fe" : "#cbd5e1",
-                          cursor: "pointer",
-                          fontWeight: 750,
-                          userSelect: "none",
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(event) => {
-                            const isChecked = event.target.checked;
-                            setManualProductionStations((previous) => {
-                              const withoutCurrent = previous.filter(
-                                (selected) => normalizeLooseText(selected) !== normalizeLooseText(station)
-                              );
-                              return isChecked ? [...withoutCurrent, station] : withoutCurrent;
-                            });
-                          }}
-                          style={{ width: 18, height: 18, accentColor: "#0ea5e9", cursor: "pointer" }}
-                        />
-                        <span>{station}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-
-              <div style={{ marginTop: 10, color: manualProductionStations.length > 0 ? "#86efac" : "#fbbf24", fontSize: 12, fontWeight: 750 }}>
-                Kijelölt munkaállomások: {manualProductionStations.length}
-              </div>
-            </div>
-
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
-              <button type="button" onClick={addManualProductionPlanRow} style={{ ...buttonPrimary, minHeight: 46, minWidth: 190, whiteSpace: "nowrap" }}>
-                + Termék hozzáadása
-              </button>
-            </div>
-          </section>
-
-
-
-          <section data-office-window="production-plan:plan-preview" style={{ ...sectionCardStyle }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, flexWrap: "wrap", marginBottom: 16 }}>
-              <div style={sectionHeaderStyle}>
-                <div style={sectionNumberStyle}>4</div>
-                <div>
-                  <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Összeállított termelési terv</h3>
-                  <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13, lineHeight: 1.45 }}>
-                    Mentés előtt ellenőrizheted, javíthatod vagy törölheted az egyes sorokat.
-                  </div>
-                </div>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <div style={{ padding: "9px 12px", borderRadius: 10, background: officeTheme.panelAltBackground, border: `1px solid ${officeTheme.borderColor}`, color: officeTheme.mutedText, fontWeight: 800 }}>
-                  Tételek: {productionPlanPreview.length}
-                </div>
-                <button type="button" onClick={() => void saveProductionPlan()} disabled={savingProductionPlan || productionPlanPreview.length === 0} style={buttonPrimary}>
-                  {savingProductionPlan ? "Terv mentése..." : "Terv mentése és aktiválása"}
-                </button>
-              </div>
-            </div>
-
-            {productionPlanPreview.length === 0 ? (
-              <div style={{ padding: "24px 16px", borderRadius: 12, background: officeTheme.panelAltBackground, border: `1px dashed ${officeTheme.borderColor}`, color: officeTheme.mutedText, textAlign: "center" }}>
-                Még nincs hozzáadott termék. Rögzíts egy tételt kézzel, vagy tölts fel egy Excel / CSV fájlt.
-              </div>
-            ) : (
-              <div style={{ overflowX: "auto", maxHeight: 430, overflowY: "auto", borderRadius: 12, border: `1px solid ${officeTheme.borderColor}`, background: officeTheme.panelAltBackground }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
-                  <thead style={{ position: "sticky", top: 0, zIndex: 2, background: officeTheme.panelAltBackground }}>
-                    <tr style={{ color: officeTheme.mutedText, textAlign: "left" }}>
-                      <th style={{ padding: "12px 10px", borderBottom: `1px solid ${officeTheme.borderColor}` }}>Sorrend</th>
-                      <th style={{ padding: "12px 10px", borderBottom: `1px solid ${officeTheme.borderColor}` }}>Sorszám</th>
-                      <th style={{ padding: "12px 10px", borderBottom: `1px solid ${officeTheme.borderColor}` }}>Tervezett db</th>
-                      <th style={{ padding: "12px 10px", borderBottom: `1px solid ${officeTheme.borderColor}` }}>Megnevezés</th>
-                      <th style={{ padding: "12px 10px", borderBottom: `1px solid ${officeTheme.borderColor}` }}>Munkaállomások</th>
-                      <th style={{ padding: "12px 10px", borderBottom: `1px solid ${officeTheme.borderColor}` }} />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {productionPlanPreview.map((row, index) => (
-                      <tr key={`${row.orderNumber}-${index}`}>
-                        <td style={{ padding: 8, borderBottom: `1px solid ${officeTheme.borderColor}`, width: 110 }}>
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            pattern="[0-9]*"
-                            value={row.sequenceNumber}
-                            onChange={(event) => {
-                              const digits = event.target.value.replace(/\D/g, "").slice(0, 9);
-                              updateProductionPlanPreviewRow(index, { sequenceNumber: Math.max(1, Number(digits) || index + 1) });
-                            }}
-                            style={{ ...fieldStyle, minWidth: 80, padding: "8px 10px" }}
-                          />
-                        </td>
-                        <td style={{ padding: 8, borderBottom: `1px solid ${officeTheme.borderColor}` }}>
-                          <input
-                            type="text"
-                            value={row.orderNumber}
-                            onChange={(event) => updateProductionPlanPreviewRow(index, { orderNumber: event.target.value })}
-                            maxLength={250}
-                            autoComplete="off"
-                            style={{ ...fieldStyle, minWidth: 190, padding: "8px 10px" }}
-                          />
-                        </td>
-                        <td style={{ padding: 8, borderBottom: `1px solid ${officeTheme.borderColor}`, width: 150 }}>
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            pattern="[0-9]*"
-                            value={row.plannedQuantity ?? ""}
-                            onChange={(event) => {
-                              const digits = event.target.value.replace(/\D/g, "").slice(0, 10);
-                              updateProductionPlanPreviewRow(index, { plannedQuantity: digits === "" ? null : Number(digits) });
-                            }}
-                            maxLength={10}
-                            autoComplete="off"
-                            style={{ ...fieldStyle, minWidth: 110, padding: "8px 10px" }}
-                          />
-                        </td>
-                        <td style={{ padding: 8, borderBottom: `1px solid ${officeTheme.borderColor}` }}>
-                          <input
-                            type="text"
-                            value={row.productName}
-                            onChange={(event) => updateProductionPlanPreviewRow(index, { productName: event.target.value })}
-                            maxLength={250}
-                            autoComplete="off"
-                            style={{ ...fieldStyle, minWidth: 230, padding: "8px 10px" }}
-                          />
-                        </td>
-                        <td style={{ padding: 8, borderBottom: `1px solid ${officeTheme.borderColor}`, minWidth: 240 }}>
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            {row.requiredStations.length > 0 ? row.requiredStations.map((station) => (
-                              <span key={`${row.orderNumber}-${station}`} style={{ padding: "5px 8px", borderRadius: 999, background: "#0c4a6e", border: "1px solid #0284c7", color: "#e0f2fe", fontSize: 11, fontWeight: 750 }}>
-                                {station}
-                              </span>
-                            )) : (
-                              <span style={{ color: "#fbbf24", fontSize: 12 }}>Nincs kijelölve</span>
-                            )}
-                          </div>
-                        </td>
-                        <td style={{ padding: 8, borderBottom: `1px solid ${officeTheme.borderColor}`, width: 90 }}>
-                          <button type="button" onClick={() => setProductionPlanPreview((previous) => previous.filter((_, rowIndex) => rowIndex !== index))} style={{ ...buttonSecondary, padding: "8px 10px" }}>Törlés</button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-
-          <section style={sectionCardStyle}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
-              <div style={sectionHeaderStyle}>
-                <div style={sectionNumberStyle}>5</div>
-                <div>
-                  <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Napi termelési terv – {productionPlanDate}</h3>
-                  <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13 }}>Dátumonként pontosan egy termelési terv van; az új mentések ehhez adódnak hozzá.</div>
-                </div>
-              </div>
-              <button type="button" onClick={() => void loadProductionPlans(productionPlanDate)} disabled={loadingProductionPlan} style={buttonSecondary}>Frissítés</button>
-            </div>
-
-            {productionPlans.length === 0 ? (
-              <div style={{ color: officeTheme.mutedText, padding: "18px 14px", borderRadius: 12, background: officeTheme.panelAltBackground, border: `1px dashed ${officeTheme.borderColor}` }}>
-                Erre a napra még nincs feltöltött termelési terv.
-              </div>
-            ) : (
-              <div style={{ display: "grid", gap: 10, marginBottom: 16 }}>
-                {productionPlans.map((plan) => (
-                  <div key={String(plan.id)} style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap", padding: 14, borderRadius: 12, border: plan.is_active ? "1px solid #22c55e" : "1px solid #334155", background: plan.is_active ? "#052e16" : "#020617" }}>
-                    <button type="button" onClick={() => void loadProductionPlanItems(plan)} style={{ border: 0, background: "transparent", color: officeTheme.textColor, textAlign: "left", cursor: "pointer", padding: 0 }}>
-                      <div style={{ fontWeight: 900 }}>{plan.name}</div>
-                      <div style={{ color: officeTheme.mutedText, fontSize: 12, marginTop: 3 }}>{plan.created_at ? formatDateTime(plan.created_at) : "-"} {plan.is_active ? "· AKTÍV" : ""}</div>
-                    </button>
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      {!plan.is_active && <button type="button" onClick={() => void activateProductionPlan(plan)} style={buttonPrimary}>Aktiválás</button>}
-                      <button type="button" onClick={() => void deleteProductionPlan(plan)} style={buttonSecondary}>Törlés</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {productionPlanItems.length > 0 && (
-              <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto", borderRadius: 12, border: `1px solid ${officeTheme.borderColor}`, background: officeTheme.panelAltBackground }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 650 }}>
-                  <thead style={{ position: "sticky", top: 0, zIndex: 1, background: officeTheme.panelAltBackground }}>
-                    <tr style={{ color: officeTheme.mutedText, textAlign: "left" }}>
-                      <th style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>Sorrend</th>
-                      <th style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>Sorszám</th>
-                      <th style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>Tervezett db</th>
-                      <th style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>Megnevezés</th>
-                      <th style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>Munkaállomások</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {productionPlanItems.map((item) => (
-                      <tr key={String(item.id || `${item.plan_id}-${item.order_number}`)}>
-                        <td style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>{item.sequence_number}</td>
-                        <td style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}`, fontWeight: 800 }}>{item.order_number}</td>
-                        <td style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>{item.planned_quantity ?? "-"}</td>
-                        <td style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>{item.product_name || "-"}</td>
-                        <td style={{ padding: 10, borderBottom: `1px solid ${officeTheme.borderColor}` }}>
-                          {Array.isArray(item.required_stations) && item.required_stations.length > 0
-                            ? item.required_stations.join(", ")
-                            : "Minden munkaállomás"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
         </div>
       </div>
     );
@@ -20274,7 +20006,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       // A fájlt közvetlenül a böngésző olvassa be. Nincs több szerveres P:\ elérési út vagy API-hívás.
       const workbook = XLSX.read(await selectedFile.arrayBuffer(), { type: "array" });
-      const importStations = machineOptions.filter((station) =>
+      const availableStations = machineOptions.filter((station) =>
         normalizeLooseText(station) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
         !normalizeLooseText(station).includes("iroda")
       );
@@ -20283,18 +20015,30 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         rows: XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets[name], { defval: "", raw: true }),
       }));
 
-      const missingSheets: string[] = [];
+      // Csak azokba a munkaállomásokba mentünk, amelyek munkafüle ténylegesen
+      // benne van a feltöltött Excelben. Egy külön Szerelés Excel tehát kizárólag
+      // a szereles_terv táblát módosítja.
+      const matchedImports = sheets
+        .map((sheet) => {
+          const stationName = availableStations.find(
+            (station) => normalizePlanColumnName(station) === normalizePlanColumnName(sheet.name)
+          );
+          return stationName ? { stationName, sheet } : null;
+        })
+        .filter((entry): entry is { stationName: string; sheet: ServerWorkbookSheetPayload } => Boolean(entry));
+
+      if (matchedImports.length === 0) {
+        throw new Error(
+          `A fájl egyik munkafülének neve sem egyezik a machine_id munkaállomásaival. Munkafülek: ${workbook.SheetNames.join(", ")}`
+        );
+      }
+
       const failedSheets: string[] = [];
       const successfulSheets: string[] = [];
       let totalProcessed = 0;
       let totalSkipped = 0;
 
-      for (const stationName of importStations) {
-        const sheet = sheets.find((candidate) => normalizePlanColumnName(candidate.name) === normalizePlanColumnName(stationName));
-        if (!sheet) {
-          missingSheets.push(stationName);
-          continue;
-        }
+      for (const { stationName, sheet } of matchedImports) {
 
         try {
           // A fejlécet tartalmazó, de még adat nélküli munkafül (pl. Csomagolás)
@@ -20327,7 +20071,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       setProductionPlanLastFileModifiedAt(fileModifiedAt);
 
       const warningParts = [
-        missingSheets.length ? `Hiányzó munkafülek: ${missingSheets.join(", ")}.` : "",
         failedSheets.length ? `Hibák: ${failedSheets.join(" | ")}` : "",
       ].filter(Boolean);
 
@@ -20338,7 +20081,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (productionCardAdminStation) void loadProductionCardData(productionCardAdminStation, productionCardDate);
     } catch (error) {
       console.error("FELTÖLTÖTT TERMELÉSI TERV IMPORT HIBA:", error);
-      setMessage({ type: "error", text: `A közös XLSX termelési terv feltöltése sikertelen: ${normalizeError(error)}` });
+      setMessage({ type: "error", text: `A munkaállomási XLSX termelési terv feltöltése sikertelen: ${normalizeError(error)}` });
     } finally {
       setRefreshingProductionPlanWorkbook(false);
     }
@@ -20537,109 +20280,131 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
-  function downloadProductionPlanTemplate(): void {
-    const XLSX = window.XLSX;
-    if (!XLSX?.utils?.book_new) {
-      setMessage({ type: "error", text: "Az Excel könyvtár még nem töltődött be." });
-      return;
+  function toggleProductionPlanExportStation(stationName: string): void {
+    setProductionPlanExportStations((previous) => {
+      const exists = previous.some(
+        (item) => normalizeLooseText(item) === normalizeLooseText(stationName)
+      );
+      return exists
+        ? previous.filter(
+            (item) => normalizeLooseText(item) !== normalizeLooseText(stationName)
+          )
+        : [...previous, stationName];
+    });
+  }
+
+  function getStationPlanTemplateSampleValue(
+    field: StationPlanFieldDefinition,
+    stationName: string,
+    index: number
+  ): string | number {
+    const key = normalizePlanColumnName(field.key);
+    const label = normalizePlanColumnName(field.label);
+
+    if (key === "kiszallitasi_datum") return "";
+    if (field.dataType === "date") return getLocalDateKey(new Date());
+    if (field.dataType === "integer") return 1;
+    if (key === "normaido") return "1:30";
+    if (key === "sorszam" || key === "gyartasi_szam" || key === "gyartasi_szam_projekt_neve") {
+      return `MINTA-${String(index + 1).padStart(3, "0")}`;
+    }
+    if (key === "rsz") return "00001";
+    if (key === "megnevezes" || label.includes("megnevez")) return `${stationName} minta termék`;
+    if (key === "tipus" || label.includes("tipus")) return "Normál";
+    if (key === "szin" || label.includes("szin")) return "Minta szín";
+    if (key === "statusz" || label.includes("statusz")) return "Ajtó";
+    return "";
+  }
+
+  function getStationPlanExportCellValue(
+    row: Record<string, unknown>,
+    definition: StationPlanFieldDefinition
+  ): string | number {
+    const resolved = getProductionCardPlanValue(row, definition.key);
+    if (resolved === null || resolved === undefined || String(resolved).trim() === "") return "";
+
+    if (definition.dataType === "integer") {
+      const parsed = parseSpreadsheetNumber(resolved);
+      return parsed === null ? "" : parsed;
     }
 
-    const getMachineRowName = (row: MachineIdRow): string => String(
-      row.name ?? row.Name ?? row.machine_name ?? row.machine_id ?? row.megnevezes ?? ""
-    ).trim();
+    if (definition.dataType === "date") {
+      return parseSpreadsheetDate(resolved) || String(resolved).slice(0, 10);
+    }
 
-    const getMachineRowOrder = (row: MachineIdRow): number => {
-      const rawOrder =
-        row["megjelenési_sorrend"] ??
-        row.megjelenesi_sorrend ??
-        row.display_order ??
-        row.sorrend ??
-        row.id ??
-        Number.MAX_SAFE_INTEGER;
-      const parsedOrder = Number(rawOrder);
-      return Number.isFinite(parsedOrder) ? parsedOrder : Number.MAX_SAFE_INTEGER;
+    if (definition.key === "normaido") return formatExcelDuration(resolved);
+    if (typeof resolved === "object") return JSON.stringify(resolved);
+    return String(resolved);
+  }
+
+  async function fetchAllStationPlanRowsForExport(
+    stationName: string
+  ): Promise<Array<Record<string, unknown>>> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    const tableName = buildStationPlanTableName(stationName);
+    const result: Array<Record<string, unknown>> = [];
+    const pageSize = 1000;
+
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await supabase
+        .from(tableName)
+        .select("*")
+        .range(from, from + pageSize - 1);
+
+      if (error) throw error;
+
+      const page = (data || []) as Array<Record<string, unknown>>;
+      result.push(...page);
+      if (page.length < pageSize) break;
+    }
+
+    return result;
+  }
+
+  function applyStationPlanWorksheetPresentation(
+    worksheet: Record<string, any>,
+    definitions: StationPlanFieldDefinition[],
+    rowCount: number
+  ): void {
+    const toExcelColumn = (columnIndex: number): string => {
+      let value = columnIndex + 1;
+      let result = "";
+      while (value > 0) {
+        const remainder = (value - 1) % 26;
+        result = String.fromCharCode(65 + remainder) + result;
+        value = Math.floor((value - 1) / 26);
+      }
+      return result;
     };
 
-    const orderedMachineNames = [...machineIdRows]
-      .sort((left, right) => getMachineRowOrder(left) - getMachineRowOrder(right))
-      .map(getMachineRowName)
-      .filter((name) =>
-        Boolean(name) &&
-        normalizeLooseText(name) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
-        !normalizeLooseText(name).includes("iroda")
-      );
+    const lastColumn = toExcelColumn(Math.max(0, definitions.length - 1));
+    worksheet["!autofilter"] = { ref: `A1:${lastColumn}${Math.max(1, rowCount + 1)}` };
+    worksheet["!freeze"] = {
+      xSplit: 0,
+      ySplit: 1,
+      topLeftCell: "A2",
+      activePane: "bottomLeft",
+      state: "frozen",
+    };
+    worksheet["!cols"] = definitions.map((definition) => ({
+      wch:
+        definition.key === "sorszam" ? 20 :
+        definition.key === "megnevezes" ? 32 :
+        definition.key.includes("datum") ? 18 :
+        definition.key === "mennyiseg" ? 12 :
+        20,
+    }));
+    worksheet["!rows"] = [
+      { hpt: 26 },
+      ...Array.from({ length: Math.max(0, rowCount) }, () => ({ hpt: 22 })),
+    ];
 
-    const sourceNames = orderedMachineNames.length > 0
-      ? orderedMachineNames
-      : machineOptions.filter((name) =>
-          normalizeLooseText(name) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
-          !normalizeLooseText(name).includes("iroda")
-        );
-
-    const uniqueStationNames = Array.from(
-      new Map(sourceNames.map((name) => [normalizeLooseText(name), name])).values()
-    ) as string[];
-
-    if (uniqueStationNames.length === 0) {
-      setMessage({ type: "error", text: "A minta Excel elkészítéséhez előbb be kell tölteni a machine_id tábla munkaállomásait." });
-      return;
-    }
-
-    const invalidSheetNames = uniqueStationNames.filter(
-      (name) => name.length > 31 || /[\\/?*\[\]:]/.test(name)
-    );
-    if (invalidSheetNames.length > 0) {
-      setMessage({
-        type: "error",
-        text: `Az alábbi machine_id.name értékek nem használhatók változtatás nélkül Excel-munkafülnévként: ${invalidSheetNames.join(", ")}`,
-      });
-      return;
-    }
-
-    const workbook = XLSX.utils.book_new();
-    const today = getLocalDateKey(new Date());
-
-    uniqueStationNames.forEach((stationName, index) => {
-      const definitions = getStationPlanFieldDefinitions(stationName);
-      const sampleByKey: Record<string, string | number> = {
-        sorszam: `MINTA-${String(index + 1).padStart(3, "0")}`,
-        gyartasi_szam: "",
-        megnevezes: `${stationName} minta termék`,
-        mennyiseg: 1,
-        elkeszules_datum: today,
-        tipus: "Normál",
-      };
-      const rows: Array<Array<string | number>> = [
-        definitions.map((definition) => definition.label),
-        definitions.map((definition) => sampleByKey[definition.key] ?? ""),
-      ];
-      const worksheet = XLSX.utils.aoa_to_sheet(rows) as Record<string, any>;
-      const lastColumnIndex = Math.max(0, definitions.length - 1);
-      const toExcelColumn = (columnIndex: number): string => {
-        let value = columnIndex + 1;
-        let result = "";
-        while (value > 0) {
-          const remainder = (value - 1) % 26;
-          result = String.fromCharCode(65 + remainder) + result;
-          value = Math.floor((value - 1) / 26);
-        }
-        return result;
-      };
-      const lastColumn = toExcelColumn(lastColumnIndex);
-      worksheet["!autofilter"] = { ref: `A1:${lastColumn}2` };
-      worksheet["!freeze"] = { xSplit: 0, ySplit: 1, topLeftCell: "A2", activePane: "bottomLeft", state: "frozen" };
-      worksheet["!cols"] = definitions.map((definition) => ({
-        wch: definition.key === "sorszam" ? 18 :
-             definition.key === "megnevezes" ? 30 :
-             definition.key.includes("datum") ? 16 :
-             definition.key === "mennyiseg" ? 12 : 20,
-      }));
-      worksheet["!rows"] = [{ hpt: 26 }, { hpt: 22 }];
-
-      definitions.forEach((definition, columnIndex) => {
-        const cellAddress = `${toExcelColumn(columnIndex)}1`;
-        if (!worksheet[cellAddress]) return;
-        worksheet[cellAddress].s = {
+    definitions.forEach((definition, columnIndex) => {
+      const column = toExcelColumn(columnIndex);
+      const headerAddress = `${column}1`;
+      if (worksheet[headerAddress]) {
+        worksheet[headerAddress].s = {
           font: { bold: true, color: { rgb: "FFFFFF" }, sz: 11 },
           fill: { patternType: "solid", fgColor: { rgb: "0F4C5C" } },
           alignment: { horizontal: "center", vertical: "center", wrapText: true },
@@ -20650,35 +20415,137 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             right: { style: "thin", color: { rgb: "8EA6BA" } },
           },
         };
-        const sampleAddress = `${toExcelColumn(columnIndex)}2`;
-        if (worksheet[sampleAddress]) {
-          worksheet[sampleAddress].s = {
-            fill: { patternType: "solid", fgColor: { rgb: "F1F5F9" } },
-            alignment: { vertical: "center", wrapText: true },
-            border: {
-              bottom: { style: "thin", color: { rgb: "CBD5E1" } },
-              left: { style: "thin", color: { rgb: "E2E8F0" } },
-              right: { style: "thin", color: { rgb: "E2E8F0" } },
-            },
-          };
-          if (definition.dataType === "date") worksheet[sampleAddress].z = "yyyy-mm-dd";
-          if (definition.dataType === "integer") worksheet[sampleAddress].z = "0";
-        }
-      });
+      }
 
-      XLSX.utils.book_append_sheet(workbook, worksheet, stationName);
+      for (let rowIndex = 2; rowIndex <= rowCount + 1; rowIndex += 1) {
+        const address = `${column}${rowIndex}`;
+        if (!worksheet[address]) continue;
+        worksheet[address].s = {
+          fill: { patternType: "solid", fgColor: { rgb: "F8FAFC" } },
+          alignment: { vertical: "center", wrapText: true },
+          border: {
+            bottom: { style: "thin", color: { rgb: "CBD5E1" } },
+            left: { style: "thin", color: { rgb: "E2E8F0" } },
+            right: { style: "thin", color: { rgb: "E2E8F0" } },
+          },
+        };
+        if (definition.dataType === "date") worksheet[address].z = "yyyy-mm-dd";
+        if (definition.dataType === "integer") worksheet[address].z = "0";
+      }
     });
+  }
 
-    const output = (XLSX.write as any)(workbook, { bookType: "xlsx", type: "array", cellStyles: true });
-    downloadBlob(
-      "Napi_termelesi_terv_minta.xlsx",
-      new Blob([output]),
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  async function exportSelectedProductionPlanWorkbooks(includeData: boolean): Promise<void> {
+    const selectedStations = machineOptions.filter((station) =>
+      productionPlanExportStations.some(
+        (selected) => normalizeLooseText(selected) === normalizeLooseText(station)
+      )
     );
-    setMessage({
-      type: "success",
-      text: `A professzionális minta Excel elkészült ${uniqueStationNames.length} munkaállomási munkafüllel, minden rendelkezésre álló mezővel. Az iroda munkafül szándékosan kimaradt.`,
-    });
+
+    if (selectedStations.length === 0) {
+      setMessage({
+        type: "error",
+        text: "Pipálj ki legalább egy munkaállomást az Excel exportálása előtt.",
+      });
+      return;
+    }
+
+    if (includeData && !supabase) {
+      setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
+      return;
+    }
+
+    setRefreshingProductionPlanWorkbook(true);
+
+    try {
+      const XLSX = await waitForXlsx();
+      const today = getLocalDateKey(new Date());
+      let totalExportedRows = 0;
+
+      for (let stationIndex = 0; stationIndex < selectedStations.length; stationIndex += 1) {
+        const stationName = selectedStations[stationIndex];
+        const definitions = getStationPlanFieldDefinitions(stationName);
+
+        let dataRows: Array<Record<string, unknown>> = [];
+        if (includeData) {
+          dataRows = await fetchAllStationPlanRowsForExport(stationName);
+          totalExportedRows += dataRows.length;
+        }
+
+        const rows: Array<Array<string | number>> = [
+          definitions.map((definition) => definition.label),
+        ];
+
+        if (includeData) {
+          dataRows.forEach((row) => {
+            rows.push(
+              definitions.map((definition) =>
+                getStationPlanExportCellValue(row, definition)
+              )
+            );
+          });
+        } else {
+          rows.push(
+            definitions.map((definition) =>
+              getStationPlanTemplateSampleValue(
+                definition,
+                stationName,
+                stationIndex
+              )
+            )
+          );
+        }
+
+        const worksheet = XLSX.utils.aoa_to_sheet(rows) as Record<string, any>;
+        applyStationPlanWorksheetPresentation(
+          worksheet,
+          definitions,
+          Math.max(0, rows.length - 1)
+        );
+
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, stationName);
+
+        const output = (XLSX.write as any)(workbook, {
+          bookType: "xlsx",
+          type: "array",
+          cellStyles: true,
+        });
+
+        const safeStationName = normalizePlanColumnName(stationName) || "munkaallomas";
+        const suffix = includeData ? "adatok" : "minta";
+        downloadBlob(
+          `${safeStationName}_terv_${suffix}_${today}.xlsx`,
+          new Blob([output], {
+            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          }),
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+      }
+
+      setMessage({
+        type: "success",
+        text: includeData
+          ? `${selectedStations.length} külön munkaállomási Excel exportálva, összesen ${totalExportedRows} Supabase-sorral.`
+          : `${selectedStations.length} külön munkaállomási minta Excel exportálva. Minden fájl csak a saját _terv mezőit tartalmazza.`,
+      });
+    } catch (error) {
+      console.error("MUNKAÁLLOMÁSI EXCEL EXPORT HIBA:", error);
+      setMessage({
+        type: "error",
+        text: `A munkaállomási Excel exportálása sikertelen: ${normalizeError(error)}`,
+      });
+    } finally {
+      setRefreshingProductionPlanWorkbook(false);
+    }
+  }
+
+  function downloadProductionPlanTemplate(): void {
+    void exportSelectedProductionPlanWorkbooks(false);
+  }
+
+  function downloadProductionPlanTemplateWithData(): void {
+    void exportSelectedProductionPlanWorkbooks(true);
   }
 
   async function loadProductionPlanItems(plan: ProductionPlanRow): Promise<void> {
