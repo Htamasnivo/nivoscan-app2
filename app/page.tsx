@@ -7618,6 +7618,11 @@ export default function Page() {
   const actionScanStartedAtRef = useRef<number | null>(null);
   const actionLastInputAtRef = useRef<number | null>(null);
   const actionScanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // CSAK a 6-os esemény scanneres automatikus Enterének duplázásvédelme.
+  const eventSixOrderAutoSubmitInFlightRef = useRef(false);
+  const eventSixEndAutoSubmitInFlightRef = useRef(false);
+
   const batchFinalizeInFlightRef = useRef(false);
   const orderDuplicateCheckInFlightRef = useRef(false);
 
@@ -13050,67 +13055,22 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       stationPlanRows.push(...(((stationPlanResponse.data || []) as ProductionCardPlanSourceRow[])
         .map((row, index) => {
           const raw = row as unknown as Record<string, unknown>;
-          const jsonData = raw.adat && typeof raw.adat === "object" && !Array.isArray(raw.adat)
-            ? raw.adat as Record<string, unknown>
-            : {};
+          const jsonData = raw.adat && typeof raw.adat === "object" && !Array.isArray(raw.adat) ? raw.adat as Record<string, unknown> : {};
           const parsedExcelOrder = parseSpreadsheetNumber(row.excel_sorrend);
-
-          const stationIdentity = getStationPlanIdentityKey(cleanStationName);
-          const isSzinterStation =
-            stationIdentity === "szinter"
-            || stationIdentity === "kezi_szinter";
-
-          // Szinter / Kézi szinter:
-          // a sor KIZÁRÓLAG a saját *_terv táblából jön.
-          // Régebbi importoknál előfordulhat, hogy a kompatibilitási
-          // "sorszam" üres, miközben a valódi gyartasi_szam ki van töltve.
-          // Emiatt ezeket a sorokat korábban a .filter(row.orderNumber)
-          // teljesen kidobta, ezért a Kézi szinter kártya 0 sort mutatott.
-          const firstPlanText = (...keys: string[]): string => {
-            for (const key of keys) {
-              const directValue = raw[key];
-              if (directValue !== null && directValue !== undefined && String(directValue).trim()) {
-                return String(directValue).trim();
-              }
-
-              const jsonValue = jsonData[key];
-              if (jsonValue !== null && jsonValue !== undefined && String(jsonValue).trim()) {
-                return String(jsonValue).trim();
-              }
-            }
-            return "";
-          };
-
-          const orderNumber = isSzinterStation
-            ? firstPlanText(
-                "sorszam",
-                "gyartasi_szam",
-                "gyartasi_szam_projekt_neve",
-                "rsz"
-              )
-            : String(row.sorszam ?? "").trim();
-
-          const productName = isSzinterStation
-            ? firstPlanText("megnevezes", "tipus")
-            : String(row.megnevezes ?? "").trim();
-
-          const productType = isSzinterStation
-            ? firstPlanText("tipus")
-            : String(row.tipus ?? "").trim();
-
           return {
-            orderNumber,
-            productName,
+            orderNumber: String(row.sorszam ?? "").trim(),
+            productName: String(row.megnevezes ?? "").trim(),
             excelOrder: parsedExcelOrder === null ? index + 1 : parsedExcelOrder,
             sourceRowId: String(row.id ?? `${dateKey}-${index + 1}`),
-            quantity: parseSpreadsheetNumber(row.mennyiseg) ?? (isSzinterStation ? 1 : null),
+            quantity: parseSpreadsheetNumber(row.mennyiseg),
             completionDate: String(row.elkeszules_datum ?? dateKey).slice(0, 10),
-            productType,
+            productType: String(row.tipus ?? "").trim(),
             planData: {
               ...jsonData,
               ...raw,
-              // A teljes saját *_terv sor megmarad. Az rsz, szín, típus,
-              // tokozat_szine stb. közvetlenül innen kerül a kártyára.
+              // A nyers "adat" JSON-t is megtartjuk, hogy a megjelenítő
+              // régebbi/importált soroknál abból is fel tudja oldani
+              // az rsz/szín/stb. mezőket.
               adat: jsonData,
             },
           };
@@ -18347,7 +18307,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const shouldKeepTypeFocus = step === 4 && flowStage === "batch-selection";
     const shouldKeepOperationFocus = step === 4 && flowStage === "batch-operation-selection";
     const shouldKeepBatchFocus = step === 4 && flowStage === "batch-scan";
-    const shouldKeepOrderFocus = step === 5 && workflowMode === "batch" && flowStage === "order-scan";
+    const shouldKeepOrderFocus =
+      step === 5
+      && flowStage === "order-scan"
+      && (
+        workflowMode === "batch"
+        || (
+          workflowMode === "single"
+          && Number(getWorkerEsemenyKotegValue(activeWorker)) === 6
+        )
+      );
     const shouldKeepActiveBatchFocus = step === 5 && workflowMode === "end" && flowStage === "active-batch-list";
     const shouldKeepEndCommandFocus = step === 5 && workflowMode === "end" && flowStage === "end-batch-detail";
     const shouldKeepActionFocus = step === 6 && (flowStage === "start-scan" || pendingAction === "END");
@@ -25075,7 +25044,18 @@ body {
             ? `Sikeres azonosítás: ${worker["Teljes nev"]}. 7-es háromrészes mód aktív: Külső lap + Belső lap + Tokléc. Olvasd be a rendelésszámot.`
             : `Sikeres azonosítás: ${worker["Teljes nev"]}. 6-os egyedi mód aktív: Ajtólapok + Tokléc külön részjelentéssel. Olvasd be a rendelésszámot.`,
       });
-      window.setTimeout(() => focusAndSelectInput(orderInputRef, { preventScroll: true }), 0);
+      if (koteg === 6) {
+        [0, 40, 120].forEach((delay) => {
+          window.setTimeout(() => {
+            focusAndSelectInput(orderInputRef, {
+              force: true,
+              preventScroll: true,
+            });
+          }, delay);
+        });
+      } else {
+        window.setTimeout(() => focusAndSelectInput(orderInputRef, { preventScroll: true }), 0);
+      }
       return;
     }
 
@@ -29841,12 +29821,122 @@ body {
     }
   }
 
-  function scheduleOrderAutoSubmit(_currentValue: string, _startedAt: number): void {
+  async function submitEventSixOrderLikeEnter(scannedValue: string): Promise<void> {
+    const normalized = scannedValue.replace(/[\r\n]+/g, "").trim();
+
+    if (
+      !normalized
+      || Number(getWorkerEsemenyKotegValue(activeWorker)) !== 6
+      || workflowMode !== "single"
+      || flowStage !== "order-scan"
+      || step !== 5
+      || eventSixOrderAutoSubmitInFlightRef.current
+    ) {
+      return;
+    }
+
+    eventSixOrderAutoSubmitInFlightRef.current = true;
     clearOrderScanTimer();
+    orderScanStartedAtRef.current = null;
+    orderLastInputAtRef.current = null;
+
+    try {
+      await handleOrderStep(true, normalized);
+    } finally {
+      window.setTimeout(() => {
+        eventSixOrderAutoSubmitInFlightRef.current = false;
+      }, 180);
+    }
   }
 
-  function scheduleActionAutoSubmit(_currentValue: string, _startedAt: number): void {
+  async function submitEventSixEndLikeEnter(scannedValue: string): Promise<void> {
+    const normalized = scannedValue.replace(/[\r\n]+/g, "").trim();
+
+    if (
+      !normalized
+      || Number(getWorkerEsemenyKotegValue(activeWorker)) !== 6
+      || pendingAction !== "END"
+      || step !== 6
+      || eventSixEndAutoSubmitInFlightRef.current
+    ) {
+      return;
+    }
+
+    eventSixEndAutoSubmitInFlightRef.current = true;
     clearActionScanTimer();
+    actionScanStartedAtRef.current = null;
+    actionLastInputAtRef.current = null;
+
+    try {
+      // 6-os eseménynél ez az END kódot erősíti meg.
+      // Az Ajtólapok / Tokléc pipák továbbra is változatlanul kézzel választhatók.
+      await handleActionBarcodeSubmit(true, normalized);
+    } finally {
+      window.setTimeout(() => {
+        eventSixEndAutoSubmitInFlightRef.current = false;
+      }, 180);
+    }
+  }
+
+  function scheduleOrderAutoSubmit(currentValue: string, startedAt: number): void {
+    clearOrderScanTimer();
+
+    if (
+      Number(getWorkerEsemenyKotegValue(activeWorker)) !== 6
+      || workflowMode !== "single"
+      || flowStage !== "order-scan"
+      || step !== 5
+    ) {
+      return;
+    }
+
+    const normalized = currentValue.replace(/[\r\n]+/g, "").trim();
+    if (normalized.length < 2) return;
+    if (Date.now() - startedAt > 1500) return;
+
+    orderScanTimerRef.current = setTimeout(() => {
+      const lastInputAt = orderLastInputAtRef.current;
+
+      if (lastInputAt !== null && Date.now() - lastInputAt < 70) {
+        scheduleOrderAutoSubmit(
+          normalized,
+          orderScanStartedAtRef.current ?? Date.now()
+        );
+        return;
+      }
+
+      void submitEventSixOrderLikeEnter(normalized);
+    }, 110);
+  }
+
+  function scheduleActionAutoSubmit(currentValue: string, startedAt: number): void {
+    clearActionScanTimer();
+
+    if (
+      Number(getWorkerEsemenyKotegValue(activeWorker)) !== 6
+      || pendingAction !== "END"
+      || step !== 6
+    ) {
+      return;
+    }
+
+    const normalized = currentValue.replace(/[\r\n]+/g, "").trim();
+    if (normalized.length < 2) return;
+    if (Date.now() - startedAt > 1500) return;
+
+    actionScanTimerRef.current = setTimeout(() => {
+      const lastInputAt = actionLastInputAtRef.current;
+
+      if (lastInputAt !== null && Date.now() - lastInputAt < 70) {
+        scheduleActionAutoSubmit(
+          normalized,
+          actionScanStartedAtRef.current ?? Date.now()
+        );
+        return;
+      }
+
+      void submitEventSixEndLikeEnter(normalized);
+    }, 110);
   }
 
 
@@ -29866,12 +29956,59 @@ body {
 
   function handleOrderInputChange(value: string): void {
     clearOrderScanTimer();
-    setOrderNumber(value);
+
+    const normalized = value.replace(/[\r\n]+/g, "");
+    const now = Date.now();
+    const previousInputAt = orderLastInputAtRef.current;
+
+    if (
+      orderScanStartedAtRef.current === null
+      || previousInputAt === null
+      || now - previousInputAt > 260
+      || normalized.length <= 1
+    ) {
+      orderScanStartedAtRef.current = now;
+    }
+
+    orderLastInputAtRef.current = now;
+    setOrderNumber(normalized);
+
+    if (Number(getWorkerEsemenyKotegValue(activeWorker)) === 6) {
+      scheduleOrderAutoSubmit(
+        normalized,
+        orderScanStartedAtRef.current ?? now
+      );
+    }
   }
 
   function handleActionBarcodeChange(value: string): void {
     clearActionScanTimer();
-    setActionBarcode(value);
+
+    const normalized = value.replace(/[\r\n]+/g, "");
+    const now = Date.now();
+    const previousInputAt = actionLastInputAtRef.current;
+
+    if (
+      actionScanStartedAtRef.current === null
+      || previousInputAt === null
+      || now - previousInputAt > 260
+      || normalized.length <= 1
+    ) {
+      actionScanStartedAtRef.current = now;
+    }
+
+    actionLastInputAtRef.current = now;
+    setActionBarcode(normalized);
+
+    if (
+      Number(getWorkerEsemenyKotegValue(activeWorker)) === 6
+      && pendingAction === "END"
+    ) {
+      scheduleActionAutoSubmit(
+        normalized,
+        actionScanStartedAtRef.current ?? now
+      );
+    }
   }
 
   function getLocalTimestampWithOffset(date = new Date()): string {
@@ -32793,7 +32930,13 @@ body {
                   onKeyDown={(e) => {
                     if (isScannerSubmitKey(e)) {
                       e.preventDefault();
-                      void handleOrderStep(false, e.currentTarget.value);
+                      clearOrderScanTimer();
+
+                      if (Number(getWorkerEsemenyKotegValue(activeWorker)) === 6) {
+                        void submitEventSixOrderLikeEnter(e.currentTarget.value);
+                      } else {
+                        void handleOrderStep(false, e.currentTarget.value);
+                      }
                     }
                   }}
                 />
@@ -32891,6 +33034,16 @@ body {
                       style={fieldStyle}
                       autoComplete="off"
                       onKeyDown={(e) => {
+                        if (
+                          Number(getWorkerEsemenyKotegValue(activeWorker)) === 6
+                          && isScannerSubmitKey(e)
+                        ) {
+                          e.preventDefault();
+                          clearActionScanTimer();
+                          void submitEventSixEndLikeEnter(e.currentTarget.value);
+                          return;
+                        }
+
                         void handleSingleEndBarcodeKeyDown(e);
                       }}
                       onBlur={() => {
