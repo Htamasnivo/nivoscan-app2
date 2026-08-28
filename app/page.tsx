@@ -16352,6 +16352,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       : `Nincs aktív terv · ${productionMonitorDate} → ${productionMonitorDateTo}`}
                   </div>
                 )}
+                <div
+                  style={{
+                    display: "inline-flex",
+                    marginTop: 6,
+                    padding: "5px 9px",
+                    borderRadius: 999,
+                    border: `1px solid ${profileTheme.borderColor}`,
+                    background: profileTheme.headerPanelBackground,
+                    color: profileTheme.headerPanelText,
+                    fontSize: 12,
+                    fontWeight: 900,
+                  }}
+                >
+                  Szűrés alapja: Beépítési dátum
+                </div>
                 {profileTheme.showLastUpdated && (
                   <div style={{ color: profileTheme.subtitleText, opacity: 0.82, fontSize: 12, marginTop: 4 }}>
                     Utolsó adatfrissítés: {productionMonitorData.lastUpdatedAt ? formatDateTime(productionMonitorData.lastUpdatedAt) : "-"}
@@ -16389,7 +16404,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <option value="custom">Egyedi stílus</option>
               </select>
               <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
-                <span>Dátumtól</span>
+                <span>Dátumtól · Beépítési dátum</span>
                 <input
                   type="date"
                   value={productionMonitorDate}
@@ -16416,7 +16431,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               </label>
 
               <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
-                <span>Dátumig</span>
+                <span>Dátumig · Beépítési dátum</span>
                 <input
                   type="date"
                   value={productionMonitorDateTo}
@@ -21283,8 +21298,27 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const aggregatesByOrder = new Map<string, MonitorPlanAggregate>();
     let sequenceNumber = 1;
 
+    const readMonitorPlanValue = (
+      row: Record<string, unknown>,
+      aliases: string[]
+    ): unknown => {
+      const directValue = readRecordValue(row, aliases);
+      if (directValue !== null && directValue !== undefined && valueAsText(directValue) !== "") {
+        return directValue;
+      }
+
+      const nestedData =
+        row.adat
+        && typeof row.adat === "object"
+        && !Array.isArray(row.adat)
+          ? row.adat as Record<string, unknown>
+          : null;
+
+      return readRecordValue(nestedData, aliases);
+    };
+
     const getPlanOrderNumber = (row: Record<string, unknown>): string => valueAsText(
-      readRecordValue(row, [
+      readMonitorPlanValue(row, [
         "sorszam",
         "gyartasi_szam",
         "gyártási szám",
@@ -21295,12 +21329,34 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
 
     const getPlanProductName = (row: Record<string, unknown>): string => valueAsText(
-      readRecordValue(row, ["megnevezes", "megnevezés", "product_name"])
+      readMonitorPlanValue(row, ["megnevezes", "megnevezés", "product_name"])
     );
 
+    const getPlanInstallationDate = (row: Record<string, unknown>): string => {
+      const rawValue = readMonitorPlanValue(row, [
+        "beepites_datuma",
+        "beepitesi_datum",
+        "beépítés dátuma",
+        "beépítési dátum",
+      ]);
+
+      return parseSpreadsheetDate(rawValue) || valueAsText(rawValue).slice(0, 10);
+    };
+
     const addStationPlanRow = (station: string, row: Record<string, unknown>): void => {
+      // A monitorba CSAK olyan sor kerülhet, amelynek van beépítési dátuma,
+      // és az a felső Dátumtól / Dátumig tartományba esik.
+      const installationDate = getPlanInstallationDate(row);
+      if (
+        !/^\d{4}-\d{2}-\d{2}$/.test(installationDate)
+        || installationDate < startDateKey
+        || installationDate > endDateKey
+      ) {
+        return;
+      }
+
       const rowStatus = normalizeLooseText(valueAsText(
-        readRecordValue(row, ["statusz", "státusz", "status"])
+        readMonitorPlanValue(row, ["statusz", "státusz", "status"])
       ));
       if (rowStatus !== normalizedWantedStatus) return;
 
@@ -21312,7 +21368,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       let aggregate = aggregatesByOrder.get(normalizedOrder);
 
       if (!aggregate) {
-        const quantityRaw = readRecordValue(row, ["mennyiseg", "mennyiség", "planned_quantity"]);
+        const quantityRaw = readMonitorPlanValue(row, ["mennyiseg", "mennyiség", "planned_quantity"]);
         const quantityNumber = Number(quantityRaw);
         aggregate = {
           itemId: normalizedOrder,
@@ -21333,7 +21389,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       aggregate.requiredStations.add(station);
       if (!aggregate.productName && productName) aggregate.productName = productName;
 
-      const quantityRaw = readRecordValue(row, ["mennyiseg", "mennyiség", "planned_quantity"]);
+      const quantityRaw = readMonitorPlanValue(row, ["mennyiseg", "mennyiség", "planned_quantity"]);
       const quantityNumber = Number(quantityRaw);
       if (Number.isFinite(quantityNumber)) {
         aggregate.plannedQuantity = aggregate.plannedQuantity === null
@@ -21343,15 +21399,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
 
     // A monitor közvetlenül a munkaállomási *_terv táblákból épül fel.
-    // MINDEN munkaállomás oszlopa megmarad mindkét monitoron; az adott
-    // monitor csak a statusz = Ajtó / Kerítés sorokat veszi fel.
+    // Dátumszűrés alapja KIZÁRÓLAG a beépítési dátum.
+    //
+    // Itt szándékosan nem szűrünk Supabase-oldalon elkeszules_datum-ra:
+    // a sor csak akkor kerül be, ha a saját *_terv rekord beepites_datuma
+    // mezője (vagy régi importnál az adat JSON azonos mezője) a kiválasztott
+    // tartományba esik. Üres beépítési dátum = a sor nem jelenik meg.
     for (const station of monitorStations) {
       const tableName = buildStationPlanTableName(station);
       const response = await supabase
         .from(tableName)
         .select("*")
-        .gte("elkeszules_datum", startDateKey)
-        .lte("elkeszules_datum", endDateKey)
         .limit(10000);
 
       if (response.error) {
