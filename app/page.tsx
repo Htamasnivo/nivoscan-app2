@@ -4285,14 +4285,35 @@ function isAdmin(worker: Worker | null): boolean {
   return szamozas === "5";
 }
 
+function isLimitedOfficeWorker(worker: Worker | null | undefined): boolean {
+  if (!worker) return false;
+  return Number(worker.Esemeny_Koteg ?? worker.esemeny_koteg ?? -1) === 9;
+}
+
+function getDefaultManagementSectionForWorker(worker: Worker | null | undefined): ManagementSection {
+  return isLimitedOfficeWorker(worker) ? "atvetel" : "dashboard";
+}
+
+function canWorkerAccessManagementSection(
+  worker: Worker | null | undefined,
+  section: ManagementSection
+): boolean {
+  if (!isLimitedOfficeWorker(worker)) return true;
+  return section === "atvetel" || section === "production-monitor";
+}
+
 function isManagementDashboardWorker(worker: Worker | null): boolean {
   if (!worker) return false;
 
   const eventKoteg = Number(worker.Esemeny_Koteg ?? worker.esemeny_koteg ?? -1);
 
-  // A 0-s esemény_köteg az irodai / tervezői műszerfal fenntartott módja.
-  // Más esemény_köteg értékkel – különösen a 4-es és 5-ös speciális egyedi módokkal –
-  // akkor sem nyílhat meg a műszerfal, ha a dolgozó egyéb jogosultsága magasabb.
+  // A 9-es esemény_köteg egy külön, korlátozott irodai mód.
+  // Ehhez nem kell külön irodai munkakör/jogosultság: maga a 9-es érték
+  // határozza meg a butított irodai felületet.
+  if (eventKoteg === 9) return true;
+
+  // A normál teljes irodai / tervezői műszerfal továbbra is a 0-s mód.
+  // Minden más esemény_köteg dolgozói lejelentő mód marad.
   if (eventKoteg !== 0) return false;
 
   const role = normalizeLooseText(worker.Munkakor || "");
@@ -10355,10 +10376,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function ManagementNavigation(): React.JSX.Element {
-    const items: Array<{ id: ManagementSection; label: string }> = [
+    const allItems: Array<{ id: ManagementSection; label: string }> = [
       { id:"dashboard", label:"Vezetői műszerfal" }, { id:"production-plan", label:"Termelés tervezése" }, { id:"production-monitor", label:"Termelési monitor" },
       { id:"production-card", label:"Termelési kártya" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" },
     ];
+
+    // Esemeny_Koteg = 9: csak ez a két irodai menüpont látható.
+    // A Megjelenés/Profi szerkesztő funkciók nem kerülnek letiltásra,
+    // mert a két engedélyezett oldalon mindent ugyanúgy állíthat.
+    const items = isLimitedOfficeWorker(activeWorker)
+      ? allItems.filter(
+          (item) => item.id === "atvetel" || item.id === "production-monitor"
+        )
+      : allItems;
     const currentTheme = getOfficeTheme(managementSection);
     const selectedWindowKey = officeThemeScope === "__page__" ? null : officeThemeScope;
     const selectedTheme = selectedWindowKey ? getOfficeWindowTheme(managementSection, selectedWindowKey) : currentTheme;
@@ -10389,6 +10419,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           {items.map((item) => {
             const active = managementSection === item.id;
             return <button key={item.id} type="button" onClick={() => {
+              if (!canWorkerAccessManagementSection(activeWorker, item.id)) {
+                setManagementSection("atvetel");
+                setAtvetelClosureFilter("all");
+                void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo);
+                return;
+              }
+
               setManagementSection(item.id); setOfficeThemeScope("__page__");
               if (item.id === "dashboard") void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
               else if (item.id === "production-plan") void loadProductionPlans(productionPlanDate);
@@ -18105,6 +18142,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function ManagementDashboard(): React.JSX.Element {
+    // A 9-es korlátozott irodai dolgozó más managementSection értéket
+    // sem közvetlen állapotból, sem későbbi új funkcióból nem nyithat meg.
+    if (
+      isLimitedOfficeWorker(activeWorker)
+      && !canWorkerAccessManagementSection(activeWorker, managementSection)
+    ) {
+      return AtvetelAdmin();
+    }
+
     if (managementSection === "production-plan") return ProductionPlanAdmin();
     if (managementSection === "production-monitor") return ProductionPlanMonitor({});
     if (managementSection === "production-card") return ProductionCardAdmin();
@@ -19150,20 +19196,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   useEffect(() => {
     if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
 
-    // A vezetői dashboardra csak a jelszóellenőrzés sikeres befejezése után
-    // szabad átlépni. A 2. lépés a jelszó megadásának vagy létrehozásának képernyője.
+    // A jelszókezeléshez nem nyúlunk:
+    // ha a workers beállítás szerint jelszó kell, a 2. lépést ugyanúgy végig kell vinni.
     if (passwordRequired && step === 2) return;
+
+    const defaultSection = getDefaultManagementSectionForWorker(activeWorker);
+    const currentSectionAllowed = canWorkerAccessManagementSection(
+      activeWorker,
+      managementSection
+    );
 
     const isAlreadyLockedToDashboard =
       terminalView === "management" &&
       flowStage === "dashboard" &&
       step === 7 &&
       workflowMode === null &&
-      pendingAction === null;
+      pendingAction === null &&
+      currentSectionAllowed;
 
     if (isAlreadyLockedToDashboard) return;
 
     setTerminalView("management");
+
+    if (!currentSectionAllowed || isLimitedOfficeWorker(activeWorker)) {
+      setManagementSection(defaultSection);
+    }
+
     setWorkflowMode(null);
     setPendingAction(null);
     setBatchCode("");
@@ -19180,8 +19238,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     setFlowStage("dashboard");
     setStep(7);
 
-    if (!loadingDashboard) {
-      void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo);
+    if (defaultSection === "atvetel") {
+      setAtvetelClosureFilter("all");
+      void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo);
+    } else if (!loadingDashboard) {
+      void loadManagementDashboardView(
+        dashboardFilterMode,
+        dashboardDate,
+        dashboardDateTo
+      );
     }
   }, [
     activeWorker,
@@ -19190,11 +19255,31 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     step,
     workflowMode,
     pendingAction,
+    managementSection,
     loadingDashboard,
     dashboardFilterMode,
     dashboardDate,
     dashboardDateTo,
+    atvetelDateFrom,
+    atvetelDateTo,
     passwordRequired,
+  ]);
+
+  useEffect(() => {
+    if (!activeWorker || !isLimitedOfficeWorker(activeWorker)) return;
+    if (terminalView !== "management" || flowStage !== "dashboard") return;
+    if (canWorkerAccessManagementSection(activeWorker, managementSection)) return;
+
+    setManagementSection("atvetel");
+    setAtvetelClosureFilter("all");
+    void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo);
+  }, [
+    activeWorker?.id,
+    terminalView,
+    flowStage,
+    managementSection,
+    atvetelDateFrom,
+    atvetelDateTo,
   ]);
 
   useEffect(() => {
@@ -23249,6 +23334,29 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     orderFilters: string[] = dashboardOrderFiltersRef.current
   ): Promise<void> {
     const backgroundRefresh = isNivoBackgroundRefreshRunning();
+
+    // Esemeny_Koteg = 9 esetén a "management home" nem a teljes vezetői
+    // műszerfal, hanem az Átvétel. Ez védi a régi belépési/jelszóágakat is:
+    // azok változatlanul hívhatják ezt a függvényt, a 9-es mégsem jut
+    // a teljes irodai dashboardra.
+    if (activeWorker && isLimitedOfficeWorker(activeWorker)) {
+      setManagementSection("atvetel");
+      setAtvetelClosureFilter("all");
+
+      if (!backgroundRefresh) {
+        setTerminalView("management");
+        setWorkflowMode(null);
+        setPendingAction(null);
+        setOrderNumber("");
+        setOrderTypeInput("");
+        orderTypeLatestValueRef.current = "";
+        setFlowStage("dashboard");
+        setStep(7);
+      }
+
+      await loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo);
+      return;
+    }
     if (!supabase) {
       if (!backgroundRefresh) setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
       return;
@@ -25839,11 +25947,11 @@ body {
     }
   }
 
-  function normalizeEsemenyKotegValue(value: unknown): 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 {
+  function normalizeEsemenyKotegValue(value: unknown): 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 {
     const numeric = Number(value);
     if (
       numeric === 0 || numeric === 1 || numeric === 2 || numeric === 3 || numeric === 4
-      || numeric === 5 || numeric === 6 || numeric === 7 || numeric === 8
+      || numeric === 5 || numeric === 6 || numeric === 7 || numeric === 8 || numeric === 9
     ) return numeric;
     return 1;
   }
@@ -25884,7 +25992,10 @@ body {
   function routeWorkerWorkflow(worker: Worker): void {
     setEntryPermissionDenied(false);
     if (isManagementDashboardWorker(worker)) {
+      const defaultSection = getDefaultManagementSectionForWorker(worker);
+
       setTerminalView("management");
+      setManagementSection(defaultSection);
       setWorkflowMode(null);
       setPendingAction(null);
       setOrderNumber("");
@@ -25892,7 +26003,17 @@ body {
       orderTypeLatestValueRef.current = "";
       setFlowStage("dashboard");
       setStep(7);
-      void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo);
+
+      if (defaultSection === "atvetel") {
+        setAtvetelClosureFilter("all");
+        void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo);
+      } else {
+        void loadManagementDashboardView(
+          dashboardFilterMode,
+          dashboardDate,
+          dashboardDateTo
+        );
+      }
       return;
     }
     const rawKotegValue = getWorkerEsemenyKotegValue(worker);
@@ -26248,12 +26369,25 @@ body {
 
   async function continueAfterWorkerValidated(worker: Worker): Promise<void> {
     if (isManagementDashboardWorker(worker)) {
+      const defaultSection = getDefaultManagementSectionForWorker(worker);
+
       setTerminalView("management");
+      setManagementSection(defaultSection);
       setWorkflowMode(null);
       setPendingAction(null);
       setFlowStage("dashboard");
       setStep(7);
-      await loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo);
+
+      if (defaultSection === "atvetel") {
+        setAtvetelClosureFilter("all");
+        await loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo);
+      } else {
+        await loadManagementDashboardView(
+          dashboardFilterMode,
+          dashboardDate,
+          dashboardDateTo
+        );
+      }
       return;
     }
     if (isStatsOnlyWorker(worker)) {
