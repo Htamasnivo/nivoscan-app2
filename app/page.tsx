@@ -13050,22 +13050,67 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       stationPlanRows.push(...(((stationPlanResponse.data || []) as ProductionCardPlanSourceRow[])
         .map((row, index) => {
           const raw = row as unknown as Record<string, unknown>;
-          const jsonData = raw.adat && typeof raw.adat === "object" && !Array.isArray(raw.adat) ? raw.adat as Record<string, unknown> : {};
+          const jsonData = raw.adat && typeof raw.adat === "object" && !Array.isArray(raw.adat)
+            ? raw.adat as Record<string, unknown>
+            : {};
           const parsedExcelOrder = parseSpreadsheetNumber(row.excel_sorrend);
+
+          const stationIdentity = getStationPlanIdentityKey(cleanStationName);
+          const isSzinterStation =
+            stationIdentity === "szinter"
+            || stationIdentity === "kezi_szinter";
+
+          // Szinter / Kézi szinter:
+          // a sor KIZÁRÓLAG a saját *_terv táblából jön.
+          // Régebbi importoknál előfordulhat, hogy a kompatibilitási
+          // "sorszam" üres, miközben a valódi gyartasi_szam ki van töltve.
+          // Emiatt ezeket a sorokat korábban a .filter(row.orderNumber)
+          // teljesen kidobta, ezért a Kézi szinter kártya 0 sort mutatott.
+          const firstPlanText = (...keys: string[]): string => {
+            for (const key of keys) {
+              const directValue = raw[key];
+              if (directValue !== null && directValue !== undefined && String(directValue).trim()) {
+                return String(directValue).trim();
+              }
+
+              const jsonValue = jsonData[key];
+              if (jsonValue !== null && jsonValue !== undefined && String(jsonValue).trim()) {
+                return String(jsonValue).trim();
+              }
+            }
+            return "";
+          };
+
+          const orderNumber = isSzinterStation
+            ? firstPlanText(
+                "sorszam",
+                "gyartasi_szam",
+                "gyartasi_szam_projekt_neve",
+                "rsz"
+              )
+            : String(row.sorszam ?? "").trim();
+
+          const productName = isSzinterStation
+            ? firstPlanText("megnevezes", "tipus")
+            : String(row.megnevezes ?? "").trim();
+
+          const productType = isSzinterStation
+            ? firstPlanText("tipus")
+            : String(row.tipus ?? "").trim();
+
           return {
-            orderNumber: String(row.sorszam ?? "").trim(),
-            productName: String(row.megnevezes ?? "").trim(),
+            orderNumber,
+            productName,
             excelOrder: parsedExcelOrder === null ? index + 1 : parsedExcelOrder,
             sourceRowId: String(row.id ?? `${dateKey}-${index + 1}`),
-            quantity: parseSpreadsheetNumber(row.mennyiseg),
+            quantity: parseSpreadsheetNumber(row.mennyiseg) ?? (isSzinterStation ? 1 : null),
             completionDate: String(row.elkeszules_datum ?? dateKey).slice(0, 10),
-            productType: String(row.tipus ?? "").trim(),
+            productType,
             planData: {
               ...jsonData,
               ...raw,
-              // A nyers "adat" JSON-t is megtartjuk, hogy a megjelenítő
-              // régebbi/importált soroknál abból is fel tudja oldani
-              // az rsz/szín/stb. mezőket.
+              // A teljes saját *_terv sor megmarad. Az rsz, szín, típus,
+              // tokozat_szine stb. közvetlenül innen kerül a kártyára.
               adat: jsonData,
             },
           };
