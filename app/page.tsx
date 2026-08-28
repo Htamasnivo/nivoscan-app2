@@ -7321,6 +7321,9 @@ export default function Page() {
   const [atvetelDateFrom, setAtvetelDateFrom] = useState(getLocalDateKey(new Date()));
   const [atvetelDateTo, setAtvetelDateTo] = useState(getLocalDateKey(new Date()));
   const [atvetelSearch, setAtvetelSearch] = useState("");
+  // A kereső csak Enter után aktiválódik. Aktív keresésnél a dátumtartomány
+  // nem szűri a szereles_terv táblát; törléskor visszaáll a dátumalapú nézet.
+  const [atvetelCommittedSearch, setAtvetelCommittedSearch] = useState("");
   const [atvetelClosureFilter, setAtvetelClosureFilter] = useState<"open" | "closed" | "all">("all");
   const [atvetelRows, setAtvetelRows] = useState<AtvetelMonitorRow[]>([]);
   const [atvetelDrafts, setAtvetelDrafts] = useState<Record<string, AtvetelDraft>>({});
@@ -17120,7 +17123,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   async function loadAtvetelMonitor(
     dateFrom = atvetelDateFrom,
-    dateTo = atvetelDateTo
+    dateTo = atvetelDateTo,
+    searchOverride = atvetelCommittedSearch
   ): Promise<void> {
     if (!supabase) return;
 
@@ -17133,6 +17137,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       startDate = endDate;
       endDate = swap;
     }
+
+    const normalizedGlobalSearch = normalizeDashboardOrderSearch(searchOverride);
+    const searchWholeSourceTable = Boolean(normalizedGlobalSearch);
 
     const backgroundRefresh = isNivoBackgroundRefreshRunning();
     if (!backgroundRefresh) setAtvetelLoading(true);
@@ -17154,7 +17161,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
         if (!orderNumber) return;
         if (!/^\d{4}-\d{2}-\d{2}$/.test(beepitesiDatum)) return;
-        if (beepitesiDatum < startDate || beepitesiDatum > endDate) return;
+
+        // Normál nézetben a dátumtartomány szűr. Enterrel aktivált rendeléskeresésnél
+        // viszont a TELJES szereles_terv táblában keresünk, a dátumszűrőtől függetlenül.
+        if (searchWholeSourceTable) {
+          if (!matchesDashboardOrderFilters(orderNumber, [searchOverride])) return;
+        } else if (beepitesiDatum < startDate || beepitesiDatum > endDate) {
+          return;
+        }
 
         const key = normalizeLooseText(orderNumber);
         const existing = sourceByOrder.get(key);
@@ -17481,7 +17495,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   function AtvetelAdmin(): React.JSX.Element {
     const officeTheme = getOfficeTheme("atvetel");
-    const normalizedSearch = normalizeDashboardOrderSearch(atvetelSearch);
+    const normalizedSearch = normalizeDashboardOrderSearch(atvetelCommittedSearch);
 
     const visibleRows = atvetelRows.filter((row) => {
       const closed = Boolean(row.persisted?.lezart);
@@ -17492,7 +17506,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (!normalizedSearch) return true;
 
       // Ugyanaz az 5 karakteres gyorskód-logika, mint a Vezetői műszerfalon.
-      return matchesDashboardOrderFilters(row.orderNumber, [atvetelSearch]);
+      // Csak az Enterrel jóváhagyott keresés szűr.
+      return matchesDashboardOrderFilters(row.orderNumber, [atvetelCommittedSearch]);
     });
 
     const pagePanel: React.CSSProperties = {
@@ -17663,7 +17678,25 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   <input
                     type="search"
                     value={atvetelSearch}
-                    onChange={(event) => setAtvetelSearch(event.target.value)}
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      setAtvetelSearch(nextValue);
+
+                      // Ha a keresőmezőt teljesen kiürítik, azonnal visszaállunk
+                      // a normál, Dátumtól–Dátumig szerinti Átvétel nézetre.
+                      if (!nextValue.trim() && atvetelCommittedSearch) {
+                        setAtvetelCommittedSearch("");
+                        void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, "");
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") return;
+                      event.preventDefault();
+
+                      const nextSearch = atvetelSearch.trim();
+                      setAtvetelCommittedSearch(nextSearch);
+                      void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, nextSearch);
+                    }}
                     placeholder="Pl. R2608... vagy gyorskód: 07178"
                     style={fieldStyle}
                   />
@@ -17709,8 +17742,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   {visibleRows.length} megjelenített rendelés · minden sor külön Mentés és végleges Lezárás gombbal
                 </div>
               </div>
-              {atvetelSearch && (
-                <button type="button" onClick={() => setAtvetelSearch("")} style={buttonSecondary}>
+              {(atvetelSearch || atvetelCommittedSearch) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAtvetelSearch("");
+                    setAtvetelCommittedSearch("");
+                    void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, "");
+                  }}
+                  style={buttonSecondary}
+                >
                   Keresés törlése
                 </button>
               )}
@@ -20432,6 +20473,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     managementSection,
     atvetelDateFrom,
     atvetelDateTo,
+    atvetelCommittedSearch,
     workers.length,
   ]);
 
@@ -20457,6 +20499,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     managementSection,
     atvetelDateFrom,
     atvetelDateTo,
+    atvetelCommittedSearch,
   ]);
 
   useEffect(() => {
@@ -20483,6 +20526,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     managementSection,
     atvetelDateFrom,
     atvetelDateTo,
+    atvetelCommittedSearch,
   ]);
 
   useEffect(() => {
