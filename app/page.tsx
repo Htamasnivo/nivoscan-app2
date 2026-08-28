@@ -7300,7 +7300,7 @@ export default function Page() {
   const [atvetelDateFrom, setAtvetelDateFrom] = useState(getLocalDateKey(new Date()));
   const [atvetelDateTo, setAtvetelDateTo] = useState(getLocalDateKey(new Date()));
   const [atvetelSearch, setAtvetelSearch] = useState("");
-  const [atvetelClosureFilter, setAtvetelClosureFilter] = useState<"open" | "closed" | "all">("open");
+  const [atvetelClosureFilter, setAtvetelClosureFilter] = useState<"open" | "closed" | "all">("all");
   const [atvetelRows, setAtvetelRows] = useState<AtvetelMonitorRow[]>([]);
   const [atvetelDrafts, setAtvetelDrafts] = useState<Record<string, AtvetelDraft>>({});
   const [atvetelSavingOrder, setAtvetelSavingOrder] = useState("");
@@ -10399,7 +10399,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               );
               else if (item.id === "production-card") { const stations = getOrderedDashboardStations(); const nextStation = productionCardAdminStation || stations[0] || ""; if (nextStation && nextStation !== productionCardAdminStation) setProductionCardAdminStation(nextStation); if (nextStation) { void loadProductionCardSettingsForStation(nextStation); void loadProductionCardData(nextStation, productionCardDate); } }
               else if (item.id === "reproduction-report") void loadReproductionReport(reproductionReportFilterMode, reproductionReportDate, reproductionReportDateTo, reproductionReportSelectedStation);
-              else if (item.id === "atvetel") void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo);
+              else if (item.id === "atvetel") {
+                // Minden új belépéskor az összes rendelés legyen látható.
+                // Az oldalon belül a felhasználó továbbra is szabadon válthat
+                // Nem lezárt / Lezárt / Összes között.
+                setAtvetelClosureFilter("all");
+                void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo);
+              }
               else if (item.id === "label-printer") { const stations = getOrderedDashboardStations(); const preferred = stations.find((station) => normalizeLooseText(station) === normalizeLooseText("Asztalos")) || officeLabelPrinterStation || stations[0] || "Asztalos"; setOfficeLabelPrinterStation(preferred); setCarpenterPrinterTab("printer"); void loadCarpenterPrinterSettings(preferred); }
               else if (item.id === "executive-report") {
                 const stations = getOrderedDashboardStations();
