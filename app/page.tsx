@@ -17290,13 +17290,43 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+  function shiftAtvetelDateRange(direction: -1 | 1): void {
+    const fallback = getLocalDateKey(new Date());
+
+    const startKey = /^\d{4}-\d{2}-\d{2}$/.test(atvetelDateFrom)
+      ? atvetelDateFrom
+      : fallback;
+
+    const endKey = /^\d{4}-\d{2}-\d{2}$/.test(atvetelDateTo)
+      ? atvetelDateTo
+      : startKey;
+
+    const start = new Date(`${startKey}T12:00:00`);
+    const end = new Date(`${endKey}T12:00:00`);
+
+    start.setDate(start.getDate() + direction);
+    end.setDate(end.getDate() + direction);
+
+    const nextFrom = getLocalDateKey(start);
+    const nextTo = getLocalDateKey(end);
+
+    // A teljes időszak együtt mozdul egy nappal.
+    // A meglévő Átvétel useEffect a state-változásra automatikusan frissít.
+    setAtvetelDateFrom(nextFrom);
+    setAtvetelDateTo(nextTo);
+  }
+
   function AtvetelAdmin(): React.JSX.Element {
     const officeTheme = getOfficeTheme("atvetel");
     const normalizedSearch = normalizeDashboardOrderSearch(atvetelSearch);
 
     const visibleRows = atvetelRows.filter((row) => {
       if (!normalizedSearch) return true;
-      return normalizeDashboardOrderSearch(row.orderNumber).includes(normalizedSearch);
+
+      // Pontosan ugyanaz a gyors rendeléskód-logika, mint a Vezetői műszerfalon.
+      // Példa: 5 karakteres "07178" -> R26 + 07 + ... + 178.
+      // Rövidebb/hosszabb keresésnél a normál részszöveges egyezés is megmarad.
+      return matchesDashboardOrderFilters(row.orderNumber, [atvetelSearch]);
     });
 
     const pagePanel: React.CSSProperties = {
@@ -17379,6 +17409,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         }}
       >
         <div style={{ width: "100%", maxWidth: "none", margin: "0 auto" }}>
+          <ManagementNavigation />
+
           <section data-office-window="atvetel:header" style={{ ...pagePanel, marginBottom: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
               <div>
@@ -17392,7 +17424,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 </div>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(170px, 1fr)) auto", gap: 10, alignItems: "end", minWidth: "min(100%, 900px)" }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "auto repeat(4, minmax(170px, 1fr)) auto auto",
+                  gap: 10,
+                  alignItems: "end",
+                  minWidth: "min(100%, 1080px)",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => shiftAtvetelDateRange(-1)}
+                  style={{
+                    ...buttonSecondary,
+                    minWidth: 52,
+                    height: 42,
+                    alignSelf: "end",
+                    fontSize: 22,
+                    fontWeight: 900,
+                    lineHeight: 1,
+                  }}
+                  title="Egy nappal vissza"
+                  aria-label="Egy nappal vissza"
+                >
+                  ←
+                </button>
                 <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
                   Dátumtól · Beépítési dátum
                   <input
@@ -17414,15 +17471,33 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 </label>
 
                 <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800, gridColumn: "span 2" }}>
-                  Rendelésszám kereső
+                  Rendelésszám kereső · 5 karakteres gyorsszűrő
                   <input
                     type="search"
                     value={atvetelSearch}
                     onChange={(event) => setAtvetelSearch(event.target.value)}
-                    placeholder="Pl. R2608 vagy 080"
+                    placeholder="Pl. R2608... vagy gyorskód: 07178"
                     style={fieldStyle}
                   />
                 </label>
+
+                <button
+                  type="button"
+                  onClick={() => shiftAtvetelDateRange(1)}
+                  style={{
+                    ...buttonSecondary,
+                    minWidth: 52,
+                    height: 42,
+                    alignSelf: "end",
+                    fontSize: 22,
+                    fontWeight: 900,
+                    lineHeight: 1,
+                  }}
+                  title="Egy nappal előre"
+                  aria-label="Egy nappal előre"
+                >
+                  →
+                </button>
 
                 <button
                   type="button"
