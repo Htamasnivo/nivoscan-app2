@@ -7318,7 +7318,6 @@ export default function Page() {
   // Renderenként frissülő "source of truth" a régi async callbackok ellen.
   productionCardAdminStationLatestRef.current = productionCardAdminStation;
   productionCardDateLatestRef.current = productionCardDate;
-  terminalMachineLatestRef.current = machineId;
   executiveReportStationLatestRef.current = executiveReportStation;
   executiveReportDateFromLatestRef.current = executiveReportDateFrom;
   executiveReportDateToLatestRef.current = executiveReportDateTo;
@@ -7390,6 +7389,14 @@ export default function Page() {
   );
 
   const [machineId, setMachineId] = useState<MachineIdOption>(DEFAULT_MACHINE_ID);
+
+  // Vercel/Next.js prerender javítás:
+  // machineId csak a deklarációja UTÁN olvasható. A korábbi verzióban
+  // terminalMachineLatestRef.current = machineId néhány sorral a useState
+  // deklaráció ELŐTT futott, ezért SSR/prerender alatt TDZ ReferenceError
+  // ("Cannot access ... before initialization") keletkezett.
+  terminalMachineLatestRef.current = machineId;
+
   const [machineOptions, setMachineOptions] = useState<string[]>([]);
   const [machineIdRows, setMachineIdRows] = useState<MachineIdRow[]>([]);
   const [machineAdminOpen, setMachineAdminOpen] = useState(false);
