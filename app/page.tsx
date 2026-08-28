@@ -1817,6 +1817,24 @@ function normalizePlanColumnName(value: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
+// Szinter és Kézi szinter KÉT KÜLÖN munkaállomás.
+// Ennél a két állomásnál kizárólag exact egyezést használunk:
+//   Szinter      -> szinter_terv
+//   Kézi szinter -> kezi_szinter_terv
+const EXPLICIT_STATION_PLAN_TABLE_NAMES: Record<string, string> = {
+  szinter: "szinter_terv",
+  kezi_szinter: "kezi_szinter_terv",
+};
+
+function getStationPlanIdentityKey(stationName: string | null | undefined): string {
+  const normalized = normalizePlanColumnName(String(stationName || ""));
+
+  if (normalized === "szinter") return "szinter";
+  if (normalized === "kezi_szinter") return "kezi_szinter";
+
+  return normalized;
+}
+
 const FENYEZO_TECHNICAL_PLAN_FIELD_KEYS = new Set([
   "id",
   "excel_sorrend",
@@ -1886,7 +1904,7 @@ function registerFenyezoBusinessPlanFields(rows: Array<Record<string, unknown>>)
 }
 
 function getStationPlanFieldDefinitions(stationName: string | null | undefined): StationPlanFieldDefinition[] {
-  const key = normalizePlanColumnName(String(stationName || ""));
+  const key = getStationPlanIdentityKey(stationName);
   const baseDefinitions = STATION_PLAN_FIELD_DEFINITIONS[key] || STATION_PLAN_BASE_FIELD_DEFINITIONS;
 
   // FONTOS: csak a Fényező kap dinamikus mezőfelismerést.
@@ -2819,7 +2837,7 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
   const crossStationStatusFieldIds = getProductionCardCrossStationStatusFields(stationName);
 
   const excelExactCardStations = new Set(["szinter", "kezi_szinter", "lezerhegesztes", "csomagolas", "foliazo", "fenyezo"]);
-  if (excelExactCardStations.has(normalizePlanColumnName(stationName))) {
+  if (excelExactCardStations.has(getStationPlanIdentityKey(stationName))) {
     return Array.from(new Set([
       ...planFieldIds,
       ...PRODUCTION_CARD_REQUIRED_FIELD_IDS,
@@ -3123,7 +3141,7 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
   const table = createDefaultProductionMonitorTable(`${cleanStationName} termelési kártya`, "card-table-default", theme);
   table.dataSource = "production-plan";
   const usesSzinterExcelSchema = ["szinter", "kezi_szinter"].includes(
-    normalizePlanColumnName(cleanStationName)
+    getStationPlanIdentityKey(cleanStationName)
   );
   const allProductionCardFieldIds = [...getProductionCardFieldIdsForTable(table, cleanStationName)];
   const crossStationStatusFieldIds = allProductionCardFieldIds.filter(
@@ -4371,14 +4389,12 @@ function parseSpreadsheetDate(value: unknown): string | null {
 }
 
 function buildStationPlanTableName(stationName: string): string {
-  const normalized = stationName
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return `${normalized || "munkaallomas"}_terv`;
+  const identityKey = getStationPlanIdentityKey(stationName);
+
+  const explicitTableName = EXPLICIT_STATION_PLAN_TABLE_NAMES[identityKey];
+  if (explicitTableName) return explicitTableName;
+
+  return `${identityKey || "munkaallomas"}_terv`;
 }
 
 function isStockProductionType(value: string | null | undefined): boolean {
@@ -7234,6 +7250,12 @@ export default function Page() {
   const productionCardAutoSaveTimerRef = useRef<number | null>(null);
   const productionCardLastSavedPayloadRef = useRef("");
   const productionCardPriorityCleanupStartedRef = useRef(false);
+
+  // Állomásváltási race-condition védelem.
+  const productionCardDataLoadSequenceRef = useRef(0);
+  const productionCardSettingsLoadSequenceRef = useRef(0);
+  const terminalProductionCardLoadSequenceRef = useRef(0);
+  const executiveReportLoadSequenceRef = useRef(0);
 
   const [terminalProductionCardData, setTerminalProductionCardData] = useState<ProductionCardData>({
     stationName: "",
@@ -12783,17 +12805,30 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   async function loadProductionCardSettingsForStation(stationName: string): Promise<void> {
     const cleanStationName = String(stationName || "").trim();
     if (!cleanStationName) return;
+
+    const requestSequence = ++productionCardSettingsLoadSequenceRef.current;
+
     setProductionCardLayoutLoaded(false);
     productionCardLastSavedPayloadRef.current = "";
+
     try {
       const result = await fetchProductionCardProfileForStation(cleanStationName);
+
+      if (requestSequence !== productionCardSettingsLoadSequenceRef.current) return;
+
       setProductionCardProfile(result.profile);
       const activeTable = result.profile.tables.find((table) => table.id === result.profile.activeTableId) || result.profile.tables[0];
       setProductionCardTableNameDraft(activeTable?.name || "Termelési kártya");
-      setSelectedProductionCardStyleFieldId(activeTable ? (getProductionCardFieldIdsForTable(activeTable, productionCardAdminStation)[0] || PRODUCTION_CARD_ORDER_FIELD_ID) : PRODUCTION_CARD_ORDER_FIELD_ID);
+      setSelectedProductionCardStyleFieldId(
+        activeTable
+          ? (getProductionCardFieldIdsForTable(activeTable, cleanStationName)[0] || PRODUCTION_CARD_ORDER_FIELD_ID)
+          : PRODUCTION_CARD_ORDER_FIELD_ID
+      );
       setProductionCardLastSavedAt(result.updatedAt);
       productionCardLastSavedPayloadRef.current = JSON.stringify(result.profile);
     } catch (error) {
+      if (requestSequence !== productionCardSettingsLoadSequenceRef.current) return;
+
       console.error("A termelési kártya beállításainak betöltése sikertelen:", error);
       const fallback = createDefaultProductionCardProfile(cleanStationName);
       setProductionCardProfile(fallback);
@@ -12803,7 +12838,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         text: `A termelési kártya beállításainak betöltése sikertelen. Futtasd le a mellékelt SQL-t. Részletek: ${normalizeError(error)}`,
       });
     } finally {
-      setProductionCardLayoutLoaded(true);
+      if (requestSequence === productionCardSettingsLoadSequenceRef.current) {
+        setProductionCardLayoutLoaded(true);
+      }
     }
   }
 
@@ -13615,18 +13652,30 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   async function loadProductionCardData(stationName = productionCardAdminStation, dateKey = productionCardDate): Promise<void> {
-    if (!stationName || !dateKey) return;
+    const cleanStationName = String(stationName || "").trim();
+    if (!cleanStationName || !dateKey) return;
+
+    const requestSequence = ++productionCardDataLoadSequenceRef.current;
     const backgroundRefresh = isNivoBackgroundRefreshRunning();
+
     if (!backgroundRefresh) setLoadingProductionCard(true);
+
     try {
-      setProductionCardData(await fetchProductionCardData(stationName, dateKey));
+      const result = await fetchProductionCardData(cleanStationName, dateKey);
+
+      // Csak a LEGUTOLJÁRA kért állomás eredménye kerülhet képernyőre.
+      if (requestSequence !== productionCardDataLoadSequenceRef.current) return;
+
+      setProductionCardData(result);
     } catch (error) {
+      if (requestSequence !== productionCardDataLoadSequenceRef.current) return;
+
       console.error("A termelési kártya adatainak betöltése sikertelen:", error);
       if (!backgroundRefresh) {
         setProductionCardData({
-          stationName,
+          stationName: cleanStationName,
           dateKey,
-          tableName: buildStationPlanTableName(stationName),
+          tableName: buildStationPlanTableName(cleanStationName),
           rows: [],
           priorityRows: [],
           lastUpdatedAt: new Date().toISOString(),
@@ -13635,24 +13684,38 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         setMessage({ type: "error", text: `A termelési kártya betöltése sikertelen: ${normalizeError(error)}` });
       }
     } finally {
-      if (!backgroundRefresh) setLoadingProductionCard(false);
+      if (
+        requestSequence === productionCardDataLoadSequenceRef.current
+        && !backgroundRefresh
+      ) {
+        setLoadingProductionCard(false);
+      }
     }
   }
 
   async function loadTerminalProductionCard(stationName = machineId): Promise<void> {
     const cleanStationName = String(stationName || "").trim();
     if (!isUsableProductionCardStation(cleanStationName)) return;
+
+    const requestSequence = ++terminalProductionCardLoadSequenceRef.current;
     const today = getLocalDateKey(new Date());
     const backgroundRefresh = isNivoBackgroundRefreshRunning();
+
     if (!backgroundRefresh) setLoadingTerminalProductionCard(true);
+
     try {
       const [settingsResult, dataResult] = await Promise.all([
         fetchProductionCardProfileForStation(cleanStationName),
         fetchProductionCardData(cleanStationName, today),
       ]);
+
+      if (requestSequence !== terminalProductionCardLoadSequenceRef.current) return;
+
       setTerminalProductionCardProfile(settingsResult.profile);
       setTerminalProductionCardData(dataResult);
     } catch (error) {
+      if (requestSequence !== terminalProductionCardLoadSequenceRef.current) return;
+
       console.error("A munkaállomási termelési kártya betöltése sikertelen:", error);
       if (!backgroundRefresh) {
         setTerminalProductionCardProfile(createDefaultProductionCardProfile(cleanStationName));
@@ -13667,7 +13730,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         });
       }
     } finally {
-      if (!backgroundRefresh) setLoadingTerminalProductionCard(false);
+      if (
+        requestSequence === terminalProductionCardLoadSequenceRef.current
+        && !backgroundRefresh
+      ) {
+        setLoadingTerminalProductionCard(false);
+      }
     }
   }
 
@@ -14908,6 +14976,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   ): Promise<void> {
     const cleanStation = String(stationName || "").trim();
     if (!cleanStation || !dateFrom || !dateTo) return;
+
+    const requestSequence = ++executiveReportLoadSequenceRef.current;
+
     if (dateFrom > dateTo) {
       setMessage({ type: "error", text: "A Vezetői jelentésnél a Dátumtól nem lehet későbbi, mint a Dátumig." });
       return;
@@ -14920,16 +14991,25 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         fetchExecutiveReportProfileForStation(cleanStation),
         fetchExecutiveReportProductionCardData(cleanStation, dateFrom, dateTo),
       ]);
+      if (requestSequence !== executiveReportLoadSequenceRef.current) return;
+
       setExecutiveReportProfile(profileResult.profile);
       setExecutiveReportLastSavedAt(profileResult.updatedAt);
       setExecutiveReportData(dataResult);
     } catch (error) {
+      if (requestSequence !== executiveReportLoadSequenceRef.current) return;
+
       console.error("Vezetői jelentés betöltési hiba:", error);
       if (!backgroundRefresh) {
         setMessage({ type: "error", text: `A Vezetői jelentés betöltése sikertelen: ${normalizeError(error)}` });
       }
     } finally {
-      if (!backgroundRefresh) setLoadingExecutiveReport(false);
+      if (
+        requestSequence === executiveReportLoadSequenceRef.current
+        && !backgroundRefresh
+      ) {
+        setLoadingExecutiveReport(false);
+      }
     }
   }
 
