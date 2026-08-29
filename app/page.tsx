@@ -7736,12 +7736,32 @@ export default function Page() {
   const [terminalEntryLayoutResetToDefaultPending, setTerminalEntryLayoutResetToDefaultPending] = useState(false);
   const [terminalEntryLayoutAuthOpen, setTerminalEntryLayoutAuthOpen] = useState(false);
   const [terminalEntryLayoutPin, setTerminalEntryLayoutPin] = useState("");
+  const [terminalEntryLayoutViewportWidth, setTerminalEntryLayoutViewportWidth] = useState(0);
   const terminalEntryLayoutCanvasRef = useRef<HTMLDivElement | null>(null);
   const terminalEntryLayoutDefaultsRef = useRef<Record<string, TerminalEntryLayoutConfig>>({});
   const terminalEntryLayoutLoadedStationRef = useRef("");
   const terminalEntryLayoutInteractionRef = useRef<TerminalEntryLayoutInteraction | null>(null);
   const terminalEntryLayoutInteractionCleanupRef = useRef<(() => void) | null>(null);
   const terminalEntryLayoutDraftRef = useRef<TerminalEntryLayoutConfig | null>(null);
+
+  // Az elmentett munkaállomást és egyedi elrendezést még az első böngészőfestés előtt
+  // visszatöltjük. Így oldalfrissítéskor nem villan fel az alapértelmezett, összecsukott nézet.
+  useLayoutEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const storedMachineId = readMachineIdFromStorage();
+    setMachineId(storedMachineId);
+    setMachineDraftId(storedMachineId);
+    setTerminalEntryLayoutByStation(readTerminalEntryLayoutsFromStorage());
+    setTerminalEntryLayoutViewportWidth(Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, window.innerWidth));
+
+    const handleResize = (): void => {
+      const currentWidth = terminalEntryLayoutCanvasRef.current?.clientWidth || window.innerWidth;
+      setTerminalEntryLayoutViewportWidth(Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, currentWidth));
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   const terminalEntryLayoutStationKey = normalizeLooseText(machineId);
   const terminalEntrySavedLayout = terminalEntryLayoutByStation[terminalEntryLayoutStationKey] || null;
@@ -7757,7 +7777,14 @@ export default function Page() {
   const terminalEntryLayoutCanvasHeight = terminalEntryRuntimeLayout
     ? Math.max(
         620,
-        ...(Object.values(terminalEntryRuntimeLayout.windows) as TerminalEntryLayoutRect[]).map((rect) => rect.y + rect.height + TERMINAL_ENTRY_LAYOUT_GRID_SIZE)
+        ...(Object.values(terminalEntryRuntimeLayout.windows) as TerminalEntryLayoutRect[]).map((rect) => {
+          const scaledRect = scaleTerminalEntryLayoutRectToCanvas(
+            rect,
+            terminalEntryRuntimeLayout.canvasWidth,
+            terminalEntryLayoutViewportWidth || terminalEntryRuntimeLayout.canvasWidth
+          );
+          return scaledRect.y + scaledRect.height + TERMINAL_ENTRY_LAYOUT_GRID_SIZE;
+        })
       )
     : undefined;
 
@@ -7780,6 +7807,24 @@ export default function Page() {
     if (!terminalEntryLayoutStationKey) return;
 
     const frameId = window.requestAnimationFrame(() => {
+      if (terminalEntryLayoutLoadedStationRef.current === terminalEntryLayoutStationKey) return;
+
+      const stored = readTerminalEntryLayoutsFromStorage();
+      const storedLayout = stored[terminalEntryLayoutStationKey];
+
+      // Mentett egyedi elrendezésnél azt már a useLayoutEffect az első festés előtt
+      // aktiválta. Adatbetöltés után nem mérjük vissza és nem írjuk felül, mert az
+      // okozná a frissítés közbeni összecsukást/átugrást.
+      if (storedLayout) {
+        terminalEntryLayoutLoadedStationRef.current = terminalEntryLayoutStationKey;
+        setTerminalEntryLayoutByStation((current) => current[terminalEntryLayoutStationKey]
+          ? current
+          : { ...current, [terminalEntryLayoutStationKey]: storedLayout });
+        return;
+      }
+
+      // Csak olyan állomásnál mérjük fel az eredeti alapelrendezést, ahol még nincs
+      // mentett egyedi elrendezés. Ezzel a régi alapértelmezett viselkedés megmarad.
       if (!terminalEntryLayoutDefaultsRef.current[terminalEntryLayoutStationKey]) {
         const capturedDefault = captureTerminalEntryLayoutFromDom();
         if (capturedDefault && Object.keys(capturedDefault.windows).length >= 2) {
@@ -7787,20 +7832,7 @@ export default function Page() {
         }
       }
 
-      if (terminalEntryLayoutLoadedStationRef.current === terminalEntryLayoutStationKey) return;
       terminalEntryLayoutLoadedStationRef.current = terminalEntryLayoutStationKey;
-
-      const stored = readTerminalEntryLayoutsFromStorage();
-      const storedLayout = stored[terminalEntryLayoutStationKey];
-      if (!storedLayout) return;
-      const merged = mergeTerminalEntryLayouts(
-        terminalEntryLayoutDefaultsRef.current[terminalEntryLayoutStationKey],
-        storedLayout
-      );
-      setTerminalEntryLayoutByStation((current) => ({
-        ...current,
-        [terminalEntryLayoutStationKey]: merged,
-      }));
     });
 
     return () => window.cancelAnimationFrame(frameId);
@@ -14711,6 +14743,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     row: Record<string, unknown>;
   };
 
+  type SzerelesMergedPlanFieldCatalogEntry = {
+    key: string;
+    normalizedKey: string;
+  };
+
   function getSzerelesMergedPlanRowDisplayOrder(row: MachineIdRow, fallbackIndex: number): number {
     const raw = row["megjelenési_sorrend"]
       ?? row.megjelenesi_sorrend
@@ -14790,7 +14827,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   async function resolveSzerelesMergedPlanDetailRows(
     dataSource: ProductionCardTableDataSource,
     rawRow: ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
-    fallbackDate: string
+    fallbackDate: string,
+    stationOverride?: Array<{ stationName: string; groupName: string; displayOrder: number }>
   ): Promise<SzerelesMergedPlanSource[]> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
@@ -14800,7 +14838,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const hintData = getSzerelesPlanDetailDirectPlanData(dataSource, rawRow);
     const hintDate = getSzerelesPlanDetailHintDate(dataSource, rawRow, fallbackDate);
     const clickedSourceRowId = getSzerelesPlanDetailSourceRowId(dataSource, rawRow);
-    const stations = await loadSzerelesMergedPlanStations();
+    const stations = stationOverride || await loadSzerelesMergedPlanStations();
     if (stations.length === 0) {
       throw new Error("A machine_id táblában nem található Csoport 1 vagy Csoport 2 munkaállomás.");
     }
@@ -14856,6 +14894,98 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
 
     return result;
+  }
+
+  async function discoverSzerelesMergedPlanBusinessFields(
+    stations: Array<{ stationName: string; groupName: string; displayOrder: number }>
+  ): Promise<SzerelesMergedPlanFieldCatalogEntry[]> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    const fieldsByNormalizedKey = new Map<string, SzerelesMergedPlanFieldCatalogEntry>();
+    const rememberKey = (rawKey: string): void => {
+      const normalizedKey = normalizePlanColumnName(rawKey);
+      if (!isSzerelesPlanDetailBusinessField(normalizedKey)) return;
+      if (!fieldsByNormalizedKey.has(normalizedKey)) {
+        fieldsByNormalizedKey.set(normalizedKey, { key: rawKey, normalizedKey });
+      }
+    };
+
+    for (const station of stations) {
+      const tableName = getExactProductionCardPlanTableName(station.stationName);
+
+      // A fizikai SQL oszlopok teljes listája már egyetlen select(*) sor kulcsaiból látszik,
+      // akkor is, ha az adott oszlop értéke éppen NULL.
+      const sampleResponse = await supabase.from(tableName).select("*").limit(1);
+      if (sampleResponse.error) {
+        console.warn(`A(z) ${tableName} mezőlistája nem olvasható a PDF-hez:`, sampleResponse.error);
+        continue;
+      }
+
+      const sampleRow = ((sampleResponse.data || [])[0] || null) as Record<string, unknown> | null;
+      if (!sampleRow) continue;
+      Object.keys(sampleRow).forEach(rememberKey);
+
+      const sampleJson = sampleRow.adat;
+      if (sampleJson && typeof sampleJson === "object" && !Array.isArray(sampleJson)) {
+        Object.keys(sampleJson as Record<string, unknown>).forEach(rememberKey);
+      }
+
+      // Az `adat` JSON régebbi importoknál eltérő oszlopkészletet is tartalmazhat.
+      // Ezért az egész táblát lapozva átnézzük, így olyan mező sem marad ki,
+      // amely csak egy korábbi vagy ritka rendelésben fordult elő.
+      if (Object.prototype.hasOwnProperty.call(sampleRow, "adat")) {
+        const pageSize = 1000;
+        for (let offset = 0; ; offset += pageSize) {
+          const pageResponse = await supabase
+            .from(tableName)
+            .select("adat")
+            .range(offset, offset + pageSize - 1);
+          if (pageResponse.error) {
+            console.warn(`A(z) ${tableName}.adat mezők teljes felderítése nem sikerült:`, pageResponse.error);
+            break;
+          }
+
+          const pageRows = (pageResponse.data || []) as Array<{ adat?: unknown }>;
+          pageRows.forEach((row) => {
+            const json = row.adat;
+            if (!json || typeof json !== "object" || Array.isArray(json)) return;
+            Object.keys(json as Record<string, unknown>).forEach(rememberKey);
+          });
+          if (pageRows.length < pageSize) break;
+        }
+      }
+    }
+
+    const preferredOrder = [
+      "sorszam",
+      "gyartasi_szam",
+      "rsz",
+      "megnevezes",
+      "tipus",
+      "mennyiseg",
+      "szin",
+      "elkeszules_datum",
+      "kiszallitasi_datum",
+      "beepites_datuma",
+      "telephely",
+      "atvetel",
+      "statusz",
+      "megjegyzes",
+    ].map(normalizePlanColumnName);
+
+    return Array.from(fieldsByNormalizedKey.values()).sort((left, right) => {
+      const leftPreferred = preferredOrder.indexOf(left.normalizedKey);
+      const rightPreferred = preferredOrder.indexOf(right.normalizedKey);
+      if (leftPreferred >= 0 || rightPreferred >= 0) {
+        if (leftPreferred < 0) return 1;
+        if (rightPreferred < 0) return -1;
+        return leftPreferred - rightPreferred;
+      }
+      return getSzerelesPlanDetailFieldLabel(left.key).localeCompare(
+        getSzerelesPlanDetailFieldLabel(right.key),
+        "hu"
+      );
+    });
   }
 
   function getSzerelesPlanDetailFieldLabel(fieldKey: string): string {
@@ -14930,38 +15060,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function collectSzerelesMergedPlanDetailPdfFields(
-    sources: SzerelesMergedPlanSource[]
+    sources: SzerelesMergedPlanSource[],
+    fieldCatalog: SzerelesMergedPlanFieldCatalogEntry[]
   ): Array<{ key: string; label: string; value: string }> {
-    type FieldSourceValue = { stationName: string; rawValue: unknown; displayValue: string };
+    type FieldSourceValue = { stationName: string; displayValue: string };
     const valuesByKey = new Map<string, { key: string; values: FieldSourceValue[] }>();
-    const preferredKeys: string[] = [];
 
-    const rememberPreferredKey = (key: string): void => {
-      const normalized = normalizePlanColumnName(key);
-      if (!normalized || !isSzerelesPlanDetailBusinessField(normalized)) return;
-      if (!preferredKeys.includes(normalized)) preferredKeys.push(normalized);
-    };
-
-    [
-      "sorszam",
-      "gyartasi_szam",
-      "rsz",
-      "megnevezes",
-      "tipus",
-      "mennyiseg",
-      "szin",
-      "elkeszules_datum",
-      "kiszallitasi_datum",
-      "beepites_datuma",
-      "telephely",
-      "atvetel",
-      "statusz",
-      "megjegyzes",
-    ].forEach(rememberPreferredKey);
+    // Előre felvesszük a Csoport 1 + Csoport 2 táblák teljes üzleti mezőunióját.
+    // Így az ennél a rendelésnél üres mezők is megjelennek „–” értékkel.
+    fieldCatalog.forEach((field) => {
+      if (!isSzerelesPlanDetailBusinessField(field.normalizedKey)) return;
+      valuesByKey.set(field.normalizedKey, { key: field.key, values: [] });
+    });
 
     sources.forEach((source) => {
-      getStationPlanFieldDefinitions(source.stationName).forEach((field) => rememberPreferredKey(field.key));
-
       const nestedData = source.row.adat && typeof source.row.adat === "object" && !Array.isArray(source.row.adat)
         ? source.row.adat as Record<string, unknown>
         : {};
@@ -14976,36 +15088,37 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const displayValue = getSzerelesPlanDetailDisplayValue(rawKey, rawValue);
         const existing = valuesByKey.get(normalizedKey) || { key: rawKey, values: [] };
         const duplicate = existing.values.some((item) => normalizeLooseText(item.displayValue) === normalizeLooseText(displayValue));
-        if (!duplicate) {
-          existing.values.push({ stationName: source.stationName, rawValue, displayValue });
-        }
+        if (!duplicate) existing.values.push({ stationName: source.stationName, displayValue });
         valuesByKey.set(normalizedKey, existing);
       });
     });
 
-    const orderedKeys = [
-      ...preferredKeys.filter((key) => valuesByKey.has(key)),
-      ...Array.from(valuesByKey.keys())
-        .filter((key) => !preferredKeys.includes(key))
-        .sort((left, right) => getSzerelesPlanDetailFieldLabel(left).localeCompare(getSzerelesPlanDetailFieldLabel(right), "hu")),
-    ];
+    const orderedCatalogKeys = fieldCatalog.map((field) => field.normalizedKey);
+    const extraKeys = Array.from(valuesByKey.keys())
+      .filter((key) => !orderedCatalogKeys.includes(key))
+      .sort((left, right) => getSzerelesPlanDetailFieldLabel(left).localeCompare(getSzerelesPlanDetailFieldLabel(right), "hu"));
 
-    return Array.from(new Set(orderedKeys)).map((normalizedKey) => {
-      const entry = valuesByKey.get(normalizedKey)!;
-      const value = entry.values.length <= 1
-        ? entry.values[0]?.displayValue || "–"
-        : entry.values.map((item) => `${item.stationName}: ${item.displayValue}`).join("\n");
-      return {
-        key: entry.key,
-        label: getSzerelesPlanDetailFieldLabel(entry.key),
-        value,
-      };
-    });
+    return Array.from(new Set([...orderedCatalogKeys, ...extraKeys]))
+      .filter((normalizedKey) => valuesByKey.has(normalizedKey))
+      .map((normalizedKey) => {
+        const entry = valuesByKey.get(normalizedKey)!;
+        const value = entry.values.length === 0
+          ? "–"
+          : entry.values.length === 1
+            ? entry.values[0].displayValue
+            : entry.values.map((item) => `${item.stationName}: ${item.displayValue}`).join("\n");
+        return {
+          key: entry.key,
+          label: getSzerelesPlanDetailFieldLabel(entry.key),
+          value,
+        };
+      });
   }
 
   async function createSzerelesPlanDetailPdfBlob(
     sources: SzerelesMergedPlanSource[],
-    orderNumber: string
+    orderNumber: string,
+    fieldCatalog: SzerelesMergedPlanFieldCatalogEntry[]
   ): Promise<Blob> {
     const jspdf = await waitForJsPdf();
     let logoDataUrl = "";
@@ -15043,64 +15156,66 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const white = [255, 255, 255] as const;
     const yellowV = [245, 180, 0] as const;
     const generatedAt = formatDateTime(new Date());
-    const fields = collectSzerelesMergedPlanDetailPdfFields(sources);
+    const fields = collectSzerelesMergedPlanDetailPdfFields(sources, fieldCatalog);
     const stationNames = sources.map((source) => source.stationName);
 
     const drawFallbackLogo = (): void => {
-      doc.setFillColor(...black);
-      pdf.roundedRect(marginX, 20, 88, 48, 4, 4, "F");
       doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.setFontSize(19);
-      doc.setTextColor(...white);
-      doc.text("NÍ", marginX + 9, 51);
-      const niWidth = Number(pdf.getTextWidth?.("NÍ") || 22);
+      doc.setFontSize(21);
+      doc.setTextColor(...black);
+      doc.text("NÍ", marginX + 4, 51);
+      const niWidth = Number(pdf.getTextWidth?.("NÍ") || 24);
       doc.setTextColor(...yellowV);
-      doc.text("V", marginX + 9 + niWidth + 1, 51);
-      const vWidth = Number(pdf.getTextWidth?.("V") || 13);
-      doc.setTextColor(...white);
-      doc.text("Ó", marginX + 9 + niWidth + vWidth + 2, 51);
+      doc.text("V", marginX + 4 + niWidth + 1, 51);
+      const vWidth = Number(pdf.getTextWidth?.("V") || 14);
+      doc.setTextColor(...black);
+      doc.text("Ó", marginX + 4 + niWidth + vWidth + 2, 51);
     };
 
     const drawHeader = (continued = false): number => {
-      doc.setFillColor(...black);
-      pdf.rect(0, 0, pageWidth, 100, "F");
-      doc.setFillColor(...charcoal);
-      pdf.rect(0, 96, pageWidth, 4, "F");
+      // A fejléc teljes felülete fehér: a NÍVÓ logó fekete/fehér formája így tisztán ül,
+      // és a dokumentum egyetlen színes hangsúlya továbbra is a logó sárga V-je.
+      doc.setFillColor(...white);
+      pdf.rect(0, 0, pageWidth, 106, "F");
+      doc.setFillColor(...dark);
+      pdf.rect(0, 102, pageWidth, 4, "F");
 
       if (logoDataUrl && logoSize) {
-        const maxW = 96;
-        const maxH = 48;
+        const maxW = 104;
+        const maxH = 52;
         const ratio = Math.min(maxW / Math.max(1, logoSize.width), maxH / Math.max(1, logoSize.height));
         const w = Math.max(1, logoSize.width * ratio);
         const h = Math.max(1, logoSize.height * ratio);
         try {
-          pdf.addImage(logoDataUrl, "PNG", marginX, 20 + (maxH - h) / 2, w, h, undefined, "FAST");
+          pdf.addImage(logoDataUrl, "PNG", marginX, 18 + (maxH - h) / 2, w, h, undefined, "FAST");
         } catch {
-          try { pdf.addImage(logoDataUrl, marginX, 20 + (maxH - h) / 2, w, h); } catch { drawFallbackLogo(); }
+          try { pdf.addImage(logoDataUrl, marginX, 18 + (maxH - h) / 2, w, h); } catch { drawFallbackLogo(); }
         }
       } else {
         drawFallbackLogo();
       }
 
-      doc.setTextColor(...white);
+      doc.setTextColor(...black);
       doc.setFont(PDF_FONT_FAMILY, "bold");
       doc.setFontSize(17.5);
-      doc.text(continued ? "Rendelési részletező – folytatás" : "Rendelési részletező", 155, 34);
+      doc.text(continued ? "Rendelési részletező – folytatás" : "Rendelési részletező", 155, 32);
       doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setTextColor(...charcoal);
       doc.setFontSize(9.2);
-      doc.text("Csoport 1 + Csoport 2 · összevont termelési tervadatok", 155, 51);
-      doc.setTextColor(210, 210, 210);
+      doc.text("Csoport 1 + Csoport 2 · összevont termelési tervadatok", 155, 49);
+      doc.setTextColor(...mid);
       doc.setFontSize(7.8);
       const stationLine = pdf.splitTextToSize(`Forrásállomások: ${stationNames.join(", ")}`, 390) as string[];
-      doc.text(stationLine.slice(0, 2), 155, 64);
+      doc.text(stationLine.slice(0, 2), 155, 62);
 
-      doc.setFillColor(...dark);
-      pdf.roundedRect(155, 73, 280, 20, 4, 4, "F");
-      doc.setTextColor(...white);
+      doc.setFillColor(...veryPale);
+      doc.setDrawColor(...border);
+      pdf.roundedRect(155, 74, 300, 21, 4, 4, "FD");
+      doc.setTextColor(...black);
       doc.setFont(PDF_FONT_FAMILY, "bold");
       doc.setFontSize(10.8);
-      doc.text(`Rendelésszám: ${orderNumber}`, 166, 87);
-      return 126;
+      doc.text(`Rendelésszám: ${orderNumber}`, 166, 88);
+      return 130;
     };
 
     let y = drawHeader(false);
@@ -15193,8 +15308,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     } catch { /* no-op */ }
 
     try {
-      const planSources = await resolveSzerelesMergedPlanDetailRows(dataSource, rawRow, fallbackDate);
-      const blob = await createSzerelesPlanDetailPdfBlob(planSources, orderNumber);
+      const groupStations = await loadSzerelesMergedPlanStations();
+      if (groupStations.length === 0) {
+        throw new Error("A machine_id táblában nem található Csoport 1 vagy Csoport 2 munkaállomás.");
+      }
+      const [planSources, fieldCatalog] = await Promise.all([
+        resolveSzerelesMergedPlanDetailRows(dataSource, rawRow, fallbackDate, groupStations),
+        discoverSzerelesMergedPlanBusinessFields(groupStations),
+      ]);
+      const blob = await createSzerelesPlanDetailPdfBlob(planSources, orderNumber, fieldCatalog);
       const blobUrl = URL.createObjectURL(blob);
       previewWindow.location.replace(blobUrl);
       window.setTimeout(() => URL.revokeObjectURL(blobUrl), 5 * 60 * 1000);
@@ -17141,7 +17263,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function TerminalProductionCardPanel(): React.JSX.Element | null {
     if (!isUsableProductionCardStation(machineId)) return null;
 
-    const cardContent = loadingTerminalProductionCard && !terminalProductionCardData.lastUpdatedAt ? (
+    const cardContent = loadingTerminalProductionCard
+      && !terminalProductionCardData.lastUpdatedAt
+      && !terminalEntryLayoutRuntimeActive ? (
       <div
         data-terminal-entry-layout-window="production-loading"
         style={{
@@ -20070,11 +20194,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     setStandaloneProductionMonitor(true);
   }, []);
 
-  useEffect(() => {
-    const storedMachineId = readMachineIdFromStorage();
-    setMachineId(storedMachineId);
-    setMachineDraftId(storedMachineId);
-  }, []);
+  useLayoutEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!terminalEntryLayoutRuntimeActive) return;
+    const currentWidth = terminalEntryLayoutCanvasRef.current?.clientWidth || window.innerWidth;
+    if (currentWidth > 0 && Math.abs(currentWidth - terminalEntryLayoutViewportWidth) >= 1) {
+      setTerminalEntryLayoutViewportWidth(Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, currentWidth));
+    }
+  }, [terminalEntryLayoutRuntimeActive, terminalEntryLayoutStationKey]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -26302,7 +26429,8 @@ START: ${formatDateTime(startAt)}`
     if (canvas?.clientWidth) return Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, canvas.clientWidth);
     return Math.max(
       TERMINAL_ENTRY_LAYOUT_MIN_WIDTH,
-      terminalEntryLayoutDraftRef.current?.canvasWidth
+      terminalEntryLayoutViewportWidth
+        || terminalEntryLayoutDraftRef.current?.canvasWidth
         || terminalEntryRuntimeLayout?.canvasWidth
         || (typeof window !== "undefined" ? window.innerWidth : 1600)
     );
@@ -26334,6 +26462,22 @@ START: ${formatDateTime(startAt)}`
     };
   }
 
+  function scaleTerminalEntryLayoutRectToCanvas(
+    rect: TerminalEntryLayoutRect,
+    sourceCanvasWidth: number,
+    targetCanvasWidth: number
+  ): TerminalEntryLayoutRect {
+    const sourceWidth = Math.max(1, Number(sourceCanvasWidth) || 1);
+    const targetWidth = Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, Number(targetCanvasWidth) || sourceWidth);
+    const ratio = targetWidth / sourceWidth;
+    return {
+      x: rect.x * ratio,
+      y: rect.y * ratio,
+      width: rect.width * ratio,
+      height: rect.height * ratio,
+    };
+  }
+
   function terminalEntryLayoutRectsOverlap(
     left: TerminalEntryLayoutRect,
     right: TerminalEntryLayoutRect
@@ -26360,7 +26504,13 @@ START: ${formatDateTime(startAt)}`
   function getTerminalEntryLayoutWindowStyle(windowId: string): React.CSSProperties {
     if (!terminalEntryLayoutRuntimeActive || !terminalEntryRuntimeLayout) return {};
     const rawRect = terminalEntryRuntimeLayout.windows[windowId] || getTerminalEntryLayoutFallbackRect(windowId);
-    const rect = fitTerminalEntryLayoutRectToCanvas(rawRect);
+    const canvasWidth = getTerminalEntryLayoutCanvasWidth();
+    const scaledRect = scaleTerminalEntryLayoutRectToCanvas(
+      rawRect,
+      terminalEntryRuntimeLayout.canvasWidth,
+      canvasWidth
+    );
+    const rect = fitTerminalEntryLayoutRectToCanvas(scaledRect, canvasWidth);
     return {
       position: "absolute",
       left: rect.x,
