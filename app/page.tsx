@@ -91,11 +91,35 @@ type MachineIdRow = {
   machine_name?: string | null;
   machine_id?: string | null;
   megnevezes?: string | null;
+  csoportok?: string | null;
+  Csoportok?: string | null;
   "megjelenési_sorrend"?: number | string | null;
   megjelenesi_sorrend?: number | string | null;
   display_order?: number | string | null;
   sorrend?: number | string | null;
   [key: string]: unknown;
+};
+
+type MachineGroupDirectoryEntry = {
+  machineName: string;
+  groupName: string;
+  machineKey: string;
+  groupKey: string;
+};
+
+type StartGroupConflict = {
+  orderNumber: string;
+  blockingMachine: string;
+  blockingGroup: string;
+  source: "work_logs" | "production_batches";
+  batchCode: string | null;
+  startedAt: string | null;
+};
+
+type StartGroupCheckResult = {
+  currentMachine: string;
+  currentGroup: string;
+  conflicts: StartGroupConflict[];
 };
 
 type WorkAction = "START" | "END";
@@ -28605,6 +28629,16 @@ body {
     try {
       const nowIso = new Date().toISOString();
       const currentMachineId = getCurrentMachineIdForInsert();
+      const groupCheck = await findStartGroupConflicts(normalizeProductionBatchOrders(batch.order_ids), {
+        currentMachineId,
+        ignoreBatchCodes: [batch.batch_code],
+      });
+      if (groupCheck.conflicts.length > 0) {
+        playSharpErrorBeep();
+        setMessage({ type: "error", text: buildStartGroupConflictMessage(groupCheck, true) });
+        return;
+      }
+
       let query = supabase.from("production_batches").update({
         operation_code: "MARAS",
         operation_status: "MARAS_FOLYAMATBAN",
@@ -28811,6 +28845,16 @@ body {
       const nowIso = new Date().toISOString();
       const workerNameForSave = activeWorker["Teljes nev"];
       const currentMachineId = getCurrentMachineIdForInsert();
+      const groupCheck = await findStartGroupConflicts(readyOrders, {
+        currentMachineId,
+        ignoreBatchCodes: [selectedEndBatch.batch_code],
+      });
+      if (groupCheck.conflicts.length > 0) {
+        playSharpErrorBeep();
+        setMessage({ type: "error", text: buildStartGroupConflictMessage(groupCheck, true) });
+        return;
+      }
+
       const cuttingStartTime = selectedEndBatch.start_time || selectedEndBatch.created_at || nowIso;
       const batchNoteClean = endBatchNote.trim();
       const millingBatchCode = `BATCH-${Date.now()}-MAR`;
@@ -29763,36 +29807,157 @@ body {
     }
   }
 
-  async function checkOrderAlreadyInProductionBatch(orderId: string): Promise<{ exists: boolean; batchCode: string | null }> {
-    if (!supabase) return { exists: false, batchCode: null };
-    const cleanOrderId = orderId.trim();
-    if (!cleanOrderId) return { exists: false, batchCode: null };
+  async function loadMachineGroupDirectoryForStartCheck(): Promise<Map<string, MachineGroupDirectoryEntry>> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
+    // Minden START-ellenőrzés közvetlenül a machine_id táblából olvassa a csoportot.
+    // Így egy Supabase-ben átírt csoportosítás azonnal érvényes, kódmódosítás nélkül.
     const { data, error } = await supabase
-      .from("production_batches")
-      .select("batch_code, order_ids, created_at")
-      .filter("order_ids", "cs", JSON.stringify([cleanOrderId]))
-      .order("created_at", { ascending: false })
-      .limit(1);
+      .from("machine_id")
+      .select("id, name, csoportok")
+      .order("id", { ascending: true });
 
-    if (error) throw error;
-    if (Array.isArray(data) && data.length > 0) {
-      return { exists: true, batchCode: String(data[0]?.batch_code || "") || null };
+    if (error) {
+      throw new Error(`A munkaállomás-csoportok betöltése sikertelen: ${normalizeError(error)}`);
     }
 
-    return { exists: false, batchCode: null };
+    const directory = new Map<string, MachineGroupDirectoryEntry>();
+    ((data || []) as MachineIdRow[]).forEach((row) => {
+      const machineName = String(row.name ?? row.Name ?? row.machine_name ?? row.machine_id ?? row.megnevezes ?? "").trim();
+      const groupName = String(row.csoportok ?? row.Csoportok ?? "").trim();
+      const machineKey = normalizeLooseText(machineName);
+      const groupKey = normalizeLooseText(groupName);
+      if (!machineKey || !groupKey) return;
+      directory.set(machineKey, { machineName, groupName, machineKey, groupKey });
+    });
+
+    return directory;
   }
 
-  async function findOrdersAlreadyInProductionBatches(orderIds: string[]): Promise<string[]> {
-    const uniqueOrders = Array.from(new Set(orderIds.map((order) => String(order).trim()).filter(Boolean)));
-    const duplicateOrders: string[] = [];
+  function isProductionBatchPhysicallyActiveForGroupLock(statusValue: unknown): boolean {
+    const status = String(statusValue || "").trim().toUpperCase();
+    // MARASRA_VAR: a megelőző művelet END-je már megtörtént, ezért fizikailag nem foglalja a csoportot.
+    // KESZ: lezárt állapot, szintén nem blokkolhat új START-ot.
+    return status !== "MARASRA_VAR" && status !== "KESZ";
+  }
 
-    for (const orderId of uniqueOrders) {
-      const result = await checkOrderAlreadyInProductionBatch(orderId);
-      if (result.exists) duplicateOrders.push(orderId);
+  async function findStartGroupConflicts(
+    orderIds: string[],
+    options?: { currentMachineId?: string; ignoreBatchCodes?: string[] }
+  ): Promise<StartGroupCheckResult> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    const uniqueOrders = Array.from(new Set(orderIds.map((order) => String(order || "").trim()).filter(Boolean)));
+    const currentMachine = String(options?.currentMachineId || getCurrentMachineIdForInsert() || "").trim();
+    if (!currentMachine) throw new Error("START nem indítható: nincs beállítva munkaállomás.");
+
+    const directory = await loadMachineGroupDirectoryForStartCheck();
+    const currentEntry = directory.get(normalizeLooseText(currentMachine));
+    if (!currentEntry) {
+      throw new Error(`START nem indítható: a(z) ${currentMachine} munkaállomáshoz nincs kitöltve a machine_id.csoportok mező.`);
     }
 
-    return duplicateOrders;
+    if (uniqueOrders.length === 0) {
+      return { currentMachine: currentEntry.machineName, currentGroup: currentEntry.groupName, conflicts: [] };
+    }
+
+    const orderDisplayByKey = new Map(uniqueOrders.map((order) => [normalizeLooseText(order), order]));
+    const orderKeys = new Set(orderDisplayByKey.keys());
+    const ignoredBatchCodes = new Set((options?.ignoreBatchCodes || []).map((code) => normalizeLooseText(String(code || ""))).filter(Boolean));
+    const conflictsByOrderAndMachine = new Map<string, StartGroupConflict>();
+
+    // Egyedi / normál START-ok: a nyitott START sor az, ahol már van start_time,
+    // de még nincs end_time. END után ugyanaz a sor lezáródik, ezért többé nem blokkol.
+    const workResponse = await supabase
+      .from("work_logs")
+      .select("id, order_number, machine_id, action, start_time, start_timestamp, end_time, end_timestamp, created_at, batch_code")
+      .in("order_number", uniqueOrders)
+      .is("end_time", null)
+      .limit(5000);
+
+    if (workResponse.error) throw workResponse.error;
+
+    ((workResponse.data || []) as Array<Record<string, unknown>>).forEach((row) => {
+      if (row.end_time || row.end_timestamp) return;
+      const hasStart = Boolean(row.start_time || row.start_timestamp) || String(row.action || "").trim().toUpperCase() === "START";
+      if (!hasStart) return;
+
+      const orderNumberRaw = String(row.order_number || "").trim();
+      const orderKey = normalizeLooseText(orderNumberRaw);
+      if (!orderKeys.has(orderKey)) return;
+
+      const blockingMachineRaw = String(row.machine_id || "").trim();
+      const blockingEntry = directory.get(normalizeLooseText(blockingMachineRaw));
+      if (!blockingEntry || blockingEntry.groupKey !== currentEntry.groupKey) return;
+
+      const displayOrder = orderDisplayByKey.get(orderKey) || orderNumberRaw;
+      const conflictKey = `${orderKey}|${blockingEntry.machineKey}`;
+      conflictsByOrderAndMachine.set(conflictKey, {
+        orderNumber: displayOrder,
+        blockingMachine: blockingEntry.machineName,
+        blockingGroup: blockingEntry.groupName,
+        source: "work_logs",
+        batchCode: String(row.batch_code || "").trim() || null,
+        startedAt: String(row.start_time || row.start_timestamp || row.created_at || "").trim() || null,
+      });
+    });
+
+    // Köteg START esetén a futó állapot a production_batches táblában él egészen az END-ig.
+    // Ezt is figyelembe kell venni, különben egy köteg fizikailag futna, de nem blokkolná a csoporttárs állomást.
+    const batchResponse = await supabase
+      .from("production_batches")
+      .select("batch_code, order_ids, machine_id, start_time, created_at, operation_status");
+
+    if (batchResponse.error) throw batchResponse.error;
+
+    ((batchResponse.data || []) as Array<Record<string, unknown>>).forEach((row) => {
+      const batchCode = String(row.batch_code || "").trim();
+      if (batchCode && ignoredBatchCodes.has(normalizeLooseText(batchCode))) return;
+      if (!isProductionBatchPhysicallyActiveForGroupLock(row.operation_status)) return;
+
+      const blockingMachineRaw = String(row.machine_id || "").trim();
+      const blockingEntry = directory.get(normalizeLooseText(blockingMachineRaw));
+      if (!blockingEntry || blockingEntry.groupKey !== currentEntry.groupKey) return;
+
+      normalizeProductionBatchOrders(row.order_ids).forEach((batchOrder) => {
+        const orderKey = normalizeLooseText(batchOrder);
+        if (!orderKeys.has(orderKey)) return;
+
+        const displayOrder = orderDisplayByKey.get(orderKey) || String(batchOrder).trim();
+        const conflictKey = `${orderKey}|${blockingEntry.machineKey}`;
+        // Ha ugyanarra a rendelésre ugyanazon gépről work_logs nyitott START is van,
+        // azt tartjuk meg elsődleges forrásként, hogy ne jelenjen meg kétszer ugyanaz a blokkolás.
+        if (conflictsByOrderAndMachine.has(conflictKey)) return;
+
+        conflictsByOrderAndMachine.set(conflictKey, {
+          orderNumber: displayOrder,
+          blockingMachine: blockingEntry.machineName,
+          blockingGroup: blockingEntry.groupName,
+          source: "production_batches",
+          batchCode: batchCode || null,
+          startedAt: String(row.start_time || row.created_at || "").trim() || null,
+        });
+      });
+    });
+
+    return {
+      currentMachine: currentEntry.machineName,
+      currentGroup: currentEntry.groupName,
+      conflicts: Array.from(conflictsByOrderAndMachine.values()),
+    };
+  }
+
+  function buildStartGroupConflictMessage(result: StartGroupCheckResult, batchMode = false): string {
+    const title = batchMode ? "⛔ KÖTEG START TILTVA ⛔" : "⛔ START TILTVA ⛔";
+    const details = result.conflicts
+      .slice(0, 8)
+      .map((conflict) => `${conflict.orderNumber} → ${conflict.blockingMachine} (${conflict.blockingGroup})`)
+      .join(" | ");
+    const moreCount = Math.max(0, result.conflicts.length - 8);
+    const moreText = moreCount > 0 ? ` | +${moreCount} további blokkolt rendelés` : "";
+    return `${title} ${batchMode ? "A köteg nem indítható." : "A rendelés nem indítható."} `
+      + `A(z) ${result.currentGroup} csoportban ugyanaz a rendelés egyszerre csak egy munkaállomáson lehet folyamatban. `
+      + `Jelenleg folyamatban: ${details}${moreText}. Előbb az ottani munkát END-del készre kell jelenteni.`;
   }
 
   async function addOrderToBatch(rawValue?: string): Promise<void> {
@@ -29813,14 +29978,11 @@ body {
     orderDuplicateCheckInFlightRef.current = true;
 
     try {
-      const duplicateCheck = await checkOrderAlreadyInProductionBatch(candidate);
-      if (duplicateCheck.exists) {
+      const groupCheck = await findStartGroupConflicts([candidate]);
+      if (groupCheck.conflicts.length > 0) {
         playSharpErrorBeep();
         setOrderNumber("");
-        setMessage({
-          type: "error",
-          text: `HIBA: Az ${candidate} rendelésszám már rögzítve lett egy korábbi kötegben! (Dupla munkalap)`,
-        });
+        setMessage({ type: "error", text: buildStartGroupConflictMessage(groupCheck, true) });
         focusAndSelectInput(orderInputRef);
         return;
       }
@@ -29846,7 +30008,7 @@ body {
       });
       setOrderNumber("");
     } catch (error) {
-      console.error("SUPABASE HIBA addOrderToBatch duplicate/reproduction check:", error);
+      console.error("SUPABASE HIBA addOrderToBatch group/reproduction check:", error);
       playSharpErrorBeep();
       setMessage({ type: "error", text: normalizeError(error) });
       focusAndSelectInput(orderInputRef);
@@ -30255,9 +30417,25 @@ body {
 
         if (closeError) throw closeError;
       } else {
+        const groupCheck = await findStartGroupConflicts([finalOrder], { currentMachineId });
+        if (groupCheck.conflicts.length > 0) {
+          playSharpErrorBeep();
+          setMessage({ type: "error", text: buildStartGroupConflictMessage(groupCheck, false) });
+          focusAndSelectInput(orderInputRef);
+          return;
+        }
+
         const productionDecision = await prepareOrderProductionMeta(finalOrder, true);
         if (!productionDecision.proceed) {
           setMessage({ type: "info", text: `A(z) ${finalOrder} rendelés készre jelentése megszakítva.` });
+          return;
+        }
+
+        const finalGroupCheck = await findStartGroupConflicts([finalOrder], { currentMachineId });
+        if (finalGroupCheck.conflicts.length > 0) {
+          playSharpErrorBeep();
+          setMessage({ type: "error", text: buildStartGroupConflictMessage(finalGroupCheck, false) });
+          focusAndSelectInput(orderInputRef);
           return;
         }
 
@@ -30362,6 +30540,15 @@ body {
         return;
       }
 
+      const groupCheck = await findStartGroupConflicts([finalOrder]);
+      if (groupCheck.conflicts.length > 0) {
+        playSharpErrorBeep();
+        setOrderNumber(finalOrder);
+        setMessage({ type: "error", text: buildStartGroupConflictMessage(groupCheck, false) });
+        focusAndSelectInput(orderInputRef);
+        return;
+      }
+
       if (isDoorTwoPartWorker(activeWorker)) {
         doorCompletionForStart = await fetchDoorCompletionStateForOrder(finalOrder);
       }
@@ -30370,18 +30557,6 @@ body {
       }
       if (isThreePartWorker(activeWorker)) {
         threePartCompletionForStart = await fetchThreePartCompletionStateForOrder(finalOrder);
-      }
-
-      const duplicateCheck = await checkOrderAlreadyInProductionBatch(finalOrder);
-      if (duplicateCheck.exists) {
-        playSharpErrorBeep();
-        setOrderNumber("");
-        setMessage({
-          type: "error",
-          text: `HIBA: Az ${finalOrder} rendelésszám már rögzítve lett egy korábbi kötegben! (Dupla munkalap)`,
-        });
-        focusAndSelectInput(orderInputRef);
-        return;
       }
 
       if (isDoorTwoPartWorker(activeWorker) && doorCompletionForStart.isDoorWorkflow && doorCompletionForStart.completionPercent < 100) {
@@ -30425,7 +30600,7 @@ body {
         }
       }
     } catch (error) {
-      console.error("SUPABASE HIBA finalizeSingleOrderCreation duplicate/start-state check:", error);
+      console.error("SUPABASE HIBA finalizeSingleOrderCreation group/start-state check:", error);
       playSharpErrorBeep();
       setMessage({ type: "error", text: normalizeError(error) });
       focusAndSelectInput(orderInputRef);
@@ -30440,6 +30615,17 @@ body {
       const nowIso = new Date().toISOString();
       const workerNameForSave = activeWorker["Teljes nev"];
       const currentMachineId = getCurrentMachineIdForInsert();
+
+      // Közvetlenül az INSERT előtt még egyszer ellenőrzünk, hogy a beolvasás/ellenőrzés
+      // óta ne tudjon egy csoporttárs munkaállomás ugyanazzal a rendeléssel START-ot nyitni.
+      const finalGroupCheck = await findStartGroupConflicts([finalOrder], { currentMachineId });
+      if (finalGroupCheck.conflicts.length > 0) {
+        playSharpErrorBeep();
+        setMessage({ type: "error", text: buildStartGroupConflictMessage(finalGroupCheck, false) });
+        focusAndSelectInput(orderInputRef);
+        return;
+      }
+
       const activeScrapReplacement = isCarpenterStationName(currentMachineId)
         ? await fetchOpenSingleScrapReplacement(finalOrder)
         : null;
@@ -30627,18 +30813,17 @@ body {
 
     setBusy(true);
     try {
-      const duplicateOrders = await findOrdersAlreadyInProductionBatches(ordersForSave);
-      if (duplicateOrders.length > 0) {
+      // A köteg lezáró START kódjánál újra, élő Supabase-adatokból ellenőrzünk.
+      // Így az is blokkol, ha a tételek beolvasása óta indult el ugyanaz a rendelés egy csoporttárs állomáson.
+      const groupCheck = await findStartGroupConflicts(ordersForSave, { currentMachineId });
+      if (groupCheck.conflicts.length > 0) {
         playSharpErrorBeep();
-        setMessage({
-          type: "error",
-          text: `Sikertelen mentés. A listában szereplő ${duplicateOrders.join(", ")} már létezik az adatbázisban, kérjük töröld őket!`,
-        });
+        setMessage({ type: "error", text: buildStartGroupConflictMessage(groupCheck, true) });
         focusAndSelectInput(orderInputRef);
         return;
       }
     } catch (error) {
-      console.error("SUPABASE HIBA finalizeBatchCreation duplicate check:", error);
+      console.error("SUPABASE HIBA finalizeBatchCreation group check:", error);
       playSharpErrorBeep();
       setMessage({ type: "error", text: normalizeError(error) });
       focusAndSelectInput(orderInputRef);
@@ -30650,6 +30835,14 @@ body {
     batchFinalizeInFlightRef.current = true;
     setBusy(true);
     try {
+      const finalGroupCheck = await findStartGroupConflicts(ordersForSave, { currentMachineId });
+      if (finalGroupCheck.conflicts.length > 0) {
+        playSharpErrorBeep();
+        setMessage({ type: "error", text: buildStartGroupConflictMessage(finalGroupCheck, true) });
+        focusAndSelectInput(orderInputRef);
+        return;
+      }
+
       const generatedBatchCode = `BATCH-${Date.now()}`;
 
       const { data, error } = await supabase
@@ -31256,6 +31449,13 @@ body {
 
     if (action === "START") {
       try {
+        const groupCheck = await findStartGroupConflicts([finalOrderNumber]);
+        if (groupCheck.conflicts.length > 0) {
+          playSharpErrorBeep();
+          setMessage({ type: "error", text: buildStartGroupConflictMessage(groupCheck, false) });
+          return;
+        }
+
         const productionDecision = await prepareOrderProductionMeta(finalOrderNumber, true);
         if (!productionDecision.proceed) {
           setMessage({ type: "info", text: `A(z) ${finalOrderNumber} rendelés újragyártása megszakítva, nem történt mentés.` });
@@ -31569,6 +31769,13 @@ body {
           await updateSingleScrapReplacement(activeScrapReplacement, "KESZ", nowForSave);
         }
       } else {
+        const finalGroupCheck = await findStartGroupConflicts([finalOrderNumber], { currentMachineId });
+        if (finalGroupCheck.conflicts.length > 0) {
+          playSharpErrorBeep();
+          setMessage({ type: "error", text: buildStartGroupConflictMessage(finalGroupCheck, false) });
+          return;
+        }
+
         const payloadBase = {
           worker_id: activeWorker.id,
           worker_name: activeWorker["Teljes nev"],
