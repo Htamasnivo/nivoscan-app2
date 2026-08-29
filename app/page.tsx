@@ -136,13 +136,17 @@ type TerminalEntryLayoutConfig = {
   windows: Record<string, TerminalEntryLayoutRect>;
 };
 
+type TerminalEntryLayoutResizeEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
 type TerminalEntryLayoutInteraction = {
   mode: "drag" | "resize";
+  resizeEdge?: TerminalEntryLayoutResizeEdge;
   pointerId: number;
   windowId: string;
   startClientX: number;
   startClientY: number;
   initialRect: TerminalEntryLayoutRect;
+  lastValidRect: TerminalEntryLayoutRect;
 };
 
 type WorkAction = "START" | "END";
@@ -7736,6 +7740,8 @@ export default function Page() {
   const terminalEntryLayoutDefaultsRef = useRef<Record<string, TerminalEntryLayoutConfig>>({});
   const terminalEntryLayoutLoadedStationRef = useRef("");
   const terminalEntryLayoutInteractionRef = useRef<TerminalEntryLayoutInteraction | null>(null);
+  const terminalEntryLayoutInteractionCleanupRef = useRef<(() => void) | null>(null);
+  const terminalEntryLayoutDraftRef = useRef<TerminalEntryLayoutConfig | null>(null);
 
   const terminalEntryLayoutStationKey = normalizeLooseText(machineId);
   const terminalEntrySavedLayout = terminalEntryLayoutByStation[terminalEntryLayoutStationKey] || null;
@@ -7754,6 +7760,18 @@ export default function Page() {
         ...(Object.values(terminalEntryRuntimeLayout.windows) as TerminalEntryLayoutRect[]).map((rect) => rect.y + rect.height + TERMINAL_ENTRY_LAYOUT_GRID_SIZE)
       )
     : undefined;
+
+  useEffect(() => {
+    terminalEntryLayoutDraftRef.current = terminalEntryLayoutDraft;
+  }, [terminalEntryLayoutDraft]);
+
+  useEffect(() => {
+    return () => {
+      terminalEntryLayoutInteractionCleanupRef.current?.();
+      terminalEntryLayoutInteractionCleanupRef.current = null;
+      terminalEntryLayoutInteractionRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -14739,12 +14757,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <NivoPersistentProductionCardScrollContainer
               scrollKey={`production-card-scroll:${normalizeLooseText(data.stationName)}:${table.id}:${data.dateKey}`}
               style={{
-                overflowX: executiveReport ? "auto" : "hidden",
+                overflowX: executiveReport || terminalEntrySurface ? "auto" : "hidden",
                 overflowY: "auto",
-                maxHeight: compact ? 520 : 650,
+                maxHeight: terminalEntrySurface && terminalEntryLayoutRuntimeActive ? "none" : compact ? 520 : 650,
               }}
             >
-              <table style={{ width: "100%", minWidth: executiveReport ? 1450 : undefined, tableLayout: "fixed", borderCollapse: "separate", borderSpacing: 0, fontFamily: theme.fontFamily }}>
+              <table style={{
+                width: "100%",
+                minWidth: executiveReport
+                  ? 1450
+                  : terminalEntrySurface
+                    ? Math.max(360, visibleCount * 84)
+                    : undefined,
+                tableLayout: "fixed",
+                borderCollapse: "separate",
+                borderSpacing: 0,
+                fontFamily: theme.fontFamily,
+              }}>
                 <colgroup>
                   {executiveReport && <col style={{ width: 390 }} />}
                   {visibleFieldIds.map((fieldId) => <col key={`${table.id}-${fieldId}`} style={{ width: `${(Math.max(0.25, fieldWeights[fieldId] || 1) / totalWeight) * 100}%` }} />)}
@@ -25655,15 +25684,78 @@ START: ${formatDateTime(startAt)}`
     };
   }
 
+  function getTerminalEntryLayoutCanvasWidth(): number {
+    const canvas = terminalEntryLayoutCanvasRef.current;
+    if (canvas?.clientWidth) return Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, canvas.clientWidth);
+    return Math.max(
+      TERMINAL_ENTRY_LAYOUT_MIN_WIDTH,
+      terminalEntryLayoutDraftRef.current?.canvasWidth
+        || terminalEntryRuntimeLayout?.canvasWidth
+        || (typeof window !== "undefined" ? window.innerWidth : 1600)
+    );
+  }
+
+  function snapTerminalEntryLayoutBoundedValue(value: number, minValue: number, maxValue: number): number {
+    if (maxValue <= minValue) return minValue;
+    if (value <= minValue + TERMINAL_ENTRY_LAYOUT_GRID_SIZE / 2) return minValue;
+    if (value >= maxValue - TERMINAL_ENTRY_LAYOUT_GRID_SIZE / 2) return maxValue;
+    return Math.max(minValue, Math.min(maxValue, snapTerminalEntryLayoutValue(value)));
+  }
+
+  function fitTerminalEntryLayoutRectToCanvas(
+    rect: TerminalEntryLayoutRect,
+    canvasWidth = getTerminalEntryLayoutCanvasWidth()
+  ): TerminalEntryLayoutRect {
+    const safeCanvasWidth = Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, canvasWidth);
+    const width = Math.min(
+      safeCanvasWidth,
+      Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, snapTerminalEntryLayoutValue(rect.width))
+    );
+    const height = Math.max(TERMINAL_ENTRY_LAYOUT_MIN_HEIGHT, snapTerminalEntryLayoutValue(rect.height));
+    const maxX = Math.max(0, safeCanvasWidth - width);
+    return {
+      x: snapTerminalEntryLayoutBoundedValue(rect.x, 0, maxX),
+      y: Math.max(0, snapTerminalEntryLayoutValue(rect.y)),
+      width,
+      height,
+    };
+  }
+
+  function terminalEntryLayoutRectsOverlap(
+    left: TerminalEntryLayoutRect,
+    right: TerminalEntryLayoutRect
+  ): boolean {
+    return (
+      left.x < right.x + right.width
+      && left.x + left.width > right.x
+      && left.y < right.y + right.height
+      && left.y + left.height > right.y
+    );
+  }
+
+  function terminalEntryLayoutRectHasCollision(
+    windowId: string,
+    rect: TerminalEntryLayoutRect,
+    layout: TerminalEntryLayoutConfig
+  ): boolean {
+    return Object.entries(layout.windows).some(([otherWindowId, otherRect]) => {
+      if (otherWindowId === windowId) return false;
+      return terminalEntryLayoutRectsOverlap(rect, otherRect);
+    });
+  }
+
   function getTerminalEntryLayoutWindowStyle(windowId: string): React.CSSProperties {
     if (!terminalEntryLayoutRuntimeActive || !terminalEntryRuntimeLayout) return {};
-    const rect = terminalEntryRuntimeLayout.windows[windowId] || getTerminalEntryLayoutFallbackRect(windowId);
+    const rawRect = terminalEntryRuntimeLayout.windows[windowId] || getTerminalEntryLayoutFallbackRect(windowId);
+    const rect = fitTerminalEntryLayoutRectToCanvas(rawRect);
     return {
       position: "absolute",
       left: rect.x,
       top: rect.y,
       width: rect.width,
       height: rect.height,
+      minWidth: 0,
+      maxWidth: "none",
       margin: 0,
       boxSizing: "border-box",
       overflow: "auto",
@@ -25674,101 +25766,258 @@ START: ${formatDateTime(startAt)}`
     };
   }
 
-  function updateTerminalEntryLayoutDraftRect(windowId: string, nextRect: TerminalEntryLayoutRect): void {
+  function updateTerminalEntryLayoutDraftRect(windowId: string, nextRect: TerminalEntryLayoutRect): boolean {
+    const current = terminalEntryLayoutDraftRef.current;
+    if (!current) return false;
+
+    const fittedRect = fitTerminalEntryLayoutRectToCanvas(nextRect);
+    if (terminalEntryLayoutRectHasCollision(windowId, fittedRect, current)) return false;
+
+    const nextLayout: TerminalEntryLayoutConfig = {
+      ...current,
+      canvasWidth: getTerminalEntryLayoutCanvasWidth(),
+      windows: {
+        ...current.windows,
+        [windowId]: fittedRect,
+      },
+    };
+
+    terminalEntryLayoutDraftRef.current = nextLayout;
     setTerminalEntryLayoutResetToDefaultPending(false);
-    setTerminalEntryLayoutDraft((current) => {
-      if (!current) return current;
-      return {
-        ...current,
-        windows: {
-          ...current.windows,
-          [windowId]: nextRect,
-        },
-      };
-    });
+    setTerminalEntryLayoutDraft(nextLayout);
+    return true;
+  }
+
+  function buildTerminalEntryResizeRect(
+    interaction: TerminalEntryLayoutInteraction,
+    clientX: number,
+    clientY: number
+  ): TerminalEntryLayoutRect {
+    const initial = interaction.initialRect;
+    const edge = interaction.resizeEdge || "se";
+    const dx = clientX - interaction.startClientX;
+    const dy = clientY - interaction.startClientY;
+    const canvasWidth = getTerminalEntryLayoutCanvasWidth();
+
+    let left = initial.x;
+    let top = initial.y;
+    let right = initial.x + initial.width;
+    let bottom = initial.y + initial.height;
+
+    if (edge.includes("e")) {
+      right = snapTerminalEntryLayoutBoundedValue(
+        initial.x + initial.width + dx,
+        left + TERMINAL_ENTRY_LAYOUT_MIN_WIDTH,
+        canvasWidth
+      );
+    }
+    if (edge.includes("w")) {
+      left = snapTerminalEntryLayoutBoundedValue(
+        initial.x + dx,
+        0,
+        right - TERMINAL_ENTRY_LAYOUT_MIN_WIDTH
+      );
+    }
+    if (edge.includes("s")) {
+      bottom = Math.max(
+        top + TERMINAL_ENTRY_LAYOUT_MIN_HEIGHT,
+        snapTerminalEntryLayoutValue(initial.y + initial.height + dy)
+      );
+    }
+    if (edge.includes("n")) {
+      top = snapTerminalEntryLayoutBoundedValue(
+        initial.y + dy,
+        0,
+        bottom - TERMINAL_ENTRY_LAYOUT_MIN_HEIGHT
+      );
+    }
+
+    return fitTerminalEntryLayoutRectToCanvas({
+      x: left,
+      y: top,
+      width: right - left,
+      height: bottom - top,
+    }, canvasWidth);
+  }
+
+  function moveTerminalEntryLayoutInteraction(
+    pointerId: number,
+    clientX: number,
+    clientY: number
+  ): void {
+    const interaction = terminalEntryLayoutInteractionRef.current;
+    if (!interaction || interaction.pointerId !== pointerId) return;
+
+    if (interaction.mode === "resize") {
+      const nextRect = buildTerminalEntryResizeRect(interaction, clientX, clientY);
+      if (updateTerminalEntryLayoutDraftRect(interaction.windowId, nextRect)) {
+        interaction.lastValidRect = { ...nextRect };
+      }
+      return;
+    }
+
+    const dx = clientX - interaction.startClientX;
+    const dy = clientY - interaction.startClientY;
+    const canvasWidth = getTerminalEntryLayoutCanvasWidth();
+    const initial = interaction.initialRect;
+    const maxX = Math.max(0, canvasWidth - initial.width);
+    const desired: TerminalEntryLayoutRect = {
+      ...initial,
+      x: snapTerminalEntryLayoutBoundedValue(initial.x + dx, 0, maxX),
+      y: Math.max(0, snapTerminalEntryLayoutValue(initial.y + dy)),
+    };
+
+    if (updateTerminalEntryLayoutDraftRect(interaction.windowId, desired)) {
+      interaction.lastValidRect = { ...desired };
+      return;
+    }
+
+    // Ha egy másik ablak útban van, engedjük az ablakot a másik mellett
+    // vízszintesen vagy függőlegesen továbbcsúszni, de átfedést soha nem engedünk.
+    const last = interaction.lastValidRect;
+    const horizontalOnly = { ...desired, y: last.y };
+    if (updateTerminalEntryLayoutDraftRect(interaction.windowId, horizontalOnly)) {
+      interaction.lastValidRect = { ...horizontalOnly };
+      return;
+    }
+
+    const verticalOnly = { ...desired, x: last.x };
+    if (updateTerminalEntryLayoutDraftRect(interaction.windowId, verticalOnly)) {
+      interaction.lastValidRect = { ...verticalOnly };
+    }
+  }
+
+  function stopTerminalEntryLayoutInteraction(): void {
+    terminalEntryLayoutInteractionCleanupRef.current?.();
+    terminalEntryLayoutInteractionCleanupRef.current = null;
+    terminalEntryLayoutInteractionRef.current = null;
   }
 
   function beginTerminalEntryLayoutInteraction(
     event: React.PointerEvent<HTMLElement>,
     windowId: string,
-    mode: "drag" | "resize"
+    mode: "drag" | "resize",
+    resizeEdge?: TerminalEntryLayoutResizeEdge
   ): void {
-    if (!terminalEntryLayoutEditorOpen || !terminalEntryLayoutDraft) return;
+    const draft = terminalEntryLayoutDraftRef.current || terminalEntryLayoutDraft;
+    if (!terminalEntryLayoutEditorOpen || !draft) return;
+    if (event.button !== 0 || !event.isPrimary) return;
+
     event.preventDefault();
     event.stopPropagation();
-    const initialRect = terminalEntryLayoutDraft.windows[windowId] || getTerminalEntryLayoutFallbackRect(windowId);
+    stopTerminalEntryLayoutInteraction();
+
+    const initialRect = fitTerminalEntryLayoutRectToCanvas(
+      draft.windows[windowId] || getTerminalEntryLayoutFallbackRect(windowId)
+    );
     terminalEntryLayoutInteractionRef.current = {
       mode,
+      resizeEdge,
       pointerId: event.pointerId,
       windowId,
       startClientX: event.clientX,
       startClientY: event.clientY,
       initialRect: { ...initialRect },
+      lastValidRect: { ...initialRect },
     };
-    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ignore */ }
-  }
 
-  function moveTerminalEntryLayoutInteraction(event: React.PointerEvent<HTMLElement>): void {
-    const interaction = terminalEntryLayoutInteractionRef.current;
-    const canvas = terminalEntryLayoutCanvasRef.current;
-    if (!interaction || interaction.pointerId !== event.pointerId || !canvas) return;
-    event.preventDefault();
-    event.stopPropagation();
-
-    const dx = event.clientX - interaction.startClientX;
-    const dy = event.clientY - interaction.startClientY;
-    const canvasWidth = Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, canvas.clientWidth);
-    const initial = interaction.initialRect;
-
-    if (interaction.mode === "drag") {
-      const x = Math.max(
-        0,
-        Math.min(
-          Math.max(0, canvasWidth - initial.width),
-          snapTerminalEntryLayoutValue(initial.x + dx)
-        )
-      );
-      const y = Math.max(0, snapTerminalEntryLayoutValue(initial.y + dy));
-      updateTerminalEntryLayoutDraftRect(interaction.windowId, { ...initial, x, y });
-      return;
+    if (
+      initialRect.x !== (draft.windows[windowId]?.x ?? initialRect.x)
+      || initialRect.y !== (draft.windows[windowId]?.y ?? initialRect.y)
+      || initialRect.width !== (draft.windows[windowId]?.width ?? initialRect.width)
+      || initialRect.height !== (draft.windows[windowId]?.height ?? initialRect.height)
+    ) {
+      updateTerminalEntryLayoutDraftRect(windowId, initialRect);
     }
 
-    const width = Math.max(
-      TERMINAL_ENTRY_LAYOUT_MIN_WIDTH,
-      Math.min(
-        Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, canvasWidth - initial.x),
-        snapTerminalEntryLayoutValue(initial.width + dx)
-      )
-    );
-    const height = Math.max(
-      TERMINAL_ENTRY_LAYOUT_MIN_HEIGHT,
-      snapTerminalEntryLayoutValue(initial.height + dy)
-    );
-    updateTerminalEntryLayoutDraftRect(interaction.windowId, { ...initial, width, height });
-  }
+    const previousUserSelect = document.body.style.userSelect;
+    const previousCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = mode === "drag"
+      ? "grabbing"
+      : resizeEdge === "n" || resizeEdge === "s"
+        ? "ns-resize"
+        : resizeEdge === "e" || resizeEdge === "w"
+          ? "ew-resize"
+          : resizeEdge === "ne" || resizeEdge === "sw"
+            ? "nesw-resize"
+            : "nwse-resize";
 
-  function endTerminalEntryLayoutInteraction(event: React.PointerEvent<HTMLElement>): void {
-    const interaction = terminalEntryLayoutInteractionRef.current;
-    if (!interaction || interaction.pointerId !== event.pointerId) return;
-    terminalEntryLayoutInteractionRef.current = null;
-    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* ignore */ }
+    let finished = false;
+    const cleanup = () => {
+      if (finished) return;
+      finished = true;
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
+      window.removeEventListener("blur", onWindowBlur);
+      document.body.style.userSelect = previousUserSelect;
+      document.body.style.cursor = previousCursor;
+      if (terminalEntryLayoutInteractionCleanupRef.current === cleanup) {
+        terminalEntryLayoutInteractionCleanupRef.current = null;
+      }
+      terminalEntryLayoutInteractionRef.current = null;
+    };
+
+    const onPointerMove = (nativeEvent: PointerEvent) => {
+      const active = terminalEntryLayoutInteractionRef.current;
+      if (!active || active.pointerId !== nativeEvent.pointerId) return;
+      if (nativeEvent.pointerType === "mouse" && nativeEvent.buttons === 0) {
+        cleanup();
+        return;
+      }
+      nativeEvent.preventDefault();
+      moveTerminalEntryLayoutInteraction(nativeEvent.pointerId, nativeEvent.clientX, nativeEvent.clientY);
+    };
+    const onPointerUp = (nativeEvent: PointerEvent) => {
+      const active = terminalEntryLayoutInteractionRef.current;
+      if (!active || active.pointerId !== nativeEvent.pointerId) return;
+      nativeEvent.preventDefault();
+      cleanup();
+    };
+    const onPointerCancel = (nativeEvent: PointerEvent) => {
+      const active = terminalEntryLayoutInteractionRef.current;
+      if (!active || active.pointerId !== nativeEvent.pointerId) return;
+      cleanup();
+    };
+    const onWindowBlur = () => cleanup();
+
+    terminalEntryLayoutInteractionCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", onPointerMove, { passive: false });
+    window.addEventListener("pointerup", onPointerUp, { passive: false });
+    window.addEventListener("pointercancel", onPointerCancel);
+    window.addEventListener("blur", onWindowBlur);
   }
 
   function renderTerminalEntryLayoutEditorChrome(windowId: string, label: string): React.JSX.Element | null {
     if (!terminalEntryLayoutEditorOpen) return null;
+
+    const resizeHandles: Array<{
+      edge: TerminalEntryLayoutResizeEdge;
+      title: string;
+      cursor: React.CSSProperties["cursor"];
+      style: React.CSSProperties;
+    }> = [
+      { edge: "n", title: "Felső él méretezése", cursor: "ns-resize", style: { top: -2, left: 12, right: 12, height: 9 } },
+      { edge: "s", title: "Alsó él méretezése", cursor: "ns-resize", style: { bottom: -2, left: 12, right: 12, height: 9 } },
+      { edge: "e", title: "Jobb él méretezése", cursor: "ew-resize", style: { right: -2, top: 12, bottom: 12, width: 9 } },
+      { edge: "w", title: "Bal él méretezése", cursor: "ew-resize", style: { left: -2, top: 12, bottom: 12, width: 9 } },
+      { edge: "nw", title: "Bal felső sarok méretezése", cursor: "nwse-resize", style: { left: -4, top: -4, width: 16, height: 16 } },
+      { edge: "ne", title: "Jobb felső sarok méretezése", cursor: "nesw-resize", style: { right: -4, top: -4, width: 16, height: 16 } },
+      { edge: "sw", title: "Bal alsó sarok méretezése", cursor: "nesw-resize", style: { left: -4, bottom: -4, width: 16, height: 16 } },
+      { edge: "se", title: "Jobb alsó sarok méretezése", cursor: "nwse-resize", style: { right: -4, bottom: -4, width: 16, height: 16 } },
+    ];
+
     return (
       <>
         <div
           onPointerDown={(event) => beginTerminalEntryLayoutInteraction(event, windowId, "drag")}
-          onPointerMove={moveTerminalEntryLayoutInteraction}
-          onPointerUp={endTerminalEntryLayoutInteraction}
-          onPointerCancel={endTerminalEntryLayoutInteraction}
-          title="Húzd az ablak mozgatásához"
+          title="Kattints, tartsd lenyomva és húzd az ablak mozgatásához"
           style={{
             position: "absolute",
-            top: 4,
-            left: 4,
-            right: 34,
+            top: 5,
+            left: 8,
+            right: 8,
             height: 28,
             zIndex: 100,
             borderRadius: 8,
@@ -25780,41 +26029,31 @@ START: ${formatDateTime(startAt)}`
             padding: "0 10px",
             fontSize: 12,
             fontWeight: 900,
-            cursor: "move",
+            cursor: "grab",
             userSelect: "none",
+            touchAction: "none",
             boxShadow: "0 4px 14px rgba(0,0,0,0.3)",
           }}
         >
           ↔ {label}
         </div>
-        <div
-          onPointerDown={(event) => beginTerminalEntryLayoutInteraction(event, windowId, "resize")}
-          onPointerMove={moveTerminalEntryLayoutInteraction}
-          onPointerUp={endTerminalEntryLayoutInteraction}
-          onPointerCancel={endTerminalEntryLayoutInteraction}
-          title="Húzd az ablak átméretezéséhez"
-          style={{
-            position: "absolute",
-            right: 3,
-            bottom: 3,
-            width: 24,
-            height: 24,
-            zIndex: 101,
-            borderRadius: 7,
-            border: "2px solid #e0f2fe",
-            background: "#0284c7",
-            color: "#ffffff",
-            cursor: "nwse-resize",
-            userSelect: "none",
-            display: "grid",
-            placeItems: "center",
-            fontSize: 15,
-            fontWeight: 900,
-            boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-          }}
-        >
-          ↘
-        </div>
+
+        {resizeHandles.map((handle) => (
+          <div
+            key={`${windowId}-${handle.edge}`}
+            onPointerDown={(event) => beginTerminalEntryLayoutInteraction(event, windowId, "resize", handle.edge)}
+            title={`${handle.title} – kattints, tartsd lenyomva és húzd`}
+            style={{
+              position: "absolute",
+              zIndex: 104,
+              cursor: handle.cursor,
+              userSelect: "none",
+              touchAction: "none",
+              background: "transparent",
+              ...handle.style,
+            }}
+          />
+        ))}
       </>
     );
   }
@@ -25847,6 +26086,7 @@ START: ${formatDateTime(startAt)}`
     const merged = terminalEntrySavedLayout
       ? mergeTerminalEntryLayouts(terminalEntryLayoutDefaultsRef.current[terminalEntryLayoutStationKey], baseLayout)
       : cloneTerminalEntryLayout(baseLayout);
+    terminalEntryLayoutDraftRef.current = merged;
     setTerminalEntryLayoutDraft(merged);
     setTerminalEntryLayoutResetToDefaultPending(false);
     setTerminalEntryLayoutEditorOpen(true);
@@ -25882,7 +26122,8 @@ START: ${formatDateTime(startAt)}`
   }
 
   function cancelTerminalEntryLayoutEditing(): void {
-    terminalEntryLayoutInteractionRef.current = null;
+    stopTerminalEntryLayoutInteraction();
+    terminalEntryLayoutDraftRef.current = null;
     setTerminalEntryLayoutEditorOpen(false);
     setTerminalEntryLayoutDraft(null);
     setTerminalEntryLayoutResetToDefaultPending(false);
@@ -25895,7 +26136,9 @@ START: ${formatDateTime(startAt)}`
       setMessage({ type: "error", text: "Az alapértelmezett elrendezés még nem áll rendelkezésre." });
       return;
     }
-    setTerminalEntryLayoutDraft(cloneTerminalEntryLayout(defaultLayout));
+    const resetLayout = cloneTerminalEntryLayout(defaultLayout);
+    terminalEntryLayoutDraftRef.current = resetLayout;
+    setTerminalEntryLayoutDraft(resetLayout);
     setTerminalEntryLayoutResetToDefaultPending(true);
     setMessage({ type: "info", text: "A szerkesztő visszaállította a jelenlegi program alapértelmezett elrendezését. Mentéskor a munkaállomás egyedi elrendezése törlődik, és pontosan a mostani alapnézet áll vissza." });
   }
@@ -25913,10 +26156,11 @@ START: ${formatDateTime(startAt)}`
         delete next[terminalEntryLayoutStationKey];
         return next;
       });
+      stopTerminalEntryLayoutInteraction();
+      terminalEntryLayoutDraftRef.current = null;
       setTerminalEntryLayoutEditorOpen(false);
       setTerminalEntryLayoutDraft(null);
       setTerminalEntryLayoutResetToDefaultPending(false);
-      terminalEntryLayoutInteractionRef.current = null;
       setMessage({ type: "success", text: `A(z) ${machineId} alapképernyője visszaállt a program eredeti, alapértelmezett elrendezésére.` });
       return;
     }
@@ -25931,10 +26175,11 @@ START: ${formatDateTime(startAt)}`
     const nextStored = { ...stored, [terminalEntryLayoutStationKey]: layoutToSave };
     writeTerminalEntryLayoutsToStorage(nextStored);
     setTerminalEntryLayoutByStation((current) => ({ ...current, [terminalEntryLayoutStationKey]: layoutToSave }));
+    stopTerminalEntryLayoutInteraction();
+    terminalEntryLayoutDraftRef.current = null;
     setTerminalEntryLayoutEditorOpen(false);
     setTerminalEntryLayoutDraft(null);
     setTerminalEntryLayoutResetToDefaultPending(false);
-    terminalEntryLayoutInteractionRef.current = null;
     setMessage({ type: "success", text: `Az Egyedi szerkesztő elrendezése elmentve ehhez a munkaállomáshoz: ${machineId}.` });
   }
 
@@ -34567,7 +34812,7 @@ body {
       style={{
         minHeight: "100vh",
         background: getWorkerEntryBackground(machineId),
-        padding: 24,
+        padding: terminalEntryLayoutRuntimeActive ? 0 : 24,
         fontFamily: "Arial, sans-serif",
         color: "#e2e8f0",
         display: "flex",
@@ -34585,9 +34830,11 @@ body {
       <div
         style={{
           width: "100%",
-          maxWidth: flowStage === "dashboard" || flowStage === "carpenter-printer-settings" || flowStage === "carpenter-reprint-requests"
+          maxWidth: terminalEntryLayoutRuntimeActive
             ? "none"
-            : (step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId) ? 1700 : 960),
+            : flowStage === "dashboard" || flowStage === "carpenter-printer-settings" || flowStage === "carpenter-reprint-requests"
+              ? "none"
+              : (step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId) ? 1700 : 960),
           overflowAnchor: "none",
         }}
       >
@@ -34834,6 +35081,9 @@ body {
                   ? "grid"
                   : "block",
             position: terminalEntryLayoutRuntimeActive ? "relative" : undefined,
+            width: terminalEntryLayoutRuntimeActive ? "100%" : undefined,
+            maxWidth: terminalEntryLayoutRuntimeActive ? "none" : undefined,
+            boxSizing: "border-box",
             height: terminalEntryLayoutRuntimeActive ? terminalEntryLayoutCanvasHeight : undefined,
             minHeight: terminalEntryLayoutRuntimeActive ? 620 : undefined,
             gridTemplateColumns: !terminalEntryLayoutRuntimeActive && step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId)
