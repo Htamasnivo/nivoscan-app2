@@ -15300,11 +15300,25 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       : null;
                     const executiveSelection = executiveDescriptor ? getExecutiveReportSelection(executiveDescriptor) : null;
                     const executiveWorkers = executiveReport ? getExecutiveReportWorkersForStation(data.stationName) : [];
+                    const canOpenSzerelesDetailPdfRow = Boolean(
+                      terminalEntrySurface
+                      && !terminalEntryLayoutEditorOpen
+                      && getStationPlanIdentityKey(data.stationName) === "szereles"
+                    );
 
                     return (
                       <tr
                         key={`${table.id}-${rowKey}`}
                         data-nivo-scroll-anchor={`production-card-row:${normalizeLooseText(data.stationName)}:${table.id}:${rowKey}`}
+                        title={canOpenSzerelesDetailPdfRow ? "Kattints a sorra a szerelési _terv részletező PDF megnyitásához" : undefined}
+                        onClick={canOpenSzerelesDetailPdfRow ? () => {
+                          void openSzerelesPlanDetailPdf(
+                            (table.dataSource || "production-plan") as ProductionCardTableDataSource,
+                            rawRow as ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
+                            data.dateKey
+                          );
+                        } : undefined}
+                        style={{ cursor: canOpenSzerelesDetailPdfRow ? "pointer" : undefined }}
                       >
                         {executiveReport && executiveDescriptor && executiveSelection && (
                           <td style={{ padding: 8, background: executiveSelection.selected ? "#172554" : "#0f172a", color: "#f8fafc", borderBottom: `1px solid ${theme.borderColor}`, borderRight: `2px solid ${theme.borderColor}`, verticalAlign: "top" }}>
@@ -15350,12 +15364,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
                           const isStatus = fieldId === PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID;
                           const isOrder = fieldId === PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID;
-                          const canOpenSzerelesDetailPdf = Boolean(
-                            isOrder
-                            && terminalEntrySurface
-                            && !terminalEntryLayoutEditorOpen
-                            && getStationPlanIdentityKey(data.stationName) === "szereles"
-                          );
+                          const canOpenSzerelesDetailPdf = Boolean(isOrder && canOpenSzerelesDetailPdfRow);
                           let background = isOrder ? theme.orderCellBackground : theme.waitingBackground;
                           let color = isOrder ? theme.orderCellText : theme.waitingText;
 
@@ -15468,15 +15477,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                           return (
                             <td
                               key={`${table.id}-${rowKey}-${fieldId}`}
-                              title={canOpenSzerelesDetailPdf ? `${String(value || "Rendelés")} · Kattints a szerelési _terv részletező PDF megnyitásához` : title}
-                              onClick={canOpenSzerelesDetailPdf ? (event) => {
-                                event.stopPropagation();
-                                void openSzerelesPlanDetailPdf(
-                                  (table.dataSource || "production-plan") as ProductionCardTableDataSource,
-                                  rawRow as ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
-                                  data.dateKey
-                                );
-                              } : undefined}
+                              title={canOpenSzerelesDetailPdf ? `${String(value || "Rendelés")} · A teljes sor kattintható a szerelési _terv részletező PDF megnyitásához` : title}
                               style={{
                                 padding: `${Math.max(2, Math.round(theme.cellPadding * zoomRatio))}px 5px`,
                                 background: quantityPartialRow
