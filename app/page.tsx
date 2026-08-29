@@ -873,6 +873,39 @@ type ProductionCardPlanSourceRow = {
   excel_sorrend?: string | number | null;
 };
 
+type QuantityPartialPlanState = "reszjelentes" | "nyitott_maradek" | "teljes" | null;
+
+type QuantityPlanContext = {
+  tableName: string;
+  rowId: string | number;
+  orderNumber: string;
+  plannedQuantity: number;
+  completionDate: string;
+  rawRow: Record<string, unknown>;
+  adat: Record<string, unknown>;
+  state: QuantityPartialPlanState;
+  groupId: string | null;
+  sequence: number;
+  rootRowId: string | number;
+  rootQuantity: number;
+  cumulativeCompleted: number;
+  createdAt: string | null;
+  closedAt: string | null;
+};
+
+type QuantityPlanMutationResult = {
+  groupId: string;
+  currentRowId: string | number;
+  nextRowId: string | number | null;
+  sequence: number;
+  plannedQuantity: number;
+  reportedQuantity: number;
+  remainingQuantity: number;
+  rootQuantity: number;
+  cumulativeCompleted: number;
+  partial: boolean;
+};
+
 type ScrapReplacementStatus = "VARAKOZIK" | "SZABAS_FOLYAMATBAN" | "MARASRA_VAR" | "MARAS_FOLYAMATBAN" | "KESZ";
 
 type ScrapReplacementRow = {
@@ -4517,6 +4550,120 @@ function getExactProductionCardPlanTableName(stationName: string): string {
   return buildStationPlanTableName(stationName);
 }
 
+
+function getQuantityPartialPlanMetadata(planData: Record<string, unknown> | null | undefined): {
+  state: QuantityPartialPlanState;
+  groupId: string | null;
+  sequence: number;
+  rootRowId: string | number | null;
+  rootQuantity: number | null;
+  segmentQuantity: number | null;
+  reportedQuantity: number | null;
+  remainingQuantity: number | null;
+  cumulativeCompleted: number;
+  createdAt: string | null;
+  closedAt: string | null;
+} {
+  const source = planData && typeof planData === "object" ? planData : {};
+  const adat = source.adat && typeof source.adat === "object" && !Array.isArray(source.adat)
+    ? source.adat as Record<string, unknown>
+    : {};
+  const merged = { ...source, ...adat } as Record<string, unknown>;
+  const rawState = String(merged.reszjelentes_allapot || "").trim().toLowerCase();
+  const state: QuantityPartialPlanState = rawState === "reszjelentes" || rawState === "nyitott_maradek" || rawState === "teljes"
+    ? rawState
+    : null;
+  const numberOrNull = (value: unknown): number | null => {
+    const parsed = parseSpreadsheetNumber(value);
+    return parsed !== null && Number.isFinite(parsed) ? parsed : null;
+  };
+  const rawSequence = numberOrNull(merged.reszjelentes_sorszam);
+  const rawCumulative = numberOrNull(merged.reszjelentes_osszesitett_elkeszult_mennyiseg);
+  return {
+    state,
+    groupId: String(merged.reszjelentes_csoport_id || "").trim() || null,
+    sequence: rawSequence !== null && rawSequence > 0 ? Math.trunc(rawSequence) : 1,
+    rootRowId: (merged.reszjelentes_gyoker_sor_id as string | number | null | undefined) ?? null,
+    rootQuantity: numberOrNull(merged.reszjelentes_eredeti_mennyiseg),
+    segmentQuantity: numberOrNull(merged.reszjelentes_szakasz_mennyiseg),
+    reportedQuantity: numberOrNull(merged.reszjelentes_teljesitett_mennyiseg),
+    remainingQuantity: numberOrNull(merged.reszjelentes_maradek_mennyiseg),
+    cumulativeCompleted: Math.max(0, rawCumulative || 0),
+    createdAt: String(merged.reszjelentes_letrehozva_at || "").trim() || null,
+    closedAt: String(merged.reszjelentes_lezarva_at || "").trim() || null,
+  };
+}
+
+function isQuantityPartialClosedPlanData(planData: Record<string, unknown> | null | undefined): boolean {
+  const state = getQuantityPartialPlanMetadata(planData).state;
+  return state === "reszjelentes" || state === "teljes";
+}
+
+function getQuantityPlanEventTimestamp(value: WorkLogRow | ProductionBatchRow): number {
+  const candidate = "end_time" in value
+    ? value.end_time || value.end_timestamp || value.start_time || value.start_timestamp || value.created_at || ""
+    : value.start_time || value.created_at || "";
+  const parsed = new Date(String(candidate || "")).getTime();
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function filterWorkLogsForQuantityPlanLifecycle(
+  logs: WorkLogRow[],
+  planData: Record<string, unknown> | null | undefined
+): WorkLogRow[] {
+  const meta = getQuantityPartialPlanMetadata(planData);
+  if (!meta.state) return logs;
+
+  const startTime = meta.createdAt ? new Date(meta.createdAt).getTime() : Number.NEGATIVE_INFINITY;
+  const endTime = meta.closedAt ? new Date(meta.closedAt).getTime() : Number.POSITIVE_INFINITY;
+  const currentPlanRowId = String(planData?.id ?? "").trim();
+
+  return logs.filter((log) => {
+    const timestamp = getQuantityPlanEventTimestamp(log);
+    if (!Number.isFinite(timestamp)) return false;
+    if (timestamp < startTime || timestamp > endTime) return false;
+
+    // Egy részjelentés END-je és az abból létrehozott maradék tervsor ugyanazt
+    // az időbélyeget is kaphatja. Emiatt nem pusztán idő alapján választjuk szét
+    // a két életciklust: a mennyiségi END auditja megmondja, melyik *_terv sorhoz
+    // tartozott. Így a maradék sor nem örökli az előző rész END állapotát, viszont
+    // egy ugyanabban a másodpercben induló új START már helyesen látható marad.
+    if (meta.state === "nyitott_maradek" && currentPlanRowId) {
+      const audit = getStructuredNoteMetadata(log.note);
+      const auditedPlanRowId = String(audit.reszjelentes_terv_sor_id ?? "").trim();
+      if (auditedPlanRowId && auditedPlanRowId !== currentPlanRowId) return false;
+    }
+
+    return true;
+  });
+}
+
+function filterProductionBatchesForQuantityPlanLifecycle(
+  batches: ProductionBatchRow[],
+  planData: Record<string, unknown> | null | undefined
+): ProductionBatchRow[] {
+  const meta = getQuantityPartialPlanMetadata(planData);
+  if (!meta.state) return batches;
+  const startTime = meta.createdAt ? new Date(meta.createdAt).getTime() : Number.NEGATIVE_INFINITY;
+  const endTime = meta.closedAt ? new Date(meta.closedAt).getTime() : Number.POSITIVE_INFINITY;
+  return batches.filter((batch) => {
+    const timestamp = getQuantityPlanEventTimestamp(batch);
+    if (!Number.isFinite(timestamp)) return false;
+    return timestamp >= startTime && timestamp <= endTime;
+  });
+}
+
+function buildQuantityPartialStatusLabel(planData: Record<string, unknown> | null | undefined): string {
+  const meta = getQuantityPartialPlanMetadata(planData);
+  if (meta.state !== "reszjelentes") return "";
+  const segment = Math.max(0, meta.segmentQuantity || 0);
+  const reported = Math.max(0, meta.reportedQuantity || 0);
+  const remaining = Math.max(0, meta.remainingQuantity || 0);
+  const root = Math.max(segment, meta.rootQuantity || segment);
+  const cumulative = Math.max(reported, meta.cumulativeCompleted || reported);
+  return `RÉSZJELENTÉS • ${reported}/${segment || root} db • összesen ${cumulative}/${root} db • maradék ${remaining} db`;
+}
+
 function isStockProductionType(value: string | null | undefined): boolean {
   return normalizeLooseText(String(value || "")) === "keszlet";
 }
@@ -7277,6 +7424,9 @@ export default function Page() {
   const [endEventFiveOrderStateMap, setEndEventFiveOrderStateMap] = useState<Record<string, EventFiveBatchOrderState>>({});
   const [endEventSixOrderStateMap, setEndEventSixOrderStateMap] = useState<Record<string, EventSixBatchOrderState>>({});
   const [endOrderNotes, setEndOrderNotes] = useState<Record<string, string>>({});
+  const [endOrderQuantities, setEndOrderQuantities] = useState<Record<string, string>>({});
+  const [endPlanQuantityByOrder, setEndPlanQuantityByOrder] = useState<Record<string, QuantityPlanContext | null>>({});
+  const [singleEndPlanQuantityContext, setSingleEndPlanQuantityContext] = useState<QuantityPlanContext | null>(null);
   const [endBatchNote, setEndBatchNote] = useState("");
   const [terminalView, setTerminalView] = useState<"scanner" | "management">("scanner");
   const [managementSelection, setManagementSelection] = useState<EventCard | null>(null);
@@ -13322,7 +13472,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             },
           };
         })
-        .filter((row) => row.orderNumber && row.completionDate);
+        .filter((row) =>
+          row.orderNumber
+          && row.completionDate
+          && !isQuantityPartialClosedPlanData(row.planData)
+        );
 
       const overdueOrderNumbers = Array.from(new Set(overdueSourceRows.map((row) => row.orderNumber)));
       const overdueLogs: WorkLogRow[] = [];
@@ -13404,16 +13558,57 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           .at(-1);
 
         groupRows.forEach((planRow) => {
-          const completedQuantity = Math.min(planRow.plannedQuantity, Math.max(0, unallocatedCompletedQuantity));
-          unallocatedCompletedQuantity = Math.max(0, unallocatedCompletedQuantity - completedQuantity);
+          const quantityMeta = getQuantityPartialPlanMetadata(planRow.planData);
+          const isOpenQuantityRemainder = quantityMeta.state === "nyitott_maradek";
+
+          // A részjelentésből létrejött maradék sor csak a SAJÁT létrejötte utáni
+          // START/END eseményeket láthatja. Így az előző 300 -> 150 END nem jelöli
+          // automatikusan késznek az új 150 db-os maradék sort.
+          const effectiveRowLogs = isOpenQuantityRemainder
+            ? filterWorkLogsForQuantityPlanLifecycle(rowLogs, planRow.planData)
+            : rowLogs;
+          const effectiveRowBatchStarts = isOpenQuantityRemainder
+            ? filterProductionBatchesForQuantityPlanLifecycle(rowBatchStarts, planRow.planData)
+            : rowBatchStarts;
+          const rowWorkerStatus = isOpenQuantityRemainder
+            ? resolveProductionCardWorkers(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
+            : workerStatus;
+
+          const completedQuantity = isOpenQuantityRemainder
+            ? Math.min(
+                planRow.plannedQuantity,
+                calculateCompletedPlanQuantity(
+                  effectiveRowLogs,
+                  planRow.plannedQuantity,
+                  planRow.productType,
+                  cleanStationName
+                )
+              )
+            : Math.min(planRow.plannedQuantity, Math.max(0, unallocatedCompletedQuantity));
+
+          if (!isOpenQuantityRemainder) {
+            unallocatedCompletedQuantity = Math.max(0, unallocatedCompletedQuantity - completedQuantity);
+          }
+
+          const rowCompletionLogs = isOpenQuantityRemainder
+            ? getRelevantCompletionLogsForQuantity(effectiveRowLogs, cleanStationName)
+            : completionLogs;
+          const rowCompletionTimes = rowCompletionLogs
+            .map((log) => new Date(log.end_time || log.end_timestamp || log.created_at || "").getTime())
+            .filter(Number.isFinite)
+            .sort((left, right) => left - right);
+          const rowLatestCompletionTime = rowCompletionTimes.length > 0
+            ? rowCompletionTimes[rowCompletionTimes.length - 1]
+            : undefined;
+
           // A kártyáról csak valódi teljes END után tűnhet el.
           // A darab/mennyiség önmagában nem jelent lezárt munkát.
-          const completed = workerStatus.status === "done";
-          const completedOnSelectedDate = completed && latestCompletionTime !== undefined &&
-            latestCompletionTime >= selectedDayStartTime && latestCompletionTime < selectedDayEndTime;
+          const completed = rowWorkerStatus.status === "done";
+          const completedOnSelectedDate = completed && rowLatestCompletionTime !== undefined &&
+            rowLatestCompletionTime >= selectedDayStartTime && rowLatestCompletionTime < selectedDayEndTime;
           if (completed && !completedOnSelectedDate) return;
 
-          const hasProgress = completedQuantity > 0 || workerStatus.status === "in-progress";
+          const hasProgress = completedQuantity > 0 || rowWorkerStatus.status === "in-progress";
           const status: ProductionMonitorStatus = completed ? "done" : hasProgress ? "in-progress" : "waiting";
           const delayDays = Math.max(1, Math.floor((selectedDayStartTime - new Date(`${planRow.completionDate}T00:00:00`).getTime()) / 86400000));
           backlogRows.push({
@@ -13428,23 +13623,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             status,
             statusLabel: completed
               ? "Lemaradás elkészült"
-              : workerStatus.doorWorkflow
+              : rowWorkerStatus.doorWorkflow
                 ? buildDoorCompletionStatusLabel({
                     ...EMPTY_DOOR_COMPLETION_SNAPSHOT,
                     isDoorWorkflow: true,
-                    tokKesz: workerStatus.tokKesz,
-                    nyiloKesz: workerStatus.nyiloKesz,
-                    completionPercent: (workerStatus.completionPercent || 0) as 0 | 50 | 100,
-                  }, workerStatus.status === "in-progress")
+                    tokKesz: rowWorkerStatus.tokKesz,
+                    nyiloKesz: rowWorkerStatus.nyiloKesz,
+                    completionPercent: (rowWorkerStatus.completionPercent || 0) as 0 | 50 | 100,
+                  }, rowWorkerStatus.status === "in-progress")
                 : hasProgress ? "Pótlás folyamatban" : "Lemaradás – elvégzendő",
-            startWorkerName: workerStatus.startWorkerName,
-            lastWorkerName: workerStatus.endedAt ? workerStatus.endWorkerName : "",
-            startedAt: workerStatus.startedAt,
-            endedAt: workerStatus.endedAt,
-            doorWorkflow: workerStatus.doorWorkflow,
-            tokKesz: workerStatus.tokKesz,
-            nyiloKesz: workerStatus.nyiloKesz,
-            completionPercent: workerStatus.completionPercent,
+            startWorkerName: rowWorkerStatus.startWorkerName,
+            lastWorkerName: rowWorkerStatus.endedAt ? rowWorkerStatus.endWorkerName : "",
+            startedAt: rowWorkerStatus.startedAt,
+            endedAt: rowWorkerStatus.endedAt,
+            doorWorkflow: rowWorkerStatus.doorWorkflow,
+            tokKesz: rowWorkerStatus.tokKesz,
+            nyiloKesz: rowWorkerStatus.nyiloKesz,
+            completionPercent: rowWorkerStatus.completionPercent,
             planData: planRow.planData,
           });
         });
@@ -13621,7 +13816,28 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         Array.isArray(batch.order_ids) &&
         batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(planRow.orderNumber))
       );
-      const status = resolveProductionCardWorkers(rowLogs, rowBatchStarts, planRow.orderNumber);
+
+      // Az azonos rendelésszámmal létrejövő részjelentési sorokat időben is
+      // szétválasztjuk. Az új maradék sor nem örökölheti az előző rész END-jét.
+      const lifecycleLogs = filterWorkLogsForQuantityPlanLifecycle(rowLogs, planRow.planData);
+      const lifecycleBatchStarts = filterProductionBatchesForQuantityPlanLifecycle(rowBatchStarts, planRow.planData);
+      const resolvedStatus = resolveProductionCardWorkers(lifecycleLogs, lifecycleBatchStarts, planRow.orderNumber);
+      const quantityMeta = getQuantityPartialPlanMetadata(planRow.planData);
+
+      const status = quantityMeta.state === "reszjelentes"
+        ? {
+            ...resolvedStatus,
+            status: "done" as ProductionMonitorStatus,
+            statusLabel: buildQuantityPartialStatusLabel(planRow.planData) || "RÉSZJELENTÉS",
+          }
+        : quantityMeta.state === "teljes"
+          ? {
+              ...resolvedStatus,
+              status: "done" as ProductionMonitorStatus,
+              statusLabel: resolvedStatus.status === "done" ? resolvedStatus.statusLabel : "Kész",
+            }
+          : resolvedStatus;
+
       return {
         ...planRow,
         ...status,
@@ -14600,6 +14816,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                           const forceNormalStartedRow = isNormalProductionTable && status === "in-progress";
                           const forceNormalDoneRow = isNormalProductionTable && status === "done";
                           const forceNormalWaitingRow = isNormalProductionTable && status === "waiting";
+                          const quantityPartialRow =
+                            isNormalProductionTable
+                            && Boolean(productionRow)
+                            && getQuantityPartialPlanMetadata(productionRow!.planData).state === "reszjelentes";
 
                           // MINDEN normál termelési kártyán ugyanaz az állapotszabály:
                           // Várakozik = saját várakozó szín, START = saját folyamatban szín,
@@ -14610,8 +14830,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               ? productionRow.completionPercent
                               : null;
 
-                          const forcedNormalRowBackground = forceNormalDoneRow
-                            ? theme.doneBackground
+                          const forcedNormalRowBackground = quantityPartialRow
+                            ? "#2563eb"
+                            : forceNormalDoneRow
+                              ? theme.doneBackground
                             : threePartCompletionPercent === 66
                               ? "#fdba74"
                               : threePartCompletionPercent === 33
@@ -14622,8 +14844,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                     ? theme.waitingBackground
                                     : "";
 
-                          const forcedNormalRowText = forceNormalDoneRow
-                            ? theme.doneText
+                          const forcedNormalRowText = quantityPartialRow
+                            ? "#eff6ff"
+                            : forceNormalDoneRow
+                              ? theme.doneText
                             : threePartCompletionPercent === 66
                               ? "#7c2d12"
                               : threePartCompletionPercent === 33
@@ -14644,22 +14868,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               title={title}
                               style={{
                                 padding: `${Math.max(2, Math.round(theme.cellPadding * zoomRatio))}px 5px`,
-                                background: isCrossStationStatusField
-                                  ? (style.cellBackground || background)
-                                  : (
-                                      forcedScrapRowBackground
-                                      || forcedNormalRowBackground
-                                      || style.cellBackground
-                                      || background
-                                    ),
-                                color: isCrossStationStatusField
-                                  ? (style.cellTextColor || color)
-                                  : (
-                                      forcedScrapRowText
-                                      || forcedNormalRowText
-                                      || style.cellTextColor
-                                      || color
-                                    ),
+                                background: quantityPartialRow
+                                  ? "#2563eb"
+                                  : isCrossStationStatusField
+                                    ? (style.cellBackground || background)
+                                    : (
+                                        forcedScrapRowBackground
+                                        || forcedNormalRowBackground
+                                        || style.cellBackground
+                                        || background
+                                      ),
+                                color: quantityPartialRow
+                                  ? "#eff6ff"
+                                  : isCrossStationStatusField
+                                    ? (style.cellTextColor || color)
+                                    : (
+                                        forcedScrapRowText
+                                        || forcedNormalRowText
+                                        || style.cellTextColor
+                                        || color
+                                      ),
                                 borderBottom: `1px solid ${theme.borderColor}`,
                                 borderRight: `1px solid ${theme.borderColor}`,
                                 textAlign: style.textAlign,
@@ -24904,6 +25132,9 @@ START: ${formatDateTime(startAt)}`
     setEndEventFiveOrderStateMap({});
     setEndEventSixOrderStateMap({});
     setEndOrderNotes({});
+    setEndOrderQuantities({});
+    setEndPlanQuantityByOrder({});
+    setSingleEndPlanQuantityContext(null);
     setEndBatchNote("");
     setStatsFilter("");
     setStatsDateFrom("");
@@ -26347,6 +26578,9 @@ body {
     setEndNote("");
     setEndDarab("");
     setEndSzal("");
+    setEndOrderQuantities({});
+    setEndPlanQuantityByOrder({});
+    setSingleEndPlanQuantityContext(null);
     setShowIncompleteBatches(false);
     setIncompleteBatches([]);
     resetReportFlow();
@@ -28707,11 +28941,26 @@ body {
         };
       }
     }
+
+    let quantityContexts: Record<string, QuantityPlanContext | null> = {};
+    try {
+      quantityContexts = await fetchActiveQuantityPlanContexts(
+        batch.machine_id || getCurrentMachineIdForInsert(),
+        orders
+      );
+    } catch (error) {
+      console.error("Köteg tervmennyiség betöltési hiba:", error);
+      setMessage({ type: "error", text: `A köteg tervmennyisége nem olvasható, ezért a lejelentés nem nyitható meg: ${normalizeError(error)}` });
+      return;
+    }
+
     setSelectedEndBatch({ ...batch, order_ids: orders });
     setEndReadyMap(readyMap);
     setEndEventFiveOrderStateMap(eventFiveMap);
     setEndEventSixOrderStateMap(eventSixMap);
     setEndOrderNotes(notes);
+    setEndOrderQuantities({});
+    setEndPlanQuantityByOrder(quantityContexts);
     setEndBatchNote("");
     setEndDarab("");
     setEndSzal("");
@@ -28839,12 +29088,22 @@ body {
       return;
     }
 
+    const currentMachineIdForQuantity = getCurrentMachineIdForInsert();
+    const quantityPreparation = await prepareBatchReportedQuantities(
+      readyOrders,
+      currentMachineIdForQuantity,
+      finalDarab
+    );
+    if (!quantityPreparation) return;
+    const quantityContexts = quantityPreparation.contexts;
+    const reportedQuantityByOrder = quantityPreparation.quantities;
+
     batchFinalizeInFlightRef.current = true;
     setBusy(true);
     try {
       const nowIso = new Date().toISOString();
       const workerNameForSave = activeWorker["Teljes nev"];
-      const currentMachineId = getCurrentMachineIdForInsert();
+      const currentMachineId = currentMachineIdForQuantity;
       const groupCheck = await findStartGroupConflicts(readyOrders, {
         currentMachineId,
         ignoreBatchCodes: [selectedEndBatch.batch_code],
@@ -28866,6 +29125,7 @@ body {
       const cuttingEndLogs = readyOrders.map((order) => {
         const orderNoteClean = (endOrderNotes[order] || "").trim();
         const orderProductionMeta = getProductionMetaForOrder(selectedEndBatch.production_meta, order);
+        const reportedDarab = reportedQuantityByOrder[order] ?? finalDarab;
         return {
           worker_id: activeWorker.id,
           worker_name: workerNameForSave,
@@ -28899,8 +29159,9 @@ body {
             order_number: order,
             order_note: orderNoteClean || null,
             batch_note: batchNoteClean || null,
-            darab: finalDarab,
+            darab: reportedDarab,
             szal: finalSzal,
+            ...getQuantityPlanAuditMetadata(quantityContexts[order], reportedDarab),
             action: "END" as WorkAction,
             operation_code: "SZABAS",
             operation_status: "MARAS_FOLYAMATBAN",
@@ -28913,7 +29174,7 @@ body {
             gyartas_tipus: orderProductionMeta.gyartas_tipus,
           }),
           scrap_qty: null,
-          darab: finalDarab,
+          darab: reportedDarab,
           szal: finalSzal,
           selejt_potlas: scrapReplacementMap.has(normalizeLooseText(order)),
           selejt_forras_munkaallomas: scrapReplacementMap.get(normalizeLooseText(order))?.source_station || null,
@@ -29080,6 +29341,15 @@ body {
       )) return;
     }
 
+    const quantityPreparation = await prepareBatchReportedQuantities(
+      changes.map((item) => item.order),
+      currentMachineId,
+      finalDarab
+    );
+    if (!quantityPreparation) return;
+    const quantityContexts = quantityPreparation.contexts;
+    const reportedQuantityByOrder = quantityPreparation.quantities;
+
     batchFinalizeInFlightRef.current = true;
     setBusy(true);
 
@@ -29099,6 +29369,7 @@ body {
           : batchStartTime;
 
         const orderProductionMeta = getProductionMetaForOrder(selectedEndBatch.production_meta, item.order);
+        const reportedDarab = reportedQuantityByOrder[item.order] ?? finalDarab;
         const tokAt = item.newlyTok ? nowIso : item.previous.tokKeszAt;
         const nyiloAt = item.newlyNyilo ? nowIso : item.previous.nyiloKeszAt;
         const tokWorker = item.newlyTok ? workerNameForSave : item.previous.tokKeszWorkerName;
@@ -29131,7 +29402,7 @@ body {
           gyartas_tipus: orderProductionMeta.gyartas_tipus,
           gyartasi_kor: orderProductionMeta.gyartasi_kor,
           scrap_qty: null,
-          darab: finalDarab,
+          darab: reportedDarab,
           szal: finalSzal,
 
           kulso_lap_selejt: item.state.outerScrap,
@@ -29174,6 +29445,9 @@ body {
               toklec_selejt: item.state.toklecScrap,
               order_note: item.note || null,
               batch_note: batchNoteClean || null,
+              darab: reportedDarab,
+              szal: finalSzal,
+              ...getQuantityPlanAuditMetadata(quantityContexts[item.order], reportedDarab),
             }
           ),
         };
@@ -29235,6 +29509,22 @@ body {
           ? await deleteQuery.eq("id", selectedEndBatch.id)
           : await deleteQuery.eq("batch_code", selectedEndBatch.batch_code);
         if (deleteError) throw deleteError;
+      }
+
+      // A *_terv sor csak akkor válik mennyiségi részjelentéssé, amikor
+      // a Tok + Nyíló logikai folyamat is 100%-osan elkészült.
+      for (const item of changes) {
+        const quantityContext = quantityContexts[item.order];
+        const reportedDarab = reportedQuantityByOrder[item.order];
+        if (
+          item.nextPercent >= 100
+          && quantityContext
+          && quantityContext.plannedQuantity > 1
+          && reportedDarab !== null
+          && reportedDarab !== undefined
+        ) {
+          await applyQuantityPlanCompletion(quantityContext, reportedDarab, nowIso);
+        }
       }
 
       await stopScannerAsync();
@@ -29336,6 +29626,15 @@ body {
       if (!window.confirm(`Selejtjelölés kerül mentésre és az Asztalos selejtpótlási kártyára:\n\n${summary}\n\nBiztosan mented?`)) return;
     }
 
+    const quantityPreparation = await prepareBatchReportedQuantities(
+      changes.map((item) => item.order),
+      currentMachineId,
+      finalDarab
+    );
+    if (!quantityPreparation) return;
+    const quantityContexts = quantityPreparation.contexts;
+    const reportedQuantityByOrder = quantityPreparation.quantities;
+
     batchFinalizeInFlightRef.current = true;
     setBusy(true);
     try {
@@ -29352,6 +29651,7 @@ body {
           ? previousPartTimes.sort().at(-1)!
           : batchStartTime;
         const orderProductionMeta = getProductionMetaForOrder(selectedEndBatch.production_meta, item.order);
+        const reportedDarab = reportedQuantityByOrder[item.order] ?? finalDarab;
         const ajtolapAt = item.newlyAjtolapok ? nowIso : item.previous.ajtolapokKeszAt;
         const toklecAt = item.newlyToklec ? nowIso : item.previous.toklecKeszAt;
         const ajtolapWorker = item.newlyAjtolapok ? workerNameForSave : item.previous.ajtolapokKeszWorkerName;
@@ -29377,7 +29677,7 @@ body {
           gyartas_tipus: orderProductionMeta.gyartas_tipus,
           gyartasi_kor: orderProductionMeta.gyartasi_kor,
           scrap_qty: null,
-          darab: finalDarab,
+          darab: reportedDarab,
           szal: finalSzal,
           kulso_lap_selejt: item.state.outerScrap,
           belso_lap_selejt: item.state.innerScrap,
@@ -29411,6 +29711,9 @@ body {
             toklec_selejt: item.state.toklecScrap,
             order_note: item.note || null,
             batch_note: batchNoteClean || null,
+            darab: reportedDarab,
+            szal: finalSzal,
+            ...getQuantityPlanAuditMetadata(quantityContexts[item.order], reportedDarab),
           }),
         };
 
@@ -29459,6 +29762,21 @@ body {
           ? await deleteQuery.eq("id", selectedEndBatch.id)
           : await deleteQuery.eq("batch_code", selectedEndBatch.batch_code);
         if (deleteError) throw deleteError;
+      }
+
+      // A *_terv mennyiségi láncot csak teljes Ajtólapok + Tokléc készültségnél léptetjük.
+      for (const item of changes) {
+        const quantityContext = quantityContexts[item.order];
+        const reportedDarab = reportedQuantityByOrder[item.order];
+        if (
+          item.nextPercent >= 100
+          && quantityContext
+          && quantityContext.plannedQuantity > 1
+          && reportedDarab !== null
+          && reportedDarab !== undefined
+        ) {
+          await applyQuantityPlanCompletion(quantityContext, reportedDarab, nowIso);
+        }
       }
 
       await stopScannerAsync();
@@ -29528,13 +29846,23 @@ body {
       return;
     }
 
+    const currentMachineIdForQuantity = getCurrentMachineIdForInsert();
+    const quantityPreparation = await prepareBatchReportedQuantities(
+      readyOrders,
+      currentMachineIdForQuantity,
+      finalDarab
+    );
+    if (!quantityPreparation) return;
+    const quantityContexts = quantityPreparation.contexts;
+    const reportedQuantityByOrder = quantityPreparation.quantities;
+
     batchFinalizeInFlightRef.current = true;
     setBusy(true);
     try {
       const nowIso = new Date().toISOString();
       const workerNameForSave = activeWorker["Teljes nev"];
       const batchNoteClean = endBatchNote.trim();
-      const currentMachineId = getCurrentMachineIdForInsert();
+      const currentMachineId = currentMachineIdForQuantity;
       const batchStartTime = selectedEndBatch.start_time || selectedEndBatch.created_at || nowIso;
       const operationLabel = operationCode === "SZABAS" ? "Szabás" : operationCode === "MARAS" ? "Marás" : "Köteg";
       const scrapReplacementMap = await fetchOpenScrapReplacementMap(allOrders);
@@ -29542,6 +29870,7 @@ body {
       const logs = readyOrders.map((order) => {
         const orderNoteClean = (endOrderNotes[order] || "").trim();
         const orderProductionMeta = getProductionMetaForOrder(selectedEndBatch.production_meta, order);
+        const reportedDarab = reportedQuantityByOrder[order] ?? finalDarab;
         return {
           worker_id: activeWorker.id,
           worker_name: workerNameForSave,
@@ -29575,8 +29904,9 @@ body {
             order_number: order,
             order_note: orderNoteClean || null,
             batch_note: batchNoteClean || null,
-            darab: finalDarab,
+            darab: reportedDarab,
             szal: finalSzal,
+            ...getQuantityPlanAuditMetadata(quantityContexts[order], reportedDarab),
             action: "END" as WorkAction,
             operation_code: operationCode,
             operation_status: operationCode === "SZABAS" ? "MARASRA_VAR" : operationCode === "MARAS" ? "KESZ" : null,
@@ -29586,7 +29916,7 @@ body {
             gyartas_tipus: orderProductionMeta.gyartas_tipus,
           }),
           scrap_qty: null,
-          darab: finalDarab,
+          darab: reportedDarab,
           szal: finalSzal,
           selejt_potlas: scrapReplacementMap.has(normalizeLooseText(order)),
           selejt_forras_munkaallomas: scrapReplacementMap.get(normalizeLooseText(order))?.source_station || null,
@@ -29689,6 +30019,22 @@ body {
           milling_batch_code: selectedEndBatch.batch_code,
           completed_at: nowIso,
         });
+      }
+
+      // Szabás után még ugyanaz a tervsor folytatódik Maráson, ezért ott nem bontjuk.
+      // Marásnál és a normál egyfázisú köteg END-jénél viszont a ténylegesen elkészült
+      // darabszám alapján létrejön a maradék nyitott *_terv sor.
+      for (const order of readyOrders) {
+        const quantityContext = quantityContexts[order];
+        const reportedDarab = reportedQuantityByOrder[order];
+        if (
+          quantityContext
+          && quantityContext.plannedQuantity > 1
+          && reportedDarab !== null
+          && reportedDarab !== undefined
+        ) {
+          await applyQuantityPlanCompletion(quantityContext, reportedDarab, nowIso);
+        }
       }
 
       await stopScannerAsync();
@@ -31372,6 +31718,385 @@ body {
     return parsed;
   }
 
+
+  function buildQuantityPlanContext(tableName: string, rawRow: Record<string, unknown>): QuantityPlanContext | null {
+    const rowId = rawRow.id as string | number | null | undefined;
+    const orderNumber = String(rawRow.sorszam ?? "").trim();
+    const plannedQuantity = parseSpreadsheetNumber(rawRow.mennyiseg);
+    if (rowId === null || rowId === undefined || !orderNumber || plannedQuantity === null || !Number.isFinite(plannedQuantity) || plannedQuantity <= 0) {
+      return null;
+    }
+
+    const adat = rawRow.adat && typeof rawRow.adat === "object" && !Array.isArray(rawRow.adat)
+      ? rawRow.adat as Record<string, unknown>
+      : {};
+    const meta = getQuantityPartialPlanMetadata({ ...rawRow, adat });
+    const rootRowId = meta.rootRowId ?? rowId;
+    const rootQuantity = Math.max(plannedQuantity, meta.rootQuantity || plannedQuantity);
+
+    return {
+      tableName,
+      rowId,
+      orderNumber,
+      plannedQuantity: Math.trunc(plannedQuantity),
+      completionDate: String(rawRow.elkeszules_datum ?? "").slice(0, 10),
+      rawRow,
+      adat,
+      state: meta.state,
+      groupId: meta.groupId,
+      sequence: meta.sequence,
+      rootRowId,
+      rootQuantity: Math.trunc(rootQuantity),
+      cumulativeCompleted: Math.max(0, Math.trunc(meta.cumulativeCompleted || 0)),
+      createdAt: meta.createdAt,
+      closedAt: meta.closedAt,
+    };
+  }
+
+  function chooseActiveQuantityPlanContext(contexts: QuantityPlanContext[]): QuantityPlanContext | null {
+    const openContexts = contexts.filter((context) => context.state !== "reszjelentes" && context.state !== "teljes");
+    if (openContexts.length === 0) return null;
+    return [...openContexts].sort((left, right) => {
+      const leftRemainder = left.state === "nyitott_maradek" ? 1 : 0;
+      const rightRemainder = right.state === "nyitott_maradek" ? 1 : 0;
+      if (leftRemainder !== rightRemainder) return rightRemainder - leftRemainder;
+      if (left.sequence !== right.sequence) return right.sequence - left.sequence;
+      const dateDifference = right.completionDate.localeCompare(left.completionDate);
+      if (dateDifference !== 0) return dateDifference;
+      return String(right.rowId).localeCompare(String(left.rowId), "hu", { numeric: true });
+    })[0] || null;
+  }
+
+  async function fetchActiveQuantityPlanContexts(
+    stationName: string,
+    orderNumbers: string[]
+  ): Promise<Record<string, QuantityPlanContext | null>> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat a tervmennyiség ellenőrzéséhez.");
+    const cleanStation = String(stationName || "").trim();
+    const cleanOrders = Array.from(new Set(orderNumbers.map((value) => String(value || "").trim()).filter(Boolean)));
+    const result: Record<string, QuantityPlanContext | null> = {};
+    cleanOrders.forEach((order) => { result[order] = null; });
+    if (!cleanStation || cleanOrders.length === 0) return result;
+
+    const tableName = getExactProductionCardPlanTableName(cleanStation);
+    const rows: Record<string, unknown>[] = [];
+
+    for (let index = 0; index < cleanOrders.length; index += 100) {
+      const chunk = cleanOrders.slice(index, index + 100);
+      const response = await supabase
+        .from(tableName)
+        .select("*")
+        .in("sorszam", chunk)
+        .order("elkeszules_datum", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(10000);
+      if (response.error) {
+        throw new Error(`A(z) ${tableName} tervmennyisége nem olvasható: ${normalizeError(response.error)}`);
+      }
+      rows.push(...((response.data || []) as Record<string, unknown>[]));
+    }
+
+    const grouped = new Map<string, QuantityPlanContext[]>();
+    rows.forEach((rawRow) => {
+      const context = buildQuantityPlanContext(tableName, rawRow);
+      if (!context) return;
+      const key = normalizeLooseText(context.orderNumber);
+      const list = grouped.get(key) || [];
+      list.push(context);
+      grouped.set(key, list);
+    });
+
+    cleanOrders.forEach((order) => {
+      const key = normalizeLooseText(order);
+      result[order] = chooseActiveQuantityPlanContext(grouped.get(key) || []);
+    });
+    return result;
+  }
+
+  async function loadSingleEndQuantityPlanContext(orderNumberForLoad: string): Promise<QuantityPlanContext | null> {
+    const cleanOrder = String(orderNumberForLoad || "").trim();
+    if (!cleanOrder || !activeWorker) {
+      setSingleEndPlanQuantityContext(null);
+      return null;
+    }
+    try {
+      const currentMachineId = getCurrentMachineIdForInsert();
+      const contexts = await fetchActiveQuantityPlanContexts(currentMachineId, [cleanOrder]);
+      const context = contexts[cleanOrder] || null;
+      setSingleEndPlanQuantityContext(context);
+      return context;
+    } catch (error) {
+      console.error("Tervmennyiség betöltési hiba:", error);
+      setSingleEndPlanQuantityContext(null);
+      return null;
+    }
+  }
+
+  function validateRequiredReportedQuantity(
+    context: QuantityPlanContext | null | undefined,
+    inputValue: string,
+    fallbackQuantity: number | null,
+    orderLabel: string
+  ): { quantity: number | null; error: string | null } {
+    if (!context || context.plannedQuantity <= 1) {
+      if (fallbackQuantity !== null && !Number.isFinite(fallbackQuantity)) {
+        return { quantity: null, error: `${orderLabel}: a Darab mező 0 vagy nagyobb egész szám legyen.` };
+      }
+      return { quantity: fallbackQuantity, error: null };
+    }
+
+    const parsed = parseDarabValue(inputValue);
+    if (parsed === null) {
+      return {
+        quantity: null,
+        error: `${orderLabel}: a tervmennyiség ${context.plannedQuantity} db, ezért az elkészült mennyiség megadása kötelező.`,
+      };
+    }
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed > context.plannedQuantity) {
+      return {
+        quantity: null,
+        error: `${orderLabel}: az elkészült mennyiség 1 és ${context.plannedQuantity} db között lehet.`,
+      };
+    }
+    return { quantity: parsed, error: null };
+  }
+
+  async function prepareBatchReportedQuantities(
+    orderNumbers: string[],
+    stationName: string,
+    fallbackDarab: number | null
+  ): Promise<{
+    contexts: Record<string, QuantityPlanContext | null>;
+    quantities: Record<string, number | null>;
+  } | null> {
+    let contexts: Record<string, QuantityPlanContext | null>;
+    try {
+      contexts = await fetchActiveQuantityPlanContexts(stationName, orderNumbers);
+    } catch (error) {
+      setMessage({ type: "error", text: `A tervmennyiség ellenőrzése sikertelen, ezért az END nem menthető: ${normalizeError(error)}` });
+      return null;
+    }
+
+    setEndPlanQuantityByOrder((current) => ({ ...current, ...contexts }));
+    const quantities: Record<string, number | null> = {};
+    for (const order of orderNumbers) {
+      const context = contexts[order] || null;
+      const inputValue = context && context.plannedQuantity > 1
+        ? String(endOrderQuantities[order] || "")
+        : endDarab;
+      const validation = validateRequiredReportedQuantity(context, inputValue, fallbackDarab, order);
+      if (validation.error) {
+        setMessage({ type: "error", text: validation.error });
+        return null;
+      }
+      quantities[order] = validation.quantity;
+    }
+    return { contexts, quantities };
+  }
+
+  function renderRequiredBatchQuantityInput(orderNumberForInput: string): React.JSX.Element | null {
+    const order = String(orderNumberForInput || "").trim();
+    const context = endPlanQuantityByOrder[order] || null;
+    if (!context || context.plannedQuantity <= 1) return null;
+    const currentValue = String(endOrderQuantities[order] || "");
+    const invalidEmpty = !currentValue.trim();
+
+    return (
+      <div
+        style={{
+          marginTop: 10,
+          marginBottom: 10,
+          padding: 10,
+          border: `2px solid ${invalidEmpty ? "#f59e0b" : "#22c55e"}`,
+          borderRadius: 10,
+          background: invalidEmpty ? "rgba(245,158,11,0.12)" : "rgba(34,197,94,0.10)",
+        }}
+      >
+        <label style={{ display: "block", marginBottom: 7, color: "#fde68a", fontWeight: 900 }}>
+          Elkészült mennyiség * • Terv: {context.plannedQuantity} db
+        </label>
+        <input
+          type="number"
+          min={1}
+          max={context.plannedQuantity}
+          step={1}
+          inputMode="numeric"
+          value={currentValue}
+          onChange={(event) => {
+            const value = event.target.value;
+            if (value === "" || /^\d+$/.test(value)) {
+              setEndOrderQuantities((current) => ({ ...current, [order]: value }));
+            }
+          }}
+          placeholder={`Kötelező: 1–${context.plannedQuantity}`}
+          style={{
+            ...fieldStyle,
+            borderColor: invalidEmpty ? "#f59e0b" : "#22c55e",
+          }}
+        />
+        <div style={{ color: "#fef3c7", fontSize: 12, marginTop: 6, lineHeight: 1.4 }}>
+          Ha kevesebbet adsz meg a tervnél, a maradék automatikusan új nyitott tervsor lesz ugyanazzal a dátummal és adatokkal.
+        </div>
+      </div>
+    );
+  }
+
+  function getQuantityPlanAuditMetadata(
+    context: QuantityPlanContext | null | undefined,
+    reportedQuantity: number | null
+  ): Record<string, unknown> {
+    if (!context || context.plannedQuantity <= 1 || reportedQuantity === null || !Number.isFinite(reportedQuantity)) return {};
+    const groupId = context.groupId || `RESZ-${normalizePlanColumnName(context.tableName)}-${String(context.rootRowId)}`;
+    const remainingQuantity = Math.max(0, context.plannedQuantity - reportedQuantity);
+    return {
+      reszjelentes_csoport_id: groupId,
+      reszjelentes_terv_sor_id: context.rowId,
+      reszjelentes_gyoker_sor_id: context.rootRowId,
+      reszjelentes_sorszam: context.sequence,
+      reszjelentes_eredeti_mennyiseg: context.rootQuantity,
+      reszjelentes_szakasz_mennyiseg: context.plannedQuantity,
+      reszjelentes_teljesitett_mennyiseg: reportedQuantity,
+      reszjelentes_maradek_mennyiseg: remainingQuantity,
+      reszjelentes_osszesitett_elkeszult_mennyiseg: context.cumulativeCompleted + reportedQuantity,
+      mennyisegi_reszjelentes: remainingQuantity > 0,
+    };
+  }
+
+  async function applyQuantityPlanCompletion(
+    context: QuantityPlanContext,
+    reportedQuantity: number,
+    nowIso: string
+  ): Promise<QuantityPlanMutationResult> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat a részjelentés mentéséhez.");
+    if (!Number.isInteger(reportedQuantity) || reportedQuantity < 1 || reportedQuantity > context.plannedQuantity) {
+      throw new Error(`${context.orderNumber}: hibás elkészült mennyiség (${reportedQuantity}/${context.plannedQuantity}).`);
+    }
+
+    const remainingQuantity = Math.max(0, context.plannedQuantity - reportedQuantity);
+    const groupId = context.groupId || `RESZ-${normalizePlanColumnName(context.tableName)}-${String(context.rootRowId)}`;
+    const cumulativeCompleted = Math.min(context.rootQuantity, context.cumulativeCompleted + reportedQuantity);
+    const commonMetadata = {
+      reszjelentes_csoport_id: groupId,
+      reszjelentes_gyoker_sor_id: context.rootRowId,
+      reszjelentes_sorszam: context.sequence,
+      reszjelentes_eredeti_mennyiseg: context.rootQuantity,
+      reszjelentes_szakasz_mennyiseg: context.plannedQuantity,
+      reszjelentes_teljesitett_mennyiseg: reportedQuantity,
+      reszjelentes_maradek_mennyiseg: remainingQuantity,
+      reszjelentes_osszesitett_elkeszult_mennyiseg: cumulativeCompleted,
+      reszjelentes_lezarva_at: nowIso,
+    };
+
+    if (remainingQuantity === 0) {
+      const completedAdat = {
+        ...context.adat,
+        ...commonMetadata,
+        reszjelentes_allapot: "teljes",
+      };
+      const { error } = await supabase
+        .from(context.tableName)
+        .update({ adat: completedAdat })
+        .eq("id", context.rowId);
+      if (error) throw error;
+      return {
+        groupId,
+        currentRowId: context.rowId,
+        nextRowId: null,
+        sequence: context.sequence,
+        plannedQuantity: context.plannedQuantity,
+        reportedQuantity,
+        remainingQuantity: 0,
+        rootQuantity: context.rootQuantity,
+        cumulativeCompleted,
+        partial: false,
+      };
+    }
+
+    const closedAdat = {
+      ...context.adat,
+      ...commonMetadata,
+      reszjelentes_allapot: "reszjelentes",
+    };
+    const originalAdat = { ...context.adat };
+
+    const { error: closeError } = await supabase
+      .from(context.tableName)
+      .update({ adat: closedAdat })
+      .eq("id", context.rowId);
+    if (closeError) throw closeError;
+
+    const nextSequence = context.sequence + 1;
+    let nextRowId: string | number | null = null;
+    try {
+      const nextAdat = {
+        ...context.adat,
+        mennyiseg: remainingQuantity,
+        reszjelentes_csoport_id: groupId,
+        reszjelentes_allapot: "nyitott_maradek",
+        reszjelentes_sorszam: nextSequence,
+        reszjelentes_eredeti_mennyiseg: context.rootQuantity,
+        reszjelentes_szakasz_mennyiseg: remainingQuantity,
+        reszjelentes_teljesitett_mennyiseg: 0,
+        reszjelentes_maradek_mennyiseg: remainingQuantity,
+        reszjelentes_osszesitett_elkeszult_mennyiseg: cumulativeCompleted,
+        reszjelentes_gyoker_sor_id: context.rootRowId,
+        reszjelentes_elozo_sor_id: context.rowId,
+        reszjelentes_letrehozva_at: nowIso,
+        reszjelentes_lezarva_at: null,
+      };
+
+      const insertPayload: Record<string, unknown> = { ...context.rawRow };
+      delete insertPayload.id;
+      delete insertPayload.created_at;
+      delete insertPayload.updated_at;
+      insertPayload.mennyiseg = remainingQuantity;
+      insertPayload.adat = nextAdat;
+
+      const { data: inserted, error: insertError } = await supabase
+        .from(context.tableName)
+        .insert([insertPayload])
+        .select("id")
+        .single();
+      if (insertError) throw insertError;
+      nextRowId = (inserted as { id?: string | number | null } | null)?.id ?? null;
+    } catch (error) {
+      // Ha az új maradék sor létrehozása nem sikerül, az eredeti sort
+      // visszaállítjuk, így nem marad félbehagyott részjelentési lánc.
+      await supabase
+        .from(context.tableName)
+        .update({ adat: originalAdat })
+        .eq("id", context.rowId);
+      throw error;
+    }
+
+    if (nextRowId !== null) {
+      const currentAdatWithLink = {
+        ...closedAdat,
+        reszjelentes_kovetkezo_sor_id: nextRowId,
+      };
+      const { error: linkError } = await supabase
+        .from(context.tableName)
+        .update({ adat: currentAdatWithLink })
+        .eq("id", context.rowId);
+      if (linkError) {
+        console.warn("A részjelentési következő-sor kapcsolat nem menthető, a csoportazonosító alapján a lánc továbbra is visszakereshető:", linkError);
+      }
+    }
+
+    return {
+      groupId,
+      currentRowId: context.rowId,
+      nextRowId,
+      sequence: context.sequence,
+      plannedQuantity: context.plannedQuantity,
+      reportedQuantity,
+      remainingQuantity,
+      rootQuantity: context.rootQuantity,
+      cumulativeCompleted,
+      partial: true,
+    };
+  }
+
   function getMissingRouteParts(finalOrderNumber?: string): string[] {
     const missing: string[] = [];
     if (workerEventKoteg === 3 && !selectedEventCard) missing.push("Esemény");
@@ -31402,7 +32127,9 @@ body {
     const finalScrapQty = action === "END"
       ? (overrides?.scrapQty ?? parseScrapQtyValue(scrapQty))
       : null;
-    const finalDarab = action === "END" ? parseDarabValue(endDarab) : null;
+    let finalDarab = action === "END" ? parseDarabValue(endDarab) : null;
+    let quantityPlanContext: QuantityPlanContext | null = null;
+    let quantityPlanResult: QuantityPlanMutationResult | null = null;
     const finalSzal = action === "END" ? parseSzalValue(endSzal) : null;
     const finalOuterSheetScrap = action === "END" && isFoilSheetScrapWorker(activeWorker) ? outerSheetScrap : false;
     const finalInnerSheetScrap = action === "END" && isFoilSheetScrapWorker(activeWorker) ? innerSheetScrap : false;
@@ -31464,6 +32191,32 @@ body {
         startProductionMeta = productionDecision.meta;
       } catch (error) {
         setMessage({ type: "error", text: normalizeError(error) });
+        return;
+      }
+    }
+
+    if (action === "END") {
+      try {
+        const quantityMachineId = getCurrentMachineIdForInsert();
+        const quantityContexts = await fetchActiveQuantityPlanContexts(quantityMachineId, [finalOrderNumber]);
+        quantityPlanContext = quantityContexts[finalOrderNumber] || null;
+        setSingleEndPlanQuantityContext(quantityPlanContext);
+        const quantityValidation = validateRequiredReportedQuantity(
+          quantityPlanContext,
+          endDarab,
+          finalDarab,
+          finalOrderNumber
+        );
+        if (quantityValidation.error) {
+          setMessage({ type: "error", text: quantityValidation.error });
+          return;
+        }
+        finalDarab = quantityValidation.quantity;
+      } catch (error) {
+        setMessage({
+          type: "error",
+          text: `A tervmennyiség ellenőrzése sikertelen, ezért az END nem menthető: ${normalizeError(error)}`,
+        });
         return;
       }
     }
@@ -31581,6 +32334,7 @@ body {
         event_code: eventMetadata.event_code,
         darab: finalDarab,
         szal: finalSzal,
+        ...getQuantityPlanAuditMetadata(quantityPlanContext, finalDarab),
         kulso_lap_selejt: finalOuterSheetScrap,
         belso_lap_selejt: finalInnerSheetScrap,
         toklec_selejt: finalToklecScrap,
@@ -31768,6 +32522,20 @@ body {
         if (activeScrapReplacement) {
           await updateSingleScrapReplacement(activeScrapReplacement, "KESZ", nowForSave);
         }
+
+        if (
+          !partialTwoPartSave
+          && quantityPlanContext
+          && quantityPlanContext.plannedQuantity > 1
+          && finalDarab !== null
+          && Number.isFinite(finalDarab)
+        ) {
+          quantityPlanResult = await applyQuantityPlanCompletion(
+            quantityPlanContext,
+            finalDarab,
+            nowForSave
+          );
+        }
       } else {
         const finalGroupCheck = await findStartGroupConflicts([finalOrderNumber], { currentMachineId });
         if (finalGroupCheck.conflicts.length > 0) {
@@ -31865,6 +32633,11 @@ body {
       const savedThreePartCompletionText = isThreePartEnd
         ? ` | Készültség: ${threePartCompletionPercent}% | Külső lap: ${cumulativeKulsoLapKesz ? "kész" : "folyamatban"} | Belső lap: ${cumulativeBelsoLapKesz ? "kész" : "folyamatban"} | Tokléc: ${cumulativeLapToklecKesz ? "kész" : "folyamatban"}`
         : "";
+      const savedQuantityPlanText = quantityPlanResult
+        ? quantityPlanResult.partial
+          ? ` | RÉSZJELENTÉS: ${quantityPlanResult.reportedQuantity}/${quantityPlanResult.plannedQuantity} db kész, ${quantityPlanResult.remainingQuantity} db új nyitott tervsorban`
+          : ` | Mennyiségi terv teljesítve: ${quantityPlanResult.reportedQuantity}/${quantityPlanResult.plannedQuantity} db`
+        : "";
       const savedSheetScrapText = action === "END" && (finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap)
         ? ` | Selejt: ${[finalOuterSheetScrap ? "külső lap" : "", finalInnerSheetScrap ? "belső lap" : "", finalToklecScrap ? "tokléc" : ""].filter(Boolean).join(" + ")} | Asztalos pótlási kártyára továbbítva`
         : activeScrapReplacement && action === "END"
@@ -31877,7 +32650,7 @@ body {
         text:
           action === "START"
             ? `START automatikusan rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}`
-            : `END sikeresen rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}${savedDarabText}${savedSzalText}${savedScrapText}${savedDoorCompletionText}${savedPanelCompletionText}${savedThreePartCompletionText}${savedSheetScrapText}${savedNoteText}`,
+            : `END sikeresen rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}${savedDarabText}${savedSzalText}${savedScrapText}${savedDoorCompletionText}${savedPanelCompletionText}${savedThreePartCompletionText}${savedQuantityPlanText}${savedSheetScrapText}${savedNoteText}`,
       });
     } catch (error) {
       console.error("SUPABASE HIBA saveWorkLog:", error);
@@ -31965,6 +32738,7 @@ body {
     }
 
     setStep(6);
+    void loadSingleEndQuantityPlanContext(finalOrder);
     setMessage({
       type: "info",
       text: autoAfterScan
@@ -32004,6 +32778,14 @@ body {
     if (effectiveAction === "END") {
       setEndBarcodeConfirmed(true);
       if (_autoAfterScan && !isFoilSheetScrapWorker(activeWorker)) {
+        const quantityContext = singleEndPlanQuantityContext || await loadSingleEndQuantityPlanContext(orderNumber);
+        if (quantityContext && quantityContext.plannedQuantity > 1 && !endDarab.trim()) {
+          setMessage({
+            type: "info",
+            text: `Az END kód rendben. A terv ${quantityContext.plannedQuantity} db, ezért add meg kötelezően az elkészült mennyiséget, majd mentsd az END-et.`,
+          });
+          return;
+        }
         await saveWorkLog("END", { note: null, scrapQty: null });
         return;
       }
@@ -32052,6 +32834,15 @@ body {
             : isThreePartWorker(activeWorker)
               ? "Az END kód rendben. Jelöld a Külső lap / Belső lap / Tokléc elkészültét, ellenőrizd a selejtjelöléseket, majd kattints az END mentése gombra."
               : "Az END kód rendben. Ellenőrizd a Külső lap selejt, Belső lap selejt és Tokléc selejt pipákat, majd kattints az END mentése gombra.",
+      });
+      return;
+    }
+
+    const quantityContext = singleEndPlanQuantityContext || await loadSingleEndQuantityPlanContext(orderNumber);
+    if (quantityContext && quantityContext.plannedQuantity > 1 && !endDarab.trim()) {
+      setMessage({
+        type: "info",
+        text: `Az END kód rendben. A terv ${quantityContext.plannedQuantity} db, ezért az elkészült mennyiség megadása kötelező.`,
       });
       return;
     }
@@ -33967,6 +34758,8 @@ body {
                                     </div>
                                   </div>
 
+                                  {renderRequiredBatchQuantityInput(order)}
+
                                   <textarea
                                     value={endOrderNotes[order] || ""}
                                     onChange={(e) => setEndOrderNotes((prev) => ({ ...prev, [order]: e.target.value }))}
@@ -34025,6 +34818,8 @@ body {
                                     </div>
                                   </div>
 
+                                  {renderRequiredBatchQuantityInput(order)}
+
                                   <textarea
                                     value={endOrderNotes[order] || ""}
                                     onChange={(e) => setEndOrderNotes((prev) => ({ ...prev, [order]: e.target.value }))}
@@ -34055,6 +34850,7 @@ body {
                                     {ready ? "✓ Kész" : "□ Pipa"}
                                   </button>
                                 </div>
+                                {renderRequiredBatchQuantityInput(order)}
                                 <textarea value={endOrderNotes[order] || ""} onChange={(e) => setEndOrderNotes((prev) => ({ ...prev, [order]: e.target.value }))} placeholder="Egyedi megjegyzés ehhez a rendeléshez" style={{ ...textareaStyle, marginTop: 10, minHeight: 54 }} />
                               </div>
                             );
@@ -34396,16 +35192,23 @@ body {
                             : isThreePartWorker(activeWorker)
                               ? "A fizikai szkenner Enterrel megerősíti az END kódot. Ezután jelöld a Külső lap / Belső lap / Tokléc elkészültét, ellenőrizd a selejtjelöléseket, majd mentsd az END-et."
                               : "A fizikai szkenner Enterrel megerősíti az END kódot. Ezután ellenőrizd a lap-selejt pipákat, majd mentsd az END-et."
-                        : "A fizikai szkenner Enterrel zárja a beolvasást; END beolvasásakor a lejelentés azonnal mentésre kerül."}
+                        : singleEndPlanQuantityContext?.plannedQuantity && singleEndPlanQuantityContext.plannedQuantity > 1
+                          ? `A fizikai szkenner Enterrel megerősíti az END-et. A ${singleEndPlanQuantityContext.plannedQuantity} db-os terv miatt az elkészült mennyiség kötelező, utána mentsd az END-et.`
+                          : "A fizikai szkenner Enterrel zárja a beolvasást; END beolvasásakor a lejelentés azonnal mentésre kerül."}
                     </div>
                   </div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 18 }}>
                     <div>
-                      <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>Darab</label>
+                      <label style={{ display: "block", marginBottom: 8, color: singleEndPlanQuantityContext?.plannedQuantity && singleEndPlanQuantityContext.plannedQuantity > 1 ? "#fbbf24" : "#cbd5e1", fontWeight: singleEndPlanQuantityContext?.plannedQuantity && singleEndPlanQuantityContext.plannedQuantity > 1 ? 900 : undefined }}>
+                        {singleEndPlanQuantityContext?.plannedQuantity && singleEndPlanQuantityContext.plannedQuantity > 1
+                          ? `Elkészült mennyiség * • Terv: ${singleEndPlanQuantityContext.plannedQuantity} db`
+                          : "Darab"}
+                      </label>
                       <input
                         type="number"
-                        min="0"
+                        min={singleEndPlanQuantityContext?.plannedQuantity && singleEndPlanQuantityContext.plannedQuantity > 1 ? 1 : 0}
+                        max={singleEndPlanQuantityContext?.plannedQuantity && singleEndPlanQuantityContext.plannedQuantity > 1 ? singleEndPlanQuantityContext.plannedQuantity : undefined}
                         step="1"
                         inputMode="numeric"
                         value={endDarab}
@@ -34416,9 +35219,19 @@ body {
                         onBlur={() => {
                           if (step === 6 && pendingAction === "END") focusScannerInputAfterEditableBlur(actionBarcodeInputRef);
                         }}
-                        placeholder="Egész szám, opcionális"
-                        style={fieldStyle}
+                        placeholder={singleEndPlanQuantityContext?.plannedQuantity && singleEndPlanQuantityContext.plannedQuantity > 1
+                          ? `Kötelező: 1–${singleEndPlanQuantityContext.plannedQuantity}`
+                          : "Egész szám, opcionális"}
+                        style={{
+                          ...fieldStyle,
+                          borderColor: singleEndPlanQuantityContext?.plannedQuantity && singleEndPlanQuantityContext.plannedQuantity > 1 && !endDarab.trim() ? "#f59e0b" : undefined,
+                        }}
                       />
+                      {singleEndPlanQuantityContext?.plannedQuantity && singleEndPlanQuantityContext.plannedQuantity > 1 && (
+                        <div style={{ color: "#fbbf24", fontSize: 12, marginTop: 6, fontWeight: 800 }}>
+                          Kötelező mező. Részmennyiség esetén a maradék automatikusan új, nyitott tervsorba kerül.
+                        </div>
+                      )}
                     </div>
                     <div>
                       <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>Szál</label>
