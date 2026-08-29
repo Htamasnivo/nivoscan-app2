@@ -14612,6 +14612,452 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     setMessage({ type: "success", text: "A termelési kártya megjelenése visszaállt az alapértelmezettre." });
   }
 
+  function getSzerelesPlanDetailOrderNumber(
+    dataSource: ProductionCardTableDataSource,
+    rawRow: ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow
+  ): string {
+    if (dataSource === "priority") return String((rawRow as ProductionCardPriorityRow).orderNumber || "").trim();
+    if (dataSource === "scrap-replacement") return String((rawRow as ScrapReplacementRow).order_number || "").trim();
+    if (dataSource === "backlog") return String((rawRow as ProductionCardBacklogRow).orderNumber || "").trim();
+    return String((rawRow as ProductionCardRow).orderNumber || "").trim();
+  }
+
+  function getSzerelesPlanDetailDirectPlanData(
+    dataSource: ProductionCardTableDataSource,
+    rawRow: ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow
+  ): Record<string, unknown> | null {
+    if (dataSource === "production-plan") return (rawRow as ProductionCardRow).planData || null;
+    if (dataSource === "backlog") return (rawRow as ProductionCardBacklogRow).planData || null;
+    if (dataSource === "priority") {
+      const data = (rawRow as ProductionCardPriorityRow).data;
+      return data && typeof data === "object" && !Array.isArray(data) ? data : null;
+    }
+    return null;
+  }
+
+  function getSzerelesPlanDetailSourceRowId(
+    dataSource: ProductionCardTableDataSource,
+    rawRow: ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow
+  ): string {
+    if (dataSource === "production-plan") return String((rawRow as ProductionCardRow).sourceRowId || "").trim();
+    if (dataSource === "backlog") return String((rawRow as ProductionCardBacklogRow).id || "").trim();
+    if (dataSource === "priority") {
+      const hint = (rawRow as ProductionCardPriorityRow).data || {};
+      return String(
+        getProductionCardPlanValue(hint, "terv_sor_id")
+        ?? getProductionCardPlanValue(hint, "source_row_id")
+        ?? ""
+      ).trim();
+    }
+    return "";
+  }
+
+  function getSzerelesPlanDetailHintDate(
+    dataSource: ProductionCardTableDataSource,
+    rawRow: ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
+    fallbackDate: string
+  ): string {
+    if (dataSource === "production-plan") return String((rawRow as ProductionCardRow).completionDate || fallbackDate || "").slice(0, 10);
+    if (dataSource === "backlog") return String((rawRow as ProductionCardBacklogRow).completionDate || fallbackDate || "").slice(0, 10);
+    if (dataSource === "scrap-replacement") return String((rawRow as ScrapReplacementRow).reported_at || fallbackDate || "").slice(0, 10);
+    const hint = (rawRow as ProductionCardPriorityRow).data || {};
+    const rawDate = getProductionCardPlanValue(hint, "elkeszules_datum")
+      ?? getProductionCardPlanValue(hint, "beepites_datuma")
+      ?? fallbackDate;
+    return parseSpreadsheetDate(rawDate) || String(rawDate || "").slice(0, 10);
+  }
+
+  function scoreSzerelesPlanDetailCandidate(
+    candidate: Record<string, unknown>,
+    hintData: Record<string, unknown> | null,
+    hintDate: string
+  ): number {
+    let score = 0;
+    const comparableKeys = [
+      "elkeszules_datum",
+      "beepites_datuma",
+      "gyartasi_szam",
+      "rsz",
+      "tipus",
+      "megnevezes",
+      "szin",
+      "telephely",
+      "atvetel",
+    ];
+
+    if (hintData) {
+      comparableKeys.forEach((key) => {
+        const hintValue = getProductionCardPlanValue(hintData, key);
+        const candidateValue = getProductionCardPlanValue(candidate, key);
+        if (!hasProductionCardPlanValue(hintValue) || !hasProductionCardPlanValue(candidateValue)) return;
+        if (normalizeLooseText(String(hintValue)) === normalizeLooseText(String(candidateValue))) {
+          score += key === "elkeszules_datum" || key === "beepites_datuma" ? 8 : 4;
+        }
+      });
+    }
+
+    const candidateDateRaw = getProductionCardPlanValue(candidate, "elkeszules_datum")
+      ?? getProductionCardPlanValue(candidate, "beepites_datuma");
+    const candidateDate = parseSpreadsheetDate(candidateDateRaw) || String(candidateDateRaw || "").slice(0, 10);
+    if (hintDate && candidateDate === hintDate) score += 10;
+
+    return score;
+  }
+
+  async function resolveSzerelesPlanDetailRow(
+    dataSource: ProductionCardTableDataSource,
+    rawRow: ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
+    fallbackDate: string
+  ): Promise<Record<string, unknown>> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    const orderNumber = getSzerelesPlanDetailOrderNumber(dataSource, rawRow);
+    if (!orderNumber) throw new Error("A kiválasztott kártyasorhoz nem található rendelésszám.");
+
+    const directPlanData = getSzerelesPlanDetailDirectPlanData(dataSource, rawRow);
+    const sourceRowId = getSzerelesPlanDetailSourceRowId(dataSource, rawRow);
+
+    if (sourceRowId) {
+      const byId = await supabase
+        .from(ATVETEL_SOURCE_TABLE)
+        .select("*")
+        .eq("id", sourceRowId)
+        .limit(1);
+      if (!byId.error && byId.data?.length) {
+        return (byId.data[0] || {}) as Record<string, unknown>;
+      }
+    }
+
+    // Normál és lemaradási kártyán a planData pontosan az adott *_terv sor.
+    // Ha az ID-alapú friss lekérés nem sikerül, ezt használjuk, hogy ne válasszunk
+    // ugyanazon rendelésszám egy másik tervsorából.
+    if ((dataSource === "production-plan" || dataSource === "backlog") && directPlanData) {
+      return directPlanData;
+    }
+
+    const response = await supabase
+      .from(ATVETEL_SOURCE_TABLE)
+      .select("*")
+      .eq("sorszam", orderNumber)
+      .limit(250);
+    if (response.error) throw response.error;
+
+    const candidates = ((response.data || []) as Array<Record<string, unknown>>);
+    if (candidates.length === 0) {
+      throw new Error(`${orderNumber}: a szereles_terv táblában nem található a rendeléshez tartozó sor.`);
+    }
+    if (candidates.length === 1) return candidates[0];
+
+    const hintDate = getSzerelesPlanDetailHintDate(dataSource, rawRow, fallbackDate);
+    const scored = candidates
+      .map((candidate, index) => ({
+        candidate,
+        index,
+        score: scoreSzerelesPlanDetailCandidate(candidate, directPlanData, hintDate),
+        date: String(
+          parseSpreadsheetDate(
+            getProductionCardPlanValue(candidate, "elkeszules_datum")
+              ?? getProductionCardPlanValue(candidate, "beepites_datuma")
+          ) || ""
+        ),
+      }))
+      .sort((left, right) =>
+        right.score - left.score
+        || right.date.localeCompare(left.date)
+        || left.index - right.index
+      );
+
+    return scored[0].candidate;
+  }
+
+  function getSzerelesPlanDetailFieldLabel(fieldKey: string): string {
+    const normalizedKey = normalizePlanColumnName(fieldKey);
+    const known = getStationPlanFieldDefinitions("Szereles").find(
+      (field) => normalizePlanColumnName(field.key) === normalizedKey
+    );
+    if (known) return known.label;
+
+    const specialLabels: Record<string, string> = {
+      id: "Adatbázis sorazonosító",
+      excel_sorrend: "Excel sorrend",
+      created_at: "Létrehozva",
+      updated_at: "Módosítva",
+      reszjelentes_csoport_id: "Részjelentés csoportazonosító",
+      reszjelentes_allapot: "Részjelentés állapot",
+      reszjelentes_sorszam: "Részjelentés sorszám",
+      reszjelentes_eredeti_mennyiseg: "Eredeti mennyiség",
+      reszjelentes_resz_mennyiseg: "Rész mennyiség",
+      reszjelentes_jelentett_mennyiseg: "Lejelentett mennyiség",
+      reszjelentes_maradek_mennyiseg: "Maradék mennyiség",
+      reszjelentes_osszesitett_elkeszult_mennyiseg: "Összesített elkészült mennyiség",
+    };
+    if (specialLabels[normalizedKey]) return specialLabels[normalizedKey];
+
+    const humanized = String(fieldKey || "")
+      .replace(/_/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return humanized ? humanized.charAt(0).toUpperCase() + humanized.slice(1) : "Mező";
+  }
+
+  function getSzerelesPlanDetailDisplayValue(fieldKey: string, value: unknown): string {
+    if (value === null || value === undefined || value === "") return "–";
+    if (typeof value === "boolean") return value ? "Igen" : "Nem";
+    if (fieldKey === "normaido") return formatExcelDuration(value);
+
+    const normalizedKey = normalizePlanColumnName(fieldKey);
+    if (normalizedKey.includes("datum") || normalizedKey.endsWith("_at") || normalizedKey === "created_at" || normalizedKey === "updated_at") {
+      const parsedDate = parseSpreadsheetDate(value);
+      if (parsedDate) return parsedDate;
+      const rawText = String(value);
+      const asDate = new Date(rawText);
+      if (Number.isFinite(asDate.getTime()) && /[T:\-]/.test(rawText)) return formatDateTime(asDate);
+    }
+
+    if (typeof value === "object") {
+      try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+    }
+    return String(value);
+  }
+
+  function collectSzerelesPlanDetailPdfFields(planRow: Record<string, unknown>): Array<{ key: string; label: string; value: string }> {
+    const nestedData = planRow.adat && typeof planRow.adat === "object" && !Array.isArray(planRow.adat)
+      ? planRow.adat as Record<string, unknown>
+      : {};
+    const valueByNormalizedKey = new Map<string, { key: string; value: unknown }>();
+
+    Object.entries(nestedData).forEach(([key, value]) => {
+      const normalizedKey = normalizePlanColumnName(key);
+      if (!normalizedKey) return;
+      valueByNormalizedKey.set(normalizedKey, { key, value });
+    });
+
+    Object.entries(planRow).forEach(([key, value]) => {
+      if (key === "adat") return;
+      const normalizedKey = normalizePlanColumnName(key);
+      if (!normalizedKey) return;
+      const existing = valueByNormalizedKey.get(normalizedKey);
+      if (!existing || hasProductionCardPlanValue(value) || !hasProductionCardPlanValue(existing.value)) {
+        valueByNormalizedKey.set(normalizedKey, { key, value });
+      }
+    });
+
+    const preferredKeys = getStationPlanFieldDefinitions("Szereles").map((field) => normalizePlanColumnName(field.key));
+    const technicalPreferred = [
+      "id",
+      "excel_sorrend",
+      "created_at",
+      "updated_at",
+      "reszjelentes_csoport_id",
+      "reszjelentes_allapot",
+      "reszjelentes_sorszam",
+      "reszjelentes_eredeti_mennyiseg",
+      "reszjelentes_resz_mennyiseg",
+      "reszjelentes_jelentett_mennyiseg",
+      "reszjelentes_maradek_mennyiseg",
+      "reszjelentes_osszesitett_elkeszult_mennyiseg",
+    ].map(normalizePlanColumnName);
+
+    const orderedNormalizedKeys = [
+      ...preferredKeys.filter((key) => valueByNormalizedKey.has(key)),
+      ...Array.from(valueByNormalizedKey.keys())
+        .filter((key) => !preferredKeys.includes(key) && !technicalPreferred.includes(key))
+        .sort((left, right) => left.localeCompare(right, "hu")),
+      ...technicalPreferred.filter((key) => valueByNormalizedKey.has(key)),
+    ];
+
+    return Array.from(new Set(orderedNormalizedKeys)).map((normalizedKey) => {
+      const entry = valueByNormalizedKey.get(normalizedKey)!;
+      return {
+        key: entry.key,
+        label: getSzerelesPlanDetailFieldLabel(entry.key),
+        value: getSzerelesPlanDetailDisplayValue(entry.key, entry.value),
+      };
+    });
+  }
+
+  async function createSzerelesPlanDetailPdfBlob(planRow: Record<string, unknown>, orderNumber: string): Promise<Blob> {
+    const jspdf = await waitForJsPdf();
+    let logoDataUrl = "";
+    let logoSize: { width: number; height: number } | null = null;
+    try {
+      logoDataUrl = await loadDashboardPdfCompanyLogo();
+      logoSize = await getPdfImageNaturalSize(logoDataUrl);
+    } catch {
+      // A részletező logó nélkül is használható marad.
+    }
+
+    const doc = new jspdf.jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
+    const pdf = doc as any;
+    registerPdfUnicodeFonts(doc);
+    try {
+      pdf.setProperties?.({
+        title: `NÍVÓ rendelési részletező – ${orderNumber}`,
+        subject: "Szerelés _terv rendelési részletező",
+        author: "NÍVÓ",
+      });
+    } catch { /* no-op */ }
+
+    const pageWidth = 595.28;
+    const pageHeight = 841.89;
+    const marginX = 34;
+    const contentWidth = pageWidth - marginX * 2;
+    const footerTop = pageHeight - 34;
+    const navy = [15, 23, 42] as const;
+    const blue = [37, 99, 235] as const;
+    const cyan = [14, 165, 233] as const;
+    const ink = [30, 41, 59] as const;
+    const muted = [100, 116, 139] as const;
+    const border = [203, 213, 225] as const;
+    const pale = [248, 250, 252] as const;
+    const white = [255, 255, 255] as const;
+    const generatedAt = formatDateTime(new Date());
+    const fields = collectSzerelesPlanDetailPdfFields(planRow);
+
+    const drawHeader = (continued = false): number => {
+      doc.setFillColor(...navy);
+      pdf.rect(0, 0, pageWidth, 102, "F");
+      doc.setFillColor(...blue);
+      pdf.rect(0, 98, pageWidth, 4, "F");
+
+      if (logoDataUrl && logoSize) {
+        const maxW = 92;
+        const maxH = 44;
+        const ratio = Math.min(maxW / Math.max(1, logoSize.width), maxH / Math.max(1, logoSize.height));
+        const w = Math.max(1, logoSize.width * ratio);
+        const h = Math.max(1, logoSize.height * ratio);
+        try {
+          pdf.addImage(logoDataUrl, "PNG", marginX, 22 + (maxH - h) / 2, w, h, undefined, "FAST");
+        } catch {
+          try { pdf.addImage(logoDataUrl, marginX, 22 + (maxH - h) / 2, w, h); } catch { /* no-op */ }
+        }
+      } else {
+        doc.setFillColor(...cyan);
+        pdf.roundedRect(marginX, 23, 58, 42, 7, 7, "F");
+        doc.setTextColor(...white);
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(15);
+        doc.text("NÍVÓ", marginX + 10, 49);
+      }
+
+      doc.setTextColor(...white);
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(18);
+      doc.text(continued ? "Rendelési részletező – folytatás" : "Szerelési rendelés részletező", 155, 38);
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(9.5);
+      doc.text("Forrás: public.szereles_terv · A kiválasztott kártyasor részletes adatai", 155, 56);
+
+      doc.setFillColor(30, 41, 59);
+      pdf.roundedRect(155, 66, 260, 24, 6, 6, "F");
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(11.5);
+      doc.text(`Rendelésszám: ${orderNumber}`, 166, 82);
+      return 126;
+    };
+
+    let y = drawHeader(false);
+    doc.setTextColor(...ink);
+    doc.setFont(PDF_FONT_FAMILY, "bold");
+    doc.setFontSize(12.5);
+    doc.text("_terv adatok", marginX, y);
+    y += 12;
+    doc.setDrawColor(...border);
+    doc.setLineWidth(0.8);
+    doc.line(marginX, y, marginX + contentWidth, y);
+    y += 13;
+
+    const labelWidth = 176;
+    const gap = 12;
+    const valueX = marginX + labelWidth + gap;
+    const valueWidth = contentWidth - labelWidth - gap;
+
+    fields.forEach((field, index) => {
+      const valueLines = pdf.splitTextToSize(field.value || "–", valueWidth - 18) as string[];
+      const labelLines = pdf.splitTextToSize(field.label, labelWidth - 18) as string[];
+      const lineCount = Math.max(valueLines.length, labelLines.length, 1);
+      const rowHeight = Math.max(31, 14 + lineCount * 11.5);
+
+      if (y + rowHeight > footerTop - 12) {
+        pdf.addPage();
+        y = drawHeader(true);
+      }
+
+      const rowFill = index % 2 === 0 ? pale : white;
+      doc.setFillColor(rowFill[0], rowFill[1], rowFill[2]);
+      doc.setDrawColor(...border);
+      pdf.roundedRect(marginX, y, contentWidth, rowHeight, 4, 4, "FD");
+      doc.line(marginX + labelWidth, y, marginX + labelWidth, y + rowHeight);
+
+      doc.setTextColor(...muted);
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(8.8);
+      doc.text(labelLines, marginX + 9, y + 17);
+
+      doc.setTextColor(...ink);
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(9.3);
+      doc.text(valueLines, valueX + 6, y + 17);
+
+      y += rowHeight + 5;
+    });
+
+    const pageCount = Number(pdf.internal?.getNumberOfPages?.() || 1);
+    for (let pageIndex = 1; pageIndex <= pageCount; pageIndex += 1) {
+      pdf.setPage(pageIndex);
+      doc.setDrawColor(...border);
+      doc.line(marginX, footerTop, marginX + contentWidth, footerTop);
+      doc.setTextColor(...muted);
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(7.8);
+      doc.text(`NÍVÓ · Szerelés _terv részletező · Generálva: ${generatedAt}`, marginX, footerTop + 15);
+      doc.text(`${pageIndex}/${pageCount}`, marginX + contentWidth, footerTop + 15, { align: "right" });
+    }
+
+    return doc.output("blob");
+  }
+
+  async function openSzerelesPlanDetailPdf(
+    dataSource: ProductionCardTableDataSource,
+    rawRow: ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
+    fallbackDate: string
+  ): Promise<void> {
+    if (getStationPlanIdentityKey(machineId) !== "szereles") return;
+    if (terminalEntryLayoutEditorOpen) return;
+
+    const orderNumber = getSzerelesPlanDetailOrderNumber(dataSource, rawRow);
+    if (!orderNumber) {
+      setMessage({ type: "error", text: "A kiválasztott kártyasorhoz nem található rendelésszám." });
+      return;
+    }
+
+    const previewWindow = typeof window !== "undefined" ? window.open("about:blank", "_blank") : null;
+    if (!previewWindow) {
+      setMessage({ type: "error", text: "A böngésző letiltotta az új PDF fület. Engedélyezd az előugró ablakokat ezen az oldalon." });
+      return;
+    }
+    try { previewWindow.opener = null; } catch { /* no-op */ }
+
+    try {
+      previewWindow.document.title = `Rendelési részletező – ${orderNumber}`;
+      previewWindow.document.body.innerHTML = `<div style="font-family:Arial,sans-serif;padding:32px;color:#0f172a"><h2>Rendelési részletező készítése…</h2><p>${orderNumber}</p></div>`;
+    } catch { /* no-op */ }
+
+    try {
+      const planRow = await resolveSzerelesPlanDetailRow(dataSource, rawRow, fallbackDate);
+      const blob = await createSzerelesPlanDetailPdfBlob(planRow, orderNumber);
+      const blobUrl = URL.createObjectURL(blob);
+      previewWindow.location.replace(blobUrl);
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 5 * 60 * 1000);
+    } catch (error) {
+      const detail = normalizeError(error);
+      try {
+        previewWindow.document.body.innerHTML = `<div style="font-family:Arial,sans-serif;padding:32px;color:#991b1b"><h2>A PDF nem készíthető el</h2><p>${String(detail).replace(/[<>&]/g, "")}</p></div>`;
+      } catch { /* no-op */ }
+      setMessage({ type: "error", text: `A szerelési rendelés részletező PDF-je nem készíthető el: ${detail}` });
+    }
+  }
+
   function renderProductionCardDisplay(
     profile: ProductionMonitorProfile,
     data: ProductionCardData,
@@ -14904,6 +15350,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
                           const isStatus = fieldId === PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID;
                           const isOrder = fieldId === PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID;
+                          const canOpenSzerelesDetailPdf = Boolean(
+                            isOrder
+                            && terminalEntrySurface
+                            && !terminalEntryLayoutEditorOpen
+                            && getStationPlanIdentityKey(data.stationName) === "szereles"
+                          );
                           let background = isOrder ? theme.orderCellBackground : theme.waitingBackground;
                           let color = isOrder ? theme.orderCellText : theme.waitingText;
 
@@ -15016,7 +15468,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                           return (
                             <td
                               key={`${table.id}-${rowKey}-${fieldId}`}
-                              title={title}
+                              title={canOpenSzerelesDetailPdf ? `${String(value || "Rendelés")} · Kattints a szerelési _terv részletező PDF megnyitásához` : title}
+                              onClick={canOpenSzerelesDetailPdf ? (event) => {
+                                event.stopPropagation();
+                                void openSzerelesPlanDetailPdf(
+                                  (table.dataSource || "production-plan") as ProductionCardTableDataSource,
+                                  rawRow as ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
+                                  data.dateKey
+                                );
+                              } : undefined}
                               style={{
                                 padding: `${Math.max(2, Math.round(theme.cellPadding * zoomRatio))}px 5px`,
                                 background: quantityPartialRow
@@ -15048,6 +15508,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                 lineHeight: 1.15,
                                 whiteSpace: "normal",
                                 overflowWrap: "anywhere",
+                                cursor: canOpenSzerelesDetailPdf ? "pointer" : undefined,
+                                textDecoration: canOpenSzerelesDetailPdf ? "underline" : undefined,
+                                textUnderlineOffset: canOpenSzerelesDetailPdf ? 3 : undefined,
                               }}
                             >
                               {value === "" ? "–" : value}
