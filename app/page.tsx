@@ -122,6 +122,29 @@ type StartGroupCheckResult = {
   conflicts: StartGroupConflict[];
 };
 
+type TerminalEntryLayoutRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type TerminalEntryLayoutConfig = {
+  version: 1;
+  stationName: string;
+  canvasWidth: number;
+  windows: Record<string, TerminalEntryLayoutRect>;
+};
+
+type TerminalEntryLayoutInteraction = {
+  mode: "drag" | "resize";
+  pointerId: number;
+  windowId: string;
+  startClientX: number;
+  startClientY: number;
+  initialRect: TerminalEntryLayoutRect;
+};
+
 type WorkAction = "START" | "END";
 type WorkflowMode = "single" | "batch" | "end";
 type BatchOperationCode = "SZABAS" | "MARAS";
@@ -1622,6 +1645,10 @@ const SUPABASE_ANON_KEY = "sb_publishable_Gdq5SHUVJpLRs6sDNqLXrw_23wBl3O8";
 const ADMIN_RESET_PIN = "4826";
 const MACHINE_ID_STORAGE_KEY = "nivoscan-machine-id-v1";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
+const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
+const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
+const TERMINAL_ENTRY_LAYOUT_MIN_WIDTH = 180;
+const TERMINAL_ENTRY_LAYOUT_MIN_HEIGHT = 48;
 const PRODUCTION_MONITOR_LAYOUT_STORAGE_KEY = "nivo-production-monitor-layout-v1";
 const PRODUCTION_MONITOR_PROFILES_STORAGE_KEY = "nivo-production-monitor-profiles-v2";
 const PRODUCTION_MONITOR_LEGACY_PROFILES_STORAGE_KEY = "nivo-production-monitor-profiles-v1";
@@ -7697,6 +7724,77 @@ export default function Page() {
   const [machineAdminUnlocked, setMachineAdminUnlocked] = useState(false);
   const [machineAdminPin, setMachineAdminPin] = useState("");
   const [machineDraftId, setMachineDraftId] = useState<MachineIdOption>(DEFAULT_MACHINE_ID);
+
+  // Alapképernyő egyedi elrendezés – munkaállomásonként, láthatatlan rácshoz igazítva.
+  const [terminalEntryLayoutByStation, setTerminalEntryLayoutByStation] = useState<Record<string, TerminalEntryLayoutConfig>>({});
+  const [terminalEntryLayoutDraft, setTerminalEntryLayoutDraft] = useState<TerminalEntryLayoutConfig | null>(null);
+  const [terminalEntryLayoutEditorOpen, setTerminalEntryLayoutEditorOpen] = useState(false);
+  const [terminalEntryLayoutResetToDefaultPending, setTerminalEntryLayoutResetToDefaultPending] = useState(false);
+  const [terminalEntryLayoutAuthOpen, setTerminalEntryLayoutAuthOpen] = useState(false);
+  const [terminalEntryLayoutPin, setTerminalEntryLayoutPin] = useState("");
+  const terminalEntryLayoutCanvasRef = useRef<HTMLDivElement | null>(null);
+  const terminalEntryLayoutDefaultsRef = useRef<Record<string, TerminalEntryLayoutConfig>>({});
+  const terminalEntryLayoutLoadedStationRef = useRef("");
+  const terminalEntryLayoutInteractionRef = useRef<TerminalEntryLayoutInteraction | null>(null);
+
+  const terminalEntryLayoutStationKey = normalizeLooseText(machineId);
+  const terminalEntrySavedLayout = terminalEntryLayoutByStation[terminalEntryLayoutStationKey] || null;
+  const terminalEntryRuntimeLayout = terminalEntryLayoutEditorOpen
+    ? terminalEntryLayoutDraft
+    : terminalEntrySavedLayout;
+  const terminalEntryLayoutRuntimeActive = Boolean(
+    step === 1
+    && terminalView === "scanner"
+    && isUsableProductionCardStation(machineId)
+    && terminalEntryRuntimeLayout
+  );
+  const terminalEntryLayoutCanvasHeight = terminalEntryRuntimeLayout
+    ? Math.max(
+        620,
+        ...(Object.values(terminalEntryRuntimeLayout.windows) as TerminalEntryLayoutRect[]).map((rect) => rect.y + rect.height + TERMINAL_ENTRY_LAYOUT_GRID_SIZE)
+      )
+    : undefined;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (step !== 1 || terminalView !== "scanner" || !isUsableProductionCardStation(machineId)) return;
+    if (loadingTerminalProductionCard || !terminalProductionCardData.lastUpdatedAt) return;
+    if (!terminalEntryLayoutStationKey) return;
+
+    const frameId = window.requestAnimationFrame(() => {
+      if (!terminalEntryLayoutDefaultsRef.current[terminalEntryLayoutStationKey]) {
+        const capturedDefault = captureTerminalEntryLayoutFromDom();
+        if (capturedDefault && Object.keys(capturedDefault.windows).length >= 2) {
+          terminalEntryLayoutDefaultsRef.current[terminalEntryLayoutStationKey] = cloneTerminalEntryLayout(capturedDefault);
+        }
+      }
+
+      if (terminalEntryLayoutLoadedStationRef.current === terminalEntryLayoutStationKey) return;
+      terminalEntryLayoutLoadedStationRef.current = terminalEntryLayoutStationKey;
+
+      const stored = readTerminalEntryLayoutsFromStorage();
+      const storedLayout = stored[terminalEntryLayoutStationKey];
+      if (!storedLayout) return;
+      const merged = mergeTerminalEntryLayouts(
+        terminalEntryLayoutDefaultsRef.current[terminalEntryLayoutStationKey],
+        storedLayout
+      );
+      setTerminalEntryLayoutByStation((current) => ({
+        ...current,
+        [terminalEntryLayoutStationKey]: merged,
+      }));
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [
+    machineId,
+    step,
+    terminalView,
+    loadingTerminalProductionCard,
+    terminalProductionCardData.lastUpdatedAt,
+    terminalProductionCardProfile.tables.length,
+    terminalEntryLayoutStationKey,
+  ]);
 
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
@@ -14504,6 +14602,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const compact = Boolean(options.compact);
     const editable = Boolean(options.editable);
     const executiveReport = Boolean(options.executiveReport);
+    const terminalEntrySurface = compact && !executiveReport;
     const safeProfile = normalizeProductionCardProfile(profile, data.stationName);
     const zoomRatio = safeProfile.zoomPercent / 100;
     const profileTheme = safeProfile.theme;
@@ -14516,6 +14615,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const isPriorityTable = table.dataSource === "priority";
       const isScrapTable = table.dataSource === "scrap-replacement";
       const isBacklogTable = table.dataSource === "backlog";
+      const terminalLayoutWindowId = `production-table:${table.id}`;
       const theme = sanitizeProductionCardTheme(table.theme);
       const validFieldIds = getProductionCardFieldIdsForTable(table, data.stationName);
       const orderedFieldIds = [
@@ -14565,6 +14665,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         <section
           key={table.id}
           data-nivo-scroll-anchor={`production-card-table:${normalizeLooseText(data.stationName)}:${table.id}`}
+          data-terminal-entry-layout-window={terminalEntrySurface ? terminalLayoutWindowId : undefined}
           onClick={() => editable && switchProductionCardTable(table.id)}
           style={{
             background: theme.tablePanelBackground,
@@ -14581,8 +14682,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   ? "0 12px 30px rgba(245,158,11,0.22)"
                   : "0 10px 28px rgba(0,0,0,0.22)",
             cursor: editable ? "pointer" : "default",
+            ...(terminalEntrySurface ? getTerminalEntryLayoutWindowStyle(terminalLayoutWindowId) : {}),
           }}
         >
+          {terminalEntrySurface && renderTerminalEntryLayoutEditorChrome(terminalLayoutWindowId, table.title || table.name || `Táblázat ${tableIndex + 1}`)}
           <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
             <div>
               <div style={{ color: theme.tableTitleText, fontFamily: theme.fontFamily, fontSize: Math.max(11, Math.round(theme.tableTitleFontSize * zoomRatio)), fontWeight: theme.tableTitleBold ? 900 : 400, fontStyle: theme.tableTitleItalic ? "italic" : "normal" }}>
@@ -14934,9 +15037,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
 
     return (
-      <div style={{ background: profileTheme.pageBackground, color: profileTheme.headerPanelText, borderRadius: profileTheme.panelRadius + 4, padding: compact ? 10 : 16, fontFamily: profileTheme.fontFamily, boxSizing: "border-box" }}>
+      <div style={terminalEntrySurface && terminalEntryLayoutRuntimeActive
+        ? { display: "contents" }
+        : { background: profileTheme.pageBackground, color: profileTheme.headerPanelText, borderRadius: profileTheme.panelRadius + 4, padding: compact ? 10 : 16, fontFamily: profileTheme.fontFamily, boxSizing: "border-box" }
+      }>
         {profileTheme.showHeader && (
-          <div style={{ background: profileTheme.headerPanelBackground, border: `1px solid ${profileTheme.borderColor}`, borderRadius: profileTheme.panelRadius, padding: compact ? 10 : 14, marginBottom: compact ? 8 : 12 }}>
+          <div
+            data-terminal-entry-layout-window={terminalEntrySurface ? "production-header" : undefined}
+            style={{
+              background: profileTheme.headerPanelBackground,
+              border: `1px solid ${profileTheme.borderColor}`,
+              borderRadius: profileTheme.panelRadius,
+              padding: compact ? 10 : 14,
+              marginBottom: compact ? 8 : 12,
+              ...(terminalEntrySurface ? getTerminalEntryLayoutWindowStyle("production-header") : {}),
+            }}
+          >
+            {terminalEntrySurface && renderTerminalEntryLayoutEditorChrome("production-header", "Termelési kártya fejléc")}
             <div style={{ color: profileTheme.accentColor, fontWeight: 900, fontSize: compact ? 10 : 12, letterSpacing: 1, textTransform: "uppercase" }}>NÍVÓ termelési kártya</div>
             <div style={{ color: profileTheme.headerPanelText, fontSize: compact ? 20 : Math.max(18, Math.round(profileTheme.titleFontSize * zoomRatio)), fontWeight: profileTheme.titleBold ? 900 : 400, fontStyle: profileTheme.titleItalic ? "italic" : "normal", marginTop: 3 }}>
               {data.stationName || productionCardAdminStation || "Munkaállomás"}
@@ -14949,7 +15066,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         {safeProfile.tables.filter((table) => table.dataSource === "scrap-replacement").map(renderTable)}
         {safeProfile.tables.filter((table) => table.dataSource === "backlog").map(renderTable)}
         {profileTheme.showSummaryCards && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(80px, 1fr))", gap: 6, marginBottom: 8 }}>
+          <div
+            data-terminal-entry-layout-window={terminalEntrySurface ? "production-summary" : undefined}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3, minmax(80px, 1fr))",
+              gap: 6,
+              marginBottom: 8,
+              ...(terminalEntrySurface ? getTerminalEntryLayoutWindowStyle("production-summary") : {}),
+            }}
+          >
+            {terminalEntrySurface && renderTerminalEntryLayoutEditorChrome("production-summary", "Állapot összesítő")}
             <div style={{ background: profileTheme.doneBackground, color: profileTheme.doneText, borderRadius: profileTheme.panelRadius, padding: compact ? 8 : 10 }}><div style={{ fontSize: 10 }}>Kész</div><strong>{data.rows.filter((row) => row.status === "done").length}</strong></div>
             <div style={{ background: profileTheme.inProgressBackground, color: profileTheme.inProgressText, borderRadius: profileTheme.panelRadius, padding: compact ? 8 : 10 }}><div style={{ fontSize: 10 }}>Folyamatban</div><strong>{data.rows.filter((row) => row.status === "in-progress").length}</strong></div>
             <div style={{ background: profileTheme.waitingBackground, color: profileTheme.waitingText, borderRadius: profileTheme.panelRadius, padding: compact ? 8 : 10 }}><div style={{ fontSize: 10 }}>Várakozik</div><strong>{data.rows.filter((row) => row.status === "waiting").length}</strong></div>
@@ -16372,10 +16499,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function TerminalProductionCardPanel(): React.JSX.Element | null {
     if (!isUsableProductionCardStation(machineId)) return null;
 
-    // A videón látható LEGKÜLSŐ jobb oldali scrollbar nem a táblázaté,
-    // hanem ennek a teljes termelési-kártya panelnek a saját overflow scrollja.
-    // Ezt külön, a belső táblázat scrolljától teljesen független pixelpozícióval
-    // tartjuk meg. A két scroll-réteg így soha nem írhatja felül egymást.
+    const cardContent = loadingTerminalProductionCard && !terminalProductionCardData.lastUpdatedAt ? (
+      <div
+        data-terminal-entry-layout-window="production-loading"
+        style={{
+          background: "#0f172a",
+          color: "#cbd5e1",
+          padding: 28,
+          textAlign: "center",
+          borderRadius: 18,
+          border: "1px solid #334155",
+          ...getTerminalEntryLayoutWindowStyle("production-loading"),
+        }}
+      >
+        {renderTerminalEntryLayoutEditorChrome("production-loading", "Termelési kártya betöltése")}
+        Termelési kártya betöltése...
+      </div>
+    ) : renderProductionCardDisplay(terminalProductionCardProfile, terminalProductionCardData, { compact: true });
+
+    // Egyedi alapképernyő-elrendezésnél a termelési kártya fő elemei külön ablakok.
+    // Ilyenkor nem lehet őket egy közös sticky/scroll keretbe zárni, mert szabadon
+    // át kell húzhatók legyenek a dolgozói beléptető mellé vagy fölé.
+    if (terminalEntryLayoutRuntimeActive) {
+      return <>{cardContent}</>;
+    }
+
+    // Normál, alapértelmezett nézet: az eredeti sticky és scroll viselkedés változatlan.
     return (
       <NivoPersistentProductionCardScrollContainer
         scrollKey={`terminal-production-card-outer:${normalizeLooseText(machineId)}`}
@@ -16392,9 +16541,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           boxShadow: "0 18px 45px rgba(0,0,0,0.28)",
         }}
       >
-        {loadingTerminalProductionCard && !terminalProductionCardData.lastUpdatedAt ? (
-          <div style={{ background: "#0f172a", color: "#cbd5e1", padding: 28, textAlign: "center" }}>Termelési kártya betöltése...</div>
-        ) : renderProductionCardDisplay(terminalProductionCardProfile, terminalProductionCardData, { compact: true })}
+        {cardContent}
       </NivoPersistentProductionCardScrollContainer>
     );
   }
@@ -25366,6 +25513,431 @@ START: ${formatDateTime(startAt)}`
     return storedMachineId || DEFAULT_MACHINE_ID;
   }
 
+  function snapTerminalEntryLayoutValue(value: number): number {
+    return Math.round(value / TERMINAL_ENTRY_LAYOUT_GRID_SIZE) * TERMINAL_ENTRY_LAYOUT_GRID_SIZE;
+  }
+
+  function cloneTerminalEntryLayout(layout: TerminalEntryLayoutConfig): TerminalEntryLayoutConfig {
+    return {
+      version: 1,
+      stationName: layout.stationName,
+      canvasWidth: layout.canvasWidth,
+      windows: Object.fromEntries(
+        Object.entries(layout.windows).map(([windowId, rect]) => [windowId, { ...rect }])
+      ),
+    };
+  }
+
+  function normalizeTerminalEntryLayoutConfig(
+    value: unknown,
+    stationName: string
+  ): TerminalEntryLayoutConfig | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const raw = value as Record<string, unknown>;
+    const rawWindows = raw.windows;
+    if (!rawWindows || typeof rawWindows !== "object" || Array.isArray(rawWindows)) return null;
+
+    const windows: Record<string, TerminalEntryLayoutRect> = {};
+    Object.entries(rawWindows as Record<string, unknown>).forEach(([windowId, rawRect]) => {
+      if (!rawRect || typeof rawRect !== "object" || Array.isArray(rawRect)) return;
+      const rect = rawRect as Record<string, unknown>;
+      const x = Number(rect.x);
+      const y = Number(rect.y);
+      const width = Number(rect.width);
+      const height = Number(rect.height);
+      if (![x, y, width, height].every(Number.isFinite)) return;
+      windows[windowId] = {
+        x: Math.max(0, snapTerminalEntryLayoutValue(x)),
+        y: Math.max(0, snapTerminalEntryLayoutValue(y)),
+        width: Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, snapTerminalEntryLayoutValue(width)),
+        height: Math.max(TERMINAL_ENTRY_LAYOUT_MIN_HEIGHT, snapTerminalEntryLayoutValue(height)),
+      };
+    });
+
+    if (Object.keys(windows).length === 0) return null;
+    return {
+      version: 1,
+      stationName: String(raw.stationName || stationName || "").trim() || stationName,
+      canvasWidth: Math.max(1, Number(raw.canvasWidth) || 1),
+      windows,
+    };
+  }
+
+  function readTerminalEntryLayoutsFromStorage(): Record<string, TerminalEntryLayoutConfig> {
+    if (typeof window === "undefined") return {};
+    try {
+      const raw = window.localStorage.getItem(TERMINAL_ENTRY_LAYOUT_STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const result: Record<string, TerminalEntryLayoutConfig> = {};
+      Object.entries(parsed || {}).forEach(([stationKey, value]) => {
+        const normalized = normalizeTerminalEntryLayoutConfig(value, stationKey);
+        if (normalized) result[stationKey] = normalized;
+      });
+      return result;
+    } catch (error) {
+      console.warn("Az egyedi alapképernyő-elrendezés nem olvasható:", error);
+      return {};
+    }
+  }
+
+  function writeTerminalEntryLayoutsToStorage(layouts: Record<string, TerminalEntryLayoutConfig>): void {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(TERMINAL_ENTRY_LAYOUT_STORAGE_KEY, JSON.stringify(layouts));
+  }
+
+  function captureTerminalEntryLayoutFromDom(): TerminalEntryLayoutConfig | null {
+    const canvas = terminalEntryLayoutCanvasRef.current;
+    if (!canvas) return null;
+    const canvasRect = canvas.getBoundingClientRect();
+    if (canvasRect.width <= 0) return null;
+
+    const windows: Record<string, TerminalEntryLayoutRect> = {};
+    canvas.querySelectorAll<HTMLElement>("[data-terminal-entry-layout-window]").forEach((element) => {
+      const windowId = String(element.dataset.terminalEntryLayoutWindow || "").trim();
+      if (!windowId) return;
+      const rect = element.getBoundingClientRect();
+      if (rect.width < 20 || rect.height < 20) return;
+      windows[windowId] = {
+        x: Math.max(0, snapTerminalEntryLayoutValue(rect.left - canvasRect.left)),
+        y: Math.max(0, snapTerminalEntryLayoutValue(rect.top - canvasRect.top)),
+        width: Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, snapTerminalEntryLayoutValue(rect.width)),
+        height: Math.max(TERMINAL_ENTRY_LAYOUT_MIN_HEIGHT, snapTerminalEntryLayoutValue(rect.height)),
+      };
+    });
+
+    if (Object.keys(windows).length === 0) return null;
+    return {
+      version: 1,
+      stationName: machineId,
+      canvasWidth: canvasRect.width,
+      windows,
+    };
+  }
+
+  function mergeTerminalEntryLayouts(
+    defaultLayout: TerminalEntryLayoutConfig | null | undefined,
+    savedLayout: TerminalEntryLayoutConfig
+  ): TerminalEntryLayoutConfig {
+    if (!defaultLayout) return cloneTerminalEntryLayout(savedLayout);
+    return {
+      version: 1,
+      stationName: machineId,
+      canvasWidth: savedLayout.canvasWidth || defaultLayout.canvasWidth,
+      windows: {
+        ...Object.fromEntries(Object.entries(defaultLayout.windows).map(([windowId, rect]) => [windowId, { ...rect }])),
+        ...Object.fromEntries(Object.entries(savedLayout.windows).map(([windowId, rect]) => [windowId, { ...rect }])),
+      },
+    };
+  }
+
+  function getTerminalEntryLayoutFallbackRect(windowId: string): TerminalEntryLayoutRect {
+    const defaultLayout = terminalEntryLayoutDefaultsRef.current[terminalEntryLayoutStationKey];
+    const defaultRect = defaultLayout?.windows[windowId];
+    if (defaultRect) return { ...defaultRect };
+
+    const layout = terminalEntryRuntimeLayout;
+    const canvasWidth = terminalEntryLayoutCanvasRef.current?.clientWidth || layout?.canvasWidth || 1600;
+    const existingRects = Object.values(layout?.windows || {}) as TerminalEntryLayoutRect[];
+    const maxBottom = existingRects.length
+      ? Math.max(...existingRects.map((rect) => rect.y + rect.height))
+      : 0;
+    const left = Math.max(0, snapTerminalEntryLayoutValue(Math.min(660, canvasWidth * 0.42)));
+    const width = Math.max(
+      TERMINAL_ENTRY_LAYOUT_MIN_WIDTH,
+      snapTerminalEntryLayoutValue(Math.min(820, Math.max(360, canvasWidth - left)))
+    );
+    return {
+      x: left,
+      y: snapTerminalEntryLayoutValue(maxBottom + TERMINAL_ENTRY_LAYOUT_GRID_SIZE),
+      width,
+      height: 240,
+    };
+  }
+
+  function getTerminalEntryLayoutWindowStyle(windowId: string): React.CSSProperties {
+    if (!terminalEntryLayoutRuntimeActive || !terminalEntryRuntimeLayout) return {};
+    const rect = terminalEntryRuntimeLayout.windows[windowId] || getTerminalEntryLayoutFallbackRect(windowId);
+    return {
+      position: "absolute",
+      left: rect.x,
+      top: rect.y,
+      width: rect.width,
+      height: rect.height,
+      margin: 0,
+      boxSizing: "border-box",
+      overflow: "auto",
+      zIndex: terminalEntryLayoutEditorOpen ? 20 : 2,
+      outline: terminalEntryLayoutEditorOpen ? "2px dashed #38bdf8" : undefined,
+      outlineOffset: terminalEntryLayoutEditorOpen ? -2 : undefined,
+      touchAction: terminalEntryLayoutEditorOpen ? "none" : undefined,
+    };
+  }
+
+  function updateTerminalEntryLayoutDraftRect(windowId: string, nextRect: TerminalEntryLayoutRect): void {
+    setTerminalEntryLayoutResetToDefaultPending(false);
+    setTerminalEntryLayoutDraft((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        windows: {
+          ...current.windows,
+          [windowId]: nextRect,
+        },
+      };
+    });
+  }
+
+  function beginTerminalEntryLayoutInteraction(
+    event: React.PointerEvent<HTMLElement>,
+    windowId: string,
+    mode: "drag" | "resize"
+  ): void {
+    if (!terminalEntryLayoutEditorOpen || !terminalEntryLayoutDraft) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const initialRect = terminalEntryLayoutDraft.windows[windowId] || getTerminalEntryLayoutFallbackRect(windowId);
+    terminalEntryLayoutInteractionRef.current = {
+      mode,
+      pointerId: event.pointerId,
+      windowId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      initialRect: { ...initialRect },
+    };
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* ignore */ }
+  }
+
+  function moveTerminalEntryLayoutInteraction(event: React.PointerEvent<HTMLElement>): void {
+    const interaction = terminalEntryLayoutInteractionRef.current;
+    const canvas = terminalEntryLayoutCanvasRef.current;
+    if (!interaction || interaction.pointerId !== event.pointerId || !canvas) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const dx = event.clientX - interaction.startClientX;
+    const dy = event.clientY - interaction.startClientY;
+    const canvasWidth = Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, canvas.clientWidth);
+    const initial = interaction.initialRect;
+
+    if (interaction.mode === "drag") {
+      const x = Math.max(
+        0,
+        Math.min(
+          Math.max(0, canvasWidth - initial.width),
+          snapTerminalEntryLayoutValue(initial.x + dx)
+        )
+      );
+      const y = Math.max(0, snapTerminalEntryLayoutValue(initial.y + dy));
+      updateTerminalEntryLayoutDraftRect(interaction.windowId, { ...initial, x, y });
+      return;
+    }
+
+    const width = Math.max(
+      TERMINAL_ENTRY_LAYOUT_MIN_WIDTH,
+      Math.min(
+        Math.max(TERMINAL_ENTRY_LAYOUT_MIN_WIDTH, canvasWidth - initial.x),
+        snapTerminalEntryLayoutValue(initial.width + dx)
+      )
+    );
+    const height = Math.max(
+      TERMINAL_ENTRY_LAYOUT_MIN_HEIGHT,
+      snapTerminalEntryLayoutValue(initial.height + dy)
+    );
+    updateTerminalEntryLayoutDraftRect(interaction.windowId, { ...initial, width, height });
+  }
+
+  function endTerminalEntryLayoutInteraction(event: React.PointerEvent<HTMLElement>): void {
+    const interaction = terminalEntryLayoutInteractionRef.current;
+    if (!interaction || interaction.pointerId !== event.pointerId) return;
+    terminalEntryLayoutInteractionRef.current = null;
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* ignore */ }
+  }
+
+  function renderTerminalEntryLayoutEditorChrome(windowId: string, label: string): React.JSX.Element | null {
+    if (!terminalEntryLayoutEditorOpen) return null;
+    return (
+      <>
+        <div
+          onPointerDown={(event) => beginTerminalEntryLayoutInteraction(event, windowId, "drag")}
+          onPointerMove={moveTerminalEntryLayoutInteraction}
+          onPointerUp={endTerminalEntryLayoutInteraction}
+          onPointerCancel={endTerminalEntryLayoutInteraction}
+          title="Húzd az ablak mozgatásához"
+          style={{
+            position: "absolute",
+            top: 4,
+            left: 4,
+            right: 34,
+            height: 28,
+            zIndex: 100,
+            borderRadius: 8,
+            border: "1px solid #38bdf8",
+            background: "rgba(2, 132, 199, 0.92)",
+            color: "#ffffff",
+            display: "flex",
+            alignItems: "center",
+            padding: "0 10px",
+            fontSize: 12,
+            fontWeight: 900,
+            cursor: "move",
+            userSelect: "none",
+            boxShadow: "0 4px 14px rgba(0,0,0,0.3)",
+          }}
+        >
+          ↔ {label}
+        </div>
+        <div
+          onPointerDown={(event) => beginTerminalEntryLayoutInteraction(event, windowId, "resize")}
+          onPointerMove={moveTerminalEntryLayoutInteraction}
+          onPointerUp={endTerminalEntryLayoutInteraction}
+          onPointerCancel={endTerminalEntryLayoutInteraction}
+          title="Húzd az ablak átméretezéséhez"
+          style={{
+            position: "absolute",
+            right: 3,
+            bottom: 3,
+            width: 24,
+            height: 24,
+            zIndex: 101,
+            borderRadius: 7,
+            border: "2px solid #e0f2fe",
+            background: "#0284c7",
+            color: "#ffffff",
+            cursor: "nwse-resize",
+            userSelect: "none",
+            display: "grid",
+            placeItems: "center",
+            fontSize: 15,
+            fontWeight: 900,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+          }}
+        >
+          ↘
+        </div>
+      </>
+    );
+  }
+
+  function openTerminalEntryLayoutEditorAuth(): void {
+    if (step !== 1 || terminalView !== "scanner" || !isUsableProductionCardStation(machineId)) {
+      setMessage({ type: "error", text: "Az Egyedi szerkesztő csak a dolgozói alapképernyőn, beállított munkaállomásnál használható." });
+      return;
+    }
+    setTerminalEntryLayoutPin("");
+    setTerminalEntryLayoutAuthOpen(true);
+  }
+
+  function closeTerminalEntryLayoutEditorAuth(): void {
+    setTerminalEntryLayoutAuthOpen(false);
+    setTerminalEntryLayoutPin("");
+  }
+
+  function beginTerminalEntryLayoutEditing(): void {
+    const captured = captureTerminalEntryLayoutFromDom();
+    const defaultLayout = terminalEntryLayoutDefaultsRef.current[terminalEntryLayoutStationKey];
+    const baseLayout = captured || terminalEntrySavedLayout || defaultLayout;
+    if (!baseLayout) {
+      setMessage({ type: "error", text: "Az alapképernyő elrendezése még nem tölthető be. Várd meg a termelési kártya betöltését, majd próbáld újra." });
+      return;
+    }
+    if (!defaultLayout && captured) {
+      terminalEntryLayoutDefaultsRef.current[terminalEntryLayoutStationKey] = cloneTerminalEntryLayout(captured);
+    }
+    const merged = terminalEntrySavedLayout
+      ? mergeTerminalEntryLayouts(terminalEntryLayoutDefaultsRef.current[terminalEntryLayoutStationKey], baseLayout)
+      : cloneTerminalEntryLayout(baseLayout);
+    setTerminalEntryLayoutDraft(merged);
+    setTerminalEntryLayoutResetToDefaultPending(false);
+    setTerminalEntryLayoutEditorOpen(true);
+    setMessage({ type: "info", text: `Egyedi szerkesztő aktív – ${machineId}. Az ablakok a ${TERMINAL_ENTRY_LAYOUT_GRID_SIZE}px-es láthatatlan rácshoz igazodnak.` });
+  }
+
+  async function unlockTerminalEntryLayoutEditor(): Promise<void> {
+    const enteredCode = terminalEntryLayoutPin.trim();
+    if (!enteredCode) {
+      setMessage({ type: "error", text: "Add meg Horváth Tamás Dániel kódját." });
+      return;
+    }
+
+    let allowed = enteredCode === ADMIN_RESET_PIN;
+    if (!allowed) {
+      const normalizedTargetName = normalizeLooseText("Horváth Tamás Dániel");
+      const targetWorker = workers.find((worker) => normalizeLooseText(worker["Teljes nev"] || "") === normalizedTargetName);
+      if (targetWorker) {
+        const enteredHash = await sha256(enteredCode);
+        const storedHash = String(targetWorker.jelszo_hash || "").trim();
+        const legacyPlainCode = String(targetWorker.Jelszo || "").trim();
+        allowed = Boolean(storedHash && storedHash === enteredHash) || Boolean(legacyPlainCode && legacyPlainCode === enteredCode);
+      }
+    }
+
+    if (!allowed) {
+      setMessage({ type: "error", text: "Hibás kód. Az Egyedi szerkesztőt csak Horváth Tamás Dániel kódjával lehet megnyitni." });
+      return;
+    }
+
+    closeTerminalEntryLayoutEditorAuth();
+    beginTerminalEntryLayoutEditing();
+  }
+
+  function cancelTerminalEntryLayoutEditing(): void {
+    terminalEntryLayoutInteractionRef.current = null;
+    setTerminalEntryLayoutEditorOpen(false);
+    setTerminalEntryLayoutDraft(null);
+    setTerminalEntryLayoutResetToDefaultPending(false);
+    setMessage({ type: "info", text: "Az Egyedi szerkesztő módosításai elvetve." });
+  }
+
+  function resetTerminalEntryLayoutDraftToDefault(): void {
+    const defaultLayout = terminalEntryLayoutDefaultsRef.current[terminalEntryLayoutStationKey];
+    if (!defaultLayout) {
+      setMessage({ type: "error", text: "Az alapértelmezett elrendezés még nem áll rendelkezésre." });
+      return;
+    }
+    setTerminalEntryLayoutDraft(cloneTerminalEntryLayout(defaultLayout));
+    setTerminalEntryLayoutResetToDefaultPending(true);
+    setMessage({ type: "info", text: "A szerkesztő visszaállította a jelenlegi program alapértelmezett elrendezését. Mentéskor a munkaállomás egyedi elrendezése törlődik, és pontosan a mostani alapnézet áll vissza." });
+  }
+
+  function saveTerminalEntryLayoutEditing(): void {
+    if (!terminalEntryLayoutDraft || !terminalEntryLayoutStationKey) return;
+
+    if (terminalEntryLayoutResetToDefaultPending) {
+      const stored = readTerminalEntryLayoutsFromStorage();
+      const nextStored = { ...stored };
+      delete nextStored[terminalEntryLayoutStationKey];
+      writeTerminalEntryLayoutsToStorage(nextStored);
+      setTerminalEntryLayoutByStation((current) => {
+        const next = { ...current };
+        delete next[terminalEntryLayoutStationKey];
+        return next;
+      });
+      setTerminalEntryLayoutEditorOpen(false);
+      setTerminalEntryLayoutDraft(null);
+      setTerminalEntryLayoutResetToDefaultPending(false);
+      terminalEntryLayoutInteractionRef.current = null;
+      setMessage({ type: "success", text: `A(z) ${machineId} alapképernyője visszaállt a program eredeti, alapértelmezett elrendezésére.` });
+      return;
+    }
+
+    const canvasWidth = terminalEntryLayoutCanvasRef.current?.clientWidth || terminalEntryLayoutDraft.canvasWidth;
+    const layoutToSave: TerminalEntryLayoutConfig = {
+      ...cloneTerminalEntryLayout(terminalEntryLayoutDraft),
+      stationName: machineId,
+      canvasWidth: Math.max(1, canvasWidth),
+    };
+    const stored = readTerminalEntryLayoutsFromStorage();
+    const nextStored = { ...stored, [terminalEntryLayoutStationKey]: layoutToSave };
+    writeTerminalEntryLayoutsToStorage(nextStored);
+    setTerminalEntryLayoutByStation((current) => ({ ...current, [terminalEntryLayoutStationKey]: layoutToSave }));
+    setTerminalEntryLayoutEditorOpen(false);
+    setTerminalEntryLayoutDraft(null);
+    setTerminalEntryLayoutResetToDefaultPending(false);
+    terminalEntryLayoutInteractionRef.current = null;
+    setMessage({ type: "success", text: `Az Egyedi szerkesztő elrendezése elmentve ehhez a munkaállomáshoz: ${machineId}.` });
+  }
+
   function handleBackToName(): void {
     setEntryPermissionDenied(false);
     setMessage(null);
@@ -34147,6 +34719,55 @@ body {
           </div>
         )}
 
+        {terminalEntryLayoutAuthOpen && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 10020,
+              background: "rgba(2, 6, 23, 0.88)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 24,
+            }}
+          >
+            <div
+              style={{
+                width: "100%",
+                maxWidth: 460,
+                background: "#0f172a",
+                border: "1px solid #38bdf8",
+                borderRadius: 18,
+                padding: 22,
+                color: "#f8fafc",
+                boxShadow: "0 24px 80px rgba(0,0,0,0.55)",
+              }}
+            >
+              <div style={{ fontSize: 22, fontWeight: 900, marginBottom: 6 }}>Egyedi szerkesztő</div>
+              <div style={{ color: "#94a3b8", fontSize: 13, marginBottom: 18 }}>
+                Az elrendezés módosításához add meg Horváth Tamás Dániel kódját.
+              </div>
+              <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1", fontWeight: 800 }}>Kód</label>
+              <input
+                type="password"
+                value={terminalEntryLayoutPin}
+                onChange={(event) => setTerminalEntryLayoutPin(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void unlockTerminalEntryLayoutEditor();
+                }}
+                autoFocus
+                placeholder="Horváth Tamás Dániel kódja"
+                style={fieldStyle}
+              />
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
+                <button type="button" onClick={closeTerminalEntryLayoutEditorAuth} style={buttonSecondary}>Mégse</button>
+                <button type="button" onClick={() => void unlockTerminalEntryLayoutEditor()} style={buttonPrimary}>Feloldás</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {message && (
           <div
             style={{
@@ -34166,21 +34787,74 @@ body {
 
         {flowStage === "dashboard" && activeWorker && isManagementDashboardWorker(activeWorker) && ManagementDashboard()}
 
+        {terminalEntryLayoutEditorOpen && (
+          <div
+            style={{
+              position: "fixed",
+              top: 12,
+              left: "50%",
+              transform: "translateX(-50%)",
+              zIndex: 10010,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              flexWrap: "wrap",
+              justifyContent: "center",
+              padding: "10px 12px",
+              borderRadius: 14,
+              border: "1px solid #38bdf8",
+              background: "rgba(15, 23, 42, 0.96)",
+              boxShadow: "0 16px 42px rgba(0,0,0,0.48)",
+              color: "#e0f2fe",
+            }}
+          >
+            <div style={{ fontWeight: 900, marginRight: 4 }}>
+              Egyedi szerkesztő · {machineId} · {TERMINAL_ENTRY_LAYOUT_GRID_SIZE}px rács
+            </div>
+            <button type="button" onClick={saveTerminalEntryLayoutEditing} style={buttonPrimary}>Mentés</button>
+            <button type="button" onClick={cancelTerminalEntryLayoutEditing} style={buttonSecondary}>Mégse</button>
+            <button
+              type="button"
+              onClick={resetTerminalEntryLayoutDraftToDefault}
+              style={{ ...buttonSecondary, borderColor: "#f59e0b", color: "#fde68a" }}
+            >
+              Alapértelmezett elrendezés
+            </button>
+          </div>
+        )}
+
         <div
+          ref={terminalEntryLayoutCanvasRef}
           style={{
             display: terminalView === "management"
               ? "none"
-              : step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId)
-                ? "grid"
-                : "block",
-            gridTemplateColumns: step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId)
+              : terminalEntryLayoutRuntimeActive
+                ? "block"
+                : step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId)
+                  ? "grid"
+                  : "block",
+            position: terminalEntryLayoutRuntimeActive ? "relative" : undefined,
+            height: terminalEntryLayoutRuntimeActive ? terminalEntryLayoutCanvasHeight : undefined,
+            minHeight: terminalEntryLayoutRuntimeActive ? 620 : undefined,
+            gridTemplateColumns: !terminalEntryLayoutRuntimeActive && step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId)
               ? "minmax(520px, 0.82fr) minmax(680px, 1.18fr)"
               : undefined,
-            gap: 18,
+            gap: terminalEntryLayoutRuntimeActive ? 0 : 18,
             alignItems: "start",
           }}
         >
-        <div style={panelStyle}>
+        <div
+          data-terminal-entry-layout-window={step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId) ? "worker-entry" : undefined}
+          style={{
+            ...panelStyle,
+            ...(step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId)
+              ? getTerminalEntryLayoutWindowStyle("worker-entry")
+              : {}),
+          }}
+        >
+          {step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId)
+            ? renderTerminalEntryLayoutEditorChrome("worker-entry", "Dolgozói beléptető")
+            : null}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
             <div>
               <div style={{ fontSize: 14, color: "#94a3b8", marginBottom: 4 }}>Állapot</div>
@@ -34217,23 +34891,46 @@ body {
               >
                 {connectionOk === true ? "Kapcsolat OK" : connectionOk === false ? "Kapcsolati hiba" : "Kapcsolat teszteletlen"}
               </div>
-              <button
-                type="button"
-                onClick={openMachineAdminPanel}
-                title="Munkaállomás beállítása"
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  fontSize: 12,
-                  background: "#0f172a",
-                  color: "#e2e8f0",
-                  border: "1px solid #475569",
-                  cursor: "pointer",
-                  fontWeight: 700,
-                }}
-              >
-                Gép: {machineId}
-              </button>
+              <div style={{ display: "grid", gap: 6, justifyItems: "stretch" }}>
+                <button
+                  type="button"
+                  onClick={openMachineAdminPanel}
+                  title="Munkaállomás beállítása"
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: 999,
+                    fontSize: 12,
+                    background: "#0f172a",
+                    color: "#e2e8f0",
+                    border: "1px solid #475569",
+                    cursor: "pointer",
+                    fontWeight: 700,
+                  }}
+                >
+                  Gép: {machineId}
+                </button>
+                {step === 1 && terminalView === "scanner" && (
+                  <button
+                    type="button"
+                    onClick={openTerminalEntryLayoutEditorAuth}
+                    disabled={!isUsableProductionCardStation(machineId)}
+                    title="Az alapképernyő ablakainak munkaállomásonkénti elrendezése"
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: 9,
+                      fontSize: 11,
+                      background: "#082f49",
+                      color: "#bae6fd",
+                      border: "1px solid #0284c7",
+                      cursor: isUsableProductionCardStation(machineId) ? "pointer" : "not-allowed",
+                      fontWeight: 800,
+                      opacity: isUsableProductionCardStation(machineId) ? 1 : 0.55,
+                    }}
+                  >
+                    Egyedi szerkesztő
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
