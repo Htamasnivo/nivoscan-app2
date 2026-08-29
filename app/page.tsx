@@ -341,6 +341,18 @@ type DashboardProductTypeRow = {
   closedOrders: number;
 };
 
+type DashboardTrackedPlanType = "standard" | "plusz" | "extra";
+
+type DashboardTypeMetric = {
+  plannedOrders: number;
+  completedOrders: number;
+};
+
+type DashboardStationTypePerformanceRow = {
+  stationName: string;
+  metrics: Record<DashboardTrackedPlanType, DashboardTypeMetric>;
+};
+
 type DashboardPdfPlanRow = {
   machine_name?: string | null;
   sorszam?: string | null;
@@ -376,6 +388,7 @@ type DashboardData = {
   productTypeRows: DashboardProductTypeRow[];
   exportRows: DashboardExportRow[];
   stationEfficiencyRows: DashboardStationEfficiencyRow[];
+  stationTypePerformanceRows: DashboardStationTypePerformanceRow[];
   stationWorkerPerformance: DashboardStationWorkerPerformance[];
   totalMinutes: number;
   totalScrap: number;
@@ -7318,6 +7331,7 @@ function buildDashboardData(
     productTypeRows,
     exportRows,
     stationEfficiencyRows: [],
+    stationTypePerformanceRows: [],
     stationWorkerPerformance,
     totalMinutes,
     totalScrap: scrapRows.reduce((sum, row) => sum + row.scrapQty, 0),
@@ -7772,6 +7786,7 @@ export default function Page() {
     productTypeRows: [],
     exportRows: [],
     stationEfficiencyRows: [],
+    stationTypePerformanceRows: [],
     stationWorkerPerformance: [],
     totalMinutes: 0,
     totalScrap: 0,
@@ -18484,6 +18499,43 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const selectedStationLabel = selectedStationValue === "all" ? "Összes munkaállomás" : selectedStationValue;
     const selectedWorkerLabel = selectedWorkerValue === "all" ? "Összes dolgozó" : selectedWorkerValue;
     const activeWorkerCount = visibleWorkerRows.filter((row) => row.totalMinutes > 0).length;
+
+    const visibleTypePerformanceRows = selectedStationValue === "all"
+      ? dashboardData.stationTypePerformanceRows
+      : dashboardData.stationTypePerformanceRows.filter(
+          (row) => normalizeLooseText(row.stationName) === normalizeLooseText(selectedStationValue)
+        );
+    const dashboardTypeCards: Array<{
+      key: DashboardTrackedPlanType;
+      label: string;
+      plannedOrders: number;
+      completedOrders: number;
+      efficiencyPct: number | null;
+    }> = ([
+      ["standard", "Standard"],
+      ["plusz", "Plusz"],
+      ["extra", "Extra"],
+    ] as Array<[DashboardTrackedPlanType, string]>).map(([key, label]) => {
+      const plannedOrders = visibleTypePerformanceRows.reduce(
+        (sum, row) => sum + row.metrics[key].plannedOrders,
+        0
+      );
+      const completedOrders = visibleTypePerformanceRows.reduce(
+        (sum, row) => sum + row.metrics[key].completedOrders,
+        0
+      );
+      return {
+        key,
+        label,
+        plannedOrders,
+        completedOrders,
+        efficiencyPct: plannedOrders > 0
+          ? Math.round((completedOrders / plannedOrders) * 100)
+          : null,
+      };
+    });
+    const showDashboardTypeCards = visibleTypePerformanceRows.length > 0;
+
     const dashboardCards: Array<{ label: string; value: string | number; helper: string }> = [
       {
         label: "Tervezett állomásfeladatok",
@@ -18769,6 +18821,41 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <div style={{ color: officeTheme.mutedText, fontSize: 12, marginTop: 6 }}>{card.helper}</div>
             </div>
           ))}
+
+          {showDashboardTypeCards && (
+            <div style={{ gridColumn: "1 / -1", display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12, marginTop: 2 }}>
+              {dashboardTypeCards.map((card) => (
+                <div
+                  key={card.key}
+                  style={{
+                    ...cardStyle,
+                    minHeight: 150,
+                    display: "flex",
+                    flexDirection: "column",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <div>
+                    <div style={{ color: officeTheme.mutedText, fontSize: 15, fontWeight: 900 }}>{card.label}</div>
+                    <div style={{ color: officeTheme.textColor, fontSize: 44, fontWeight: 950, lineHeight: 1, marginTop: 10 }}>
+                      {card.completedOrders}
+                    </div>
+                    <div style={{ color: officeTheme.mutedText, fontSize: 12, marginTop: 5 }}>
+                      lezárt rendelés
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, marginTop: 16, paddingTop: 12, borderTop: `1px solid ${officeTheme.borderColor}` }}>
+                    <div style={{ color: officeTheme.mutedText, fontSize: 14 }}>
+                      Terv: <strong style={{ color: officeTheme.textColor }}>{card.plannedOrders}</strong>
+                    </div>
+                    <div style={{ color: officeTheme.accentColor, fontSize: 22, fontWeight: 950 }}>
+                      {card.efficiencyPct === null ? "–" : `${card.efficiencyPct}%`}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(440px, 1fr))", gap: 16, marginBottom: 18 }}>
@@ -23318,6 +23405,204 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
   }
 
+  function normalizeDashboardTrackedPlanType(value: unknown): DashboardTrackedPlanType | null {
+    const normalized = normalizeLooseText(String(value ?? ""));
+    if (normalized === "standard") return "standard";
+    if (normalized === "plusz") return "plusz";
+    if (normalized === "extra") return "extra";
+    return null;
+  }
+
+  function createEmptyDashboardTypeMetrics(): Record<DashboardTrackedPlanType, DashboardTypeMetric> {
+    return {
+      standard: { plannedOrders: 0, completedOrders: 0 },
+      plusz: { plannedOrders: 0, completedOrders: 0 },
+      extra: { plannedOrders: 0, completedOrders: 0 },
+    };
+  }
+
+  async function fetchDashboardStationTypePerformance(
+    range: { startIso: string; endIso: string }
+  ): Promise<DashboardStationTypePerformanceRow[]> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    const stations = getOrderedDashboardStations();
+    if (stations.length === 0) return [];
+
+    const startDateKey = getLocalDateKey(new Date(range.startIso));
+    const endDateKey = getLocalDateKey(new Date(range.endIso));
+    const completedOrdersByStation = new Map<string, Set<string>>();
+    stations.forEach((station) => completedOrdersByStation.set(station, new Set<string>()));
+
+    // A KPI kizárólag a kiválasztott időszakban TÉNYLEGESEN END-del lezárt
+    // rendeléseket számolja. A START created_at dátuma nem számít, ezért
+    // közvetlenül az end_time / end_timestamp mezőkre szűrünk.
+    const completedSelectColumns = "order_number, action, created_at, note, end_timestamp, end_time, machine_id, tok_kesz, nyilo_kesz, reszleges_keszultseg, ajtolapok_kesz, toklec_kesz, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, tok_kesz_at, nyilo_kesz_at, ajtolapok_kesz_at, toklec_kesz_at, kulso_lap_kesz_at, belso_lap_kesz_at, lap_toklec_kesz_at";
+
+    const loadCompletedRowsFromTable = async (sourceTable: "work_logs" | "work_log"): Promise<{ rows: WorkLogRow[]; error: unknown | null }> => {
+      const primary = await supabase
+        .from(sourceTable)
+        .select(completedSelectColumns)
+        .gte("end_time", range.startIso)
+        .lt("end_time", range.endIso)
+        .limit(10000);
+
+      if (primary.error) return { rows: [], error: primary.error };
+
+      // Régebbi sorok kompatibilitása: ha end_time nincs, de end_timestamp igen.
+      const legacy = await supabase
+        .from(sourceTable)
+        .select(completedSelectColumns)
+        .is("end_time", null)
+        .gte("end_timestamp", range.startIso)
+        .lt("end_timestamp", range.endIso)
+        .limit(10000);
+
+      if (legacy.error) {
+        console.warn(`A ${sourceTable}.end_timestamp tartalék lekérdezés nem olvasható:`, legacy.error);
+      }
+
+      return {
+        rows: [
+          ...(((primary.data || []) as WorkLogRow[])),
+          ...(((legacy.data || []) as WorkLogRow[])),
+        ],
+        error: null,
+      };
+    };
+
+    let completedSource = await loadCompletedRowsFromTable("work_logs");
+    if (completedSource.error) {
+      completedSource = await loadCompletedRowsFromTable("work_log");
+    }
+    if (completedSource.error) {
+      throw completedSource.error;
+    }
+
+    const rangeStartMs = new Date(range.startIso).getTime();
+    const rangeEndMs = new Date(range.endIso).getTime();
+    completedSource.rows.forEach((log) => {
+      const orderNumber = String(log.order_number || "").trim();
+      if (!orderNumber || !isFullyCompletedEndLog(log)) return;
+
+      // Mennyiségi részjelentés (pl. 300-ból 150 db) még NEM lezárt rendelés.
+      // Csak akkor számítjuk a Standard/Plusz/Extra teljesítésbe, amikor a
+      // részjelentési lánc maradéka 0-ra futott.
+      const audit = getStructuredNoteMetadata(log.note);
+      const partialRemaining = parseSpreadsheetNumber(audit.reszjelentes_maradek_mennyiseg);
+      if (audit.mennyisegi_reszjelentes === true || (partialRemaining !== null && partialRemaining > 0)) return;
+
+      const endAt = String(log.end_time || log.end_timestamp || "");
+      const endMs = new Date(endAt).getTime();
+      if (!Number.isFinite(endMs) || endMs < rangeStartMs || endMs >= rangeEndMs) return;
+
+      const resolvedStation = resolveLogStation(log, workers);
+      const canonicalStation = stations.find(
+        (station) => normalizeLooseText(station) === normalizeLooseText(resolvedStation)
+      );
+      if (!canonicalStation) return;
+
+      completedOrdersByStation.get(canonicalStation)?.add(orderNumber);
+    });
+
+    const rows = await Promise.all(stations.map(async (station): Promise<DashboardStationTypePerformanceRow | null> => {
+      const tableName = buildStationPlanTableName(station);
+      type DashboardTypePlanSourceRow = {
+        sorszam?: string | number | null;
+        elkeszules_datum?: string | null;
+        tipus?: string | null;
+        adat?: Record<string, unknown> | null;
+      };
+
+      // Ha a *_terv táblában nincs tipus oszlop, ez a lekérdezés hibára fut.
+      // Ilyenkor az adott munkaállomás nem kap Standard/Plusz/Extra boxot.
+      const planResponse = await supabase
+        .from(tableName)
+        .select("sorszam, elkeszules_datum, tipus, adat")
+        .gte("elkeszules_datum", startDateKey)
+        .lt("elkeszules_datum", endDateKey)
+        .limit(10000);
+
+      if (planResponse.error) {
+        console.warn(`A ${tableName} tipus mezője nem olvasható; Standard/Plusz/Extra KPI kihagyva ennél az állomásnál:`, planResponse.error);
+        return null;
+      }
+
+      const metrics = createEmptyDashboardTypeMetrics();
+      const plannedTypeByOrder = new Map<string, DashboardTrackedPlanType>();
+
+      ((planResponse.data || []) as DashboardTypePlanSourceRow[]).forEach((row) => {
+        const orderNumber = String(row.sorszam || "").trim();
+        if (!orderNumber) return;
+        const typeValue = row.tipus ?? row.adat?.tipus ?? null;
+        const trackedType = normalizeDashboardTrackedPlanType(typeValue);
+        if (!trackedType) return;
+        const key = normalizeLooseText(orderNumber);
+        if (!plannedTypeByOrder.has(key)) plannedTypeByOrder.set(key, trackedType);
+      });
+
+      plannedTypeByOrder.forEach((trackedType) => {
+        metrics[trackedType].plannedOrders += 1;
+      });
+
+      const completedOrders = Array.from(completedOrdersByStation.get(station) || []);
+      const completedTypeByOrder = new Map<string, DashboardTrackedPlanType>();
+
+      for (let index = 0; index < completedOrders.length; index += 100) {
+        const chunk = completedOrders.slice(index, index + 100);
+        const completedPlanResponse = await supabase
+          .from(tableName)
+          .select("sorszam, tipus, adat")
+          .in("sorszam", chunk)
+          .limit(10000);
+
+        if (completedPlanResponse.error) {
+          console.warn(`A ${tableName} lezárt rendeléseinek tipus adata nem olvasható:`, completedPlanResponse.error);
+          continue;
+        }
+
+        ((completedPlanResponse.data || []) as DashboardTypePlanSourceRow[]).forEach((row) => {
+          const orderNumber = String(row.sorszam || "").trim();
+          if (!orderNumber) return;
+          const trackedType = normalizeDashboardTrackedPlanType(row.tipus ?? row.adat?.tipus ?? null);
+          if (!trackedType) return;
+          const key = normalizeLooseText(orderNumber);
+          if (!completedTypeByOrder.has(key)) completedTypeByOrder.set(key, trackedType);
+        });
+      }
+
+      completedTypeByOrder.forEach((trackedType) => {
+        metrics[trackedType].completedOrders += 1;
+      });
+
+      // Ha az adott időszakban éppen 0 terv és 0 END van, attól még a boxok
+      // maradjanak láthatók olyan állomáson, amely ténylegesen használja a
+      // Standard / Plusz / Extra tipus mezőt. Egy rövid próbalekérdezéssel ezt
+      // külön ellenőrizzük. Ha csak más tipusok vannak, nem jelenítünk meg értéket.
+      const hasTrackedDataNow = (Object.keys(metrics) as DashboardTrackedPlanType[]).some(
+        (key) => metrics[key].plannedOrders > 0 || metrics[key].completedOrders > 0
+      );
+
+      if (!hasTrackedDataNow) {
+        const typeProbe = await supabase
+          .from(tableName)
+          .select("tipus")
+          .or("tipus.ilike.%standard%,tipus.ilike.%plusz%,tipus.ilike.%extra%")
+          .limit(50);
+
+        if (typeProbe.error) return null;
+        const hasSupportedType = ((typeProbe.data || []) as Array<{ tipus?: string | null }>).some(
+          (row) => normalizeDashboardTrackedPlanType(row.tipus) !== null
+        );
+        if (!hasSupportedType) return null;
+      }
+
+      return { stationName: station, metrics };
+    }));
+
+    return rows.filter((row): row is DashboardStationTypePerformanceRow => row !== null);
+  }
+
   function shiftDashboardPeriod(direction: -1 | 1): void {
     const current = dashboardDate ? new Date(`${dashboardDate}T00:00:00`) : new Date();
     const next = new Date(current);
@@ -23611,9 +23896,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       }
     }
 
-    const [built, stationEfficiencyRows] = await Promise.all([
+    const [built, stationEfficiencyRows, stationTypePerformanceRows] = await Promise.all([
       Promise.resolve(buildDashboardData(calculationLogs, workers, calculationRange)),
       fetchDashboardPlanEfficiency(range, orderFilters),
+      fetchDashboardStationTypePerformance(range),
     ]);
 
     return {
@@ -23623,6 +23909,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       logs: visibleLogs,
       availableOrderNumbers,
       stationEfficiencyRows,
+      stationTypePerformanceRows,
       totalScrap: visibleLogs.reduce((sum, row) => sum + (Number(row.scrap_qty || 0) || 0), 0),
       lastUpdatedAt: new Date().toISOString(),
     };
