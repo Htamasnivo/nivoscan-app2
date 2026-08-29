@@ -14704,92 +14704,181 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return score;
   }
 
-  async function resolveSzerelesPlanDetailRow(
+  type SzerelesMergedPlanSource = {
+    stationName: string;
+    groupName: string;
+    tableName: string;
+    row: Record<string, unknown>;
+  };
+
+  function getSzerelesMergedPlanRowDisplayOrder(row: MachineIdRow, fallbackIndex: number): number {
+    const raw = row["megjelenési_sorrend"]
+      ?? row.megjelenesi_sorrend
+      ?? row.display_order
+      ?? row.sorrend
+      ?? row.id
+      ?? fallbackIndex;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
+  }
+
+  async function loadSzerelesMergedPlanStations(): Promise<Array<{ stationName: string; groupName: string; displayOrder: number }>> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    // A riport mindig a Supabase aktuális machine_id.csoportok beállítását használja,
+    // így egy későbbi csoport-átsoroláshoz nem kell kódot módosítani.
+    const response = await supabase
+      .from("machine_id")
+      .select("*")
+      .order("id", { ascending: true });
+    if (response.error) throw response.error;
+
+    return ((response.data || []) as MachineIdRow[])
+      .map((row, index) => {
+        const stationName = String(row.name ?? row.Name ?? row.machine_name ?? row.machine_id ?? row.megnevezes ?? "").trim();
+        const groupName = String(row.csoportok ?? row.Csoportok ?? "").trim();
+        return {
+          stationName,
+          groupName,
+          groupKey: normalizePlanColumnName(groupName),
+          displayOrder: getSzerelesMergedPlanRowDisplayOrder(row, index),
+          originalIndex: index,
+        };
+      })
+      .filter((item) =>
+        Boolean(item.stationName)
+        && (item.groupKey === "csoport_1" || item.groupKey === "csoport_2")
+      )
+      .sort((left, right) =>
+        left.groupKey.localeCompare(right.groupKey, "hu", { numeric: true })
+        || left.displayOrder - right.displayOrder
+        || left.originalIndex - right.originalIndex
+      )
+      .map(({ stationName, groupName, displayOrder }) => ({ stationName, groupName, displayOrder }));
+  }
+
+  function selectSzerelesMergedPlanCandidate(
+    candidates: Array<Record<string, unknown>>,
+    hintData: Record<string, unknown> | null,
+    hintDate: string,
+    preferredSourceRowId = ""
+  ): Record<string, unknown> | null {
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0];
+
+    return candidates
+      .map((candidate, index) => {
+        const candidateId = String(candidate.id ?? "").trim();
+        const candidateDateRaw = getProductionCardPlanValue(candidate, "elkeszules_datum")
+          ?? getProductionCardPlanValue(candidate, "beepites_datuma");
+        const date = parseSpreadsheetDate(candidateDateRaw) || String(candidateDateRaw || "").slice(0, 10);
+        return {
+          candidate,
+          index,
+          score: scoreSzerelesPlanDetailCandidate(candidate, hintData, hintDate)
+            + (preferredSourceRowId && candidateId === preferredSourceRowId ? 1000 : 0),
+          date,
+        };
+      })
+      .sort((left, right) =>
+        right.score - left.score
+        || right.date.localeCompare(left.date)
+        || left.index - right.index
+      )[0]?.candidate || null;
+  }
+
+  async function resolveSzerelesMergedPlanDetailRows(
     dataSource: ProductionCardTableDataSource,
     rawRow: ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
     fallbackDate: string
-  ): Promise<Record<string, unknown>> {
+  ): Promise<SzerelesMergedPlanSource[]> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
     const orderNumber = getSzerelesPlanDetailOrderNumber(dataSource, rawRow);
     if (!orderNumber) throw new Error("A kiválasztott kártyasorhoz nem található rendelésszám.");
 
-    const directPlanData = getSzerelesPlanDetailDirectPlanData(dataSource, rawRow);
-    const sourceRowId = getSzerelesPlanDetailSourceRowId(dataSource, rawRow);
-
-    if (sourceRowId) {
-      const byId = await supabase
-        .from(ATVETEL_SOURCE_TABLE)
-        .select("*")
-        .eq("id", sourceRowId)
-        .limit(1);
-      if (!byId.error && byId.data?.length) {
-        return (byId.data[0] || {}) as Record<string, unknown>;
-      }
-    }
-
-    // Normál és lemaradási kártyán a planData pontosan az adott *_terv sor.
-    // Ha az ID-alapú friss lekérés nem sikerül, ezt használjuk, hogy ne válasszunk
-    // ugyanazon rendelésszám egy másik tervsorából.
-    if ((dataSource === "production-plan" || dataSource === "backlog") && directPlanData) {
-      return directPlanData;
-    }
-
-    const response = await supabase
-      .from(ATVETEL_SOURCE_TABLE)
-      .select("*")
-      .eq("sorszam", orderNumber)
-      .limit(250);
-    if (response.error) throw response.error;
-
-    const candidates = ((response.data || []) as Array<Record<string, unknown>>);
-    if (candidates.length === 0) {
-      throw new Error(`${orderNumber}: a szereles_terv táblában nem található a rendeléshez tartozó sor.`);
-    }
-    if (candidates.length === 1) return candidates[0];
-
+    const hintData = getSzerelesPlanDetailDirectPlanData(dataSource, rawRow);
     const hintDate = getSzerelesPlanDetailHintDate(dataSource, rawRow, fallbackDate);
-    const scored = candidates
-      .map((candidate, index) => ({
-        candidate,
-        index,
-        score: scoreSzerelesPlanDetailCandidate(candidate, directPlanData, hintDate),
-        date: String(
-          parseSpreadsheetDate(
-            getProductionCardPlanValue(candidate, "elkeszules_datum")
-              ?? getProductionCardPlanValue(candidate, "beepites_datuma")
-          ) || ""
-        ),
-      }))
-      .sort((left, right) =>
-        right.score - left.score
-        || right.date.localeCompare(left.date)
-        || left.index - right.index
-      );
+    const clickedSourceRowId = getSzerelesPlanDetailSourceRowId(dataSource, rawRow);
+    const stations = await loadSzerelesMergedPlanStations();
+    if (stations.length === 0) {
+      throw new Error("A machine_id táblában nem található Csoport 1 vagy Csoport 2 munkaállomás.");
+    }
 
-    return scored[0].candidate;
+    const result: SzerelesMergedPlanSource[] = [];
+    for (const station of stations) {
+      const tableName = getExactProductionCardPlanTableName(station.stationName);
+      const response = await supabase
+        .from(tableName)
+        .select("*")
+        .eq("sorszam", orderNumber)
+        .limit(250);
+
+      if (response.error) {
+        console.warn(`A(z) ${tableName} nem olvasható a rendelési részletezőhöz:`, response.error);
+        continue;
+      }
+
+      const candidates = (response.data || []) as Array<Record<string, unknown>>;
+      const selected = selectSzerelesMergedPlanCandidate(
+        candidates,
+        hintData,
+        hintDate,
+        getStationPlanIdentityKey(station.stationName) === "szereles" ? clickedSourceRowId : ""
+      );
+      if (!selected) continue;
+
+      result.push({
+        stationName: station.stationName,
+        groupName: station.groupName,
+        tableName,
+        row: selected,
+      });
+    }
+
+    // Ha a szereles_terv friss lekérése valamiért nem elérhető, a kártyán már jelen lévő
+    // pontos tervsort nem dobjuk el. Más állomásnál nincs ilyen fallback.
+    if (
+      hintData
+      && (dataSource === "production-plan" || dataSource === "backlog")
+      && !result.some((item) => getStationPlanIdentityKey(item.stationName) === "szereles")
+    ) {
+      result.push({
+        stationName: "Szereles",
+        groupName: "Csoport 2",
+        tableName: ATVETEL_SOURCE_TABLE,
+        row: hintData,
+      });
+    }
+
+    if (result.length === 0) {
+      throw new Error(`${orderNumber}: a Csoport 1 és Csoport 2 *_terv tábláiban nem található a rendeléshez tartozó sor.`);
+    }
+
+    return result;
   }
 
   function getSzerelesPlanDetailFieldLabel(fieldKey: string): string {
     const normalizedKey = normalizePlanColumnName(fieldKey);
-    const known = getStationPlanFieldDefinitions("Szereles").find(
-      (field) => normalizePlanColumnName(field.key) === normalizedKey
-    );
-    if (known) return known.label;
+    const knownLabel = getStationPlanFieldLabel(fieldKey);
+    if (knownLabel && knownLabel.trim().toLowerCase() !== String(fieldKey || "").trim().toLowerCase()) return knownLabel;
 
     const specialLabels: Record<string, string> = {
-      id: "Adatbázis sorazonosító",
-      excel_sorrend: "Excel sorrend",
-      created_at: "Létrehozva",
-      updated_at: "Módosítva",
-      reszjelentes_csoport_id: "Részjelentés csoportazonosító",
-      reszjelentes_allapot: "Részjelentés állapot",
-      reszjelentes_sorszam: "Részjelentés sorszám",
-      reszjelentes_eredeti_mennyiseg: "Eredeti mennyiség",
-      reszjelentes_resz_mennyiseg: "Rész mennyiség",
-      reszjelentes_jelentett_mennyiseg: "Lejelentett mennyiség",
-      reszjelentes_maradek_mennyiseg: "Maradék mennyiség",
-      reszjelentes_osszesitett_elkeszult_mennyiseg: "Összesített elkészült mennyiség",
+      sorszam: "Sorszám",
+      gyartasi_szam: "Gyártási szám",
+      rsz: "RSZ",
+      megnevezes: "Megnevezés",
+      mennyiseg: "Mennyiség",
+      tipus: "Típus",
+      szin: "Szín",
+      elkeszules_datum: "Elkészülés dátuma",
+      kiszallitasi_datum: "Kiszállítási dátum",
+      beepites_datuma: "Beépítési dátum",
+      telephely: "Telephely",
+      atvetel: "Átvétel",
+      normaido: "Normaidő",
+      statusz: "Státusz",
+      megjegyzes: "Megjegyzés",
     };
     if (specialLabels[normalizedKey]) return specialLabels[normalizedKey];
 
@@ -14803,80 +14892,121 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function getSzerelesPlanDetailDisplayValue(fieldKey: string, value: unknown): string {
     if (value === null || value === undefined || value === "") return "–";
     if (typeof value === "boolean") return value ? "Igen" : "Nem";
-    if (fieldKey === "normaido") return formatExcelDuration(value);
+    if (normalizePlanColumnName(fieldKey) === "normaido") return formatExcelDuration(value);
 
     const normalizedKey = normalizePlanColumnName(fieldKey);
-    if (normalizedKey.includes("datum") || normalizedKey.endsWith("_at") || normalizedKey === "created_at" || normalizedKey === "updated_at") {
+    if (normalizedKey.includes("datum") || normalizedKey.endsWith("_date")) {
       const parsedDate = parseSpreadsheetDate(value);
       if (parsedDate) return parsedDate;
-      const rawText = String(value);
-      const asDate = new Date(rawText);
-      if (Number.isFinite(asDate.getTime()) && /[T:\-]/.test(rawText)) return formatDateTime(asDate);
     }
 
     if (typeof value === "object") {
-      try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+      try { return JSON.stringify(value); } catch { return String(value); }
     }
     return String(value);
   }
 
-  function collectSzerelesPlanDetailPdfFields(planRow: Record<string, unknown>): Array<{ key: string; label: string; value: string }> {
-    const nestedData = planRow.adat && typeof planRow.adat === "object" && !Array.isArray(planRow.adat)
-      ? planRow.adat as Record<string, unknown>
-      : {};
-    const valueByNormalizedKey = new Map<string, { key: string; value: unknown }>();
+  function isSzerelesPlanDetailBusinessField(fieldKey: string): boolean {
+    const key = normalizePlanColumnName(fieldKey);
+    if (!key || key === "adat") return false;
+    if (key.startsWith("_")) return false;
+    if (key.startsWith("reszjelentes_")) return false;
 
-    Object.entries(nestedData).forEach(([key, value]) => {
-      const normalizedKey = normalizePlanColumnName(key);
-      if (!normalizedKey) return;
-      valueByNormalizedKey.set(normalizedKey, { key, value });
-    });
-
-    Object.entries(planRow).forEach(([key, value]) => {
-      if (key === "adat") return;
-      const normalizedKey = normalizePlanColumnName(key);
-      if (!normalizedKey) return;
-      const existing = valueByNormalizedKey.get(normalizedKey);
-      if (!existing || hasProductionCardPlanValue(value) || !hasProductionCardPlanValue(existing.value)) {
-        valueByNormalizedKey.set(normalizedKey, { key, value });
-      }
-    });
-
-    const preferredKeys = getStationPlanFieldDefinitions("Szereles").map((field) => normalizePlanColumnName(field.key));
-    const technicalPreferred = [
+    const technicalKeys = new Set([
       "id",
       "excel_sorrend",
+      "source_file",
+      "imported_at",
       "created_at",
       "updated_at",
-      "reszjelentes_csoport_id",
-      "reszjelentes_allapot",
-      "reszjelentes_sorszam",
-      "reszjelentes_eredeti_mennyiseg",
-      "reszjelentes_resz_mennyiseg",
-      "reszjelentes_jelentett_mennyiseg",
-      "reszjelentes_maradek_mennyiseg",
-      "reszjelentes_osszesitett_elkeszult_mennyiseg",
-    ].map(normalizePlanColumnName);
+      "updated_by",
+      "created_by",
+      "terv_sor_id",
+      "source_row_id",
+      "import_session_id",
+      "uuid",
+    ]);
+    return !technicalKeys.has(key);
+  }
 
-    const orderedNormalizedKeys = [
-      ...preferredKeys.filter((key) => valueByNormalizedKey.has(key)),
-      ...Array.from(valueByNormalizedKey.keys())
-        .filter((key) => !preferredKeys.includes(key) && !technicalPreferred.includes(key))
-        .sort((left, right) => left.localeCompare(right, "hu")),
-      ...technicalPreferred.filter((key) => valueByNormalizedKey.has(key)),
+  function collectSzerelesMergedPlanDetailPdfFields(
+    sources: SzerelesMergedPlanSource[]
+  ): Array<{ key: string; label: string; value: string }> {
+    type FieldSourceValue = { stationName: string; rawValue: unknown; displayValue: string };
+    const valuesByKey = new Map<string, { key: string; values: FieldSourceValue[] }>();
+    const preferredKeys: string[] = [];
+
+    const rememberPreferredKey = (key: string): void => {
+      const normalized = normalizePlanColumnName(key);
+      if (!normalized || !isSzerelesPlanDetailBusinessField(normalized)) return;
+      if (!preferredKeys.includes(normalized)) preferredKeys.push(normalized);
+    };
+
+    [
+      "sorszam",
+      "gyartasi_szam",
+      "rsz",
+      "megnevezes",
+      "tipus",
+      "mennyiseg",
+      "szin",
+      "elkeszules_datum",
+      "kiszallitasi_datum",
+      "beepites_datuma",
+      "telephely",
+      "atvetel",
+      "statusz",
+      "megjegyzes",
+    ].forEach(rememberPreferredKey);
+
+    sources.forEach((source) => {
+      getStationPlanFieldDefinitions(source.stationName).forEach((field) => rememberPreferredKey(field.key));
+
+      const nestedData = source.row.adat && typeof source.row.adat === "object" && !Array.isArray(source.row.adat)
+        ? source.row.adat as Record<string, unknown>
+        : {};
+      const mergedStationRow = { ...nestedData, ...source.row } as Record<string, unknown>;
+      delete mergedStationRow.adat;
+
+      Object.entries(mergedStationRow).forEach(([rawKey, rawValue]) => {
+        const normalizedKey = normalizePlanColumnName(rawKey);
+        if (!isSzerelesPlanDetailBusinessField(normalizedKey)) return;
+        if (!hasProductionCardPlanValue(rawValue)) return;
+
+        const displayValue = getSzerelesPlanDetailDisplayValue(rawKey, rawValue);
+        const existing = valuesByKey.get(normalizedKey) || { key: rawKey, values: [] };
+        const duplicate = existing.values.some((item) => normalizeLooseText(item.displayValue) === normalizeLooseText(displayValue));
+        if (!duplicate) {
+          existing.values.push({ stationName: source.stationName, rawValue, displayValue });
+        }
+        valuesByKey.set(normalizedKey, existing);
+      });
+    });
+
+    const orderedKeys = [
+      ...preferredKeys.filter((key) => valuesByKey.has(key)),
+      ...Array.from(valuesByKey.keys())
+        .filter((key) => !preferredKeys.includes(key))
+        .sort((left, right) => getSzerelesPlanDetailFieldLabel(left).localeCompare(getSzerelesPlanDetailFieldLabel(right), "hu")),
     ];
 
-    return Array.from(new Set(orderedNormalizedKeys)).map((normalizedKey) => {
-      const entry = valueByNormalizedKey.get(normalizedKey)!;
+    return Array.from(new Set(orderedKeys)).map((normalizedKey) => {
+      const entry = valuesByKey.get(normalizedKey)!;
+      const value = entry.values.length <= 1
+        ? entry.values[0]?.displayValue || "–"
+        : entry.values.map((item) => `${item.stationName}: ${item.displayValue}`).join("\n");
       return {
         key: entry.key,
         label: getSzerelesPlanDetailFieldLabel(entry.key),
-        value: getSzerelesPlanDetailDisplayValue(entry.key, entry.value),
+        value,
       };
     });
   }
 
-  async function createSzerelesPlanDetailPdfBlob(planRow: Record<string, unknown>, orderNumber: string): Promise<Blob> {
+  async function createSzerelesPlanDetailPdfBlob(
+    sources: SzerelesMergedPlanSource[],
+    orderNumber: string
+  ): Promise<Blob> {
     const jspdf = await waitForJsPdf();
     let logoDataUrl = "";
     let logoSize: { width: number; height: number } | null = null;
@@ -14884,7 +15014,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       logoDataUrl = await loadDashboardPdfCompanyLogo();
       logoSize = await getPdfImageNaturalSize(logoDataUrl);
     } catch {
-      // A részletező logó nélkül is használható marad.
+      // A részletező a NÍVÓ szöveges fallback logóval is elkészül.
     }
 
     const doc = new jspdf.jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
@@ -14893,7 +15023,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     try {
       pdf.setProperties?.({
         title: `NÍVÓ rendelési részletező – ${orderNumber}`,
-        subject: "Szerelés _terv rendelési részletező",
+        subject: "Csoport 1 + Csoport 2 összevont _terv rendelési részletező",
         author: "NÍVÓ",
       });
     } catch { /* no-op */ }
@@ -14903,103 +15033,122 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const marginX = 34;
     const contentWidth = pageWidth - marginX * 2;
     const footerTop = pageHeight - 34;
-    const navy = [15, 23, 42] as const;
-    const blue = [37, 99, 235] as const;
-    const cyan = [14, 165, 233] as const;
-    const ink = [30, 41, 59] as const;
-    const muted = [100, 116, 139] as const;
-    const border = [203, 213, 225] as const;
-    const pale = [248, 250, 252] as const;
+    const black = [18, 18, 18] as const;
+    const dark = [38, 38, 38] as const;
+    const charcoal = [66, 66, 66] as const;
+    const mid = [112, 112, 112] as const;
+    const border = [190, 190, 190] as const;
+    const pale = [244, 244, 244] as const;
+    const veryPale = [250, 250, 250] as const;
     const white = [255, 255, 255] as const;
+    const yellowV = [245, 180, 0] as const;
     const generatedAt = formatDateTime(new Date());
-    const fields = collectSzerelesPlanDetailPdfFields(planRow);
+    const fields = collectSzerelesMergedPlanDetailPdfFields(sources);
+    const stationNames = sources.map((source) => source.stationName);
+
+    const drawFallbackLogo = (): void => {
+      doc.setFillColor(...black);
+      pdf.roundedRect(marginX, 20, 88, 48, 4, 4, "F");
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(19);
+      doc.setTextColor(...white);
+      doc.text("NÍ", marginX + 9, 51);
+      const niWidth = Number(pdf.getTextWidth?.("NÍ") || 22);
+      doc.setTextColor(...yellowV);
+      doc.text("V", marginX + 9 + niWidth + 1, 51);
+      const vWidth = Number(pdf.getTextWidth?.("V") || 13);
+      doc.setTextColor(...white);
+      doc.text("Ó", marginX + 9 + niWidth + vWidth + 2, 51);
+    };
 
     const drawHeader = (continued = false): number => {
-      doc.setFillColor(...navy);
-      pdf.rect(0, 0, pageWidth, 102, "F");
-      doc.setFillColor(...blue);
-      pdf.rect(0, 98, pageWidth, 4, "F");
+      doc.setFillColor(...black);
+      pdf.rect(0, 0, pageWidth, 100, "F");
+      doc.setFillColor(...charcoal);
+      pdf.rect(0, 96, pageWidth, 4, "F");
 
       if (logoDataUrl && logoSize) {
-        const maxW = 92;
-        const maxH = 44;
+        const maxW = 96;
+        const maxH = 48;
         const ratio = Math.min(maxW / Math.max(1, logoSize.width), maxH / Math.max(1, logoSize.height));
         const w = Math.max(1, logoSize.width * ratio);
         const h = Math.max(1, logoSize.height * ratio);
         try {
-          pdf.addImage(logoDataUrl, "PNG", marginX, 22 + (maxH - h) / 2, w, h, undefined, "FAST");
+          pdf.addImage(logoDataUrl, "PNG", marginX, 20 + (maxH - h) / 2, w, h, undefined, "FAST");
         } catch {
-          try { pdf.addImage(logoDataUrl, marginX, 22 + (maxH - h) / 2, w, h); } catch { /* no-op */ }
+          try { pdf.addImage(logoDataUrl, marginX, 20 + (maxH - h) / 2, w, h); } catch { drawFallbackLogo(); }
         }
       } else {
-        doc.setFillColor(...cyan);
-        pdf.roundedRect(marginX, 23, 58, 42, 7, 7, "F");
-        doc.setTextColor(...white);
-        doc.setFont(PDF_FONT_FAMILY, "bold");
-        doc.setFontSize(15);
-        doc.text("NÍVÓ", marginX + 10, 49);
+        drawFallbackLogo();
       }
 
       doc.setTextColor(...white);
       doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.setFontSize(18);
-      doc.text(continued ? "Rendelési részletező – folytatás" : "Szerelési rendelés részletező", 155, 38);
+      doc.setFontSize(17.5);
+      doc.text(continued ? "Rendelési részletező – folytatás" : "Rendelési részletező", 155, 34);
       doc.setFont(PDF_FONT_FAMILY, "normal");
-      doc.setFontSize(9.5);
-      doc.text("Forrás: public.szereles_terv · A kiválasztott kártyasor részletes adatai", 155, 56);
+      doc.setFontSize(9.2);
+      doc.text("Csoport 1 + Csoport 2 · összevont termelési tervadatok", 155, 51);
+      doc.setTextColor(210, 210, 210);
+      doc.setFontSize(7.8);
+      const stationLine = pdf.splitTextToSize(`Forrásállomások: ${stationNames.join(", ")}`, 390) as string[];
+      doc.text(stationLine.slice(0, 2), 155, 64);
 
-      doc.setFillColor(30, 41, 59);
-      pdf.roundedRect(155, 66, 260, 24, 6, 6, "F");
+      doc.setFillColor(...dark);
+      pdf.roundedRect(155, 73, 280, 20, 4, 4, "F");
+      doc.setTextColor(...white);
       doc.setFont(PDF_FONT_FAMILY, "bold");
-      doc.setFontSize(11.5);
-      doc.text(`Rendelésszám: ${orderNumber}`, 166, 82);
+      doc.setFontSize(10.8);
+      doc.text(`Rendelésszám: ${orderNumber}`, 166, 87);
       return 126;
     };
 
     let y = drawHeader(false);
-    doc.setTextColor(...ink);
+    doc.setTextColor(...black);
     doc.setFont(PDF_FONT_FAMILY, "bold");
     doc.setFontSize(12.5);
-    doc.text("_terv adatok", marginX, y);
-    y += 12;
-    doc.setDrawColor(...border);
-    doc.setLineWidth(0.8);
+    doc.text("Összevont rendelési adatok", marginX, y);
+    y += 11;
+    doc.setDrawColor(...charcoal);
+    doc.setLineWidth(1);
     doc.line(marginX, y, marginX + contentWidth, y);
     y += 13;
 
     const labelWidth = 176;
-    const gap = 12;
-    const valueX = marginX + labelWidth + gap;
-    const valueWidth = contentWidth - labelWidth - gap;
+    const valueX = marginX + labelWidth;
+    const valueWidth = contentWidth - labelWidth;
 
     fields.forEach((field, index) => {
       const valueLines = pdf.splitTextToSize(field.value || "–", valueWidth - 18) as string[];
       const labelLines = pdf.splitTextToSize(field.label, labelWidth - 18) as string[];
       const lineCount = Math.max(valueLines.length, labelLines.length, 1);
-      const rowHeight = Math.max(31, 14 + lineCount * 11.5);
+      const rowHeight = Math.max(30, 13 + lineCount * 11.5);
 
       if (y + rowHeight > footerTop - 12) {
         pdf.addPage();
         y = drawHeader(true);
       }
 
-      const rowFill = index % 2 === 0 ? pale : white;
-      doc.setFillColor(rowFill[0], rowFill[1], rowFill[2]);
+      const rowFill = index % 2 === 0 ? pale : veryPale;
+      doc.setFillColor(...rowFill);
       doc.setDrawColor(...border);
-      pdf.roundedRect(marginX, y, contentWidth, rowHeight, 4, 4, "FD");
+      pdf.rect(marginX, y, contentWidth, rowHeight, "FD");
+      doc.setFillColor(232, 232, 232);
+      pdf.rect(marginX, y, labelWidth, rowHeight, "F");
+      doc.setDrawColor(...border);
       doc.line(marginX + labelWidth, y, marginX + labelWidth, y + rowHeight);
 
-      doc.setTextColor(...muted);
+      doc.setTextColor(...dark);
       doc.setFont(PDF_FONT_FAMILY, "bold");
       doc.setFontSize(8.8);
       doc.text(labelLines, marginX + 9, y + 17);
 
-      doc.setTextColor(...ink);
+      doc.setTextColor(...black);
       doc.setFont(PDF_FONT_FAMILY, "normal");
       doc.setFontSize(9.3);
-      doc.text(valueLines, valueX + 6, y + 17);
+      doc.text(valueLines, valueX + 9, y + 17);
 
-      y += rowHeight + 5;
+      y += rowHeight + 4;
     });
 
     const pageCount = Number(pdf.internal?.getNumberOfPages?.() || 1);
@@ -15007,10 +15156,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       pdf.setPage(pageIndex);
       doc.setDrawColor(...border);
       doc.line(marginX, footerTop, marginX + contentWidth, footerTop);
-      doc.setTextColor(...muted);
+      doc.setTextColor(...mid);
       doc.setFont(PDF_FONT_FAMILY, "normal");
       doc.setFontSize(7.8);
-      doc.text(`NÍVÓ · Szerelés _terv részletező · Generálva: ${generatedAt}`, marginX, footerTop + 15);
+      doc.text(`NÍVÓ · Csoport 1 + 2 összevont rendelési részletező · Generálva: ${generatedAt}`, marginX, footerTop + 15);
       doc.text(`${pageIndex}/${pageCount}`, marginX + contentWidth, footerTop + 15, { align: "right" });
     }
 
@@ -15040,19 +15189,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     try {
       previewWindow.document.title = `Rendelési részletező – ${orderNumber}`;
-      previewWindow.document.body.innerHTML = `<div style="font-family:Arial,sans-serif;padding:32px;color:#0f172a"><h2>Rendelési részletező készítése…</h2><p>${orderNumber}</p></div>`;
+      previewWindow.document.body.innerHTML = `<div style="font-family:Arial,sans-serif;padding:32px;color:#222;background:#f5f5f5;min-height:100vh"><h2 style="color:#111">Összevont rendelési részletező készítése…</h2><p>${orderNumber}</p><p style="color:#666">Csoport 1 + Csoport 2 tervadatainak betöltése.</p></div>`;
     } catch { /* no-op */ }
 
     try {
-      const planRow = await resolveSzerelesPlanDetailRow(dataSource, rawRow, fallbackDate);
-      const blob = await createSzerelesPlanDetailPdfBlob(planRow, orderNumber);
+      const planSources = await resolveSzerelesMergedPlanDetailRows(dataSource, rawRow, fallbackDate);
+      const blob = await createSzerelesPlanDetailPdfBlob(planSources, orderNumber);
       const blobUrl = URL.createObjectURL(blob);
       previewWindow.location.replace(blobUrl);
       window.setTimeout(() => URL.revokeObjectURL(blobUrl), 5 * 60 * 1000);
     } catch (error) {
       const detail = normalizeError(error);
       try {
-        previewWindow.document.body.innerHTML = `<div style="font-family:Arial,sans-serif;padding:32px;color:#991b1b"><h2>A PDF nem készíthető el</h2><p>${String(detail).replace(/[<>&]/g, "")}</p></div>`;
+        previewWindow.document.body.innerHTML = `<div style="font-family:Arial,sans-serif;padding:32px;color:#7f1d1d;background:#f5f5f5;min-height:100vh"><h2>A PDF nem készíthető el</h2><p>${String(detail).replace(/[<>&]/g, "")}</p></div>`;
       } catch { /* no-op */ }
       setMessage({ type: "error", text: `A szerelési rendelés részletező PDF-je nem készíthető el: ${detail}` });
     }
