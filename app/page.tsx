@@ -863,6 +863,8 @@ type AtvetelMonitorRow = {
   key: string;
   orderNumber: string;
   beepitesiDatum: string;
+  telephely: string;
+  atvetel: string;
   productionStatus: ProductionMonitorStatus;
   productionStatusLabel: string;
   persisted: AtvetelCurrentRow | null;
@@ -1843,6 +1845,8 @@ const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[
     { key: "foliazo", label: "fóliázó", dataType: "text" },
     { key: "raktar", label: "raktár", dataType: "text" },
     { key: "elszallitos_telephely", label: "elszállítós_telephely", dataType: "text" },
+    { key: "telephely", label: "telephely", dataType: "text" },
+    { key: "atvetel", label: "átvétel", dataType: "text" },
     { key: "beepites_datuma", label: "beépítés dátuma", dataType: "date" },
     { key: "statusz", label: "Státusz", dataType: "text" },
   ],
@@ -17365,6 +17369,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return parseSpreadsheetDate(rawValue) || valueAsText(rawValue).slice(0, 10);
   }
 
+  function getAtvetelTelephely(row: Record<string, unknown>): string {
+    return valueAsText(
+      readAtvetelPlanValue(row, [
+        "telephely",
+        "Telephely",
+      ])
+    ).trim();
+  }
+
+  function getAtvetelSourceAtvetel(row: Record<string, unknown>): string {
+    return valueAsText(
+      readAtvetelPlanValue(row, [
+        "atvetel",
+        "átvétel",
+        "Atvetel",
+        "Átvétel",
+      ])
+    ).trim();
+  }
+
   async function fetchAllAtvetelSourceRows(): Promise<Array<Record<string, unknown>>> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
@@ -17419,12 +17443,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       const sourceByOrder = new Map<
         string,
-        { orderNumber: string; beepitesiDatum: string }
+        { orderNumber: string; beepitesiDatum: string; telephely: string; atvetel: string }
       >();
 
       sourceRows.forEach((rawRow) => {
         const orderNumber = getAtvetelSourceOrderNumber(rawRow);
         const beepitesiDatum = getAtvetelInstallationDate(rawRow);
+        const telephely = getAtvetelTelephely(rawRow);
+        const atvetel = getAtvetelSourceAtvetel(rawRow);
 
         if (!orderNumber) return;
         if (!/^\d{4}-\d{2}-\d{2}$/.test(beepitesiDatum)) return;
@@ -17444,7 +17470,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         // Ha valamiért több szereles_terv sor van, a legkorábbi,
         // kiválasztott tartományba eső beépítési dátumot tartjuk meg.
         if (!existing || beepitesiDatum < existing.beepitesiDatum) {
-          sourceByOrder.set(key, { orderNumber, beepitesiDatum });
+          sourceByOrder.set(key, { orderNumber, beepitesiDatum, telephely, atvetel });
         }
       });
 
@@ -17559,6 +17585,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           key: `${normalizeLooseText(sourceRow.orderNumber)}|${sourceRow.beepitesiDatum}`,
           orderNumber: sourceRow.orderNumber,
           beepitesiDatum: sourceRow.beepitesiDatum,
+          telephely: sourceRow.telephely,
+          atvetel: sourceRow.atvetel,
           productionStatus: monitorCell.status,
           productionStatusLabel: monitorCell.label,
           persisted: currentByOrder.get(normalizeLooseText(sourceRow.orderNumber)) || null,
@@ -18025,12 +18053,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             </div>
 
             <div style={{ overflowX: "auto", maxHeight: "calc(100vh - 310px)", overflowY: "auto", border: `1px solid ${officeTheme.borderColor}`, borderRadius: 12 }}>
-              <table style={{ width: "100%", minWidth: 1160, borderCollapse: "collapse" }}>
+              <table style={{ width: "100%", minWidth: 1420, borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
                     <th style={tableHeaderStyle}>Rendelésszám</th>
                     <th style={tableHeaderStyle}>Beépítési dátum</th>
                     <th style={tableHeaderStyle}>Ajtó állapota</th>
+                    <th style={tableHeaderStyle}>Telephely</th>
+                    <th style={tableHeaderStyle}>Átvétel</th>
                     <th style={{ ...tableHeaderStyle, textAlign: "center" }}>Folyamatban</th>
                     <th style={{ ...tableHeaderStyle, textAlign: "center" }}>Átvette</th>
                     <th style={tableHeaderStyle}>Megjegyzés</th>
@@ -18040,7 +18070,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <tbody>
                   {visibleRows.length === 0 ? (
                     <tr>
-                      <td colSpan={7} style={{ ...tableCellStyle, textAlign: "center", padding: 30, color: officeTheme.mutedText }}>
+                      <td colSpan={9} style={{ ...tableCellStyle, textAlign: "center", padding: 30, color: officeTheme.mutedText }}>
                         {atvetelLoading
                           ? "Átvételi sorok betöltése..."
                           : "A kiválasztott beépítési dátumtartományban nincs megjeleníthető szereles_terv sor."}
@@ -18069,6 +18099,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                         <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{row.beepitesiDatum}</td>
                         <td style={tableCellStyle}>
                           <span style={statusStyle(row.productionStatus)}>{row.productionStatusLabel}</span>
+                        </td>
+                        <td style={{ ...tableCellStyle, minWidth: 150, fontWeight: 800 }}>
+                          {row.telephely || "—"}
+                        </td>
+                        <td style={{ ...tableCellStyle, minWidth: 150, fontWeight: 800 }}>
+                          {row.atvetel || "—"}
                         </td>
                         <td style={{ ...tableCellStyle, textAlign: "center" }}>
                           <input
