@@ -11234,17 +11234,22 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return;
     }
 
-    const selectedStations = machineOptions.filter((station) =>
+    const explicitlySelectedStations = machineOptions.filter((station) =>
       prioritySelectedStations.some(
         (selected) => normalizeLooseText(selected) === normalizeLooseText(station)
       )
     );
+    const allProductionStations = machineOptions.filter(
+      (station) =>
+        normalizeLooseText(station) !== normalizeLooseText(DEFAULT_MACHINE_ID)
+        && !normalizeLooseText(station).includes("iroda")
+    );
+    const selectedStations = explicitlySelectedStations.length > 0
+      ? explicitlySelectedStations
+      : allProductionStations;
 
     if (selectedStations.length === 0) {
-      setMessage({
-        type: "error",
-        text: "A prioritási Excel exportálása előtt válassz ki legalább egy munkaállomást.",
-      });
+      setMessage({ type: "error", text: "Nincs exportálható prioritási munkaállomás." });
       return;
     }
 
@@ -11253,9 +11258,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     try {
       const XLSX = await waitForXlsx();
       const today = getLocalDateKey(new Date());
+      const workbook = XLSX.utils.book_new();
 
       for (const stationName of selectedStations) {
-        // Minden kijelölt állomás külön prioritási Excel fájlt kap.
+        // Egy közös XLSX-en belül minden állomás külön munkafület kap.
+        // Munkafületenként külön session marad, így visszatöltéskor pontosan
+        // ahhoz az állomáshoz kerül prioritás, amelyik munkafülön szerepel a sor.
         const definitions = getStationPlanFieldDefinitions(stationName);
 
         const { data: session, error: sessionError } = await supabase
@@ -11313,25 +11321,22 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           { width: 42 },
         ];
 
-        const workbook = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(workbook, worksheet, stationName);
-
-        const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
-        const safeStationName = normalizePlanColumnName(stationName) || "munkaallomas";
-
-        downloadBlob(
-          `Prioritasi_${safeStationName}_${today}.xlsx`,
-          new Blob([output], {
-            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-          }),
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        );
       }
+
+      const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+      downloadBlob(
+        `Prioritasi_minta_${today}.xlsx`,
+        new Blob([output], {
+          type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
 
       setPriorityLastExportAt(new Date().toISOString());
       setMessage({
         type: "success",
-        text: `${selectedStations.length} külön prioritási Excel elkészült: ${selectedStations.join(", ")}. Minden fájl csak a saját munkaállomás mezőit és hozzárendelését tartalmazza.`,
+        text: `Egy prioritási Excel elkészült ${selectedStations.length} munkafüllel: ${selectedStations.join(", ")}.`,
       });
     } catch (error) {
       console.error("Prioritási Excel export hiba:", error);
@@ -11364,239 +11369,260 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     try {
       const XLSX = await waitForXlsx();
       const workbook = XLSX.read(await selectedFile.arrayBuffer(), { type: "array" });
-      const sheetName = workbook.SheetNames[0];
-      if (!sheetName) throw new Error("Az Excel nem tartalmaz munkafület.");
-      const worksheet = workbook.Sheets[sheetName];
-      const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, {
-        defval: null,
-        raw: true,
-      });
-
-      if (rawRows.length === 0) throw new Error("A prioritási Excel nem tartalmaz adatot.");
-
-      const normalizedRows = rawRows.map((row) => {
-        const normalized: Record<string, unknown> = {};
-        Object.entries(row || {}).forEach(([key, value]) => {
-          normalized[normalizePlanColumnName(key)] = value;
-        });
-        return normalized;
-      });
-
-      const sessionId = normalizedRows
-        .map((row) => String(row[normalizePlanColumnName(PRIORITY_TEMPLATE_SESSION_HEADER)] || "").trim())
-        .find(Boolean);
-
-      if (!sessionId) {
-        throw new Error("A fájlból hiányzik a prioritási export azonosítója. Kérlek a rendszerből exportált prioritási Excel fájlt töltsd vissza.");
-      }
-
-      const { data: sessionData, error: sessionError } = await supabase
-        .from(PRIORITY_IMPORT_SESSIONS_TABLE)
-        .select("id, station_names, field_keys, field_labels, created_at")
-        .eq("id", sessionId)
-        .single();
-
-      if (sessionError) throw sessionError;
-      const session = sessionData as PriorityImportSessionRow;
-      const stationNames = Array.isArray(session.station_names)
-        ? session.station_names.map((station) => String(station || "").trim()).filter(Boolean)
-        : [];
-      if (stationNames.length === 0) throw new Error("Ehhez a prioritási exporthoz nincs eltárolt munkaállomás.");
-
-      const definitions = getPrioritySelectedStationUnionDefinitions(stationNames);
-      const orderHeaderKey = normalizePlanColumnName(PRIORITY_TEMPLATE_ORDER_HEADER);
-      const reasonHeaderKey = normalizePlanColumnName(PRIORITY_TEMPLATE_REASON_HEADER);
-      const sessionHeaderKey = normalizePlanColumnName(PRIORITY_TEMPLATE_SESSION_HEADER);
-
-      const parsedOrders: Array<{
-        orderNumber: string;
-        reason: string;
-        data: Record<string, unknown>;
-      }> = [];
-
-      normalizedRows.forEach((row, index) => {
-        const meaningfulValues = Object.entries(row)
-          .filter(([key]) => key !== sessionHeaderKey)
-          .map(([, value]) => value)
-          .filter((value) => value !== null && value !== undefined && String(value).trim() !== "");
-        if (meaningfulValues.length === 0) return;
-
-        // Az exportált mintasor soha nem importálódhat be prioritási rendelésként.
-        const rawExplicitOrderNumber = String(row[orderHeaderKey] || "").trim();
-        if (normalizeLooseText(rawExplicitOrderNumber).startsWith("minta")) return;
-
-        const data: Record<string, unknown> = {};
-        definitions.forEach((definition) => {
-          const rawValue = row[definition.key];
-          if (definition.dataType === "date") {
-            data[definition.key] = rawValue === null || rawValue === undefined || String(rawValue).trim() === ""
-              ? null
-              : parseSpreadsheetDate(rawValue);
-          } else if (definition.dataType === "integer") {
-            data[definition.key] = parseSpreadsheetNumber(rawValue);
-          } else {
-            data[definition.key] = definition.key === "normaido"
-              ? formatExcelDuration(rawValue)
-              : (rawValue === null || rawValue === undefined ? null : String(rawValue).trim() || null);
-          }
-        });
-
-        const explicitOrderNumber = String(row[orderHeaderKey] || "").trim();
-        const fallbackOrderNumber = [
-          data.sorszam,
-          data.gyartasi_szam,
-          data.gyartasi_szam_projekt_neve,
-          data.rsz,
-        ].map((value) => String(value || "").trim()).find(Boolean) || "";
-        const orderNumber = explicitOrderNumber || fallbackOrderNumber;
-
-        if (!orderNumber) {
-          throw new Error(`A prioritási Excel ${index + 2}. sorában nincs rendelésszám.`);
-        }
-
-        parsedOrders.push({
-          orderNumber,
-          reason: String(row[reasonHeaderKey] || "").trim(),
-          data,
-        });
-      });
-
-      if (parsedOrders.length === 0) throw new Error("A prioritási Excelben nincs importálható rendelés.");
+      if (workbook.SheetNames.length === 0) throw new Error("Az Excel nem tartalmaz munkafület.");
 
       let createdCount = 0;
       let updatedCount = 0;
+      let importableCount = 0;
+      const importedStations = new Set<string>();
+      const importedSessionIds = new Set<string>();
 
-      for (const incoming of parsedOrders) {
-        const { data: existingRows, error: existingError } = await supabase
-          .from(PRIORITY_ORDERS_TABLE)
-          .select("id, order_number, is_active, completed_at, data")
-          .ilike("order_number", incoming.orderNumber)
-          .limit(1);
-        if (existingError) throw existingError;
+      // Az egyetlen prioritási XLSX minden munkafülét feldolgozzuk.
+      // Minden munkafül a saját rejtett session azonosítójából kapja meg a
+      // munkaállomás-hozzárendelést, ezért a munkafülek egymástól függetlenek.
+      for (const sheetName of workbook.SheetNames) {
+        const worksheet = workbook.Sheets[sheetName];
+        if (!worksheet) continue;
 
-        const existing = ((existingRows || [])[0] || null) as {
-          id: string;
-          order_number?: string | null;
-          is_active?: boolean | null;
-          completed_at?: string | null;
-          data?: Record<string, unknown> | null;
-        } | null;
+        const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, {
+          defval: null,
+          raw: true,
+        });
+        if (rawRows.length === 0) continue;
 
-        let priorityOrderId = "";
-        const wasActive = Boolean(existing?.is_active);
+        const normalizedRows = rawRows.map((row) => {
+          const normalized: Record<string, unknown> = {};
+          Object.entries(row || {}).forEach(([key, value]) => {
+            normalized[normalizePlanColumnName(key)] = value;
+          });
+          return normalized;
+        });
 
-        if (!existing) {
-          const { data: inserted, error: insertError } = await supabase
-            .from(PRIORITY_ORDERS_TABLE)
-            .insert([{
-              order_number: incoming.orderNumber,
-              priority_reason: incoming.reason || null,
-              data: {
-                ...(
-                  existing?.data
-                  && typeof existing.data === "object"
-                  && !Array.isArray(existing.data)
-                    ? existing.data
-                    : {}
-                ),
-                ...incoming.data,
-              },
-              import_session_id: sessionId,
-              source_file: selectedFile.name,
-              is_active: true,
-              created_by_worker_id: activeWorker?.id ?? null,
-              created_by_worker_name: activeWorker?.["Teljes nev"] || null,
-            }])
-            .select("id")
-            .single();
-          if (insertError) throw insertError;
-          priorityOrderId = String((inserted as { id?: string } | null)?.id || "");
-          createdCount += 1;
-        } else {
-          priorityOrderId = existing.id;
-          const { error: updateError } = await supabase
-            .from(PRIORITY_ORDERS_TABLE)
-            .update({
-              order_number: incoming.orderNumber,
-              priority_reason: incoming.reason || null,
-              // Munkaállomásonként külön prioritási Excel esetén az új fájl
-              // nem törölheti a korábban más állomásból beimportált mezőket.
-              data: {
-                ...(
-                  existing?.data
-                  && typeof existing.data === "object"
-                  && !Array.isArray(existing.data)
-                    ? existing.data
-                    : {}
-                ),
-                ...incoming.data,
-              },
-              import_session_id: sessionId,
-              source_file: selectedFile.name,
-              is_active: true,
-              completed_at: wasActive ? existing.completed_at || null : null,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", priorityOrderId);
-          if (updateError) throw updateError;
-          updatedCount += 1;
+        const sessionHeaderKey = normalizePlanColumnName(PRIORITY_TEMPLATE_SESSION_HEADER);
+        const sessionId = normalizedRows
+          .map((row) => String(row[sessionHeaderKey] || "").trim())
+          .find(Boolean);
+
+        if (!sessionId) {
+          throw new Error(`${sheetName}: hiányzik a prioritási export azonosítója. Kérlek a rendszerből exportált prioritási Excel munkafület töltsd vissza.`);
         }
 
-        if (!priorityOrderId) throw new Error(`${incoming.orderNumber}: a prioritási rendelés azonosítója hiányzik.`);
+        const { data: sessionData, error: sessionError } = await supabase
+          .from(PRIORITY_IMPORT_SESSIONS_TABLE)
+          .select("id, station_names, field_keys, field_labels, created_at")
+          .eq("id", sessionId)
+          .single();
+        if (sessionError) throw sessionError;
 
-        const { data: existingStationData, error: existingStationError } = await supabase
-          .from(PRIORITY_ORDER_STATIONS_TABLE)
-          .select("id, station_name, status")
-          .eq("priority_order_id", priorityOrderId)
-          .limit(10000);
-        if (existingStationError) throw existingStationError;
-
-        const existingStations = (existingStationData || []) as Array<{
-          id: string;
-          station_name?: string | null;
-          status?: string | null;
-        }>;
-
-        if (!wasActive && existingStations.length > 0) {
-          const { error: deleteResetError } = await supabase
-            .from(PRIORITY_ORDER_STATIONS_TABLE)
-            .delete()
-            .eq("priority_order_id", priorityOrderId);
-          if (deleteResetError) throw deleteResetError;
-        } else if (wasActive) {
-          // Az új munkaállomásonkénti prioritási Excel import NEM törölheti
-          // a korábban már ugyanahhoz a rendeléshez felvett más állomásokat.
-          // A most feltöltött fájl kizárólag a saját állomását egészíti ki.
+        const session = sessionData as PriorityImportSessionRow;
+        const sessionStationNames = Array.isArray(session.station_names)
+          ? session.station_names.map((station) => String(station || "").trim()).filter(Boolean)
+          : [];
+        if (sessionStationNames.length === 0) {
+          throw new Error(`${sheetName}: ehhez a prioritási exporthoz nincs eltárolt munkaállomás.`);
         }
 
-        const currentStationKeys = wasActive
-          ? new Set(existingStations.map((station) => normalizeLooseText(station.station_name)))
-          : new Set<string>();
+        // Az új több-munkafüles export minden laphoz egyetlen állomást tárol.
+        // Régi, több állomást tartalmazó exporttal is kompatibilisek maradunk.
+        const matchedSheetStation = sessionStationNames.find(
+          (station) => normalizeLooseText(station) === normalizeLooseText(sheetName)
+        );
+        const stationNames = matchedSheetStation ? [matchedSheetStation] : sessionStationNames;
+        const definitions = getPrioritySelectedStationUnionDefinitions(stationNames);
+        const orderHeaderKey = normalizePlanColumnName(PRIORITY_TEMPLATE_ORDER_HEADER);
+        const reasonHeaderKey = normalizePlanColumnName(PRIORITY_TEMPLATE_REASON_HEADER);
 
-        const stationsToInsert = stationNames
-          .filter((stationName) => !currentStationKeys.has(normalizeLooseText(stationName)))
-          .map((stationName) => ({
-            priority_order_id: priorityOrderId,
-            station_name: stationName,
-            status: "VARAKOZIK",
-          }));
+        const parsedOrders: Array<{
+          orderNumber: string;
+          reason: string;
+          data: Record<string, unknown>;
+        }> = [];
 
-        if (stationsToInsert.length > 0) {
-          const { error: stationInsertError } = await supabase
+        normalizedRows.forEach((row, index) => {
+          const meaningfulValues = Object.entries(row)
+            .filter(([key]) => key !== sessionHeaderKey)
+            .map(([, value]) => value)
+            .filter((value) => value !== null && value !== undefined && String(value).trim() !== "");
+          if (meaningfulValues.length === 0) return;
+
+          // Az exportált mintasor soha nem importálódhat be prioritási rendelésként.
+          const rawExplicitOrderNumber = String(row[orderHeaderKey] || "").trim();
+          if (normalizeLooseText(rawExplicitOrderNumber).startsWith("minta")) return;
+
+          const data: Record<string, unknown> = {};
+          definitions.forEach((definition) => {
+            const normalizedDefinitionKey = normalizePlanColumnName(definition.key);
+            const normalizedDefinitionLabel = normalizePlanColumnName(definition.label);
+            const rawValue = row[normalizedDefinitionKey] ?? row[normalizedDefinitionLabel];
+            if (definition.dataType === "date") {
+              data[definition.key] = rawValue === null || rawValue === undefined || String(rawValue).trim() === ""
+                ? null
+                : parseSpreadsheetDate(rawValue);
+            } else if (definition.dataType === "integer") {
+              data[definition.key] = parseSpreadsheetNumber(rawValue);
+            } else {
+              data[definition.key] = definition.key === "normaido"
+                ? formatExcelDuration(rawValue)
+                : (rawValue === null || rawValue === undefined ? null : String(rawValue).trim() || null);
+            }
+          });
+
+          const explicitOrderNumber = String(row[orderHeaderKey] || "").trim();
+          const fallbackOrderNumber = [
+            data.sorszam,
+            data.gyartasi_szam,
+            data.gyartasi_szam_projekt_neve,
+            data.rsz,
+          ].map((value) => String(value || "").trim()).find(Boolean) || "";
+          const orderNumber = explicitOrderNumber || fallbackOrderNumber;
+
+          if (!orderNumber) {
+            throw new Error(`${sheetName} munkafül ${index + 2}. sorában nincs rendelésszám.`);
+          }
+
+          parsedOrders.push({
+            orderNumber,
+            reason: String(row[reasonHeaderKey] || "").trim(),
+            data,
+          });
+        });
+
+        // Teljesen üres (csak mintasort tartalmazó) munkafül megengedett.
+        // Így ugyanaz az összes állomást tartalmazó Excel akkor is visszatölthető,
+        // ha a felhasználó csak néhány munkafület töltött ki.
+        if (parsedOrders.length === 0) continue;
+
+        importableCount += parsedOrders.length;
+        stationNames.forEach((stationName) => importedStations.add(stationName));
+        importedSessionIds.add(sessionId);
+
+        for (const incoming of parsedOrders) {
+          const { data: existingRows, error: existingError } = await supabase
+            .from(PRIORITY_ORDERS_TABLE)
+            .select("id, order_number, is_active, completed_at, data")
+            .ilike("order_number", incoming.orderNumber)
+            .limit(1);
+          if (existingError) throw existingError;
+
+          const existing = ((existingRows || [])[0] || null) as {
+            id: string;
+            order_number?: string | null;
+            is_active?: boolean | null;
+            completed_at?: string | null;
+            data?: Record<string, unknown> | null;
+          } | null;
+
+          let priorityOrderId = "";
+          const wasActive = Boolean(existing?.is_active);
+
+          if (!existing) {
+            const { data: inserted, error: insertError } = await supabase
+              .from(PRIORITY_ORDERS_TABLE)
+              .insert([{
+                order_number: incoming.orderNumber,
+                priority_reason: incoming.reason || null,
+                data: incoming.data,
+                import_session_id: sessionId,
+                source_file: selectedFile.name,
+                is_active: true,
+                created_by_worker_id: activeWorker?.id ?? null,
+                created_by_worker_name: activeWorker?.["Teljes nev"] || null,
+              }])
+              .select("id")
+              .single();
+            if (insertError) throw insertError;
+            priorityOrderId = String((inserted as { id?: string } | null)?.id || "");
+            createdCount += 1;
+          } else {
+            priorityOrderId = existing.id;
+            const { error: updateError } = await supabase
+              .from(PRIORITY_ORDERS_TABLE)
+              .update({
+                order_number: incoming.orderNumber,
+                priority_reason: incoming.reason || null,
+                // Több munkafül ugyanahhoz a rendeléshez tartozó mezői összeadódnak;
+                // egy későbbi munkafül nem törli a korábban beolvasott állomás adatait.
+                data: {
+                  ...(
+                    existing.data
+                    && typeof existing.data === "object"
+                    && !Array.isArray(existing.data)
+                      ? existing.data
+                      : {}
+                  ),
+                  ...incoming.data,
+                },
+                import_session_id: sessionId,
+                source_file: selectedFile.name,
+                is_active: true,
+                completed_at: wasActive ? existing.completed_at || null : null,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", priorityOrderId);
+            if (updateError) throw updateError;
+            updatedCount += 1;
+          }
+
+          if (!priorityOrderId) throw new Error(`${incoming.orderNumber}: a prioritási rendelés azonosítója hiányzik.`);
+
+          const { data: existingStationData, error: existingStationError } = await supabase
             .from(PRIORITY_ORDER_STATIONS_TABLE)
-            .insert(stationsToInsert);
-          if (stationInsertError) throw stationInsertError;
+            .select("id, station_name, status")
+            .eq("priority_order_id", priorityOrderId)
+            .limit(10000);
+          if (existingStationError) throw existingStationError;
+
+          const existingStations = (existingStationData || []) as Array<{
+            id: string;
+            station_name?: string | null;
+            status?: string | null;
+          }>;
+
+          if (!wasActive && existingStations.length > 0) {
+            const { error: deleteResetError } = await supabase
+              .from(PRIORITY_ORDER_STATIONS_TABLE)
+              .delete()
+              .eq("priority_order_id", priorityOrderId);
+            if (deleteResetError) throw deleteResetError;
+          }
+
+          const currentStationKeys = wasActive
+            ? new Set(existingStations.map((station) => normalizeLooseText(station.station_name)))
+            : new Set<string>();
+
+          const stationsToInsert = stationNames
+            .filter((stationName) => !currentStationKeys.has(normalizeLooseText(stationName)))
+            .map((stationName) => ({
+              priority_order_id: priorityOrderId,
+              station_name: stationName,
+              status: "VARAKOZIK",
+            }));
+
+          if (stationsToInsert.length > 0) {
+            const { error: stationInsertError } = await supabase
+              .from(PRIORITY_ORDER_STATIONS_TABLE)
+              .insert(stationsToInsert);
+            if (stationInsertError) throw stationInsertError;
+          }
         }
       }
 
-      const { error: sessionUpdateError } = await supabase
-        .from(PRIORITY_IMPORT_SESSIONS_TABLE)
-        .update({
-          last_imported_at: new Date().toISOString(),
-          source_filename: selectedFile.name,
-        })
-        .eq("id", sessionId);
-      if (sessionUpdateError) console.warn("A prioritási import session frissítése sikertelen:", sessionUpdateError);
+      if (importableCount === 0) {
+        throw new Error("A prioritási Excel egyik munkafülén sincs importálható rendelés.");
+      }
+
+      for (const sessionId of importedSessionIds) {
+        const { error: sessionUpdateError } = await supabase
+          .from(PRIORITY_IMPORT_SESSIONS_TABLE)
+          .update({
+            last_imported_at: new Date().toISOString(),
+            source_filename: selectedFile.name,
+          })
+          .eq("id", sessionId);
+        if (sessionUpdateError) {
+          console.warn(`A prioritási import session frissítése sikertelen (${sessionId}):`, sessionUpdateError);
+        }
+      }
 
       setPriorityLastImportAt(new Date().toISOString());
       await loadPriorityHistory();
@@ -11609,7 +11635,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       setMessage({
         type: "success",
-        text: `Prioritási import kész: ${createdCount} új, ${updatedCount} frissített rendelés. Megjelenés: ${stationNames.join(", ")}.`,
+        text: `Prioritási import kész: ${createdCount} új, ${updatedCount} frissített munkafül-sor. Érintett munkaállomások: ${Array.from(importedStations).join(", ")}.`,
       });
     } catch (error) {
       console.error("Prioritási Excel import hiba:", error);
@@ -11678,7 +11704,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <div>
                 <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 19 }}>Munkaállomási XLSX termelési tervek</h3>
                 <div style={{ marginTop: 4, color: officeTheme.mutedText, fontSize: 13, lineHeight: 1.45 }}>
-                  Pipáld ki a kívánt munkaállomásokat. Minden kijelölt állomáshoz külön Excel készül a saját <code style={{ color: "#7dd3fc" }}>_terv</code> mezőivel. Visszatöltéskor a munkafül neve alapján kizárólag a megfelelő _terv tábla frissül.
+                  A „Minta Excel letöltése” egyetlen XLSX-et készít: kijelölés nélkül minden munkaállomás, kijelölés esetén csak a kijelöltek kerülnek bele külön munkafülön, saját <code style={{ color: "#7dd3fc" }}>_terv</code> mezőikkel. Visszatöltéskor a munkafül neve alapján kizárólag a megfelelő _terv tábla frissül.
                 </div>
               </div>
             </div>
@@ -11746,7 +11772,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <button
                 type="button"
                 onClick={downloadProductionPlanTemplate}
-                disabled={productionPlanExportStations.length === 0 || refreshingProductionPlanWorkbook}
+                disabled={refreshingProductionPlanWorkbook}
                 style={buttonSecondary}
               >
                 Minta Excel letöltése
@@ -11794,7 +11820,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <div style={{ flex: 1 }}>
                 <h3 style={{ margin: 0, color: "#67e8f9", fontSize: 21 }}>Prioritási kártya</h3>
                 <div style={{ marginTop: 4, color: "#e9d5ff", fontSize: 13, lineHeight: 1.5 }}>
-                  Válaszd ki azokat a munkaállomásokat, ahol a sürgős rendelésnek meg kell jelennie. Minden kijelölt munkaállomáshoz külön prioritási Excel készül, kizárólag a saját <code style={{ color: "#67e8f9" }}>_terv</code> mezőivel. A fájl visszatöltése csak ahhoz az állomáshoz ad prioritást; más állomások korábbi prioritási hozzárendelése nem törlődik.
+                  Egyetlen prioritási XLSX készül, munkaállomásonként külön munkafülekkel. Ha nincs kijelölés, minden termelési munkaállomás bekerül; ha van kijelölés, csak a kijelöltek. Minden munkafül kizárólag a saját <code style={{ color: "#67e8f9" }}>_terv</code> mezőit tartalmazza, és egyetlen fájlként tölthető vissza.
                 </div>
               </div>
             </div>
@@ -11850,14 +11876,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   style={{ ...fieldStyle, width: "100%", boxSizing: "border-box", padding: "10px 12px" }}
                 />
                 <div style={{ marginTop: 7, color: priorityWorkbookFile ? "#67e8f9" : "#c4b5fd", fontSize: 12 }}>
-                  {priorityWorkbookFile ? `Kiválasztva: ${priorityWorkbookFile.name}` : "Minden kijelölt állomáshoz külön Excel készül. Töltsd ki, majd egyesével töltsd vissza őket."}
+                  {priorityWorkbookFile ? `Kiválasztva: ${priorityWorkbookFile.name}` : "Egy közös Excel készül külön munkafülekkel. Töltsd ki a szükséges munkafüleket, majd egyszer töltsd vissza."}
                 </div>
               </div>
 
               <button
                 type="button"
                 onClick={() => void exportPriorityWorkbookTemplate()}
-                disabled={exportingPriorityWorkbook || importingPriorityWorkbook || prioritySelectedStations.length === 0}
+                disabled={exportingPriorityWorkbook || importingPriorityWorkbook}
                 style={{ ...buttonSecondary, background: "#a21caf", color: "#ffffff", borderColor: "#22d3ee", fontWeight: 900 }}
               >
                 {exportingPriorityWorkbook ? "Excel készül..." : "Prioritási Excel exportálása"}
@@ -22952,16 +22978,28 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   async function exportSelectedProductionPlanWorkbooks(includeData: boolean): Promise<void> {
-    const selectedStations = machineOptions.filter((station) =>
+    const explicitlySelectedStations = machineOptions.filter((station) =>
       productionPlanExportStations.some(
         (selected) => normalizeLooseText(selected) === normalizeLooseText(station)
       )
     );
+    const allProductionStations = machineOptions.filter(
+      (station) =>
+        normalizeLooseText(station) !== normalizeLooseText(DEFAULT_MACHINE_ID)
+        && !normalizeLooseText(station).includes("iroda")
+    );
+    // A Minta Excel kijelölés nélkül minden termelési állomást tartalmaz.
+    // Az adatokkal export működését változatlanul hagyjuk: ott kötelező a kijelölés.
+    const selectedStations = includeData
+      ? explicitlySelectedStations
+      : (explicitlySelectedStations.length > 0 ? explicitlySelectedStations : allProductionStations);
 
     if (selectedStations.length === 0) {
       setMessage({
         type: "error",
-        text: "Pipálj ki legalább egy munkaállomást az Excel exportálása előtt.",
+        text: includeData
+          ? "Pipálj ki legalább egy munkaállomást az Excel exportálása előtt."
+          : "Nincs exportálható termelési munkaállomás.",
       });
       return;
     }
@@ -22976,41 +23014,64 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     try {
       const XLSX = await waitForXlsx();
       const today = getLocalDateKey(new Date());
-      let totalExportedRows = 0;
 
+      if (!includeData) {
+        // Egyetlen XLSX készül. Minden kiválasztott (vagy kijelölés nélkül minden)
+        // munkaállomás saját munkafület kap, pontosan egy kitöltött mintasorral.
+        const workbook = XLSX.utils.book_new();
+
+        selectedStations.forEach((stationName, stationIndex) => {
+          const definitions = getStationPlanFieldDefinitions(stationName);
+          const rows: Array<Array<string | number>> = [
+            definitions.map((definition) => definition.label),
+            definitions.map((definition) =>
+              getStationPlanTemplateSampleValue(definition, stationName, stationIndex)
+            ),
+          ];
+
+          const worksheet = XLSX.utils.aoa_to_sheet(rows) as Record<string, any>;
+          applyStationPlanWorksheetPresentation(worksheet, definitions, 1);
+          XLSX.utils.book_append_sheet(workbook, worksheet, stationName);
+        });
+
+        const output = (XLSX.write as any)(workbook, {
+          bookType: "xlsx",
+          type: "array",
+          cellStyles: true,
+        });
+        downloadBlob(
+          `termelesi_terv_minta_${today}.xlsx`,
+          new Blob([output], {
+            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          }),
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+
+        setMessage({
+          type: "success",
+          text: `Egy közös minta Excel elkészült ${selectedStations.length} munkafüllel: ${selectedStations.join(", ")}. Minden munkafül egy kitöltött mintasort tartalmaz.`,
+        });
+        return;
+      }
+
+      // Az "adatokkal" export eredeti működése változatlan: állomásonként külön XLSX.
+      let totalExportedRows = 0;
       for (let stationIndex = 0; stationIndex < selectedStations.length; stationIndex += 1) {
         const stationName = selectedStations[stationIndex];
         const definitions = getStationPlanFieldDefinitions(stationName);
-
-        let dataRows: Array<Record<string, unknown>> = [];
-        if (includeData) {
-          dataRows = await fetchAllStationPlanRowsForExport(stationName);
-          totalExportedRows += dataRows.length;
-        }
+        const dataRows = await fetchAllStationPlanRowsForExport(stationName);
+        totalExportedRows += dataRows.length;
 
         const rows: Array<Array<string | number>> = [
           definitions.map((definition) => definition.label),
         ];
-
-        if (includeData) {
-          dataRows.forEach((row) => {
-            rows.push(
-              definitions.map((definition) =>
-                getStationPlanExportCellValue(row, definition)
-              )
-            );
-          });
-        } else {
+        dataRows.forEach((row) => {
           rows.push(
             definitions.map((definition) =>
-              getStationPlanTemplateSampleValue(
-                definition,
-                stationName,
-                stationIndex
-              )
+              getStationPlanExportCellValue(row, definition)
             )
           );
-        }
+        });
 
         const worksheet = XLSX.utils.aoa_to_sheet(rows) as Record<string, any>;
         applyStationPlanWorksheetPresentation(
@@ -23027,11 +23088,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           type: "array",
           cellStyles: true,
         });
-
         const safeStationName = normalizePlanColumnName(stationName) || "munkaallomas";
-        const suffix = includeData ? "adatok" : "minta";
         downloadBlob(
-          `${safeStationName}_terv_${suffix}_${today}.xlsx`,
+          `${safeStationName}_terv_adatok_${today}.xlsx`,
           new Blob([output], {
             type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
           }),
@@ -23041,9 +23100,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       setMessage({
         type: "success",
-        text: includeData
-          ? `${selectedStations.length} külön munkaállomási Excel exportálva, összesen ${totalExportedRows} Supabase-sorral.`
-          : `${selectedStations.length} külön munkaállomási minta Excel exportálva. Minden fájl csak a saját _terv mezőit tartalmazza.`,
+        text: `${selectedStations.length} külön munkaállomási Excel exportálva, összesen ${totalExportedRows} Supabase-sorral.`,
       });
     } catch (error) {
       console.error("MUNKAÁLLOMÁSI EXCEL EXPORT HIBA:", error);
