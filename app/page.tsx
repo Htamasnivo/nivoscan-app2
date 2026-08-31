@@ -13442,17 +13442,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               && row.order_number
               && (row.status !== "KESZ" || isOnSelectedDate(row.reported_at) || isOnSelectedDate(row.completed_at));
           })
-          .map((row) => {
-            let routeReady = true;
-            if (row.event_id && row.previous_target_station) {
-              routeReady = allNormalizedRows.some((candidate) =>
-                candidate.event_id === row.event_id
-                && normalizeLooseText(candidate.target_station || "") === normalizeLooseText(row.previous_target_station || "")
-                && candidate.status === "KESZ"
-              );
-            }
-            return { ...row, route_ready: routeReady };
-          });
+          .map((row) => ({
+            ...row,
+            // A selejtpótlási munkaállomások most egymástól függetlenül START-olhatók.
+            route_ready: true,
+          }));
 
         const groupedReplacementRows = new Map<string, ScrapReplacementRow[]>();
         normalizedReplacementRows.forEach((row) => {
@@ -29410,19 +29404,10 @@ body {
     };
   }
 
-  async function assertScrapReplacementRouteReady(row: ScrapReplacementRow | null): Promise<void> {
-    if (!supabase || !row?.event_id || !row.previous_target_station) return;
-    const { data, error } = await supabase
-      .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
-      .select("id, status, target_station")
-      .eq("event_id", row.event_id)
-      .eq("target_station", row.previous_target_station)
-      .limit(20);
-    if (error) throw error;
-    const predecessorDone = ((data || []) as Array<{ status?: string | null }>).some((item) => normalizeScrapReplacementStatus(item.status) === "KESZ");
-    if (!predecessorDone) {
-      throw new Error(`⛔ SELEJTPÓTLÁS START TILTVA ⛔ Előbb a(z) ${row.previous_target_station} munkaállomásnak kell END-del lezárnia ugyanezt a selejteseményt.`);
-    }
+  async function assertScrapReplacementRouteReady(_row: ScrapReplacementRow | null): Promise<void> {
+    // IDEIGLENESEN KIKAPCSOLVA:
+    // selejtpótlásnál sem kötelező megvárni az előző célállomás END-jét.
+    return;
   }
 
   function getScrapReplacementStartStatus(_row: ScrapReplacementRow | null, _stationName: string): ScrapReplacementStatus {
@@ -29461,9 +29446,6 @@ body {
   function getScrapReplacementStatusLabel(row: ScrapReplacementRow): string {
     const status = row.status;
     if (status === "KESZ") return "Pótlás kész";
-    if (status === "VARAKOZIK" && row.previous_target_station && row.route_ready === false) {
-      return `${row.previous_target_station} pótlására vár`;
-    }
     if (row.toklec_selejt && isCarpenterStationName(row.target_station)) {
       if (status === "SZABAS_FOLYAMATBAN" || status === "MARAS_FOLYAMATBAN") return "Egyedi pótlás folyamatban";
       return "Tokléc pótlásra vár";
@@ -32490,109 +32472,14 @@ body {
   }
 
   async function findStartGroupConflicts(
-    orderIds: string[],
+    _orderIds: string[],
     options?: { currentMachineId?: string; ignoreBatchCodes?: string[] }
   ): Promise<StartGroupCheckResult> {
-    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
-
-    const uniqueOrders = Array.from(new Set(orderIds.map((order) => String(order || "").trim()).filter(Boolean)));
+    // IDEIGLENESEN KIKAPCSOLVA:
+    // ugyanaz a rendelés több munkaállomáson is lehet egyszerre START/Folyamatban.
+    // A kereszt-munkaállomási státuszok ettől továbbra is valós állapotot mutatnak.
     const currentMachine = String(options?.currentMachineId || getCurrentMachineIdForInsert() || "").trim();
-    if (!currentMachine) throw new Error("START nem indítható: nincs beállítva munkaállomás.");
-
-    const directory = await loadMachineGroupDirectoryForStartCheck();
-    const currentEntry = directory.get(normalizeLooseText(currentMachine));
-    if (!currentEntry) {
-      throw new Error(`START nem indítható: a(z) ${currentMachine} munkaállomáshoz nincs kitöltve a machine_id.csoportok mező.`);
-    }
-
-    if (uniqueOrders.length === 0) {
-      return { currentMachine: currentEntry.machineName, currentGroup: currentEntry.groupName, conflicts: [] };
-    }
-
-    const orderDisplayByKey = new Map(uniqueOrders.map((order) => [normalizeLooseText(order), order]));
-    const orderKeys = new Set(orderDisplayByKey.keys());
-    const ignoredBatchCodes = new Set((options?.ignoreBatchCodes || []).map((code) => normalizeLooseText(String(code || ""))).filter(Boolean));
-    const conflictsByOrderAndMachine = new Map<string, StartGroupConflict>();
-
-    // Egyedi / normál START-ok: a nyitott START sor az, ahol már van start_time,
-    // de még nincs end_time. END után ugyanaz a sor lezáródik, ezért többé nem blokkol.
-    const workResponse = await supabase
-      .from("work_logs")
-      .select("id, order_number, machine_id, action, start_time, start_timestamp, end_time, end_timestamp, created_at, batch_code")
-      .in("order_number", uniqueOrders)
-      .is("end_time", null)
-      .limit(5000);
-
-    if (workResponse.error) throw workResponse.error;
-
-    ((workResponse.data || []) as Array<Record<string, unknown>>).forEach((row) => {
-      if (row.end_time || row.end_timestamp) return;
-      const hasStart = Boolean(row.start_time || row.start_timestamp) || String(row.action || "").trim().toUpperCase() === "START";
-      if (!hasStart) return;
-
-      const orderNumberRaw = String(row.order_number || "").trim();
-      const orderKey = normalizeLooseText(orderNumberRaw);
-      if (!orderKeys.has(orderKey)) return;
-
-      const blockingMachineRaw = String(row.machine_id || "").trim();
-      const blockingEntry = directory.get(normalizeLooseText(blockingMachineRaw));
-      if (!blockingEntry || blockingEntry.groupKey !== currentEntry.groupKey) return;
-
-      const displayOrder = orderDisplayByKey.get(orderKey) || orderNumberRaw;
-      const conflictKey = `${orderKey}|${blockingEntry.machineKey}`;
-      conflictsByOrderAndMachine.set(conflictKey, {
-        orderNumber: displayOrder,
-        blockingMachine: blockingEntry.machineName,
-        blockingGroup: blockingEntry.groupName,
-        source: "work_logs",
-        batchCode: String(row.batch_code || "").trim() || null,
-        startedAt: String(row.start_time || row.start_timestamp || row.created_at || "").trim() || null,
-      });
-    });
-
-    // Köteg START esetén a futó állapot a production_batches táblában él egészen az END-ig.
-    // Ezt is figyelembe kell venni, különben egy köteg fizikailag futna, de nem blokkolná a csoporttárs állomást.
-    const batchResponse = await supabase
-      .from("production_batches")
-      .select("batch_code, order_ids, machine_id, start_time, created_at, operation_status");
-
-    if (batchResponse.error) throw batchResponse.error;
-
-    ((batchResponse.data || []) as Array<Record<string, unknown>>).forEach((row) => {
-      const batchCode = String(row.batch_code || "").trim();
-      if (batchCode && ignoredBatchCodes.has(normalizeLooseText(batchCode))) return;
-      if (!isProductionBatchPhysicallyActiveForGroupLock(row.operation_status)) return;
-
-      const blockingMachineRaw = String(row.machine_id || "").trim();
-      const blockingEntry = directory.get(normalizeLooseText(blockingMachineRaw));
-      if (!blockingEntry || blockingEntry.groupKey !== currentEntry.groupKey) return;
-
-      normalizeProductionBatchOrders(row.order_ids).forEach((batchOrder) => {
-        const orderKey = normalizeLooseText(batchOrder);
-        if (!orderKeys.has(orderKey)) return;
-
-        const displayOrder = orderDisplayByKey.get(orderKey) || String(batchOrder).trim();
-        const conflictKey = `${orderKey}|${blockingEntry.machineKey}`;
-        // Ha ugyanarra a rendelésre ugyanazon gépről work_logs nyitott START is van,
-        // azt tartjuk meg elsődleges forrásként, hogy ne jelenjen meg kétszer ugyanaz a blokkolás.
-        if (conflictsByOrderAndMachine.has(conflictKey)) return;
-
-        conflictsByOrderAndMachine.set(conflictKey, {
-          orderNumber: displayOrder,
-          blockingMachine: blockingEntry.machineName,
-          blockingGroup: blockingEntry.groupName,
-          source: "production_batches",
-          batchCode: batchCode || null,
-          startedAt: String(row.start_time || row.created_at || "").trim() || null,
-        });
-      });
-    });
-
-    return {
-      currentMachine: currentEntry.machineName,
-      currentGroup: currentEntry.groupName,
-      conflicts: Array.from(conflictsByOrderAndMachine.values()),
-    };
+    return { currentMachine, currentGroup: "", conflicts: [] };
   }
 
   function buildStartGroupConflictMessage(result: StartGroupCheckResult, batchMode = false): string {
