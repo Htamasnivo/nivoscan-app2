@@ -8101,8 +8101,6 @@ export default function Page() {
   const actionLastInputAtRef = useRef<number | null>(null);
   const actionScanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // CSAK a 6-os esemény END scanneres automatikus Enterének duplázásvédelme.
-  const eventSixEndAutoSubmitInFlightRef = useRef(false);
 
   const batchFinalizeInFlightRef = useRef(false);
   const orderDuplicateCheckInFlightRef = useRef(false);
@@ -33704,67 +33702,6 @@ body {
     }
   }
 
-  async function submitEventSixEndLikeEnter(scannedValue: string): Promise<void> {
-    const normalized = scannedValue.replace(/[\r\n]+/g, "").trim();
-
-    if (
-      !normalized
-      || Number(getWorkerEsemenyKotegValue(activeWorker)) !== 6
-      || pendingAction !== "END"
-      || step !== 6
-      || eventSixEndAutoSubmitInFlightRef.current
-    ) {
-      return;
-    }
-
-    eventSixEndAutoSubmitInFlightRef.current = true;
-    clearActionScanTimer();
-    actionScanStartedAtRef.current = null;
-    actionLastInputAtRef.current = null;
-
-    try {
-      // 6-os eseménynél ez az END kódot erősíti meg.
-      // Az Ajtólapok / Tokléc pipák továbbra is változatlanul kézzel választhatók.
-      await handleActionBarcodeSubmit(true, normalized);
-    } finally {
-      window.setTimeout(() => {
-        eventSixEndAutoSubmitInFlightRef.current = false;
-      }, 180);
-    }
-  }
-
-  function scheduleActionAutoSubmit(currentValue: string, startedAt: number): void {
-    clearActionScanTimer();
-
-    if (
-      Number(getWorkerEsemenyKotegValue(activeWorker)) !== 6
-      || pendingAction !== "END"
-      || step !== 6
-    ) {
-      return;
-    }
-
-    const normalized = currentValue.replace(/[\r\n]+/g, "").trim();
-    if (normalized.length < 2) return;
-    if (Date.now() - startedAt > 1500) return;
-
-    actionScanTimerRef.current = setTimeout(() => {
-      const lastInputAt = actionLastInputAtRef.current;
-
-      if (lastInputAt !== null && Date.now() - lastInputAt < 70) {
-        scheduleActionAutoSubmit(
-          normalized,
-          actionScanStartedAtRef.current ?? Date.now()
-        );
-        return;
-      }
-
-      void submitEventSixEndLikeEnter(normalized);
-    }, 110);
-  }
-
-
-
   function scheduleWorkerAutoSubmit(_currentValue: string, _startedAt: number): void {
     clearWorkerScanTimer();
     clearWorkerSubmitDebounceTimer();
@@ -33816,16 +33753,6 @@ body {
 
     actionLastInputAtRef.current = now;
     setActionBarcode(normalized);
-
-    if (
-      Number(getWorkerEsemenyKotegValue(activeWorker)) === 6
-      && pendingAction === "END"
-    ) {
-      scheduleActionAutoSubmit(
-        normalized,
-        actionScanStartedAtRef.current ?? now
-      );
-    }
   }
 
   function getLocalTimestampWithOffset(date = new Date()): string {
@@ -37569,16 +37496,6 @@ body {
                       style={fieldStyle}
                       autoComplete="off"
                       onKeyDown={(e) => {
-                        if (
-                          Number(getWorkerEsemenyKotegValue(activeWorker)) === 6
-                          && isScannerSubmitKey(e)
-                        ) {
-                          e.preventDefault();
-                          clearActionScanTimer();
-                          void submitEventSixEndLikeEnter(e.currentTarget.value);
-                          return;
-                        }
-
                         void handleSingleEndBarcodeKeyDown(e);
                       }}
                       onBlur={() => {
