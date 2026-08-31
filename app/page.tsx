@@ -8101,8 +8101,7 @@ export default function Page() {
   const actionLastInputAtRef = useRef<number | null>(null);
   const actionScanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // CSAK a 6-os esemény scanneres automatikus Enterének duplázásvédelme.
-  const eventSixOrderAutoSubmitInFlightRef = useRef(false);
+  // CSAK a 6-os esemény END scanneres automatikus Enterének duplázásvédelme.
   const eventSixEndAutoSubmitInFlightRef = useRef(false);
 
   const batchFinalizeInFlightRef = useRef(false);
@@ -20466,13 +20465,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const shouldKeepOrderFocus =
       step === 5
       && flowStage === "order-scan"
-      && (
-        workflowMode === "batch"
-        || (
-          workflowMode === "single"
-          && Number(getWorkerEsemenyKotegValue(activeWorker)) === 6
-        )
-      );
+      && workflowMode === "batch";
     const shouldKeepActiveBatchFocus = step === 5 && workflowMode === "end" && flowStage === "active-batch-list";
     const shouldKeepEndCommandFocus = step === 5 && workflowMode === "end" && flowStage === "end-batch-detail";
     const shouldKeepActionFocus = step === 6 && (flowStage === "start-scan" || pendingAction === "END");
@@ -28428,14 +28421,9 @@ body {
             : `Sikeres azonosítás: ${worker["Teljes nev"]}. 6-os egyedi mód aktív: Ajtólapok + Tokléc külön részjelentéssel. Olvasd be a rendelésszámot.`,
       });
       if (koteg === 6) {
-        [0, 40, 120].forEach((delay) => {
-          window.setTimeout(() => {
-            focusAndSelectInput(orderInputRef, {
-              force: true,
-              preventScroll: true,
-            });
-          }, delay);
-        });
+        window.setTimeout(() => {
+          focusAndSelectInput(orderInputRef);
+        }, 0);
       } else {
         window.setTimeout(() => focusAndSelectInput(orderInputRef, { preventScroll: true }), 0);
       }
@@ -33716,34 +33704,6 @@ body {
     }
   }
 
-  async function submitEventSixOrderLikeEnter(scannedValue: string): Promise<void> {
-    const normalized = scannedValue.replace(/[\r\n]+/g, "").trim();
-
-    if (
-      !normalized
-      || Number(getWorkerEsemenyKotegValue(activeWorker)) !== 6
-      || workflowMode !== "single"
-      || flowStage !== "order-scan"
-      || step !== 5
-      || eventSixOrderAutoSubmitInFlightRef.current
-    ) {
-      return;
-    }
-
-    eventSixOrderAutoSubmitInFlightRef.current = true;
-    clearOrderScanTimer();
-    orderScanStartedAtRef.current = null;
-    orderLastInputAtRef.current = null;
-
-    try {
-      await handleOrderStep(true, normalized);
-    } finally {
-      window.setTimeout(() => {
-        eventSixOrderAutoSubmitInFlightRef.current = false;
-      }, 180);
-    }
-  }
-
   async function submitEventSixEndLikeEnter(scannedValue: string): Promise<void> {
     const normalized = scannedValue.replace(/[\r\n]+/g, "").trim();
 
@@ -33771,37 +33731,6 @@ body {
         eventSixEndAutoSubmitInFlightRef.current = false;
       }, 180);
     }
-  }
-
-  function scheduleOrderAutoSubmit(currentValue: string, startedAt: number): void {
-    clearOrderScanTimer();
-
-    if (
-      Number(getWorkerEsemenyKotegValue(activeWorker)) !== 6
-      || workflowMode !== "single"
-      || flowStage !== "order-scan"
-      || step !== 5
-    ) {
-      return;
-    }
-
-    const normalized = currentValue.replace(/[\r\n]+/g, "").trim();
-    if (normalized.length < 2) return;
-    if (Date.now() - startedAt > 1500) return;
-
-    orderScanTimerRef.current = setTimeout(() => {
-      const lastInputAt = orderLastInputAtRef.current;
-
-      if (lastInputAt !== null && Date.now() - lastInputAt < 70) {
-        scheduleOrderAutoSubmit(
-          normalized,
-          orderScanStartedAtRef.current ?? Date.now()
-        );
-        return;
-      }
-
-      void submitEventSixOrderLikeEnter(normalized);
-    }, 110);
   }
 
   function scheduleActionAutoSubmit(currentValue: string, startedAt: number): void {
@@ -33867,13 +33796,6 @@ body {
 
     orderLastInputAtRef.current = now;
     setOrderNumber(normalized);
-
-    if (Number(getWorkerEsemenyKotegValue(activeWorker)) === 6) {
-      scheduleOrderAutoSubmit(
-        normalized,
-        orderScanStartedAtRef.current ?? now
-      );
-    }
   }
 
   function handleActionBarcodeChange(value: string): void {
@@ -37506,8 +37428,6 @@ body {
 
                       if (standaloneScrapReportMode && isStandaloneScrapReportStation(machineId)) {
                         void reportStandaloneScrap(e.currentTarget.value);
-                      } else if (Number(getWorkerEsemenyKotegValue(activeWorker)) === 6) {
-                        void submitEventSixOrderLikeEnter(e.currentTarget.value);
                       } else {
                         void handleOrderStep(false, e.currentTarget.value);
                       }
