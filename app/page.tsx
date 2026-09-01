@@ -10811,6 +10811,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       type="date"
                       value={draft.reportFilterStartDate}
                       max={draft.reportFilterEndDate || undefined}
+                      onClick={(event) => {
+                        try {
+                          (event.currentTarget as HTMLInputElement & { showPicker?: () => void }).showPicker?.();
+                        } catch {}
+                      }}
                       onChange={(event) => updateReportDeliveryDraft(profile.id, { reportFilterStartDate: event.target.value })}
                       style={control}
                     />
@@ -10821,6 +10826,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       type="date"
                       value={draft.reportFilterEndDate}
                       min={draft.reportFilterStartDate || undefined}
+                      onClick={(event) => {
+                        try {
+                          (event.currentTarget as HTMLInputElement & { showPicker?: () => void }).showPicker?.();
+                        } catch {}
+                      }}
                       onChange={(event) => updateReportDeliveryDraft(profile.id, { reportFilterEndDate: event.target.value })}
                       style={control}
                     />
