@@ -149,18 +149,23 @@ type TerminalEntryLayoutInteraction = {
   lastValidRect: TerminalEntryLayoutRect;
 };
 
-type StandaloneProductionMonitorHeaderSize = {
+type StandaloneProductionMonitorWindowRect = {
+  x: number;
+  y: number;
   width: number;
   height: number;
 };
 
-type StandaloneProductionMonitorHeaderResizeInteraction = {
+type StandaloneProductionMonitorWindowLayout = Record<string, StandaloneProductionMonitorWindowRect>;
+
+type StandaloneProductionMonitorWindowInteraction = {
+  mode: "drag" | "resize";
   pointerId: number;
-  edge: TerminalEntryLayoutResizeEdge;
+  windowId: string;
+  edge?: TerminalEntryLayoutResizeEdge;
   startClientX: number;
   startClientY: number;
-  initialWidth: number;
-  initialHeight: number;
+  initialRect: StandaloneProductionMonitorWindowRect;
 };
 
 type WorkAction = "START" | "END";
@@ -1694,10 +1699,10 @@ const TERMINAL_ENTRY_LAYOUT_MIN_HEIGHT = 48;
 const PRODUCTION_MONITOR_LAYOUT_STORAGE_KEY = "nivo-production-monitor-layout-v1";
 const PRODUCTION_MONITOR_PROFILES_STORAGE_KEY = "nivo-production-monitor-profiles-v2";
 const STANDALONE_PRODUCTION_MONITOR_HEADER_SIZE_STORAGE_KEY = "nivo-production-monitor-standalone-header-size-v1";
-const STANDALONE_PRODUCTION_MONITOR_HEADER_DEFAULT_HEIGHT = 112;
-const STANDALONE_PRODUCTION_MONITOR_HEADER_MIN_HEIGHT = 92;
-const STANDALONE_PRODUCTION_MONITOR_HEADER_MAX_HEIGHT = 320;
-const STANDALONE_PRODUCTION_MONITOR_HEADER_MIN_WIDTH = 720;
+const STANDALONE_PRODUCTION_MONITOR_WINDOWS_STORAGE_KEY = "nivo-production-monitor-standalone-windows-v1";
+const STANDALONE_PRODUCTION_MONITOR_WINDOW_GRID = 8;
+const STANDALONE_PRODUCTION_MONITOR_WINDOW_MIN_WIDTH = 150;
+const STANDALONE_PRODUCTION_MONITOR_WINDOW_MIN_HEIGHT = 56;
 const PRODUCTION_MONITOR_LEGACY_PROFILES_STORAGE_KEY = "nivo-production-monitor-profiles-v1";
 const PRODUCTION_MONITOR_SETTINGS_TABLE = "production_monitor_user_settings";
 const PRODUCTION_CARD_SETTINGS_TABLE = "production_card_station_settings";
@@ -5430,6 +5435,16 @@ function getMonitorCellFromLogs(
 ): ProductionMonitorCell {
   const doorSnapshot = resolveDoorCompletionSnapshot(logs);
   const panelSnapshot = resolvePanelCompletionSnapshot(logs);
+
+  // A számláló kizárólag az adott munkaállomás már leszűrt work_logs sorait nézi.
+  // Így ugyanannál a rendelésnél minden állomásnak saját Újragyártás #N értéke van.
+  const stationReproductionCount = logs.reduce((highest, log) => {
+    const reproductionNumber = Number(log.ujragyartas_sorszam);
+    return Number.isFinite(reproductionNumber) && reproductionNumber > 0
+      ? Math.max(highest, Math.trunc(reproductionNumber))
+      : highest;
+  }, 0);
+  const stationHasReproduction = stationReproductionCount > 0 || logs.some((log) => log.ujragyartas === true);
   const completedCandidates = logs
     .filter((log) =>
       (Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END")
@@ -5502,14 +5517,14 @@ function getMonitorCellFromLogs(
           : doorSnapshot.isDoorWorkflow
             ? buildDoorCompletionStatusLabel(doorSnapshot, true)
             : latestStart.statusLabel || "Folyamatban",
-        latestStart.isReproduction,
-        latestStart.reproductionNumber
+        latestStart.isReproduction || stationHasReproduction,
+        stationReproductionCount > 0 ? stationReproductionCount : latestStart.reproductionNumber
       ),
       workerName: latestStart.workerName,
       startedAt: latestStart.startedAt,
       endedAt: null,
-      isReproduction: latestStart.isReproduction,
-      reproductionNumber: latestStart.reproductionNumber,
+      isReproduction: latestStart.isReproduction || stationHasReproduction,
+      reproductionNumber: stationReproductionCount > 0 ? stationReproductionCount : latestStart.reproductionNumber,
       doorWorkflow: doorSnapshot.isDoorWorkflow,
       tokKesz: doorSnapshot.tokKesz,
       nyiloKesz: doorSnapshot.nyiloKesz,
@@ -5540,14 +5555,14 @@ function getMonitorCellFromLogs(
           : doorSnapshot.isDoorWorkflow
             ? buildDoorCompletionStatusLabel(doorSnapshot, false)
             : "Kész",
-        latestEnd.isReproduction,
-        latestEnd.reproductionNumber
+        latestEnd.isReproduction || stationHasReproduction,
+        stationReproductionCount > 0 ? stationReproductionCount : latestEnd.reproductionNumber
       ),
       workerName: latestEnd.workerName,
       startedAt: latestEnd.startedAt,
       endedAt: latestEnd.endedAt,
-      isReproduction: latestEnd.isReproduction,
-      reproductionNumber: latestEnd.reproductionNumber,
+      isReproduction: latestEnd.isReproduction || stationHasReproduction,
+      reproductionNumber: stationReproductionCount > 0 ? stationReproductionCount : latestEnd.reproductionNumber,
       doorWorkflow: doorSnapshot.isDoorWorkflow,
       tokKesz: doorSnapshot.tokKesz,
       nyiloKesz: doorSnapshot.nyiloKesz,
@@ -7814,14 +7829,10 @@ export default function Page() {
   const [managementSection, setManagementSection] = useState<ManagementSection>("dashboard");
   const [standaloneProductionMonitor, setStandaloneProductionMonitor] = useState(false);
   const [standaloneProductionMonitorWorkerName, setStandaloneProductionMonitorWorkerName] = useState("");
-  const [standaloneProductionMonitorHeaderResizeMode, setStandaloneProductionMonitorHeaderResizeMode] = useState(false);
-  const [standaloneProductionMonitorHeaderSize, setStandaloneProductionMonitorHeaderSize] = useState<StandaloneProductionMonitorHeaderSize>({
-    width: 0,
-    height: STANDALONE_PRODUCTION_MONITOR_HEADER_DEFAULT_HEIGHT,
-  });
-  const standaloneProductionMonitorHeaderRef = useRef<HTMLDivElement | null>(null);
-  const standaloneProductionMonitorHeaderResizeInteractionRef = useRef<StandaloneProductionMonitorHeaderResizeInteraction | null>(null);
-  const standaloneProductionMonitorHeaderResizeCleanupRef = useRef<(() => void) | null>(null);
+  const [standaloneProductionMonitorWindowEditMode, setStandaloneProductionMonitorWindowEditMode] = useState(false);
+  const [standaloneProductionMonitorWindowLayout, setStandaloneProductionMonitorWindowLayout] = useState<StandaloneProductionMonitorWindowLayout>({});
+  const standaloneProductionMonitorWindowInteractionRef = useRef<StandaloneProductionMonitorWindowInteraction | null>(null);
+  const standaloneProductionMonitorWindowCleanupRef = useRef<(() => void) | null>(null);
   const [productionPlanDate, setProductionPlanDate] = useState(getLocalDateKey(new Date()));
   const [productionPlanName, setProductionPlanName] = useState("Napi termelési terv");
   const [productionPlanFileName, setProductionPlanFileName] = useState("");
@@ -17895,6 +17906,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return (
         <section
           data-office-window="production-monitor:tables"
+          data-standalone-production-monitor-window={standalone ? `table:${table.id}` : undefined}
           key={table.id}
           onClick={() => productionMonitorEditMode && switchProductionMonitorTable(table.id)}
           style={{
@@ -17906,8 +17918,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             border: productionMonitorEditMode && isActiveTable ? `3px solid ${theme.accentColor}` : `1px solid ${theme.borderColor}`,
             marginBottom: 14,
             cursor: productionMonitorEditMode ? "pointer" : "default",
+            ...(standalone ? getStandaloneProductionMonitorWindowStyle(`table:${table.id}`) : {}),
           }}
         >
+          {standalone && renderStandaloneProductionMonitorWindowChrome(`table:${table.id}`, table.title || table.name || `Táblázat ${tableIndex + 1}`)}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
             <div
               style={{
@@ -18039,7 +18053,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                         const displayCellLabel = standalone
                           && normalizePlanColumnName(station) === "szereles"
                           && cell.status === "done"
-                            ? "Kész"
+                            ? buildReproductionStatusLabel("Kész", Boolean(cell.isReproduction), cell.reproductionNumber)
                             : cell.label;
                         return (
                           <td
@@ -18093,8 +18107,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           {!standalone && <ManagementNavigation />}
 
           <div
-            ref={standalone ? standaloneProductionMonitorHeaderRef : undefined}
             data-office-window="production-monitor:header"
+            data-standalone-production-monitor-window={standalone ? "header" : undefined}
             style={{
               display: standalone ? "grid" : "flex",
               justifyContent: "space-between",
@@ -18104,10 +18118,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               marginBottom: standalone ? 8 : 16,
               marginLeft: standalone ? "auto" : undefined,
               marginRight: standalone ? "auto" : undefined,
-              width: standalone && standaloneProductionMonitorHeaderSize.width > 0
-                ? Math.min(standaloneProductionMonitorHeaderSize.width, typeof window !== "undefined" ? Math.max(320, window.innerWidth - 24) : standaloneProductionMonitorHeaderSize.width)
-                : "100%",
-              height: standalone ? standaloneProductionMonitorHeaderSize.height : undefined,
+              width: "100%",
               maxWidth: "100%",
               boxSizing: "border-box",
               position: standalone ? "relative" : undefined,
@@ -18118,8 +18129,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               borderRadius: profileTheme.panelRadius,
               boxShadow: "0 8px 22px rgba(0,0,0,0.20)",
               border: `1px solid ${profileTheme.borderColor}`,
-              outline: standalone && standaloneProductionMonitorHeaderResizeMode ? "2px dashed #38bdf8" : undefined,
-              outlineOffset: standalone && standaloneProductionMonitorHeaderResizeMode ? -2 : undefined,
+              ...(standalone ? getStandaloneProductionMonitorWindowStyle("header") : {}),
             }}
           >
             {profileTheme.showHeader && (
@@ -18274,11 +18284,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <button
                   type="button"
                   onClick={() => {
-                    stopStandaloneProductionMonitorHeaderResize();
-                    setStandaloneProductionMonitorHeaderResizeMode((currentValue) => !currentValue);
+                    stopStandaloneProductionMonitorWindowInteraction();
+                    setStandaloneProductionMonitorWindowEditMode((currentValue) => !currentValue);
                   }}
-                  style={standaloneProductionMonitorHeaderResizeMode ? buttonPrimary : buttonSecondary}
-                  title="A felső monitorpanel széleinek és sarkainak egyedi méretezése"
+                  style={standaloneProductionMonitorWindowEditMode ? buttonPrimary : buttonSecondary}
+                  title="A külön monitor minden ablakának mozgatása és méretezése"
                 >
                   Egyedi méretező
                 </button>
@@ -18292,37 +18302,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               {!standalone && <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>}
             </div>
 
-            {standalone && standaloneProductionMonitorHeaderResizeMode && ([
-              { edge: "n" as TerminalEntryLayoutResizeEdge, title: "Felső él méretezése", cursor: "ns-resize", style: { top: -2, left: 12, right: 12, height: 9 } },
-              { edge: "s" as TerminalEntryLayoutResizeEdge, title: "Alsó él méretezése", cursor: "ns-resize", style: { bottom: -2, left: 12, right: 12, height: 9 } },
-              { edge: "e" as TerminalEntryLayoutResizeEdge, title: "Jobb él méretezése", cursor: "ew-resize", style: { right: -2, top: 12, bottom: 12, width: 9 } },
-              { edge: "w" as TerminalEntryLayoutResizeEdge, title: "Bal él méretezése", cursor: "ew-resize", style: { left: -2, top: 12, bottom: 12, width: 9 } },
-              { edge: "nw" as TerminalEntryLayoutResizeEdge, title: "Bal felső sarok méretezése", cursor: "nwse-resize", style: { left: -4, top: -4, width: 16, height: 16 } },
-              { edge: "ne" as TerminalEntryLayoutResizeEdge, title: "Jobb felső sarok méretezése", cursor: "nesw-resize", style: { right: -4, top: -4, width: 16, height: 16 } },
-              { edge: "sw" as TerminalEntryLayoutResizeEdge, title: "Bal alsó sarok méretezése", cursor: "nesw-resize", style: { left: -4, bottom: -4, width: 16, height: 16 } },
-              { edge: "se" as TerminalEntryLayoutResizeEdge, title: "Jobb alsó sarok méretezése", cursor: "nwse-resize", style: { right: -4, bottom: -4, width: 16, height: 16 } },
-            ]).map((handle) => (
-              <div
-                key={`standalone-monitor-header-${handle.edge}`}
-                onPointerDown={(event) => beginStandaloneProductionMonitorHeaderResize(event, handle.edge)}
-                title={`${handle.title} – kattints, tartsd lenyomva és húzd`}
-                style={{
-                  position: "absolute",
-                  zIndex: 150,
-                  cursor: handle.cursor,
-                  userSelect: "none",
-                  touchAction: "none",
-                  background: handle.edge.length === 2 ? "#38bdf8" : "transparent",
-                  borderRadius: 4,
-                  ...handle.style,
-                }}
-              />
-            ))}
+            {standalone && renderStandaloneProductionMonitorWindowChrome("header", "Felső vezérlősáv")}
+
           </div>
 
           {productionMonitorEditMode && (
             <div
               data-office-window="production-monitor:editor"
+              data-standalone-production-monitor-window={standalone ? "editor" : undefined}
               style={{
                 marginBottom: 14,
                 background: profileTheme.editorBackground,
@@ -18331,8 +18318,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 padding: 16,
                 boxShadow: "0 8px 22px rgba(0,0,0,0.20)",
                 border: `2px solid ${profileTheme.accentColor}`,
+                ...(standalone ? getStandaloneProductionMonitorWindowStyle("editor") : {}),
               }}
             >
+              {standalone && renderStandaloneProductionMonitorWindowChrome("editor", "Profi monitorszerkesztő")}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
                 <div>
                   <div style={{ fontSize: 20, fontWeight: 900 }}>Profi monitorszerkesztő</div>
@@ -18695,10 +18684,34 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
           {profileTheme.showSummaryCards && (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(120px, 1fr))", gap: 10, marginBottom: 14 }}>
-              <div style={{ background: profileTheme.headerPanelBackground, borderRadius: profileTheme.panelRadius, padding: 14, color: profileTheme.headerPanelText, border: `1px solid ${profileTheme.borderColor}` }}><div style={{ color: profileTheme.subtitleText, fontSize: 12 }}>{productionMonitorDate === productionMonitorDateTo ? "Napi terv" : "Időszaki terv"}</div><div style={{ fontSize: 28, fontWeight: 900 }}>{productionMonitorData.rows.length}</div></div>
-              <div style={{ background: profileTheme.doneBackground, borderRadius: profileTheme.panelRadius, padding: 14, color: profileTheme.doneText }}><div style={{ fontSize: 12 }}>Kész</div><div style={{ fontSize: 28, fontWeight: 900 }}>{completed}</div></div>
-              <div style={{ background: profileTheme.inProgressBackground, borderRadius: profileTheme.panelRadius, padding: 14, color: profileTheme.inProgressText }}><div style={{ fontSize: 12 }}>Folyamatban</div><div style={{ fontSize: 28, fontWeight: 900 }}>{inProgress}</div></div>
-              <div style={{ background: profileTheme.waitingBackground, borderRadius: profileTheme.panelRadius, padding: 14, color: profileTheme.waitingText }}><div style={{ fontSize: 12 }}>Várakozik</div><div style={{ fontSize: 28, fontWeight: 900 }}>{waiting}</div></div>
+              <div
+                data-standalone-production-monitor-window={standalone ? "summary-plan" : undefined}
+                style={{ background: profileTheme.headerPanelBackground, borderRadius: profileTheme.panelRadius, padding: 14, color: profileTheme.headerPanelText, border: `1px solid ${profileTheme.borderColor}`, ...(standalone ? getStandaloneProductionMonitorWindowStyle("summary-plan") : {}) }}
+              >
+                {standalone && renderStandaloneProductionMonitorWindowChrome("summary-plan", productionMonitorDate === productionMonitorDateTo ? "Napi terv" : "Időszaki terv")}
+                <div style={{ color: profileTheme.subtitleText, fontSize: 12 }}>{productionMonitorDate === productionMonitorDateTo ? "Napi terv" : "Időszaki terv"}</div><div style={{ fontSize: 28, fontWeight: 900 }}>{productionMonitorData.rows.length}</div>
+              </div>
+              <div
+                data-standalone-production-monitor-window={standalone ? "summary-done" : undefined}
+                style={{ background: profileTheme.doneBackground, borderRadius: profileTheme.panelRadius, padding: 14, color: profileTheme.doneText, ...(standalone ? getStandaloneProductionMonitorWindowStyle("summary-done") : {}) }}
+              >
+                {standalone && renderStandaloneProductionMonitorWindowChrome("summary-done", "Kész")}
+                <div style={{ fontSize: 12 }}>Kész</div><div style={{ fontSize: 28, fontWeight: 900 }}>{completed}</div>
+              </div>
+              <div
+                data-standalone-production-monitor-window={standalone ? "summary-progress" : undefined}
+                style={{ background: profileTheme.inProgressBackground, borderRadius: profileTheme.panelRadius, padding: 14, color: profileTheme.inProgressText, ...(standalone ? getStandaloneProductionMonitorWindowStyle("summary-progress") : {}) }}
+              >
+                {standalone && renderStandaloneProductionMonitorWindowChrome("summary-progress", "Folyamatban")}
+                <div style={{ fontSize: 12 }}>Folyamatban</div><div style={{ fontSize: 28, fontWeight: 900 }}>{inProgress}</div>
+              </div>
+              <div
+                data-standalone-production-monitor-window={standalone ? "summary-waiting" : undefined}
+                style={{ background: profileTheme.waitingBackground, borderRadius: profileTheme.panelRadius, padding: 14, color: profileTheme.waitingText, ...(standalone ? getStandaloneProductionMonitorWindowStyle("summary-waiting") : {}) }}
+              >
+                {standalone && renderStandaloneProductionMonitorWindowChrome("summary-waiting", "Várakozik")}
+                <div style={{ fontSize: 12 }}>Várakozik</div><div style={{ fontSize: 28, fontWeight: 900 }}>{waiting}</div>
+              </div>
             </div>
           )}
 
@@ -20667,27 +20680,51 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   useLayoutEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      const raw = window.localStorage.getItem(STANDALONE_PRODUCTION_MONITOR_HEADER_SIZE_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as Partial<StandaloneProductionMonitorHeaderSize>;
-      const width = Number(parsed.width);
-      const height = Number(parsed.height);
-      setStandaloneProductionMonitorHeaderSize({
-        width: Number.isFinite(width) && width > 0 ? Math.max(STANDALONE_PRODUCTION_MONITOR_HEADER_MIN_WIDTH, width) : 0,
-        height: Number.isFinite(height)
-          ? Math.min(STANDALONE_PRODUCTION_MONITOR_HEADER_MAX_HEIGHT, Math.max(STANDALONE_PRODUCTION_MONITOR_HEADER_MIN_HEIGHT, height))
-          : STANDALONE_PRODUCTION_MONITOR_HEADER_DEFAULT_HEIGHT,
-      });
+      const raw = window.localStorage.getItem(STANDALONE_PRODUCTION_MONITOR_WINDOWS_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        const next: StandaloneProductionMonitorWindowLayout = {};
+        Object.entries(parsed || {}).forEach(([windowId, rawRect]) => {
+          if (!rawRect || typeof rawRect !== "object" || Array.isArray(rawRect)) return;
+          const rect = rawRect as Record<string, unknown>;
+          const x = Number(rect.x);
+          const y = Number(rect.y);
+          const width = Number(rect.width);
+          const height = Number(rect.height);
+          if (![x, y, width, height].every(Number.isFinite)) return;
+          next[windowId] = {
+            x,
+            y,
+            width: Math.max(STANDALONE_PRODUCTION_MONITOR_WINDOW_MIN_WIDTH, width),
+            height: Math.max(STANDALONE_PRODUCTION_MONITOR_WINDOW_MIN_HEIGHT, height),
+          };
+        });
+        setStandaloneProductionMonitorWindowLayout(next);
+        return;
+      }
+
+      // A korábbi verzió csak a felső panel méretét mentette. Ha ilyen régi
+      // beállítás van, adatvesztés nélkül átvesszük az új, teljes ablakelrendezésbe.
+      const legacyRaw = window.localStorage.getItem(STANDALONE_PRODUCTION_MONITOR_HEADER_SIZE_STORAGE_KEY);
+      if (!legacyRaw) return;
+      const legacy = JSON.parse(legacyRaw) as Record<string, unknown>;
+      const width = Number(legacy.width);
+      const height = Number(legacy.height);
+      if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+        setStandaloneProductionMonitorWindowLayout({
+          header: { x: 0, y: 0, width, height },
+        });
+      }
     } catch {
-      // Hibás régi helyi méretbeállításnál a kompakt alapméret marad aktív.
+      // Hibás helyi elrendezésnél a normál monitor-elrendezés marad aktív.
     }
   }, []);
 
   useEffect(() => {
     return () => {
-      standaloneProductionMonitorHeaderResizeCleanupRef.current?.();
-      standaloneProductionMonitorHeaderResizeCleanupRef.current = null;
-      standaloneProductionMonitorHeaderResizeInteractionRef.current = null;
+      standaloneProductionMonitorWindowCleanupRef.current?.();
+      standaloneProductionMonitorWindowCleanupRef.current = null;
+      standaloneProductionMonitorWindowInteractionRef.current = null;
     };
   }, []);
 
@@ -24881,85 +24918,160 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
-  function persistStandaloneProductionMonitorHeaderSize(size: StandaloneProductionMonitorHeaderSize): void {
+  function snapStandaloneProductionMonitorWindowValue(value: number): number {
+    return Math.round(value / STANDALONE_PRODUCTION_MONITOR_WINDOW_GRID) * STANDALONE_PRODUCTION_MONITOR_WINDOW_GRID;
+  }
+
+  function persistStandaloneProductionMonitorWindowLayout(layout: StandaloneProductionMonitorWindowLayout): void {
     if (typeof window === "undefined") return;
     try {
       window.localStorage.setItem(
-        STANDALONE_PRODUCTION_MONITOR_HEADER_SIZE_STORAGE_KEY,
-        JSON.stringify(size)
+        STANDALONE_PRODUCTION_MONITOR_WINDOWS_STORAGE_KEY,
+        JSON.stringify(layout)
       );
     } catch {
-      // A monitor ettől még használható; legfeljebb a méret nem marad meg újratöltés után.
+      // A monitor ettől még használható; legfeljebb az elrendezés nem marad meg újratöltés után.
     }
   }
 
-  function stopStandaloneProductionMonitorHeaderResize(): void {
-    standaloneProductionMonitorHeaderResizeCleanupRef.current?.();
-    standaloneProductionMonitorHeaderResizeCleanupRef.current = null;
-    standaloneProductionMonitorHeaderResizeInteractionRef.current = null;
+  function getStandaloneProductionMonitorWindowElement(windowId: string): HTMLElement | null {
+    if (typeof document === "undefined") return null;
+    return document.querySelector<HTMLElement>(`[data-standalone-production-monitor-window="${windowId}"]`);
   }
 
-  function beginStandaloneProductionMonitorHeaderResize(
+  function getStandaloneProductionMonitorWindowRect(windowId: string): StandaloneProductionMonitorWindowRect | null {
+    const saved = standaloneProductionMonitorWindowLayout[windowId];
+    if (saved) return { ...saved };
+    const element = getStandaloneProductionMonitorWindowElement(windowId);
+    if (!element) return null;
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: 0,
+      y: 0,
+      width: Math.max(STANDALONE_PRODUCTION_MONITOR_WINDOW_MIN_WIDTH, snapStandaloneProductionMonitorWindowValue(rect.width)),
+      height: Math.max(STANDALONE_PRODUCTION_MONITOR_WINDOW_MIN_HEIGHT, snapStandaloneProductionMonitorWindowValue(rect.height)),
+    };
+  }
+
+  function getStandaloneProductionMonitorWindowStyle(windowId: string): React.CSSProperties {
+    if (!standaloneProductionMonitor) return {};
+    const rect = standaloneProductionMonitorWindowLayout[windowId];
+    if (!rect) {
+      return standaloneProductionMonitorWindowEditMode
+        ? { position: "relative", outline: "2px dashed #38bdf8", outlineOffset: -2, zIndex: 20 }
+        : {};
+    }
+    return {
+      position: "relative",
+      transform: `translate(${rect.x}px, ${rect.y}px)`,
+      width: rect.width,
+      height: rect.height,
+      minWidth: 0,
+      maxWidth: "none",
+      boxSizing: "border-box",
+      overflow: "auto",
+      zIndex: standaloneProductionMonitorWindowEditMode ? 30 : 2,
+      outline: standaloneProductionMonitorWindowEditMode ? "2px dashed #38bdf8" : undefined,
+      outlineOffset: standaloneProductionMonitorWindowEditMode ? -2 : undefined,
+    };
+  }
+
+  function stopStandaloneProductionMonitorWindowInteraction(): void {
+    standaloneProductionMonitorWindowCleanupRef.current?.();
+    standaloneProductionMonitorWindowCleanupRef.current = null;
+    standaloneProductionMonitorWindowInteractionRef.current = null;
+  }
+
+  function beginStandaloneProductionMonitorWindowInteraction(
     event: React.PointerEvent<HTMLElement>,
-    edge: TerminalEntryLayoutResizeEdge
+    windowId: string,
+    mode: "drag" | "resize",
+    edge?: TerminalEntryLayoutResizeEdge
   ): void {
-    if (!standaloneProductionMonitor || !standaloneProductionMonitorHeaderResizeMode || typeof window === "undefined") return;
-    const element = standaloneProductionMonitorHeaderRef.current;
-    if (!element) return;
+    if (!standaloneProductionMonitor || !standaloneProductionMonitorWindowEditMode || typeof window === "undefined") return;
+    const initialRect = getStandaloneProductionMonitorWindowRect(windowId);
+    if (!initialRect) return;
 
     event.preventDefault();
     event.stopPropagation();
-    stopStandaloneProductionMonitorHeaderResize();
+    stopStandaloneProductionMonitorWindowInteraction();
 
-    const rect = element.getBoundingClientRect();
-    const interaction: StandaloneProductionMonitorHeaderResizeInteraction = {
+    const interaction: StandaloneProductionMonitorWindowInteraction = {
+      mode,
       pointerId: event.pointerId,
+      windowId,
       edge,
       startClientX: event.clientX,
       startClientY: event.clientY,
-      initialWidth: rect.width,
-      initialHeight: rect.height,
+      initialRect,
     };
-    standaloneProductionMonitorHeaderResizeInteractionRef.current = interaction;
+    standaloneProductionMonitorWindowInteractionRef.current = interaction;
 
-    let latestSize: StandaloneProductionMonitorHeaderSize = {
-      width: Math.round(rect.width),
-      height: Math.round(rect.height),
+    let latestLayout: StandaloneProductionMonitorWindowLayout = {
+      ...standaloneProductionMonitorWindowLayout,
+      [windowId]: { ...initialRect },
     };
 
-    const snap = (value: number): number => Math.round(value / 8) * 8;
+    const previousUserSelect = document.body.style.userSelect;
+    const previousCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = mode === "drag" ? "grabbing" : `${edge || "se"}-resize`;
+
     const onPointerMove = (nativeEvent: PointerEvent): void => {
-      const active = standaloneProductionMonitorHeaderResizeInteractionRef.current;
+      const active = standaloneProductionMonitorWindowInteractionRef.current;
       if (!active || active.pointerId !== nativeEvent.pointerId) return;
+      if (nativeEvent.pointerType === "mouse" && nativeEvent.buttons === 0) return;
       nativeEvent.preventDefault();
 
       const deltaX = nativeEvent.clientX - active.startClientX;
       const deltaY = nativeEvent.clientY - active.startClientY;
-      const horizontalDelta = active.edge.includes("e")
-        ? deltaX
-        : active.edge.includes("w")
-          ? -deltaX
-          : 0;
-      const verticalDelta = active.edge.includes("s")
-        ? deltaY
-        : active.edge.includes("n")
-          ? -deltaY
-          : 0;
+      let next = { ...active.initialRect };
 
-      const availableWidth = Math.max(320, window.innerWidth - 24);
-      const minimumWidth = Math.min(STANDALONE_PRODUCTION_MONITOR_HEADER_MIN_WIDTH, availableWidth);
-      const nextWidth = horizontalDelta === 0
-        ? active.initialWidth
-        : Math.min(availableWidth, Math.max(minimumWidth, snap(active.initialWidth + horizontalDelta)));
-      const nextHeight = verticalDelta === 0
-        ? active.initialHeight
-        : Math.min(
-            STANDALONE_PRODUCTION_MONITOR_HEADER_MAX_HEIGHT,
-            Math.max(STANDALONE_PRODUCTION_MONITOR_HEADER_MIN_HEIGHT, snap(active.initialHeight + verticalDelta))
+      if (active.mode === "drag") {
+        next.x = snapStandaloneProductionMonitorWindowValue(active.initialRect.x + deltaX);
+        next.y = snapStandaloneProductionMonitorWindowValue(active.initialRect.y + deltaY);
+      } else {
+        const resizeEdge = active.edge || "se";
+        const east = resizeEdge.includes("e");
+        const west = resizeEdge.includes("w");
+        const south = resizeEdge.includes("s");
+        const north = resizeEdge.includes("n");
+
+        if (east) {
+          next.width = Math.max(
+            STANDALONE_PRODUCTION_MONITOR_WINDOW_MIN_WIDTH,
+            snapStandaloneProductionMonitorWindowValue(active.initialRect.width + deltaX)
           );
+        }
+        if (south) {
+          next.height = Math.max(
+            STANDALONE_PRODUCTION_MONITOR_WINDOW_MIN_HEIGHT,
+            snapStandaloneProductionMonitorWindowValue(active.initialRect.height + deltaY)
+          );
+        }
+        if (west) {
+          const desiredWidth = Math.max(
+            STANDALONE_PRODUCTION_MONITOR_WINDOW_MIN_WIDTH,
+            snapStandaloneProductionMonitorWindowValue(active.initialRect.width - deltaX)
+          );
+          const consumed = active.initialRect.width - desiredWidth;
+          next.width = desiredWidth;
+          next.x = snapStandaloneProductionMonitorWindowValue(active.initialRect.x + consumed);
+        }
+        if (north) {
+          const desiredHeight = Math.max(
+            STANDALONE_PRODUCTION_MONITOR_WINDOW_MIN_HEIGHT,
+            snapStandaloneProductionMonitorWindowValue(active.initialRect.height - deltaY)
+          );
+          const consumed = active.initialRect.height - desiredHeight;
+          next.height = desiredHeight;
+          next.y = snapStandaloneProductionMonitorWindowValue(active.initialRect.y + consumed);
+        }
+      }
 
-      latestSize = { width: Math.round(nextWidth), height: Math.round(nextHeight) };
-      setStandaloneProductionMonitorHeaderSize(latestSize);
+      latestLayout = { ...latestLayout, [windowId]: next };
+      setStandaloneProductionMonitorWindowLayout(latestLayout);
     };
 
     const cleanup = (): void => {
@@ -24967,33 +25079,103 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       window.removeEventListener("pointerup", onPointerUp);
       window.removeEventListener("pointercancel", onPointerCancel);
       window.removeEventListener("blur", onWindowBlur);
-      if (standaloneProductionMonitorHeaderResizeCleanupRef.current === cleanup) {
-        standaloneProductionMonitorHeaderResizeCleanupRef.current = null;
+      document.body.style.userSelect = previousUserSelect;
+      document.body.style.cursor = previousCursor;
+      if (standaloneProductionMonitorWindowCleanupRef.current === cleanup) {
+        standaloneProductionMonitorWindowCleanupRef.current = null;
       }
-      standaloneProductionMonitorHeaderResizeInteractionRef.current = null;
-    };
-    const onPointerUp = (nativeEvent: PointerEvent): void => {
-      const active = standaloneProductionMonitorHeaderResizeInteractionRef.current;
-      if (!active || active.pointerId !== nativeEvent.pointerId) return;
-      persistStandaloneProductionMonitorHeaderSize(latestSize);
-      cleanup();
-    };
-    const onPointerCancel = (nativeEvent: PointerEvent): void => {
-      const active = standaloneProductionMonitorHeaderResizeInteractionRef.current;
-      if (!active || active.pointerId !== nativeEvent.pointerId) return;
-      persistStandaloneProductionMonitorHeaderSize(latestSize);
-      cleanup();
-    };
-    const onWindowBlur = (): void => {
-      persistStandaloneProductionMonitorHeaderSize(latestSize);
-      cleanup();
+      standaloneProductionMonitorWindowInteractionRef.current = null;
     };
 
-    standaloneProductionMonitorHeaderResizeCleanupRef.current = cleanup;
+    const finish = (): void => {
+      persistStandaloneProductionMonitorWindowLayout(latestLayout);
+      cleanup();
+    };
+    const onPointerUp = (nativeEvent: PointerEvent): void => {
+      const active = standaloneProductionMonitorWindowInteractionRef.current;
+      if (!active || active.pointerId !== nativeEvent.pointerId) return;
+      nativeEvent.preventDefault();
+      finish();
+    };
+    const onPointerCancel = (nativeEvent: PointerEvent): void => {
+      const active = standaloneProductionMonitorWindowInteractionRef.current;
+      if (!active || active.pointerId !== nativeEvent.pointerId) return;
+      finish();
+    };
+    const onWindowBlur = (): void => finish();
+
+    standaloneProductionMonitorWindowCleanupRef.current = cleanup;
     window.addEventListener("pointermove", onPointerMove, { passive: false });
     window.addEventListener("pointerup", onPointerUp, { passive: false });
     window.addEventListener("pointercancel", onPointerCancel);
     window.addEventListener("blur", onWindowBlur);
+  }
+
+  function renderStandaloneProductionMonitorWindowChrome(windowId: string, label: string): React.JSX.Element | null {
+    if (!standaloneProductionMonitor || !standaloneProductionMonitorWindowEditMode) return null;
+    const handles: Array<{
+      edge: TerminalEntryLayoutResizeEdge;
+      cursor: React.CSSProperties["cursor"];
+      style: React.CSSProperties;
+    }> = [
+      { edge: "n", cursor: "ns-resize", style: { top: -2, left: 12, right: 12, height: 9 } },
+      { edge: "s", cursor: "ns-resize", style: { bottom: -2, left: 12, right: 12, height: 9 } },
+      { edge: "e", cursor: "ew-resize", style: { right: -2, top: 12, bottom: 12, width: 9 } },
+      { edge: "w", cursor: "ew-resize", style: { left: -2, top: 12, bottom: 12, width: 9 } },
+      { edge: "nw", cursor: "nwse-resize", style: { left: -4, top: -4, width: 16, height: 16 } },
+      { edge: "ne", cursor: "nesw-resize", style: { right: -4, top: -4, width: 16, height: 16 } },
+      { edge: "sw", cursor: "nesw-resize", style: { left: -4, bottom: -4, width: 16, height: 16 } },
+      { edge: "se", cursor: "nwse-resize", style: { right: -4, bottom: -4, width: 16, height: 16 } },
+    ];
+
+    return (
+      <>
+        <div
+          onPointerDown={(event) => beginStandaloneProductionMonitorWindowInteraction(event, windowId, "drag")}
+          title="Kattints, tartsd lenyomva és húzd az ablak mozgatásához"
+          style={{
+            position: "absolute",
+            top: 3,
+            left: 8,
+            right: 8,
+            height: 22,
+            zIndex: 160,
+            borderRadius: 7,
+            border: "1px solid #38bdf8",
+            background: "rgba(2, 132, 199, 0.92)",
+            color: "#ffffff",
+            display: "flex",
+            alignItems: "center",
+            padding: "0 8px",
+            fontSize: 11,
+            fontWeight: 900,
+            cursor: "grab",
+            userSelect: "none",
+            touchAction: "none",
+            boxSizing: "border-box",
+          }}
+        >
+          ↔ {label}
+        </div>
+        {handles.map((handle) => (
+          <div
+            key={`${windowId}-${handle.edge}`}
+            onPointerDown={(event) => beginStandaloneProductionMonitorWindowInteraction(event, windowId, "resize", handle.edge)}
+            title="Kattints, tartsd lenyomva és húzd a méretezéshez"
+            style={{
+              position: "absolute",
+              zIndex: 170,
+              cursor: handle.cursor,
+              userSelect: "none",
+              touchAction: "none",
+              background: handle.edge.length === 2 ? "#38bdf8" : "transparent",
+              borderRadius: 4,
+              ...handle.style,
+            }}
+          />
+        ))}
+      </>
+    );
   }
 
   function getOrderedDashboardStations(): string[] {
