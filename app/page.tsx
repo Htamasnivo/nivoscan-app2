@@ -732,7 +732,7 @@ type StationPlanMergeAction = StationPlanUploadRow & {
 
 type ServerWorkbookSheetPayload = {
   name: string;
-  rows: Array<Record<string, unknown>>;
+  rows: unknown[][];
 };
 
 type ProductionPlanImportSettingsRow = {
@@ -1799,7 +1799,210 @@ function isRequiredProductionCardField(fieldId: string): boolean {
 }
 
 
-const STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[]> = {
+const STATION_PLAN_MASTER_SHEET_NAMES = [
+  "Csőlézer",
+  "Összeállítás",
+  "Lakatos",
+  "Kézi szinter",
+  "Asztalos",
+  "Fényező",
+  "Fóliázó",
+  "Szerelés",
+  "Raktár",
+  "PrimaPower",
+  "Lézerhegesztés",
+  "Szinter",
+  "Kerítés fólia",
+  "Csomagolás",
+] as const;
+
+const STATION_PLAN_EXCEL_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[]> = {
+  csolezer: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam", label: "Gyártási szám", dataType: "text" },
+    { key: "rsz", label: "Rendelésszám", dataType: "text" },
+    { key: "megnevezes", label: "Megnevezés", dataType: "text" },
+    { key: "mennyiseg", label: "Mennyiseg", dataType: "integer" },
+    { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+    { key: "kiszallitasi_datum", label: "Kiszállítási dátum", dataType: "date" },
+    { key: "ell", label: "Ell", dataType: "integer" },
+  ],
+  osszeallitas: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam", label: "Gyártási szám", dataType: "text" },
+    { key: "rsz", label: "Rendelésszám", dataType: "text" },
+    { key: "ajto_tipus", label: "Ajtó típus", dataType: "text" },
+    { key: "szogvas", label: "Szögvas", dataType: "text" },
+    { key: "tok_szelesseg", label: "Tok szélesség", dataType: "text" },
+    { key: "tok_magassag", label: "Tok magasság", dataType: "text" },
+    { key: "szarny", label: "Szárny", dataType: "text" },
+    { key: "bevilagitok_szama", label: "Bevilágítók száma", dataType: "text" },
+    { key: "normaido", label: "Normaidő", dataType: "text" },
+    { key: "szin", label: "Szín", dataType: "text" },
+    { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+    { key: "kiszallitasi_datum", label: "Kiszállítási dátum", dataType: "date" },
+    { key: "ell", label: "Ell", dataType: "integer" },
+  ],
+  lakatos: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam", label: "Gyártási szám", dataType: "text" },
+    { key: "szin", label: "Szín", dataType: "text" },
+    { key: "rsz", label: "Rendelésszám", dataType: "text" },
+    { key: "tipus", label: "Ajtó típus", dataType: "text" },
+    { key: "osszef", label: "Összef", dataType: "text" },
+    { key: "normaido", label: "Normaidő", dataType: "text" },
+    { key: "szarny", label: "Szárny", dataType: "text" },
+    { key: "bevilagitok_szama", label: "Bevilágítók száma", dataType: "text" },
+    { key: "hegesztett_pant", label: "hegesztett pánt", dataType: "text" },
+    { key: "hegesztett_pant2", label: "Hegesztett pánt", dataType: "text" },
+    { key: "szogvas", label: "Szögvas", dataType: "text" },
+    { key: "nyitas", label: "Nyitás", dataType: "text" },
+    { key: "uveg", label: "Üveg", dataType: "text" },
+    { key: "takaro_kivul", label: "Takaró kívül", dataType: "text" },
+    { key: "takaro_belul", label: "Takaró belül", dataType: "text" },
+    { key: "takaro_kivul2", label: "takaró kívül2", dataType: "text" },
+    { key: "takaro_belul2", label: "takaró belül2", dataType: "text" },
+    { key: "takaroval", label: "Takaróval", dataType: "text" },
+    { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+    { key: "kiszallitasi_datum", label: "Kiszállítási dátum", dataType: "date" },
+    { key: "ell", label: "Ell", dataType: "integer" },
+  ],
+  kezi_szinter: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam", label: "Gyártási szám", dataType: "text" },
+    { key: "szin", label: "Szín", dataType: "text" },
+    { key: "rsz", label: "Rendelésszám", dataType: "text" },
+    { key: "tokozat_szine", label: "Tokozat színe", dataType: "text" },
+    { key: "takaro_kivul", label: "takaró kívül", dataType: "text" },
+    { key: "takaro_belul", label: "takaró belül", dataType: "text" },
+    { key: "tipus", label: "Ajtó típus", dataType: "text" },
+    { key: "takaro", label: "Takaró", dataType: "text" },
+    { key: "osszefogo_lemez", label: "Összefogó lemez", dataType: "text" },
+    { key: "kiszallitasi_datum", label: "Kiszállítási dátum", dataType: "date" },
+    { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+    { key: "ell", label: "Ell", dataType: "integer" },
+  ],
+  asztalos: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam", label: "Gyártási szám", dataType: "text" },
+    { key: "rsz", label: "Rendelésszám", dataType: "text" },
+    { key: "tipus", label: "Ajtó típus", dataType: "text" },
+    { key: "uveges", label: "Üveges", dataType: "text" },
+    { key: "kulso_lap", label: "Külső lap", dataType: "text" },
+    { key: "fa_szine_kivul", label: "Külső lap színe", dataType: "text" },
+    { key: "belso_lap", label: "Belső lap", dataType: "text" },
+    { key: "fa_szine_belul", label: "Belső lap színe", dataType: "text" },
+    { key: "kiszallitasi_datum", label: "Kiszállítási dátum", dataType: "date" },
+    { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+    { key: "ell", label: "Ell", dataType: "integer" },
+  ],
+  fenyezo: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam", label: "Gyártási szám", dataType: "text" },
+    { key: "rsz", label: "Rendelésszám", dataType: "text" },
+    { key: "tipus", label: "Ajtó típus", dataType: "text" },
+    { key: "uveges", label: "Üveges", dataType: "text" },
+    { key: "kulso_lap", label: "Külső lap", dataType: "text" },
+    { key: "fa_szine_kivul", label: "Külső lap színe", dataType: "text" },
+    { key: "belso_lap", label: "Belső lap", dataType: "text" },
+    { key: "fa_szine_belul", label: "Belső lap színe", dataType: "text" },
+    { key: "kiszallitasi_datum", label: "Kiszállítási dátum", dataType: "date" },
+    { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+    { key: "ell", label: "Ell", dataType: "integer" },
+  ],
+  foliazo: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam", label: "Gyártási szám", dataType: "text" },
+    { key: "rsz", label: "Rendelésszám", dataType: "text" },
+    { key: "tipus", label: "Ajtó típus", dataType: "text" },
+    { key: "uveges", label: "Üveges", dataType: "text" },
+    { key: "kulso_lap", label: "Külső lap", dataType: "text" },
+    { key: "fa_szine_kivul", label: "Külső lap színe", dataType: "text" },
+    { key: "belso_lap", label: "Belső lap", dataType: "text" },
+    { key: "fa_szine_belul", label: "Belső lap színe", dataType: "text" },
+    { key: "kiszallitasi_datum", label: "Kiszállítási dátum", dataType: "date" },
+    { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+    { key: "ell", label: "Ell", dataType: "integer" },
+  ],
+  szereles: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam", label: "Gyártási szám", dataType: "text" },
+    { key: "rsz", label: "Rendelésszám", dataType: "text" },
+    { key: "tipus", label: "Ajtó típus", dataType: "text" },
+    { key: "tokozat_szine", label: "Tokozat színe", dataType: "text" },
+    { key: "telephely", label: "Telephely", dataType: "text" },
+    { key: "atvetel", label: "Átvétel", dataType: "text" },
+    { key: "nyilo_normaido", label: "Nyíló normaidő", dataType: "text" },
+    { key: "tok_normaido", label: "Tok normaidő", dataType: "text" },
+    { key: "kiszallitasi_datum", label: "Kiszállítási dátum", dataType: "date" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+    { key: "ell", label: "Ell", dataType: "integer" },
+  ],
+  raktar: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam", label: "Gyártási szám", dataType: "text" },
+    { key: "rsz", label: "Rendelésszám", dataType: "text" },
+    { key: "tipus", label: "Ajtó típus", dataType: "text" },
+    { key: "tokozat_szine", label: "Tokozat színe", dataType: "text" },
+    { key: "telephely", label: "Telephely", dataType: "text" },
+    { key: "atvetel", label: "Átvétel", dataType: "text" },
+    { key: "kiszallitasi_datum", label: "Kiszállítási dátum", dataType: "date" },
+    { key: "tervezett_elkeszules", label: "Tervezett elkészülés", dataType: "date" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+    { key: "ell", label: "Ell", dataType: "integer" },
+  ],
+  primapower: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam_projekt_neve", label: "Gyártási szám / Projekt", dataType: "text" },
+    { key: "megnevezes", label: "Termék", dataType: "text" },
+    { key: "mennyiseg", label: "Mennyiség", dataType: "integer" },
+    { key: "normaido", label: "Normaidő", dataType: "text" },
+    { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+  ],
+  lezerhegesztes: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam", label: "Gyártási szám", dataType: "text" },
+    { key: "megnevezes", label: "Termék", dataType: "text" },
+    { key: "mennyiseg", label: "Mennyiség", dataType: "integer" },
+    { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+    { key: "kiszallitasi_datum", label: "Kiszállítási dátum", dataType: "date" },
+  ],
+  szinter: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam", label: "Gyártási szám", dataType: "text" },
+    { key: "rsz", label: "Rendelésszám", dataType: "text" },
+    { key: "szin", label: "Szín", dataType: "text" },
+    { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+  ],
+  kerites_folia: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam", label: "Gyártási szám", dataType: "text" },
+    { key: "rsz", label: "Rendelésszám", dataType: "text" },
+    { key: "szin", label: "Szín", dataType: "text" },
+    { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+  ],
+  csomagolas: [
+    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "gyartasi_szam", label: "Gyártási szám", dataType: "text" },
+    { key: "rsz", label: "Rendelésszám", dataType: "text" },
+    { key: "szin", label: "Szín", dataType: "text" },
+    { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
+    { key: "uzletag", label: "Üzletág", dataType: "text" },
+  ],
+};
+
+const LEGACY_STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefinition[]> = {
   csolezer: [
     { key: "elkeszules_datum", label: "elkeszules_datum", dataType: "date" },
     { key: "gyartasi_szam", label: "gyártási szám", dataType: "text" },
@@ -1999,6 +2202,36 @@ function normalizePlanColumnName(value: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
+// Régi Excel-fejlécek / korábbi _terv mezőnevek kompatibilitása.
+// Az új mester Excel ettől még pontosan a 2026-09-02-es oszlopsorrendet használja.
+const STATION_PLAN_FIELD_VALUE_ALIASES: Record<string, string[]> = {
+  rsz: ["rendelesszam", "rendeles_szam"],
+  tipus: ["ajto_tipus"],
+  ajto_tipus: ["tipus"],
+  fa_szine_kivul: ["kulso_lap_szine"],
+  fa_szine_belul: ["belso_lap_szine"],
+  gyartasi_szam_projekt_neve: ["gyartasi_szam_projekt", "gyartasi_szam_projekt_nev"],
+  bevilagitok_szama: ["bevilagito_szama"],
+  hegesztett_pant2: ["hegesztett_pant_1", "hegesztett_pant2"],
+  uzletag: ["statusz"],
+};
+
+function getStationPlanFieldLookupKeys(fieldKey: string): string[] {
+  return Array.from(new Set([fieldKey, ...(STATION_PLAN_FIELD_VALUE_ALIASES[fieldKey] || [])]));
+}
+
+function parseStationPlanDateValue(value: unknown): string | null {
+  // A mester Excelben a képlettel előállított "nincs dátum" néha 0-ként jelenik meg.
+  // Ezt nem szabad 1899-12-30 dátummá alakítani.
+  if (typeof value === "number" && Number.isFinite(value) && value <= 20000) return null;
+  const text = String(value ?? "").trim().replace(",", ".");
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    const numeric = Number(text);
+    if (Number.isFinite(numeric) && numeric <= 20000) return null;
+  }
+  return parseSpreadsheetDate(value);
+}
+
 // Szinter és Kézi szinter KÉT KÜLÖN munkaállomás.
 // Ennél a két állomásnál kizárólag exact egyezést használunk:
 //   Szinter      -> szinter_terv
@@ -2015,6 +2248,34 @@ function getStationPlanIdentityKey(stationName: string | null | undefined): stri
   if (normalized === "kezi_szinter") return "kezi_szinter";
 
   return normalized;
+}
+
+function getProductionPlanStationUniverse(machineNames: string[]): string[] {
+  const machineByKey = new Map<string, string>();
+  machineNames.forEach((station) => {
+    const key = getStationPlanIdentityKey(station);
+    if (!key || key === getStationPlanIdentityKey(DEFAULT_MACHINE_ID) || key.includes("iroda")) return;
+    if (!machineByKey.has(key)) machineByKey.set(key, station);
+  });
+
+  const result: string[] = [];
+  const seen = new Set<string>();
+  STATION_PLAN_MASTER_SHEET_NAMES.forEach((masterName) => {
+    const key = getStationPlanIdentityKey(masterName);
+    result.push(machineByKey.get(key) || masterName);
+    seen.add(key);
+  });
+  machineByKey.forEach((station, key) => {
+    if (!seen.has(key)) result.push(station);
+  });
+  return result;
+}
+
+function getStationPlanMasterSheetName(stationName: string): string {
+  const key = getStationPlanIdentityKey(stationName);
+  return STATION_PLAN_MASTER_SHEET_NAMES.find(
+    (masterName) => getStationPlanIdentityKey(masterName) === key
+  ) || stationName;
 }
 
 const FENYEZO_TECHNICAL_PLAN_FIELD_KEYS = new Set([
@@ -2056,7 +2317,8 @@ function inferFenyezoPlanFieldDataType(fieldKey: string): StationPlanFieldDataTy
 }
 
 function humanizeFenyezoPlanFieldLabel(fieldKey: string): string {
-  const known = STATION_PLAN_FIELD_DEFINITIONS.fenyezo?.find((field) => field.key === fieldKey);
+  const known = STATION_PLAN_EXCEL_FIELD_DEFINITIONS.fenyezo?.find((field) => field.key === fieldKey)
+    || LEGACY_STATION_PLAN_FIELD_DEFINITIONS.fenyezo?.find((field) => field.key === fieldKey);
   if (known) return known.label;
   return String(fieldKey || "")
     .replace(/_/g, " ")
@@ -2085,24 +2347,26 @@ function registerFenyezoBusinessPlanFields(rows: Array<Record<string, unknown>>)
   });
 }
 
+function getStationPlanExcelFieldDefinitions(stationName: string | null | undefined): StationPlanFieldDefinition[] {
+  const key = getStationPlanIdentityKey(stationName);
+  return STATION_PLAN_EXCEL_FIELD_DEFINITIONS[key] || STATION_PLAN_BASE_FIELD_DEFINITIONS;
+}
+
 function getStationPlanFieldDefinitions(stationName: string | null | undefined): StationPlanFieldDefinition[] {
   const key = getStationPlanIdentityKey(stationName);
-  const baseDefinitions = STATION_PLAN_FIELD_DEFINITIONS[key] || STATION_PLAN_BASE_FIELD_DEFINITIONS;
+  const excelDefinitions = getStationPlanExcelFieldDefinitions(stationName);
+  const legacyDefinitions = LEGACY_STATION_PLAN_FIELD_DEFINITIONS[key] || [];
 
-  const definitionsByKey = new Map<string, StationPlanFieldDefinition>(
-    baseDefinitions.map((field) => [field.key, field])
-  );
+  // A termelési kártya az új Excel-mestersémát mutatja elöl, de a korábbi
+  // fizikai mezőket sem dobjuk el. Így a régi _terv adatok továbbra is
+  // megjeleníthetők, miközben az import/export már az új, pontos sémát használja.
+  const definitionsByKey = new Map<string, StationPlanFieldDefinition>();
+  excelDefinitions.forEach((field) => definitionsByKey.set(field.key, field));
+  legacyDefinitions.forEach((field) => {
+    if (!definitionsByKey.has(field.key)) definitionsByKey.set(field.key, field);
+  });
 
-  // A Kiszállítási dátum minden munkaállomási *_terv közös, opcionális üzleti mezője.
-  // Nem kötelező kitölteni, de minden Excel-sémában és a Profi szerkesztőben elérhető.
-  if (!definitionsByKey.has(STATION_PLAN_KISZALLITASI_DATUM_FIELD.key)) {
-    definitionsByKey.set(
-      STATION_PLAN_KISZALLITASI_DATUM_FIELD.key,
-      STATION_PLAN_KISZALLITASI_DATUM_FIELD
-    );
-  }
-
-  // Csak a Fényező kap további dinamikus mezőfelismerést.
+  // A Fényező korábban dinamikusan felfedezett üzleti mezőit is megtartjuk.
   if (key === "fenyezo") {
     FENYEZO_DISCOVERED_BUSINESS_FIELD_KEYS.forEach((fieldKey) => {
       if (!isFenyezoBusinessPlanFieldKey(fieldKey)) return;
@@ -2119,14 +2383,18 @@ function getStationPlanFieldDefinitions(stationName: string | null | undefined):
   return Array.from(definitionsByKey.values());
 }
 
+
 function getStationPlanExtraFieldDefinitions(stationName: string | null | undefined): StationPlanFieldDefinition[] {
   return getStationPlanFieldDefinitions(stationName).filter((field) => !STATION_PLAN_REQUIRED_FIELD_KEYS.has(field.key));
 }
 
 function getStationPlanFieldLabel(fieldKey: string): string {
-  if (fieldKey === "kiszallitasi_datum") return "Kiszállítási dátum";
+  for (const definitions of Object.values(STATION_PLAN_EXCEL_FIELD_DEFINITIONS)) {
+    const field = definitions.find((item) => item.key === fieldKey);
+    if (field) return field.label;
+  }
 
-  for (const definitions of Object.values(STATION_PLAN_FIELD_DEFINITIONS)) {
+  for (const definitions of Object.values(LEGACY_STATION_PLAN_FIELD_DEFINITIONS)) {
     const field = definitions.find((item) => item.key === fieldKey);
     if (field) return field.label;
   }
@@ -11153,7 +11421,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function getPrioritySelectedStationUnionDefinitions(stationNames: string[]): StationPlanFieldDefinition[] {
     const byKey = new Map<string, StationPlanFieldDefinition>();
     stationNames.forEach((stationName) => {
-      getStationPlanFieldDefinitions(stationName).forEach((field) => {
+      getStationPlanExcelFieldDefinitions(stationName).forEach((field) => {
         if (!byKey.has(field.key)) byKey.set(field.key, field);
       });
     });
@@ -11225,7 +11493,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     if (field.dataType === "date") return getLocalDateKey(new Date());
     if (field.dataType === "integer") return 1;
-    if (key === "normaido") return "1:30";
+    if (key.includes("normaido")) return "1:30";
     if (key === "gyartasi_szam" || key === "sorszam") return "MINTA-001";
     if (key === "rsz") return "00001";
     if (key === "megnevezes" || label.includes("megnevez")) return "Minta prioritási rendelés";
@@ -11273,7 +11541,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         // Egy közös XLSX-en belül minden állomás külön munkafület kap.
         // Munkafületenként külön session marad, így visszatöltéskor pontosan
         // ahhoz az állomáshoz kerül prioritás, amelyik munkafülön szerepel a sor.
-        const definitions = getStationPlanFieldDefinitions(stationName);
+        const definitions = getStationPlanExcelFieldDefinitions(stationName);
 
         const { data: session, error: sessionError } = await supabase
           .from(PRIORITY_IMPORT_SESSIONS_TABLE)
@@ -11462,7 +11730,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           definitions.forEach((definition) => {
             const normalizedDefinitionKey = normalizePlanColumnName(definition.key);
             const normalizedDefinitionLabel = normalizePlanColumnName(definition.label);
-            const rawValue = row[normalizedDefinitionKey] ?? row[normalizedDefinitionLabel];
+            // Lakatosban két, csak kis/nagybetűben eltérő "hegesztett pánt" fejléc van.
+            // A SheetJS objektumos olvasás a másodikat _1 utótaggal különbözteti meg;
+            // ezt külön feloldjuk, hogy prioritási importnál se vesszen el a 2. oszlop.
+            const rawValue = definition.key === "hegesztett_pant2"
+              ? (row.hegesztett_pant_1 ?? row.hegesztett_pant2 ?? row[normalizedDefinitionKey])
+              : (row[normalizedDefinitionKey] ?? row[normalizedDefinitionLabel]);
             if (definition.dataType === "date") {
               data[definition.key] = rawValue === null || rawValue === undefined || String(rawValue).trim() === ""
                 ? null
@@ -11470,7 +11743,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             } else if (definition.dataType === "integer") {
               data[definition.key] = parseSpreadsheetNumber(rawValue);
             } else {
-              data[definition.key] = definition.key === "normaido"
+              data[definition.key] = normalizePlanColumnName(definition.key).includes("normaido")
                 ? formatExcelDuration(rawValue)
                 : (rawValue === null || rawValue === undefined ? null : String(rawValue).trim() || null);
             }
@@ -12558,19 +12831,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   ): unknown {
     if (!planData) return null;
 
-    const normalizedWantedKey = normalizePlanColumnName(fieldKey);
-    if (!normalizedWantedKey) return null;
+    const lookupKeys = getStationPlanFieldLookupKeys(fieldKey);
+    const normalizedWantedKeys = new Set(
+      lookupKeys
+        .map((key) => normalizePlanColumnName(key))
+        .filter(Boolean)
+    );
+    if (normalizedWantedKeys.size === 0) return null;
 
     // 1. A *_terv saját közvetlen, nem üres oszlopa az elsődleges.
-    const directExactValue = planData[fieldKey];
-    if (hasProductionCardPlanValue(directExactValue)) {
-      return directExactValue;
+    for (const lookupKey of lookupKeys) {
+      const directExactValue = planData[lookupKey];
+      if (hasProductionCardPlanValue(directExactValue)) {
+        return directExactValue;
+      }
     }
 
     for (const [rawKey, rawValue] of Object.entries(planData)) {
       if (rawKey === "adat") continue;
       if (
-        normalizePlanColumnName(rawKey) === normalizedWantedKey
+        normalizedWantedKeys.has(normalizePlanColumnName(rawKey))
         && hasProductionCardPlanValue(rawValue)
       ) {
         return rawValue;
@@ -12579,7 +12859,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     // 2. Régebbi/importált sorok kompatibilitása:
     // az eredeti Excel teljes sora az "adat" JSON-ban is megvan.
-    // Ha a fizikai oszlop NULL, onnan visszük tovább az adatot.
+    // Az új kulcsok mellett a korábbi fejlécneveket is feloldjuk.
     const nestedData =
       planData.adat
       && typeof planData.adat === "object"
@@ -12588,14 +12868,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         : null;
 
     if (nestedData) {
-      const nestedExactValue = nestedData[fieldKey];
-      if (hasProductionCardPlanValue(nestedExactValue)) {
-        return nestedExactValue;
+      for (const lookupKey of lookupKeys) {
+        const nestedExactValue = nestedData[lookupKey];
+        if (hasProductionCardPlanValue(nestedExactValue)) {
+          return nestedExactValue;
+        }
       }
 
       for (const [rawKey, rawValue] of Object.entries(nestedData)) {
         if (
-          normalizePlanColumnName(rawKey) === normalizedWantedKey
+          normalizedWantedKeys.has(normalizePlanColumnName(rawKey))
           && hasProductionCardPlanValue(rawValue)
         ) {
           return rawValue;
@@ -12604,9 +12886,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
 
     // 3. Ha tényleg nincs adat a saját *_terv sorban, üres marad.
-    // A render ezt "–"-ként jeleníti meg.
     return null;
   }
+
 
   function getProductionCardFieldValue(row: ProductionCardRow, fieldId: string): string | number {
     if (isProductionCardCrossStationStatusField(fieldId)) {
@@ -12627,7 +12909,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const value = getProductionCardPlanValue(row.planData, key);
 
       if (value === null || value === undefined) return "";
-      if (key === "normaido") return formatExcelDuration(value);
+      if (normalizePlanColumnName(key).includes("normaido")) return formatExcelDuration(value);
       if (typeof value === "object") return JSON.stringify(value);
       return String(value);
     }
@@ -12700,7 +12982,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
       const value = row.data?.[key];
       if (value === null || value === undefined) return "";
-      if (key === "normaido") return formatExcelDuration(value);
+      if (normalizePlanColumnName(key).includes("normaido")) return formatExcelDuration(value);
       if (typeof value === "object") return JSON.stringify(value);
       return String(value);
     }
@@ -12719,7 +13001,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
       const value = getProductionCardPlanValue(row.planData, key);
       if (value === null || value === undefined) return "";
-      if (key === "normaido") return formatExcelDuration(value);
+      if (normalizePlanColumnName(key).includes("normaido")) return formatExcelDuration(value);
       if (typeof value === "object") return JSON.stringify(value);
       return String(value);
     }
@@ -22168,32 +22450,71 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function parseStationPlanRowsFromWorkbookSheet(
-    rawRows: Array<Record<string, unknown>>,
+    rawMatrix: unknown[][],
     sourceLabel: string,
     stationName = ""
   ): StationPlanUploadRow[] {
-    if (!rawRows.length) throw new Error(`${sourceLabel}: a munkafül üres.`);
-    const headerSet = new Set(Object.keys(rawRows[0] || {}).map(normalizeSpreadsheetHeader));
-    const definitions = getStationPlanFieldDefinitions(stationName);
-    const missingHeaders = definitions
-      .filter((definition) => !headerSet.has(normalizeSpreadsheetHeader(definition.label)))
-      .map((definition) => definition.label);
-    if (missingHeaders.length > 0) {
-      throw new Error(`${sourceLabel}: hiányzó Excel-oszlopok: ${missingHeaders.join(", ")}.`);
+    if (!rawMatrix.length) throw new Error(`${sourceLabel}: a munkafül üres.`);
+
+    const definitions = getStationPlanExcelFieldDefinitions(stationName);
+    const headerRow = Array.isArray(rawMatrix[0]) ? rawMatrix[0] : [];
+    const expectedHeaders = definitions.map((definition) => normalizeSpreadsheetHeader(definition.label));
+    const actualHeaders = headerRow.map((value) => normalizeSpreadsheetHeader(String(value ?? "")));
+
+    const mismatches = definitions
+      .map((definition, index) => ({
+        index,
+        expected: definition.label,
+        actual: String(headerRow[index] ?? "").trim(),
+        matches: actualHeaders[index] === expectedHeaders[index],
+      }))
+      .filter((item) => !item.matches);
+
+    const unexpectedHeaders = headerRow
+      .slice(definitions.length)
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean);
+
+    if (mismatches.length > 0 || unexpectedHeaders.length > 0) {
+      const mismatchText = mismatches.length > 0
+        ? ` Eltérő oszlopok: ${mismatches.map((item) => `${item.index + 1}. „${item.actual || "(üres)"}” → várt: „${item.expected}”`).join("; ")}.`
+        : "";
+      const extraText = unexpectedHeaders.length > 0
+        ? ` Nem várt fejléc(ek): ${unexpectedHeaders.join(", ")}.`
+        : "";
+      throw new Error(
+        `${sourceLabel}: az Excel fejlécének sorrendje/formája nem egyezik a mester-sémával.${mismatchText}${extraText}`
+      );
     }
 
     const definitionByKey = new Map(definitions.map((field) => [field.key, field]));
     const parsedRows: StationPlanUploadRow[] = [];
-    rawRows.forEach((row, index) => {
-      const rowNumber = index + 2;
-      const normalizedRawRow: Record<string, unknown> = {};
-      Object.entries(row || {}).forEach(([rawKey, rawValue]) => {
-        const key = normalizePlanColumnName(rawKey);
-        if (key) normalizedRawRow[key] = rawValue;
-      });
 
-      const isCompletelyEmpty = Object.values(row || {}).every((value) => value === null || value === undefined || String(value).trim() === "");
+    rawMatrix.slice(1).forEach((rowValues, index) => {
+      const rowNumber = index + 2;
+      const row = Array.isArray(rowValues) ? rowValues : [];
+      const isCompletelyEmpty = definitions.every((_, columnIndex) => {
+        const value = row[columnIndex];
+        return value === null || value === undefined || String(value).trim() === "";
+      });
       if (isCompletelyEmpty) return;
+
+      // Pozíció alapján olvasunk, nem objektum-fejlécek alapján. Ez különösen
+      // fontos a Lakatos két, majdnem azonos „hegesztett pánt” oszlopánál:
+      // így egyik érték sem tud elveszni vagy felülíródni.
+      const normalizedRawRow: Record<string, unknown> = {};
+      definitions.forEach((definition, columnIndex) => {
+        normalizedRawRow[definition.key] = row[columnIndex] ?? "";
+      });
+      // A mesterfájlban néhány munkalap jobb oldalán fejléc nélküli segédcellák /
+      // képletek is vannak. Ezek NEM részei a kötelező _terv sémának, ezért nem
+      // exportáljuk őket oszlopként, de egy valódi tervsorhoz tartozó nem üres
+      // értékeiket technikai kulccsal az adat JSON-ban megőrizzük. Így importkor
+      // ezek sem vesznek el, és egy későbbi frissítés sem törli őket.
+      row.slice(definitions.length).forEach((extraValue, extraIndex) => {
+        if (extraValue === null || extraValue === undefined || String(extraValue).trim() === "") return;
+        normalizedRawRow[`__excel_extra_col_${definitions.length + extraIndex + 1}`] = extraValue;
+      });
 
       const normalizedValues: Record<string, unknown> = {};
       definitions.forEach((definition) => {
@@ -22201,11 +22522,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         if (definition.dataType === "date") {
           normalizedValues[definition.key] = rawValue === null || rawValue === undefined || String(rawValue).trim() === ""
             ? null
-            : parseSpreadsheetDate(rawValue);
+            : parseStationPlanDateValue(rawValue);
         } else if (definition.dataType === "integer") {
           normalizedValues[definition.key] = parseSpreadsheetNumber(rawValue);
         } else {
-          const value = definition.key === "normaido"
+          const isDurationField = normalizePlanColumnName(definition.key).includes("normaido");
+          const value = isDurationField
             ? formatExcelDuration(rawValue)
             : (rawValue === null || rawValue === undefined ? "" : String(rawValue).trim());
           if (value.length > 1000) throw new Error(`${sourceLabel}, ${rowNumber}. sor, ${definition.label}: legfeljebb 1000 karakter lehet.`);
@@ -22222,16 +22544,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         return "";
       };
 
-      // A régi termelési kártya-logika továbbra is ezt az 5 közös mezőt használja.
-      // Ha az adott Excel-munkafülben nincs ilyen oszlop, technikai kompatibilitási értéket képzünk,
-      // miközben az eredeti munkafül TELJES sora változatlanul bekerül az adat JSON-ba és a saját oszlopaiba is.
+      // A korábbi termelési kártya-logika által használt kompatibilitási mezőket
+      // továbbra is kitöltjük, de az Excelben ezeket nem kérjük külön oszlopként.
       const sorszam = firstText("sorszam", "gyartasi_szam", "gyartasi_szam_projekt_neve", "rsz", "megnevezes")
         || `${normalizePlanColumnName(stationName || "terv")}-${rowNumber}`;
       const megnevezes = firstText("megnevezes", "ajto_tipus", "tipus", "tokozat_szine") || String(stationName || "Termelési terv");
       const parsedQuantity = parseSpreadsheetNumber(normalizedValues.mennyiseg ?? normalizedRawRow.mennyiseg);
       const mennyiseg = parsedQuantity !== null && Number.isInteger(parsedQuantity) && parsedQuantity >= 0 ? parsedQuantity : 1;
-      const elkeszulesDatum = parseSpreadsheetDate(normalizedValues.elkeszules_datum ?? normalizedRawRow.elkeszules_datum) || productionPlanDate;
+      const elkeszulesDatum = parseStationPlanDateValue(normalizedValues.elkeszules_datum ?? normalizedRawRow.elkeszules_datum) || productionPlanDate;
       const tipus = firstText("tipus", "ajto_tipus") || "Normál";
+      const uzletag = firstText("uzletag");
 
       if (sorszam.length > 250 || megnevezes.length > 250 || tipus.length > 250) {
         throw new Error(`${sourceLabel}, ${rowNumber}. sor: a közös szöveges mezők legfeljebb 250 karakteresek lehetnek.`);
@@ -22240,8 +22562,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const adat: Record<string, unknown> = {};
       Object.entries(normalizedRawRow).forEach(([key, rawValue]) => {
         const definition = definitionByKey.get(key);
-        if (key === "normaido") adat[key] = formatExcelDuration(rawValue) || null;
-        else if (definition?.dataType === "date") adat[key] = rawValue === "" ? null : (parseSpreadsheetDate(rawValue) || rawValue);
+        const isDurationField = normalizePlanColumnName(key).includes("normaido");
+        if (isDurationField) adat[key] = formatExcelDuration(rawValue) || null;
+        else if (definition?.dataType === "date") adat[key] = rawValue === "" ? null : (parseStationPlanDateValue(rawValue) || rawValue);
         else if (definition?.dataType === "integer") adat[key] = parseSpreadsheetNumber(rawValue);
         else if (rawValue instanceof Date) adat[key] = rawValue.toISOString();
         else adat[key] = rawValue;
@@ -22251,17 +22574,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         adat,
         ...normalizedValues,
         excel_sorrend: index + 1,
-        // A kompatibilitási mezőket a végén írjuk rá, hogy a hiányzó Excel-oszlop ne tudja nullra felülírni őket.
+        // Kompatibilitási mezők: a régi rendszer működését megtartjuk.
         sorszam,
         megnevezes,
         mennyiseg,
         elkeszules_datum: elkeszulesDatum,
         tipus,
+        statusz: uzletag || null,
       });
     });
-    if (!parsedRows.length) throw new Error(`${sourceLabel}: a munkafül nem tartalmaz feltölthető tervsort.`);
+
+    // A fejlécet tartalmazó, de adat nélküli mester-munkafül szabályos 0 soros terv.
     return parsedRows;
   }
+
 
   function getStationPlanManufacturingNumber(
     row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
@@ -22275,6 +22601,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       row.gyartasi_szam_projekt_neve,
       data.gyartasi_szam,
       data.gyartasi_szam_projekt_neve,
+      data.gyartasi_szam_projekt,
       row.sorszam,
     ];
 
@@ -22389,8 +22716,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const latestPending = pendingMatches.at(-1);
       if (latestPending) {
         const target = actions[latestPending.index];
-        if (selectedAction === "add") target.mennyiseg += row.mennyiseg;
-        else Object.assign(target, row, { action: "insert", source_file: sourceFile });
+        if (selectedAction === "add") {
+          target.mennyiseg += row.mennyiseg;
+        } else {
+          const mergedAdat = {
+            ...((target.adat && typeof target.adat === "object" && !Array.isArray(target.adat)) ? target.adat as Record<string, unknown> : {}),
+            ...((row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)) ? row.adat as Record<string, unknown> : {}),
+          };
+          Object.assign(target, row, { adat: mergedAdat, action: "insert", source_file: sourceFile });
+        }
         continue;
       }
 
@@ -22401,8 +22735,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const nextQuantity = selectedAction === "add"
         ? Number(latestDatabaseRow.mennyiseg || 0) + Number(row.mennyiseg || 0)
         : row.mennyiseg;
+      const mergedAdat = selectedAction === "update"
+        ? {
+            ...((latestDatabaseRow.adat && typeof latestDatabaseRow.adat === "object" && !Array.isArray(latestDatabaseRow.adat)) ? latestDatabaseRow.adat as Record<string, unknown> : {}),
+            ...((row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)) ? row.adat as Record<string, unknown> : {}),
+          }
+        : row.adat;
       actions.push({
         ...row,
+        adat: mergedAdat,
         mennyiseg: nextQuantity,
         action: selectedAction,
         existing_id: latestDatabaseRow.id,
@@ -22463,7 +22804,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   async function syncDynamicProductionPlanRows(stationName: string, rawRows: Array<Record<string, unknown>>, sourceFile: string): Promise<number> {
     if (!supabase || rawRows.length === 0) return 0;
     const importedAt = new Date().toISOString();
-    const definitions = getStationPlanFieldDefinitions(stationName);
+    const definitions = getStationPlanExcelFieldDefinitions(stationName);
     const payload = rawRows.map((rawRow) => {
       const orderNumber = String(rawRow.sorszam ?? readSpreadsheetValue(rawRow, ["sorszam", "sorszám", "gyartasi_szam", "gyártási szám", "rsz", "megnevezes"]) ?? "").trim();
       const completionDate = parseSpreadsheetDate(rawRow.elkeszules_datum ?? readSpreadsheetValue(rawRow, ["elkeszules_datum", "elkeszules datum", "elkészülés dátum", "elkeszulesdatum"])) || productionPlanDate;
@@ -22490,6 +22831,48 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         updated_at: importedAt,
       };
     }).filter((row): row is NonNullable<typeof row> => Boolean(row));
+
+    // A központi kompatibilitási tábla adat JSON-jából sem dobunk el korábbi
+    // mezőket. Előbb beolvassuk az adott munkaállomás meglévő sorait, majd az
+    // új Excel-adatot csak rámerge-eljük a korábbi JSON-ra.
+    const existingDynamicDataByKey = new Map<string, Record<string, unknown>>();
+    const dynamicPageSize = 1000;
+    for (let offset = 0; ; offset += dynamicPageSize) {
+      const existingResponse = await supabase
+        .from(DYNAMIC_PRODUCTION_PLAN_TABLE)
+        .select("machine_name, sorszam, elkeszules_datum, adat")
+        .eq("machine_name", stationName)
+        .range(offset, offset + dynamicPageSize - 1);
+      if (existingResponse.error) throw existingResponse.error;
+      const existingRows = (existingResponse.data || []) as Array<Record<string, unknown>>;
+      existingRows.forEach((existingRow) => {
+        const existingKey = [
+          normalizeLooseText(String(existingRow.machine_name || "")),
+          normalizeLooseText(String(existingRow.sorszam || "")),
+          String(existingRow.elkeszules_datum || "").slice(0, 10),
+        ].join("|");
+        const existingAdat = existingRow.adat
+          && typeof existingRow.adat === "object"
+          && !Array.isArray(existingRow.adat)
+            ? existingRow.adat as Record<string, unknown>
+            : {};
+        existingDynamicDataByKey.set(existingKey, existingAdat);
+      });
+      if (existingRows.length < dynamicPageSize) break;
+    }
+
+    payload.forEach((row) => {
+      const key = [
+        normalizeLooseText(String(row.machine_name || "")),
+        normalizeLooseText(String(row.sorszam || "")),
+        String(row.elkeszules_datum || "").slice(0, 10),
+      ].join("|");
+      const oldAdat = existingDynamicDataByKey.get(key) || {};
+      const newAdat = row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)
+        ? row.adat as Record<string, unknown>
+        : {};
+      row.adat = { ...oldAdat, ...newAdat };
+    });
 
     const legacyConflictKeys = payload.map((row) =>
       [
@@ -22549,13 +22932,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       // A fájlt közvetlenül a böngésző olvassa be. Nincs több szerveres P:\ elérési út vagy API-hívás.
       const workbook = XLSX.read(await selectedFile.arrayBuffer(), { type: "array" });
-      const availableStations = machineOptions.filter((station) =>
-        normalizeLooseText(station) !== normalizeLooseText(DEFAULT_MACHINE_ID) &&
-        !normalizeLooseText(station).includes("iroda")
-      );
+      const availableStations = getProductionPlanStationUniverse(machineOptions);
       const sheets: ServerWorkbookSheetPayload[] = workbook.SheetNames.map((name) => ({
         name,
-        rows: XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets[name], { defval: "", raw: true }),
+        rows: XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[name], { header: 1, defval: "", raw: true, blankrows: false }),
       }));
 
       // Csak azokba a munkaállomásokba mentünk, amelyek munkafüle ténylegesen
@@ -22586,7 +22966,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         try {
           // A fejlécet tartalmazó, de még adat nélküli munkafül (pl. Csomagolás)
           // nem hiba: egyszerűen 0 tervsort jelent az adott munkaállomásnak.
-          if (sheet.rows.length === 0) {
+          if (sheet.rows.length <= 1) {
+            // Fejléc-only munkafül: a fejlécet azért ellenőrizzük, hogy a sablon biztosan helyes legyen.
+            parseStationPlanRowsFromWorkbookSheet(sheet.rows, `„${sheet.name}” munkafül`, stationName);
             successfulSheets.push(`${stationName} (0 sor)`);
             continue;
           }
@@ -22643,7 +23025,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const firstSheet = firstSheetName ? workbook.Sheets[firstSheetName] : null;
       if (!firstSheet) throw new Error("A kiválasztott fájl nem tartalmaz olvasható munkalapot.");
 
-      const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(firstSheet, { defval: "", raw: true });
+      const rawRows = XLSX.utils.sheet_to_json<unknown[]>(firstSheet, { header: 1, defval: "", raw: true, blankrows: false });
       if (!rawRows.length) throw new Error("A kiválasztott munkalap üres.");
 
       const parsedRows = parseStationPlanRowsFromWorkbookSheet(rawRows, `„${firstSheetName}” munkafül`, stationName);
@@ -22836,10 +23218,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
   }
 
+  function toExcelDurationSerial(value: unknown): string | number {
+    const formatted = formatExcelDuration(value);
+    const match = formatted.match(/^(\d+):(\d{2})$/);
+    if (!match) return formatted;
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return formatted;
+    return (hours * 60 + minutes) / 1440;
+  }
+
   function getStationPlanTemplateSampleValue(
     field: StationPlanFieldDefinition,
     stationName: string,
-    index: number
+    _index: number
   ): string | number {
     const key = normalizePlanColumnName(field.key);
     const label = normalizePlanColumnName(field.label);
@@ -22847,17 +23239,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (key === "kiszallitasi_datum") return "";
     if (field.dataType === "date") return getLocalDateKey(new Date());
     if (field.dataType === "integer") return 1;
-    if (key === "normaido") return "1:30";
+    if (key.includes("normaido")) return toExcelDurationSerial("1:30");
     if (key === "sorszam" || key === "gyartasi_szam" || key === "gyartasi_szam_projekt_neve") {
-      return `MINTA-${String(index + 1).padStart(3, "0")}`;
+      // Ugyanaz a mintaazonosító minden munkafülön, hogy a többállomásos
+      // rendeléskapcsolat (rendelésszám/gyártási szám + megnevezés) tesztelhető legyen.
+      return "MINTA-001";
     }
     if (key === "rsz") return "00001";
-    if (key === "megnevezes" || label.includes("megnevez")) return `${stationName} minta termék`;
-    if (key === "tipus" || label.includes("tipus")) return "Normál";
+    if (key === "megnevezes" || label.includes("megnevez") || label.includes("termek")) return "Minta termék";
+    if (key === "ajto_tipus" || key === "tipus" || label.includes("ajto_tipus") || label.includes("tipus")) return "Standard";
     if (key === "szin" || label.includes("szin")) return "Minta szín";
-    if (key === "statusz" || label.includes("statusz")) return "Ajtó";
+    if (key === "uzletag") return "ajto";
+    if (key === "ell") return 1;
+    if (key === "telephely") return "";
+    if (key === "atvetel") return "";
     return "";
   }
+
 
   function getStationPlanExportCellValue(
     row: Record<string, unknown>,
@@ -22872,10 +23270,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
 
     if (definition.dataType === "date") {
-      return parseSpreadsheetDate(resolved) || String(resolved).slice(0, 10);
+      return parseStationPlanDateValue(resolved) || "";
     }
 
-    if (definition.key === "normaido") return formatExcelDuration(resolved);
+    if (normalizePlanColumnName(definition.key).includes("normaido")) return toExcelDurationSerial(resolved);
     if (typeof resolved === "object") return JSON.stringify(resolved);
     return String(resolved);
   }
@@ -22908,7 +23306,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function applyStationPlanWorksheetPresentation(
     worksheet: Record<string, any>,
     definitions: StationPlanFieldDefinition[],
-    rowCount: number
+    rowCount: number,
+    stationName: string
   ): void {
     const toExcelColumn = (columnIndex: number): string => {
       let value = columnIndex + 1;
@@ -22919,6 +23318,35 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         value = Math.floor((value - 1) / 26);
       }
       return result;
+    };
+
+    const stationKey = getStationPlanIdentityKey(stationName);
+    const getMasterHeaderFill = (definition: StationPlanFieldDefinition): string | null => {
+      const fieldKey = definition.key;
+      const redByStation: Record<string, Set<string>> = {
+        csolezer: new Set(["rsz", "ell"]),
+        osszeallitas: new Set(["ell"]),
+        lakatos: new Set(["ell"]),
+        kezi_szinter: new Set(["ell"]),
+        asztalos: new Set(["ell"]),
+        fenyezo: new Set(["ell"]),
+        foliazo: new Set(["ell"]),
+        szereles: new Set(["nyilo_normaido", "tok_normaido", "ell"]),
+        raktar: new Set(["ell"]),
+        primapower: new Set(["normaido"]),
+      };
+      const plainByStation: Record<string, Set<string>> = {
+        csolezer: new Set(["kiszallitasi_datum"]),
+        osszeallitas: new Set(["kiszallitasi_datum"]),
+        lakatos: new Set(["osszef", "hegesztett_pant", "takaro_kivul2", "takaro_belul2", "kiszallitasi_datum"]),
+        kezi_szinter: new Set(["takaro_kivul", "takaro_belul"]),
+        szereles: new Set(["uzletag"]),
+        raktar: new Set(["uzletag"]),
+        lezerhegesztes: new Set(["kiszallitasi_datum"]),
+      };
+      if (redByStation[stationKey]?.has(fieldKey)) return "FF0000";
+      if (plainByStation[stationKey]?.has(fieldKey)) return null;
+      return "FFFF00";
     };
 
     const lastColumn = toExcelColumn(Math.max(0, definitions.length - 1));
@@ -22947,16 +23375,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const column = toExcelColumn(columnIndex);
       const headerAddress = `${column}1`;
       if (worksheet[headerAddress]) {
+        const headerFill = getMasterHeaderFill(definition);
         worksheet[headerAddress].s = {
-          font: { bold: true, color: { rgb: "FFFFFF" }, sz: 11 },
-          fill: { patternType: "solid", fgColor: { rgb: "0F4C5C" } },
-          alignment: { horizontal: "center", vertical: "center", wrapText: true },
-          border: {
-            top: { style: "thin", color: { rgb: "8EA6BA" } },
-            bottom: { style: "thin", color: { rgb: "8EA6BA" } },
-            left: { style: "thin", color: { rgb: "8EA6BA" } },
-            right: { style: "thin", color: { rgb: "8EA6BA" } },
-          },
+          font: { bold: false, color: { rgb: "000000" }, sz: 12 },
+          ...(headerFill
+            ? { fill: { patternType: "solid", fgColor: { rgb: headerFill } } }
+            : {}),
+          alignment: { horizontal: "left", vertical: "center", wrapText: false },
         };
       }
 
@@ -22964,31 +23389,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const address = `${column}${rowIndex}`;
         if (!worksheet[address]) continue;
         worksheet[address].s = {
-          fill: { patternType: "solid", fgColor: { rgb: "F8FAFC" } },
-          alignment: { vertical: "center", wrapText: true },
-          border: {
-            bottom: { style: "thin", color: { rgb: "CBD5E1" } },
-            left: { style: "thin", color: { rgb: "E2E8F0" } },
-            right: { style: "thin", color: { rgb: "E2E8F0" } },
-          },
+          font: { color: { rgb: "000000" }, sz: 11 },
+          alignment: { vertical: "center", wrapText: false },
         };
         if (definition.dataType === "date") worksheet[address].z = "yyyy-mm-dd";
         if (definition.dataType === "integer") worksheet[address].z = "0";
+        if (normalizePlanColumnName(definition.key).includes("normaido") && typeof worksheet[address].v === "number") {
+          worksheet[address].z = "[h]:mm";
+        }
       }
     });
   }
 
   async function exportSelectedProductionPlanWorkbooks(includeData: boolean): Promise<void> {
-    const explicitlySelectedStations = machineOptions.filter((station) =>
+    const stationUniverse = getProductionPlanStationUniverse(machineOptions);
+    const explicitlySelectedStations = stationUniverse.filter((station) =>
       productionPlanExportStations.some(
         (selected) => normalizeLooseText(selected) === normalizeLooseText(station)
       )
     );
-    const allProductionStations = machineOptions.filter(
-      (station) =>
-        normalizeLooseText(station) !== normalizeLooseText(DEFAULT_MACHINE_ID)
-        && !normalizeLooseText(station).includes("iroda")
-    );
+    const allProductionStations = stationUniverse;
     // A Minta Excel kijelölés nélkül minden termelési állomást tartalmaz.
     // Az adatokkal export működését változatlanul hagyjuk: ott kötelező a kijelölés.
     const selectedStations = includeData
@@ -23022,7 +23442,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const workbook = XLSX.utils.book_new();
 
         selectedStations.forEach((stationName, stationIndex) => {
-          const definitions = getStationPlanFieldDefinitions(stationName);
+          const definitions = getStationPlanExcelFieldDefinitions(stationName);
           const rows: Array<Array<string | number>> = [
             definitions.map((definition) => definition.label),
             definitions.map((definition) =>
@@ -23031,8 +23451,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           ];
 
           const worksheet = XLSX.utils.aoa_to_sheet(rows) as Record<string, any>;
-          applyStationPlanWorksheetPresentation(worksheet, definitions, 1);
-          XLSX.utils.book_append_sheet(workbook, worksheet, stationName);
+          applyStationPlanWorksheetPresentation(worksheet, definitions, 1, stationName);
+          XLSX.utils.book_append_sheet(workbook, worksheet, getStationPlanMasterSheetName(stationName));
         });
 
         const output = (XLSX.write as any)(workbook, {
@@ -23059,7 +23479,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       let totalExportedRows = 0;
       for (let stationIndex = 0; stationIndex < selectedStations.length; stationIndex += 1) {
         const stationName = selectedStations[stationIndex];
-        const definitions = getStationPlanFieldDefinitions(stationName);
+        const definitions = getStationPlanExcelFieldDefinitions(stationName);
         const dataRows = await fetchAllStationPlanRowsForExport(stationName);
         totalExportedRows += dataRows.length;
 
@@ -23078,11 +23498,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         applyStationPlanWorksheetPresentation(
           worksheet,
           definitions,
-          Math.max(0, rows.length - 1)
+          Math.max(0, rows.length - 1),
+          stationName
         );
 
         const workbook = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(workbook, worksheet, stationName);
+        XLSX.utils.book_append_sheet(workbook, worksheet, getStationPlanMasterSheetName(stationName));
 
         const output = (XLSX.write as any)(workbook, {
           bookType: "xlsx",
