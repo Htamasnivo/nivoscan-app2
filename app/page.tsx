@@ -1961,7 +1961,7 @@ const STATION_PLAN_EXCEL_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefin
   primapower: [
     { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
     { key: "gyartasi_szam_projekt_neve", label: "Gyártási szám / Projekt", dataType: "text" },
-    { key: "megnevezes", label: "Termék", dataType: "text" },
+    { key: "termek", label: "Termék", dataType: "text" },
     { key: "mennyiseg", label: "Mennyiség", dataType: "integer" },
     { key: "normaido", label: "Normaidő", dataType: "text" },
     { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
@@ -13674,7 +13674,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           const parsedExcelOrder = parseSpreadsheetNumber(row.excel_sorrend);
           return {
             orderNumber: String(row.sorszam ?? "").trim(),
-            productName: String(row.megnevezes ?? "").trim(),
+            productName: isPrimaPowerPlanStation(cleanStationName)
+              ? String(raw.termek ?? jsonData.termek ?? row.megnevezes ?? "").trim()
+              : String(row.megnevezes ?? "").trim(),
             excelOrder: parsedExcelOrder === null ? index + 1 : parsedExcelOrder,
             sourceRowId: String(row.id ?? `${dateKey}-${index + 1}`),
             quantity: parseSpreadsheetNumber(row.mennyiseg),
@@ -13994,7 +13996,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           return {
             id: String(row.id ?? `${row.sorszam}-${row.elkeszules_datum}-${index}`),
             orderNumber: String(row.sorszam ?? "").trim(),
-            productName: String(row.megnevezes ?? "").trim(),
+            productName: isPrimaPowerPlanStation(cleanStationName)
+              ? String(raw.termek ?? jsonData.termek ?? row.megnevezes ?? "").trim()
+              : String(row.megnevezes ?? "").trim(),
             plannedQuantity: Math.max(0, parseSpreadsheetNumber(row.mennyiseg) ?? 0),
             completionDate: String(row.elkeszules_datum ?? "").slice(0, 10),
             productType: String(row.tipus ?? "").trim(),
@@ -22545,10 +22549,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       };
 
       // A korábbi termelési kártya-logika által használt kompatibilitási mezőket
-      // továbbra is kitöltjük, de az Excelben ezeket nem kérjük külön oszlopként.
-      const sorszam = firstText("sorszam", "gyartasi_szam", "gyartasi_szam_projekt_neve", "rsz", "megnevezes")
-        || `${normalizePlanColumnName(stationName || "terv")}-${rowNumber}`;
-      const megnevezes = firstText("megnevezes", "ajto_tipus", "tipus", "tokozat_szine") || String(stationName || "Termelési terv");
+      // továbbra is megtartjuk, de PrimaPowernél a Termék mostantól KIZÁRÓLAG
+      // a saját "termek" oszlopba kerül, nem másoljuk a "megnevezes" mezőbe.
+      const isPrimaPower = isPrimaPowerPlanStation(stationName);
+      const sorszam = isPrimaPower
+        ? (
+          firstText("sorszam", "gyartasi_szam_projekt_neve")
+          || `${normalizePlanColumnName(stationName || "terv")}-${rowNumber}`
+        )
+        : (
+          firstText("sorszam", "gyartasi_szam", "gyartasi_szam_projekt_neve", "rsz", "megnevezes")
+          || `${normalizePlanColumnName(stationName || "terv")}-${rowNumber}`
+        );
+      const megnevezes = isPrimaPower
+        ? firstText("megnevezes")
+        : (firstText("megnevezes", "ajto_tipus", "tipus", "tokozat_szine") || String(stationName || "Termelési terv"));
       const parsedQuantity = parseSpreadsheetNumber(normalizedValues.mennyiseg ?? normalizedRawRow.mennyiseg);
       const mennyiseg = parsedQuantity !== null && Number.isInteger(parsedQuantity) && parsedQuantity >= 0 ? parsedQuantity : 1;
       const elkeszulesDatum = parseStationPlanDateValue(normalizedValues.elkeszules_datum ?? normalizedRawRow.elkeszules_datum) || productionPlanDate;
@@ -22589,6 +22604,85 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
 
+  function isPrimaPowerPlanStation(stationName: string | null | undefined): boolean {
+    return getStationPlanIdentityKey(stationName) === "primapower";
+  }
+
+  function getPrimaPowerPlanProductName(
+    row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
+  ): string {
+    const data = row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)
+      ? row.adat as Record<string, unknown>
+      : {};
+
+    const candidates = [
+      row.termek,
+      data.termek,
+      // Régi PrimaPower-import kompatibilitás: a Termék korábban a megnevezes mezőbe került.
+      row.megnevezes,
+      data.megnevezes,
+    ];
+
+    for (const value of candidates) {
+      const candidate = String(value ?? "").trim();
+      if (candidate) return candidate;
+    }
+    return "";
+  }
+
+  function getPrimaPowerPlanProjectName(
+    row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
+  ): string {
+    const data = row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)
+      ? row.adat as Record<string, unknown>
+      : {};
+
+    const candidates = [
+      row.gyartasi_szam_projekt_neve,
+      data.gyartasi_szam_projekt_neve,
+      data.gyartasi_szam_projekt,
+    ];
+
+    for (const value of candidates) {
+      const candidate = String(value ?? "").trim();
+      if (candidate) return candidate;
+    }
+    return "";
+  }
+
+  function getPrimaPowerExactDuplicateKey(
+    row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
+  ): string {
+    const completionDate = parseStationPlanDateValue(row.elkeszules_datum) || String(row.elkeszules_datum || "").slice(0, 10);
+    const projectName = getPrimaPowerPlanProjectName(row);
+    const productName = getPrimaPowerPlanProductName(row);
+    const quantity = parseSpreadsheetNumber(row.mennyiseg);
+
+    // PrimaPower pontos duplikátum = ez a 4 mező együtt egyezik.
+    return [
+      completionDate,
+      normalizeLooseText(projectName),
+      normalizeLooseText(productName),
+      quantity === null ? "" : String(quantity),
+    ].join("|");
+  }
+
+  function getPrimaPowerConflictGroupKey(
+    row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
+  ): string {
+    const completionDate = parseStationPlanDateValue(row.elkeszules_datum) || String(row.elkeszules_datum || "").slice(0, 10);
+    const projectName = getPrimaPowerPlanProjectName(row);
+    const productName = getPrimaPowerPlanProductName(row);
+
+    // Ha ugyanaz a dátum + projekt + termék, de a mennyiség eltér,
+    // továbbra is a konfliktuskezelő dönti el, mi történjen.
+    return [
+      completionDate,
+      normalizeLooseText(projectName),
+      normalizeLooseText(productName),
+    ].join("|");
+  }
+
   function getStationPlanManufacturingNumber(
     row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
   ): string {
@@ -22613,17 +22707,31 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getStationPlanDuplicateKey(
+    stationName: string,
     row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
   ): string {
+    if (isPrimaPowerPlanStation(stationName)) {
+      return getPrimaPowerExactDuplicateKey(row);
+    }
+
     const manufacturingNumber = getStationPlanManufacturingNumber(row);
     const productName = String(row.megnevezes ?? "").trim();
 
-    // A dátum SZÁNDÉKOSAN nincs benne.
-    // Csak akkor egyezés, ha a gyártási szám ÉS a megnevezés is azonos.
+    // A többi munkaállomás logikája változatlan.
     return [
       normalizeLooseText(manufacturingNumber),
       normalizeLooseText(productName),
     ].join("|");
+  }
+
+  function getStationPlanConflictKey(
+    stationName: string,
+    row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
+  ): string {
+    if (isPrimaPowerPlanStation(stationName)) {
+      return getPrimaPowerConflictGroupKey(row);
+    }
+    return getStationPlanDuplicateKey(stationName, row);
   }
 
   function askStationPlanConflictAction(
@@ -22631,14 +22739,34 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     row: StationPlanUploadRow,
     existingRows: StationPlanExistingRow[]
   ): "insert" | "add" | "update" | "skip" | "cancel" {
+    const isPrimaPower = isPrimaPowerPlanStation(stationName);
     const manufacturingNumber = getStationPlanManufacturingNumber(row) || row.sorszam;
-    const productName = String(row.megnevezes || "").trim();
+    const productName = isPrimaPower
+      ? getPrimaPowerPlanProductName(row)
+      : String(row.megnevezes || "").trim();
+
+    const promptText = isPrimaPower
+      ? (
+        `${stationName}: ugyanarra az Elkészülési dátum + Gyártási szám / Projekt + Termék kombinációra már van tervsor (${existingRows.length} sor).\n\n` +
+        `Elkészülési dátum: ${String(row.elkeszules_datum || "")}\n` +
+        `Gyártási szám / Projekt: ${getPrimaPowerPlanProjectName(row) || "–"}\n` +
+        `Termék: ${productName || "–"}\n` +
+        `Új mennyiség: ${row.mennyiseg}\n` +
+        `Meglévő mennyiség(ek): ${existingRows.map((item) => String(item.mennyiseg ?? "–")).join(", ")}\n\n` +
+        `A pontos PrimaPower duplikátumot 4 mező azonosítja: Elkészülési dátum + Gyártási szám / Projekt + Termék + Mennyiség.\n` +
+        `Eltérő mennyiségnél is itt dönthetsz a kezelésről.\n\n` +
+        `1 = Új sorba felveszem\n2 = A legutóbbi sor mennyiségéhez hozzáadom (${row.mennyiseg})\n` +
+        `3 = A legutóbbi sort frissítem az Excel adataira\n4 = Kihagyom\n0 = A teljes import megszakítása`
+      )
+      : (
+        `${stationName}: a gyártási szám + megnevezés páros már szerepel (${existingRows.length} sor).\n\n` +
+        `Gyártási szám: ${manufacturingNumber}\nMegnevezés: ${productName}\n\n` +
+        `1 = Új sorba felveszem\n2 = A legutóbbi sor mennyiségéhez hozzáadom (${row.mennyiseg})\n` +
+        `3 = A legutóbbi sort frissítem az Excel adataira\n4 = Kihagyom\n0 = A teljes import megszakítása`
+      );
 
     const answer = window.prompt(
-      `${stationName}: a gyártási szám + megnevezés páros már szerepel (${existingRows.length} sor).\n\n` +
-      `Gyártási szám: ${manufacturingNumber}\nMegnevezés: ${productName}\n\n` +
-      `1 = Új sorba felveszem\n2 = A legutóbbi sor mennyiségéhez hozzáadom (${row.mennyiseg})\n` +
-      `3 = A legutóbbi sort frissítem az Excel adataira\n4 = Kihagyom\n0 = A teljes import megszakítása`,
+      promptText,
       "4"
     );
     if (answer === null || answer.trim() === "0") return "cancel";
@@ -22674,16 +22802,33 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
 
     const actions: StationPlanMergeAction[] = [];
-    const rowKey = (
+    const exactRowKey = (
       row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
-    ) => getStationPlanDuplicateKey(row);
+    ) => getStationPlanDuplicateKey(stationName, row);
+    const conflictRowKey = (
+      row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
+    ) => getStationPlanConflictKey(stationName, row);
 
     for (const row of rows) {
-      const key = rowKey(row);
-      const databaseMatches = existingRows.filter((existing) => rowKey(existing) === key);
-      const pendingMatches = actions
+      const exactKey = exactRowKey(row);
+      const conflictKey = conflictRowKey(row);
+
+      const exactDatabaseMatches = existingRows.filter((existing) => exactRowKey(existing) === exactKey);
+      const exactPendingMatches = actions
         .map((action, index) => ({ action, index }))
-        .filter(({ action }) => rowKey(action) === key && action.action === "insert");
+        .filter(({ action }) => exactRowKey(action) === exactKey && action.action === "insert");
+
+      // PrimaPowernél a 4 mezős pontos kulcs az elsődleges. Ha a mennyiség az egyetlen
+      // eltérés, a 3 mezős csoportkulcs mégis felhozza a konfliktuskezelőt, ahogy kérted.
+      const hasExactConflict = exactDatabaseMatches.length > 0 || exactPendingMatches.length > 0;
+      const databaseMatches = hasExactConflict
+        ? exactDatabaseMatches
+        : existingRows.filter((existing) => conflictRowKey(existing) === conflictKey);
+      const pendingMatches = hasExactConflict
+        ? exactPendingMatches
+        : actions
+            .map((action, index) => ({ action, index }))
+            .filter(({ action }) => conflictRowKey(action) === conflictKey && action.action === "insert");
 
       if (databaseMatches.length === 0 && pendingMatches.length === 0) {
         actions.push({ ...row, action: "insert", source_file: sourceFile });
@@ -22696,6 +22841,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           id: `új-import-sor-${index + 1}`,
           sorszam: action.sorszam,
           megnevezes: action.megnevezes,
+          termek: action.termek,
+          gyartasi_szam_projekt_neve: action.gyartasi_szam_projekt_neve,
           mennyiseg: action.mennyiseg,
           elkeszules_datum: action.elkeszules_datum,
           tipus: action.tipus,
@@ -24309,7 +24456,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
 
     const getPlanProductName = (row: Record<string, unknown>): string => valueAsText(
-      readMonitorPlanValue(row, ["megnevezes", "megnevezés", "product_name"])
+      readMonitorPlanValue(row, ["termek", "termék", "megnevezes", "megnevezés", "product_name"])
     );
 
     const getPlanInstallationDate = (row: Record<string, unknown>): string => {
