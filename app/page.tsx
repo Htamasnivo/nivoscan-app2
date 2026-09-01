@@ -19835,7 +19835,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           </div>
         )}
 
-        <div data-office-window="dashboard:kpis" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 18, padding: 12 }}>
+        <div data-office-window="dashboard:kpis" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, marginBottom: 18, padding: 12 }}>
           {dashboardCards.map((card) => (
             <div key={card.label} style={cardStyle}>
               <div style={{ color: officeTheme.mutedText, fontSize: 13 }}>{card.label}</div>
