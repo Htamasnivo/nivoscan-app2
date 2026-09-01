@@ -37736,6 +37736,7 @@ body {
                     </div>
                   )}
 
+                  {!isDoorTwoPartWorker(activeWorker) && (
                   <div style={{ marginBottom: 18 }}>
                     <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>END vonalkód</label>
                     <input
@@ -37768,6 +37769,7 @@ body {
                           : "A fizikai szkenner Enterrel zárja a beolvasást; END beolvasásakor a lejelentés azonnal mentésre kerül."}
                     </div>
                   </div>
+                  )}
 
                   {!isDoorTwoPartWorker(activeWorker) && (
                     <>
@@ -38182,6 +38184,31 @@ body {
                       <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 8 }}>Lezárandó rendelés</div>
                       <div style={{ fontSize: 26, fontWeight: 800, color: "#fca5a5" }}>END</div>
                       <div style={{ marginTop: 8, color: "#cbd5e1" }}>Rendelés: <strong>{orderNumber}</strong></div>
+                    </div>
+                  )}
+
+                  {isDoorTwoPartWorker(activeWorker) && (
+                    <div style={{ marginBottom: 18 }}>
+                      <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>END vonalkód</label>
+                      <input
+                        ref={actionBarcodeInputRef}
+                        value={actionBarcode}
+                        onChange={(e) => handleActionBarcodeChange(e.target.value)}
+                        placeholder="END kód beolvasása"
+                        style={fieldStyle}
+                        autoComplete="off"
+                        onKeyDown={(e) => {
+                          void handleSingleEndBarcodeKeyDown(e);
+                        }}
+                        onBlur={() => {
+                          if (step === 6 && pendingAction === "END") {
+                            focusScannerInputAfterEditableBlur(actionBarcodeInputRef);
+                          }
+                        }}
+                      />
+                      <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 8 }}>
+                        A fizikai szkenner Enterrel megerősíti az END kódot. Ezután jelöld a Tok és/vagy Nyíló elkészültét, ellenőrizd a selejtjelöléseket, majd mentsd az END-et.
+                      </div>
                     </div>
                   )}
 
