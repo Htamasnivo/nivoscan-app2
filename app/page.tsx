@@ -955,6 +955,15 @@ type ScrapReplacementRoute = {
   targets: Array<{ stationName: string; sequence: number; previousStation: string | null }>;
 };
 
+type EventFiveRepairAction = "" | "Javítás" | "Újragyártás";
+
+const EVENT_FIVE_REPAIR_STATION_OPTIONS = [
+  { identityKey: "csolezer", label: "Csőlézer" },
+  { identityKey: "osszeallitas", label: "Összeállítás" },
+  { identityKey: "lakatos", label: "Lakatos" },
+  { identityKey: "kezi_szinter", label: "Kézi szinter" },
+] as const;
+
 type ScrapReplacementRow = {
   id: number | string;
   order_number: string;
@@ -7900,6 +7909,9 @@ export default function Page() {
   const [outerSheetScrap, setOuterSheetScrap] = useState(false);
   const [innerSheetScrap, setInnerSheetScrap] = useState(false);
   const [toklecScrap, setToklecScrap] = useState(false);
+  // 5-ös esemény / Szerelés: kézzel kijelölt javítási vagy újragyártási célállomások.
+  const [eventFiveRepairStationKeys, setEventFiveRepairStationKeys] = useState<string[]>([]);
+  const [eventFiveRepairAction, setEventFiveRepairAction] = useState<EventFiveRepairAction>("");
   // Csőlézer / Összeállítás / Lakatos (+ Asztalos saját selejt) külön Selejt módja.
   const [standaloneScrapReportMode, setStandaloneScrapReportMode] = useState(false);
   const [standaloneScrapNote, setStandaloneScrapNote] = useState("");
@@ -12648,7 +12660,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (fieldId === PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID) return getScrapReplacementDefectLabel(row);
     if (fieldId === PRODUCTION_CARD_SCRAP_NOTE_FIELD_ID) return row.megjegyzes || "";
     if (fieldId === PRODUCTION_CARD_SCRAP_TASK_FIELD_ID) {
-      if (row.generic_scrap) return "Selejtes alkatrész pótlása / újragyártása";
+      if (row.generic_scrap) {
+        const explicitKind = String(row.scrap_kind || "").trim();
+        if (explicitKind === "Javítás" || explicitKind === "Újragyártás") return explicitKind;
+        return "Selejtes alkatrész pótlása / újragyártása";
+      }
       if (isCarpenterStationName(row.target_station)) return row.toklec_selejt ? "Tokléc pótlása – egyedi rendelés" : "Szabás + marás pótlása";
       return "Selejtpótlás továbbfeldolgozása";
     }
@@ -27106,6 +27122,8 @@ START: ${formatDateTime(startAt)}`
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
     setToklecScrap(false);
+    setEventFiveRepairStationKeys([]);
+    setEventFiveRepairAction("");
     setStandaloneScrapReportMode(false);
     setStandaloneScrapNote("");
     setTokKesz(false);
@@ -28370,6 +28388,8 @@ body {
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
     setToklecScrap(false);
+    setEventFiveRepairStationKeys([]);
+    setEventFiveRepairAction("");
     setTokKesz(false);
     setNyiloKesz(false);
     setTokKeszLocked(false);
@@ -28472,6 +28492,8 @@ body {
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
     setToklecScrap(false);
+    setEventFiveRepairStationKeys([]);
+    setEventFiveRepairAction("");
     setTokKesz(false);
     setNyiloKesz(false);
     setTokKeszLocked(false);
@@ -28560,6 +28582,8 @@ body {
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
     setToklecScrap(false);
+    setEventFiveRepairStationKeys([]);
+    setEventFiveRepairAction("");
     setTokKesz(false);
     setNyiloKesz(false);
     setTokKeszLocked(false);
@@ -28642,6 +28666,8 @@ body {
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
     setToklecScrap(false);
+    setEventFiveRepairStationKeys([]);
+    setEventFiveRepairAction("");
     setTokKesz(false);
     setNyiloKesz(false);
     setTokKeszLocked(false);
@@ -28975,6 +29001,8 @@ body {
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
     setToklecScrap(false);
+    setEventFiveRepairStationKeys([]);
+    setEventFiveRepairAction("");
     setTokKesz(false);
     setNyiloKesz(false);
     setTokKeszLocked(false);
@@ -29262,6 +29290,169 @@ body {
 
   async function orderExistsInStationPlan(orderNumberValue: string, stationName: string): Promise<boolean> {
     return Boolean(await fetchPlanDataForOrderAtStation(orderNumberValue, stationName));
+  }
+
+  async function fetchMatchingPlanDataForOrderAndProductAtStation(
+    orderNumberValue: string,
+    productNameValue: string,
+    stationName: string
+  ): Promise<Record<string, unknown> | null> {
+    if (!supabase) return null;
+    const cleanOrder = String(orderNumberValue || "").trim();
+    const cleanProductName = String(productNameValue || "").trim();
+    const cleanStation = String(stationName || "").trim();
+    if (!cleanOrder || !cleanProductName || !cleanStation) return null;
+
+    const tableName = buildStationPlanTableName(cleanStation);
+    const response = await supabase
+      .from(tableName)
+      .select("*")
+      .eq("sorszam", cleanOrder)
+      .limit(500);
+
+    if (response.error) {
+      console.warn(`5-ös Szerelés: a ${tableName} tervtábla nem olvasható:`, response.error);
+      return null;
+    }
+
+    const productKey = normalizeLooseText(cleanProductName);
+    return (((response.data || []) as Array<Record<string, unknown>>).find((row) =>
+      normalizeLooseText(valueAsText(readRecordValue(row, ["megnevezes", "megnevezés"]))) === productKey
+    ) || null);
+  }
+
+  async function hasActualStartOrEndWorkLogAtStation(orderNumberValue: string, stationName: string): Promise<boolean> {
+    if (!supabase) return false;
+    const cleanOrder = String(orderNumberValue || "").trim();
+    const cleanStation = String(stationName || "").trim();
+    if (!cleanOrder || !cleanStation) return false;
+
+    const { data, error } = await supabase
+      .from("work_logs")
+      .select("id, action, start_time, start_timestamp, end_time, end_timestamp, created_at")
+      .eq("order_number", cleanOrder)
+      .eq("machine_id", cleanStation)
+      .limit(500);
+
+    if (error) throw error;
+    return ((data || []) as WorkLogRow[]).some((row) => {
+      const action = String(row.action || "").trim().toUpperCase();
+      return action === "START"
+        || action === "END"
+        || Boolean(row.start_time || row.start_timestamp || row.end_time || row.end_timestamp);
+    });
+  }
+
+  async function getEventFiveSourceOrderProduct(
+    orderNumberValue: string,
+    sourceStationValue: string
+  ): Promise<{ orderNumber: string; productName: string; sourcePlan: Record<string, unknown> }> {
+    const cleanOrder = String(orderNumberValue || "").trim();
+    const sourceStation = String(sourceStationValue || "").trim();
+    const sourcePlan = await fetchPlanDataForOrderAtStation(cleanOrder, sourceStation);
+    if (!sourcePlan) {
+      throw new Error(`${cleanOrder}: a rendelés nem szerepel a(z) ${sourceStation} saját *_terv táblájában.`);
+    }
+    const productName = valueAsText(readRecordValue(sourcePlan, ["megnevezes", "megnevezés"])).trim();
+    if (!productName) {
+      throw new Error(`${cleanOrder}: a(z) ${sourceStation} tervsorában nincs megnevezés, ezért a rendelésszám + megnevezés páros nem ellenőrizhető.`);
+    }
+    return { orderNumber: cleanOrder, productName, sourcePlan };
+  }
+
+  async function buildEventFiveSzerelesSheetScrapRouteTargets(
+    orderNumberValue: string,
+    sourceStationValue: string
+  ): Promise<ScrapReplacementRoute> {
+    const cleanOrder = String(orderNumberValue || "").trim();
+    const sourceStation = String(sourceStationValue || "").trim();
+    if (getStationPlanIdentityKey(sourceStation) !== "szereles") {
+      return await buildScrapRouteTargets(cleanOrder, sourceStation);
+    }
+
+    const directory = await loadMachineGroupDirectoryForStartCheck();
+    const sourceEntry = directory.get(normalizeLooseText(sourceStation));
+    if (!sourceEntry) throw new Error(`${sourceStation}: a munkaállomás nem található a machine_id táblában.`);
+    const group2Key = normalizeLooseText("Csoport 2");
+    const { productName } = await getEventFiveSourceOrderProduct(cleanOrder, sourceStation);
+
+    const asztalos = findScrapRouteStationByIdentity(directory, "asztalos", group2Key);
+    if (!asztalos) throw new Error("Az Asztalos munkaállomás nem található a Csoport 2-ben.");
+    const asztalosPlan = await fetchMatchingPlanDataForOrderAndProductAtStation(cleanOrder, productName, asztalos.machineName);
+    if (!asztalosPlan) {
+      throw new Error(`${cleanOrder} + ${productName}: az Asztalos *_terv táblájában nem található ez a rendelés, ezért a lap/tokléc selejt nem továbbítható.`);
+    }
+
+    const targets: string[] = [asztalos.machineName];
+    for (const identityKey of ["fenyezo", "foliazo"] as const) {
+      const entry = findScrapRouteStationByIdentity(directory, identityKey, group2Key);
+      if (!entry) continue;
+      const matchingPlan = await fetchMatchingPlanDataForOrderAndProductAtStation(cleanOrder, productName, entry.machineName);
+      if (!matchingPlan) continue;
+      if (!await hasActualStartOrEndWorkLogAtStation(cleanOrder, entry.machineName)) continue;
+      targets.push(entry.machineName);
+    }
+
+    // 5-ös Szerelés lap/tokléc selejtnél a Kézi szinter szándékosan NEM célállomás.
+    return {
+      sourceGroup: sourceEntry.groupName,
+      targets: targets.map((stationName, index) => ({
+        stationName,
+        sequence: index + 1,
+        previousStation: null,
+      })),
+    };
+  }
+
+  async function buildEventFiveManualRepairRouteTargets(
+    orderNumberValue: string,
+    sourceStationValue: string,
+    selectedIdentityKeys: string[]
+  ): Promise<ScrapReplacementRoute> {
+    const cleanOrder = String(orderNumberValue || "").trim();
+    const sourceStation = String(sourceStationValue || "").trim();
+    const uniqueSelectedKeys = Array.from(new Set(selectedIdentityKeys.map((value) => String(value || "").trim()).filter(Boolean)));
+    if (uniqueSelectedKeys.length === 0) return { sourceGroup: "", targets: [] };
+
+    const directory = await loadMachineGroupDirectoryForStartCheck();
+    const sourceEntry = directory.get(normalizeLooseText(sourceStation));
+    if (!sourceEntry) throw new Error(`${sourceStation}: a munkaállomás nem található a machine_id táblában.`);
+    const { productName } = await getEventFiveSourceOrderProduct(cleanOrder, sourceStation);
+
+    const targetNames: string[] = [];
+    const missingPlanStations: string[] = [];
+    for (const option of EVENT_FIVE_REPAIR_STATION_OPTIONS) {
+      if (!uniqueSelectedKeys.includes(option.identityKey)) continue;
+      const entry = Array.from(directory.values()).find((candidate) =>
+        getStationPlanIdentityKey(candidate.machineName) === option.identityKey
+      ) || null;
+      if (!entry) {
+        missingPlanStations.push(`${option.label} (nem található a machine_id táblában)`);
+        continue;
+      }
+      const matchingPlan = await fetchMatchingPlanDataForOrderAndProductAtStation(cleanOrder, productName, entry.machineName);
+      if (!matchingPlan) {
+        missingPlanStations.push(option.label);
+        continue;
+      }
+      targetNames.push(entry.machineName);
+    }
+
+    if (missingPlanStations.length > 0) {
+      throw new Error(`${cleanOrder} + ${productName}: a kijelölt munkaállomások közül itt nincs megfelelő *_terv sor: ${missingPlanStations.join(", ")}.`);
+    }
+    if (targetNames.length === 0) {
+      throw new Error("Jelölj ki legalább egy érvényes cél munkaállomást a javításhoz / újragyártáshoz.");
+    }
+
+    return {
+      sourceGroup: sourceEntry.groupName,
+      targets: targetNames.map((stationName, index) => ({
+        stationName,
+        sequence: index + 1,
+        previousStation: null,
+      })),
+    };
   }
 
   async function fetchCompletedStationsForScrapRoute(orderNumberValue: string): Promise<Map<string, { stationName: string; endedAt: string; workLogId: string }>> {
@@ -29647,6 +29838,7 @@ body {
     toklecScrap: boolean;
     note: string | null;
     genericScrap?: boolean;
+    genericScrapKind?: string | null;
     preparedRoute?: ScrapReplacementRoute | null;
   }): Promise<string[]> {
     const hasSpecificScrap = params.outerScrap || params.innerScrap || params.toklecScrap;
@@ -29663,7 +29855,7 @@ body {
     const planRow = await fetchPlanDataForOrderAtStation(params.orderNumber, snapshotStation);
     const planSnapshot = buildScrapPlanSnapshot(planRow);
     const scrapKind = isGeneric
-      ? "Általános selejt"
+      ? String(params.genericScrapKind || "").trim() || "Általános selejt"
       : [params.outerScrap ? "Külső lap" : "", params.innerScrap ? "Belső lap" : "", params.toklecScrap ? "Tokléc" : ""].filter(Boolean).join(" + ");
 
     const rows = route.targets.map((target) => ({
@@ -32870,6 +33062,8 @@ body {
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
     setToklecScrap(false);
+    setEventFiveRepairStationKeys([]);
+    setEventFiveRepairAction("");
 
     setTokKesz(doorCompletionState.tokKesz);
     setNyiloKesz(doorCompletionState.nyiloKesz);
@@ -34201,19 +34395,22 @@ body {
     }
 
     const finalNote = action === "END" ? ((overrides?.note ?? endNote ?? "").trim() || null) : null;
-    const finalScrapQty = action === "END"
+    const isDoorTwoPartEnd = action === "END" && isDoorTwoPartWorker(activeWorker);
+    // 5-ös esemény / Szerelés: Darab, Szál és Selejt darabszám nem releváns, ezért nem is mentjük őket.
+    const finalScrapQty = action === "END" && !isDoorTwoPartEnd
       ? (overrides?.scrapQty ?? parseScrapQtyValue(scrapQty))
       : null;
-    let finalDarab = action === "END" ? parseDarabValue(endDarab) : null;
+    let finalDarab = action === "END" && !isDoorTwoPartEnd ? parseDarabValue(endDarab) : null;
     let quantityPlanContext: QuantityPlanContext | null = null;
     let quantityPlanResult: QuantityPlanMutationResult | null = null;
     let routedScrapReplacementForStart: ScrapReplacementRow | null = null;
     let preparedScrapRouteForEnd: ScrapReplacementRoute | null = null;
-    const finalSzal = action === "END" ? parseSzalValue(endSzal) : null;
+    let preparedEventFiveRepairRouteForEnd: ScrapReplacementRoute | null = null;
+    const finalSzal = action === "END" && !isDoorTwoPartEnd ? parseSzalValue(endSzal) : null;
     const finalOuterSheetScrap = action === "END" && isFoilSheetScrapWorker(activeWorker) ? outerSheetScrap : false;
     const finalInnerSheetScrap = action === "END" && isFoilSheetScrapWorker(activeWorker) ? innerSheetScrap : false;
     const finalToklecScrap = action === "END" && isFoilSheetScrapWorker(activeWorker) ? toklecScrap : false;
-    const isDoorTwoPartEnd = action === "END" && isDoorTwoPartWorker(activeWorker);
+    const eventFiveManualRepairSelected = isDoorTwoPartEnd && eventFiveRepairStationKeys.length > 0;
     const requestedTokKesz = isDoorTwoPartEnd ? tokKesz : false;
     const requestedNyiloKesz = isDoorTwoPartEnd ? nyiloKesz : false;
 
@@ -34229,6 +34426,17 @@ body {
     if (action === "END" && (finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap) && !finalNote) {
       setMessage({ type: "error", text: "Selejt kijelölésekor a Megjegyzés kitöltése kötelező. Írd le, pontosan mi a probléma." });
       return;
+    }
+
+    if (action === "END" && eventFiveManualRepairSelected) {
+      if (!eventFiveRepairAction) {
+        setMessage({ type: "error", text: "A kijelölt munkaállomásokhoz kötelező kiválasztani: Javítás vagy Újragyártás." });
+        return;
+      }
+      if (!finalNote) {
+        setMessage({ type: "error", text: "Javítás / újragyártás kijelölésekor a Megjegyzés kitöltése kötelező." });
+        return;
+      }
     }
 
     if (action === "END" && (finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap)) {
@@ -34287,7 +34495,7 @@ body {
       }
     }
 
-    if (action === "END") {
+    if (action === "END" && !isDoorTwoPartEnd) {
       try {
         const quantityMachineId = getCurrentMachineIdForInsert();
         const quantityContexts = await fetchActiveQuantityPlanContexts(quantityMachineId, [finalOrderNumber]);
@@ -34328,19 +34536,38 @@ body {
       return;
     }
 
-    // Selejtes END előtt még bármilyen work_logs írás előtt ellenőrizzük a teljes
-    // visszafelé vezető útvonalat: machine_id csoport, korábbi END-ek és *_terv kiosztások.
-    // Így hibás/hiányzó előzmény esetén az END sem mentődik félig el.
+    // Selejtes END előtt még bármilyen work_logs írás előtt ellenőrizzük a teljes útvonalat.
+    // 5-ös Szerelésnél a lap/tokléc selejt: Asztalos mindig, Fényező/Fóliázó csak akkor,
+    // ha ugyanaz a rendelésszám + megnevezés szerepel a tervükben ÉS tényleges START/END jelentésük van.
+    // Kézi szinter ebben az automatikus selejtútvonalban nem vesz részt.
     if (action === "END" && (finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap)) {
       try {
-        preparedScrapRouteForEnd = await buildScrapRouteTargets(
-          finalOrderNumber,
-          getCurrentMachineIdForInsert()
-        );
+        const sourceStationForScrap = getCurrentMachineIdForInsert();
+        preparedScrapRouteForEnd = isDoorTwoPartEnd && getStationPlanIdentityKey(sourceStationForScrap) === "szereles"
+          ? await buildEventFiveSzerelesSheetScrapRouteTargets(finalOrderNumber, sourceStationForScrap)
+          : await buildScrapRouteTargets(finalOrderNumber, sourceStationForScrap);
       } catch (error) {
         setMessage({
           type: "error",
           text: `A selejtes END nem menthető, mert a selejtpótlási útvonal nem állítható össze: ${normalizeError(error)}`,
+        });
+        return;
+      }
+    }
+
+    // Az 5-ös Szerelés kézzel kijelölt Javítás / Újragyártás eseménye külön eseményként készül.
+    // A work_logs módosítása előtt ellenőrizzük, hogy a rendelésszám + megnevezés minden kijelölt *_terv táblában létezik.
+    if (action === "END" && eventFiveManualRepairSelected) {
+      try {
+        preparedEventFiveRepairRouteForEnd = await buildEventFiveManualRepairRouteTargets(
+          finalOrderNumber,
+          getCurrentMachineIdForInsert(),
+          eventFiveRepairStationKeys
+        );
+      } catch (error) {
+        setMessage({
+          type: "error",
+          text: `Az END nem menthető, mert a kijelölt ${eventFiveRepairAction || "javítás / újragyártás"} célállomások nem ellenőrizhetők: ${normalizeError(error)}`,
         });
         return;
       }
@@ -34629,6 +34856,22 @@ body {
           });
         }
 
+        if (eventFiveManualRepairSelected && preparedEventFiveRepairRouteForEnd) {
+          await createScrapReplacementFromSheetScrap({
+            orderNumber: finalOrderNumber,
+            sourceStation: currentMachineId,
+            workLogId: openLog.id,
+            reportedAt: nowForSave,
+            outerScrap: false,
+            innerScrap: false,
+            toklecScrap: false,
+            note: finalNote,
+            genericScrap: true,
+            genericScrapKind: eventFiveRepairAction,
+            preparedRoute: preparedEventFiveRepairRouteForEnd,
+          });
+        }
+
         if (activeScrapReplacement) {
           await updateSingleScrapReplacement(activeScrapReplacement, "KESZ", nowForSave);
         }
@@ -34731,7 +34974,7 @@ body {
       const savedWorker = activeWorker["Teljes nev"];
       const savedOrder = finalOrderNumber;
       const savedNoteText = finalNote ? ` | Megjegyzés: ${finalNote}` : "";
-      const savedScrapText = action === "END" ? ` | Selejt: ${finalScrapQty ?? 0}` : "";
+      const savedScrapText = action === "END" && !isDoorTwoPartEnd ? ` | Selejt: ${finalScrapQty ?? 0}` : "";
       const savedDarabText = action === "END" && finalDarab !== null ? ` | Darab: ${finalDarab}` : "";
       const savedSzalText = action === "END" && finalSzal !== null ? ` | Szál: ${finalSzal}` : "";
       const savedDoorCompletionText = isDoorTwoPartEnd
@@ -34753,6 +34996,9 @@ body {
         : activeScrapReplacement && action === "END"
           ? ` | ${getSingleScrapReplacementPartLabel(activeScrapReplacement)} pótlás készre jelentve`
           : "";
+      const savedEventFiveRepairText = eventFiveManualRepairSelected && preparedEventFiveRepairRouteForEnd
+        ? ` | ${eventFiveRepairAction}: ${preparedEventFiveRepairRouteForEnd.targets.map((target) => target.stationName).join(", ")}`
+        : "";
       resetAfterSave();
       setEndBarcodeConfirmed(false);
       setMessage({
@@ -34760,7 +35006,7 @@ body {
         text:
           action === "START"
             ? `START automatikusan rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}`
-            : `END sikeresen rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}${savedDarabText}${savedSzalText}${savedScrapText}${savedDoorCompletionText}${savedPanelCompletionText}${savedThreePartCompletionText}${savedQuantityPlanText}${savedSheetScrapText}${savedNoteText}`,
+            : `END sikeresen rögzítve. Dolgozó: ${savedWorker} | Rendelés: ${savedOrder} | Gép: ${currentMachineId} | Időpont: ${savedTime}${savedDarabText}${savedSzalText}${savedScrapText}${savedDoorCompletionText}${savedPanelCompletionText}${savedThreePartCompletionText}${savedQuantityPlanText}${savedSheetScrapText}${savedEventFiveRepairText}${savedNoteText}`,
       });
     } catch (error) {
       console.error("SUPABASE HIBA saveWorkLog:", error);
@@ -34824,6 +35070,8 @@ body {
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
     setToklecScrap(false);
+    setEventFiveRepairStationKeys([]);
+    setEventFiveRepairAction("");
     setTokKesz(false);
     setNyiloKesz(false);
     setTokKeszLocked(false);
@@ -37480,11 +37728,13 @@ body {
                 </>
               ) : (
                 <>
-                  <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: 14, marginBottom: 18 }}>
-                    <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 8 }}>Lezárandó rendelés</div>
-                    <div style={{ fontSize: 26, fontWeight: 800, color: "#fca5a5" }}>END</div>
-                    <div style={{ marginTop: 8, color: "#cbd5e1" }}>Rendelés: <strong>{orderNumber}</strong></div>
-                  </div>
+                  {!isDoorTwoPartWorker(activeWorker) && (
+                    <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: 14, marginBottom: 18 }}>
+                      <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 8 }}>Lezárandó rendelés</div>
+                      <div style={{ fontSize: 26, fontWeight: 800, color: "#fca5a5" }}>END</div>
+                      <div style={{ marginTop: 8, color: "#cbd5e1" }}>Rendelés: <strong>{orderNumber}</strong></div>
+                    </div>
+                  )}
 
                   <div style={{ marginBottom: 18 }}>
                     <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>END vonalkód</label>
@@ -37519,6 +37769,8 @@ body {
                     </div>
                   </div>
 
+                  {!isDoorTwoPartWorker(activeWorker) && (
+                    <>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 18 }}>
                     <div>
                       <label style={{ display: "block", marginBottom: 8, color: singleEndPlanQuantityContext?.plannedQuantity && singleEndPlanQuantityContext.plannedQuantity > 1 ? "#fbbf24" : "#cbd5e1", fontWeight: singleEndPlanQuantityContext?.plannedQuantity && singleEndPlanQuantityContext.plannedQuantity > 1 ? 900 : undefined }}>
@@ -37588,6 +37840,8 @@ body {
                       style={fieldStyle}
                     />
                   </div>
+                    </>
+                  )}
 
 
                   {isFoilSheetScrapWorker(activeWorker) && (
@@ -37608,6 +37862,76 @@ body {
                           Tokléc selejt
                         </label>
                       </div>
+                    </div>
+                  )}
+
+                  {isDoorTwoPartWorker(activeWorker) && (
+                    <div style={{ marginBottom: 18, padding: 16, borderRadius: 14, border: "2px solid #38bdf8", background: "linear-gradient(145deg, #082f49 0%, #0c4a6e 100%)" }}>
+                      <div style={{ color: "#e0f2fe", fontWeight: 1000, fontSize: 17, marginBottom: 6 }}>Javítás / újragyártás munkaállomások</div>
+                      <div style={{ color: "#bae6fd", fontSize: 12, marginBottom: 12 }}>
+                        Jelöld be azokat a munkaállomásokat, ahol Javítás vagy Újragyártás szükséges. Csak olyan kijelölt állomás menthető, ahol ugyanaz a rendelésszám + megnevezés szerepel a saját *_terv táblában.
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 12 }}>
+                        {EVENT_FIVE_REPAIR_STATION_OPTIONS.map((option) => {
+                          const checked = eventFiveRepairStationKeys.includes(option.identityKey);
+                          return (
+                            <label
+                              key={option.identityKey}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 12,
+                                padding: 14,
+                                borderRadius: 12,
+                                cursor: "pointer",
+                                background: checked ? "#0369a1" : "#1f2937",
+                                color: "#fff",
+                                border: checked ? "3px solid #bae6fd" : "2px solid #64748b",
+                                fontWeight: 900,
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(event) => {
+                                  const nextChecked = event.target.checked;
+                                  setEventFiveRepairStationKeys((previous) => nextChecked
+                                    ? Array.from(new Set([...previous, option.identityKey]))
+                                    : previous.filter((key) => key !== option.identityKey));
+                                  if (!nextChecked && eventFiveRepairStationKeys.length === 1 && checked) {
+                                    setEventFiveRepairAction("");
+                                  }
+                                }}
+                                style={{ width: 24, height: 24, accentColor: "#0284c7" }}
+                              />
+                              {option.label}
+                            </label>
+                          );
+                        })}
+                      </div>
+
+                      <label style={{ display: "block", marginBottom: 8, color: eventFiveRepairStationKeys.length > 0 && !eventFiveRepairAction ? "#fecaca" : "#e0f2fe", fontWeight: 900 }}>
+                        Művelet{eventFiveRepairStationKeys.length > 0 ? " *" : ""}
+                      </label>
+                      <select
+                        value={eventFiveRepairAction}
+                        onChange={(event) => setEventFiveRepairAction(event.target.value as EventFiveRepairAction)}
+                        disabled={eventFiveRepairStationKeys.length === 0}
+                        style={{
+                          ...fieldStyle,
+                          borderColor: eventFiveRepairStationKeys.length > 0 && !eventFiveRepairAction ? "#ef4444" : "#38bdf8",
+                          opacity: eventFiveRepairStationKeys.length === 0 ? 0.65 : 1,
+                        }}
+                      >
+                        <option value="">-- válassz típust --</option>
+                        <option value="Újragyártás">Újragyártás</option>
+                        <option value="Javítás">Javítás</option>
+                      </select>
+                      {eventFiveRepairStationKeys.length > 0 && (
+                        <div style={{ color: "#bae6fd", fontSize: 12, marginTop: 8 }}>
+                          A kiválasztott művelet minden bepipált munkaállomás külön kártyáján megjelenik. A Megjegyzés kötelező.
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -37815,24 +38139,51 @@ body {
                   )}
 
                   <div style={{ marginBottom: 18 }}>
-                    <label style={{ display: "block", marginBottom: 8, color: (outerSheetScrap || innerSheetScrap || toklecScrap) ? "#fecaca" : "#cbd5e1", fontWeight: (outerSheetScrap || innerSheetScrap || toklecScrap) ? 900 : 400 }}>
-                      Megjegyzés{(outerSheetScrap || innerSheetScrap || toklecScrap) ? " – selejtnél kötelező" : ""}
+                    <label
+                      style={{
+                        display: "block",
+                        marginBottom: 8,
+                        color: (outerSheetScrap || innerSheetScrap || toklecScrap || (isDoorTwoPartWorker(activeWorker) && eventFiveRepairStationKeys.length > 0)) ? "#fecaca" : "#cbd5e1",
+                        fontWeight: (outerSheetScrap || innerSheetScrap || toklecScrap || (isDoorTwoPartWorker(activeWorker) && eventFiveRepairStationKeys.length > 0)) ? 900 : 400,
+                      }}
+                    >
+                      Megjegyzés{(outerSheetScrap || innerSheetScrap || toklecScrap || (isDoorTwoPartWorker(activeWorker) && eventFiveRepairStationKeys.length > 0)) ? " – selejtnél / javításnál kötelező" : ""}
                     </label>
                     <textarea
                       value={endNote}
                       maxLength={250}
-                      required={outerSheetScrap || innerSheetScrap || toklecScrap}
+                      required={outerSheetScrap || innerSheetScrap || toklecScrap || (isDoorTwoPartWorker(activeWorker) && eventFiveRepairStationKeys.length > 0)}
                       onChange={(e) => setEndNote(e.target.value.slice(0, 250))}
                       onBlur={() => {
                         if (step === 6 && pendingAction === "END") focusScannerInputAfterEditableBlur(actionBarcodeInputRef);
                       }}
-                      placeholder={(outerSheetScrap || innerSheetScrap || toklecScrap) ? "Kötelező: írd le pontosan, mi a probléma" : "Írj megjegyzést a lezáráshoz vagy a selejthez"}
-                      style={{ ...textareaStyle, border: (outerSheetScrap || innerSheetScrap || toklecScrap) && !endNote.trim() ? "2px solid #ef4444" : textareaStyle.border }}
+                      placeholder={(outerSheetScrap || innerSheetScrap || toklecScrap || (isDoorTwoPartWorker(activeWorker) && eventFiveRepairStationKeys.length > 0)) ? "Kötelező: írd le pontosan, mi a probléma" : "Írj megjegyzést a lezáráshoz vagy a selejthez"}
+                      style={{
+                        ...textareaStyle,
+                        border: (outerSheetScrap || innerSheetScrap || toklecScrap || (isDoorTwoPartWorker(activeWorker) && eventFiveRepairStationKeys.length > 0)) && !endNote.trim()
+                          ? "2px solid #ef4444"
+                          : textareaStyle.border,
+                      }}
                     />
-                    <div style={{ marginTop: 5, textAlign: "right", color: (outerSheetScrap || innerSheetScrap || toklecScrap) && !endNote.trim() ? "#fecaca" : "#94a3b8", fontSize: 11 }}>
-                      {endNote.length}/250 karakter{(outerSheetScrap || innerSheetScrap || toklecScrap) ? " • kötelező" : ""}
+                    <div
+                      style={{
+                        marginTop: 5,
+                        textAlign: "right",
+                        color: (outerSheetScrap || innerSheetScrap || toklecScrap || (isDoorTwoPartWorker(activeWorker) && eventFiveRepairStationKeys.length > 0)) && !endNote.trim() ? "#fecaca" : "#94a3b8",
+                        fontSize: 11,
+                      }}
+                    >
+                      {endNote.length}/250 karakter{(outerSheetScrap || innerSheetScrap || toklecScrap || (isDoorTwoPartWorker(activeWorker) && eventFiveRepairStationKeys.length > 0)) ? " • kötelező" : ""}
                     </div>
                   </div>
+
+                  {isDoorTwoPartWorker(activeWorker) && (
+                    <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: 14, marginBottom: 18 }}>
+                      <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 8 }}>Lezárandó rendelés</div>
+                      <div style={{ fontSize: 26, fontWeight: 800, color: "#fca5a5" }}>END</div>
+                      <div style={{ marginTop: 8, color: "#cbd5e1" }}>Rendelés: <strong>{orderNumber}</strong></div>
+                    </div>
+                  )}
 
                   <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                     <button onClick={() => void saveWorkLog("END")} disabled={busy} style={buttonPrimary}>END mentése</button>
