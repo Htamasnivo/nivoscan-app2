@@ -149,6 +149,20 @@ type TerminalEntryLayoutInteraction = {
   lastValidRect: TerminalEntryLayoutRect;
 };
 
+type StandaloneProductionMonitorHeaderSize = {
+  width: number;
+  height: number;
+};
+
+type StandaloneProductionMonitorHeaderResizeInteraction = {
+  pointerId: number;
+  edge: TerminalEntryLayoutResizeEdge;
+  startClientX: number;
+  startClientY: number;
+  initialWidth: number;
+  initialHeight: number;
+};
+
 type WorkAction = "START" | "END";
 type WorkflowMode = "single" | "batch" | "end";
 type BatchOperationCode = "SZABAS" | "MARAS";
@@ -1679,6 +1693,11 @@ const TERMINAL_ENTRY_LAYOUT_MIN_WIDTH = 180;
 const TERMINAL_ENTRY_LAYOUT_MIN_HEIGHT = 48;
 const PRODUCTION_MONITOR_LAYOUT_STORAGE_KEY = "nivo-production-monitor-layout-v1";
 const PRODUCTION_MONITOR_PROFILES_STORAGE_KEY = "nivo-production-monitor-profiles-v2";
+const STANDALONE_PRODUCTION_MONITOR_HEADER_SIZE_STORAGE_KEY = "nivo-production-monitor-standalone-header-size-v1";
+const STANDALONE_PRODUCTION_MONITOR_HEADER_DEFAULT_HEIGHT = 112;
+const STANDALONE_PRODUCTION_MONITOR_HEADER_MIN_HEIGHT = 92;
+const STANDALONE_PRODUCTION_MONITOR_HEADER_MAX_HEIGHT = 320;
+const STANDALONE_PRODUCTION_MONITOR_HEADER_MIN_WIDTH = 720;
 const PRODUCTION_MONITOR_LEGACY_PROFILES_STORAGE_KEY = "nivo-production-monitor-profiles-v1";
 const PRODUCTION_MONITOR_SETTINGS_TABLE = "production_monitor_user_settings";
 const PRODUCTION_CARD_SETTINGS_TABLE = "production_card_station_settings";
@@ -7795,6 +7814,14 @@ export default function Page() {
   const [managementSection, setManagementSection] = useState<ManagementSection>("dashboard");
   const [standaloneProductionMonitor, setStandaloneProductionMonitor] = useState(false);
   const [standaloneProductionMonitorWorkerName, setStandaloneProductionMonitorWorkerName] = useState("");
+  const [standaloneProductionMonitorHeaderResizeMode, setStandaloneProductionMonitorHeaderResizeMode] = useState(false);
+  const [standaloneProductionMonitorHeaderSize, setStandaloneProductionMonitorHeaderSize] = useState<StandaloneProductionMonitorHeaderSize>({
+    width: 0,
+    height: STANDALONE_PRODUCTION_MONITOR_HEADER_DEFAULT_HEIGHT,
+  });
+  const standaloneProductionMonitorHeaderRef = useRef<HTMLDivElement | null>(null);
+  const standaloneProductionMonitorHeaderResizeInteractionRef = useRef<StandaloneProductionMonitorHeaderResizeInteraction | null>(null);
+  const standaloneProductionMonitorHeaderResizeCleanupRef = useRef<(() => void) | null>(null);
   const [productionPlanDate, setProductionPlanDate] = useState(getLocalDateKey(new Date()));
   const [productionPlanName, setProductionPlanName] = useState("Napi termelési terv");
   const [productionPlanFileName, setProductionPlanFileName] = useState("");
@@ -17905,7 +17932,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={{ padding: 30, color: theme.subtitleText, textAlign: "center", fontSize: 17 }}>A kiválasztott naphoz nincs aktív termelési terv.</div>
           ) : productionMonitorData.rows.length === 0 ? (
             <div style={{ padding: 30, color: theme.subtitleText, textAlign: "center", fontSize: 17 }}>
-              A kiválasztott időszakban nincs „{activeMonitorStatusLabel}” státuszú rendelés a munkaállomási _terv táblákban.
+              A kiválasztott időszakban nincs „{activeMonitorStatusLabel}” státuszú rendelés a szereles_terv napi tervében.
             </div>
           ) : runtime.visibleFieldIds.length === 0 ? (
             <div style={{ padding: 30, color: theme.subtitleText, textAlign: "center", fontSize: 17 }}>
@@ -18009,6 +18036,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
                         const station = getProductionMonitorFieldLabel(fieldId);
                         const cell = row.stations[station] || getMonitorCellFromLogs([]);
+                        const displayCellLabel = standalone
+                          && normalizePlanColumnName(station) === "szereles"
+                          && cell.status === "done"
+                            ? "Kész"
+                            : cell.label;
                         return (
                           <td
                             key={`${table.id}-${row.orderNumber}-${fieldId}`}
@@ -18028,7 +18060,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               overflowWrap: "anywhere",
                             }}
                           >
-                            {cell.label}
+                            {displayCellLabel}
                           </td>
                         );
                       })}
@@ -18050,7 +18082,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           color: profileTheme.headerPanelText,
           border: standalone ? "none" : `1px solid ${officeTheme.borderColor}`,
           borderRadius: standalone ? 0 : profileTheme.panelRadius + 4,
-          padding: 18,
+          padding: standalone ? 8 : 18,
           boxShadow: standalone ? "none" : "0 18px 45px rgba(0,0,0,0.28)",
           marginTop: 0,
           boxSizing: "border-box",
@@ -18061,31 +18093,44 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           {!standalone && <ManagementNavigation />}
 
           <div
+            ref={standalone ? standaloneProductionMonitorHeaderRef : undefined}
             data-office-window="production-monitor:header"
             style={{
-              display: "flex",
+              display: standalone ? "grid" : "flex",
               justifyContent: "space-between",
-              alignItems: "flex-start",
-              gap: 16,
-              flexWrap: "wrap",
-              marginBottom: 16,
+              alignItems: standalone ? "stretch" : "flex-start",
+              gap: standalone ? 6 : 16,
+              flexWrap: standalone ? undefined : "wrap",
+              marginBottom: standalone ? 8 : 16,
+              marginLeft: standalone ? "auto" : undefined,
+              marginRight: standalone ? "auto" : undefined,
+              width: standalone && standaloneProductionMonitorHeaderSize.width > 0
+                ? Math.min(standaloneProductionMonitorHeaderSize.width, typeof window !== "undefined" ? Math.max(320, window.innerWidth - 24) : standaloneProductionMonitorHeaderSize.width)
+                : "100%",
+              height: standalone ? standaloneProductionMonitorHeaderSize.height : undefined,
+              maxWidth: "100%",
+              boxSizing: "border-box",
+              position: standalone ? "relative" : undefined,
+              overflow: standalone ? "auto" : undefined,
               background: profileTheme.headerPanelBackground,
               color: profileTheme.headerPanelText,
-              padding: 16,
+              padding: standalone ? 8 : 16,
               borderRadius: profileTheme.panelRadius,
               boxShadow: "0 8px 22px rgba(0,0,0,0.20)",
               border: `1px solid ${profileTheme.borderColor}`,
+              outline: standalone && standaloneProductionMonitorHeaderResizeMode ? "2px dashed #38bdf8" : undefined,
+              outlineOffset: standalone && standaloneProductionMonitorHeaderResizeMode ? -2 : undefined,
             }}
           >
             {profileTheme.showHeader && (
-              <div style={{ minWidth: 260 }}>
-                <div style={{ fontSize: 13, color: profileTheme.accentColor, fontWeight: 900, letterSpacing: 1, textTransform: "uppercase" }}>
+              <div style={{ minWidth: standalone ? 0 : 260, display: standalone ? "flex" : "block", alignItems: standalone ? "center" : undefined, gap: standalone ? 8 : undefined, flexWrap: standalone ? "nowrap" : undefined, overflowX: standalone ? "auto" : undefined, whiteSpace: standalone ? "nowrap" : undefined }}>
+                <div style={{ fontSize: standalone ? 10 : 13, color: profileTheme.accentColor, fontWeight: 900, letterSpacing: 1, textTransform: "uppercase" }}>
                   NÍVÓ termelési monitor
                 </div>
                 <h2
                   style={{
-                    margin: "6px 0 4px",
-                    fontSize: monitorTitleFontSize,
+                    margin: standalone ? 0 : "6px 0 4px",
+                    fontSize: standalone ? Math.min(18, monitorTitleFontSize) : monitorTitleFontSize,
                     color: profileTheme.headerPanelText,
                     fontWeight: profileTheme.titleBold ? 900 : 400,
                     fontStyle: profileTheme.titleItalic ? "italic" : "normal",
@@ -18095,7 +18140,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   {activeMonitorStatusLabel} rendelések nyomonkövetése
                 </h2>
                 {profileTheme.showPlanInfo && (
-                  <div style={{ color: profileTheme.subtitleText }}>
+                  <div style={{ color: profileTheme.subtitleText, fontSize: standalone ? 10 : undefined }}>
                     {productionMonitorData.plan
                       ? `${productionMonitorData.plan.name} · ${productionMonitorData.plan.plan_date}`
                       : `Nincs aktív terv · ${productionMonitorDate} → ${productionMonitorDateTo}`}
@@ -18104,20 +18149,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <div
                   style={{
                     display: "inline-flex",
-                    marginTop: 6,
-                    padding: "5px 9px",
+                    marginTop: standalone ? 0 : 6,
+                    padding: standalone ? "2px 6px" : "5px 9px",
                     borderRadius: 999,
                     border: `1px solid ${profileTheme.borderColor}`,
                     background: profileTheme.headerPanelBackground,
                     color: profileTheme.headerPanelText,
-                    fontSize: 12,
+                    fontSize: standalone ? 10 : 12,
                     fontWeight: 900,
                   }}
                 >
-                  Szűrés alapja: Beépítési dátum
+                  Szűrés alapja: Elkészülési dátum
                 </div>
                 {profileTheme.showLastUpdated && (
-                  <div style={{ color: profileTheme.subtitleText, opacity: 0.82, fontSize: 12, marginTop: 4 }}>
+                  <div style={{ color: profileTheme.subtitleText, opacity: 0.82, fontSize: standalone ? 10 : 12, marginTop: standalone ? 0 : 4 }}>
                     Utolsó adatfrissítés: {productionMonitorData.lastUpdatedAt ? formatDateTime(productionMonitorData.lastUpdatedAt) : "-"}
                     {productionMonitorLastSavedAt ? ` · Beállítások mentve: ${formatDateTime(productionMonitorLastSavedAt)}` : ""}
                   </div>
@@ -18125,7 +18170,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               </div>
             )}
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", marginLeft: "auto" }}>
+            <div style={{ display: "flex", gap: standalone ? 6 : 8, flexWrap: standalone ? "nowrap" : "wrap", alignItems: "flex-end", justifyContent: standalone ? "center" : "flex-end", marginLeft: standalone ? 0 : "auto", overflowX: standalone ? "auto" : undefined, paddingBottom: standalone ? 1 : 0 }}>
               <select
                 value={activeProductionMonitorProfile.id}
                 onChange={(event) => switchProfile(event.target.value)}
@@ -18153,7 +18198,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <option value="custom">Egyedi stílus</option>
               </select>
               <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
-                <span>Dátumtól · Beépítési dátum</span>
+                <span>Dátumtól · Elkészülési dátum</span>
                 <input
                   type="date"
                   value={productionMonitorDate}
@@ -18180,7 +18225,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               </label>
 
               <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
-                <span>Dátumig · Beépítési dátum</span>
+                <span>Dátumig · Elkészülési dátum</span>
                 <input
                   type="date"
                   value={productionMonitorDateTo}
@@ -18225,6 +18270,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <button type="button" onClick={() => setProductionMonitorEditMode((currentValue) => !currentValue)} style={productionMonitorEditMode ? buttonPrimary : buttonSecondary}>
                 {productionMonitorEditMode ? "Szerkesztés bezárása" : "Profi szerkesztő"}
               </button>
+              {standalone && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopStandaloneProductionMonitorHeaderResize();
+                    setStandaloneProductionMonitorHeaderResizeMode((currentValue) => !currentValue);
+                  }}
+                  style={standaloneProductionMonitorHeaderResizeMode ? buttonPrimary : buttonSecondary}
+                  title="A felső monitorpanel széleinek és sarkainak egyedi méretezése"
+                >
+                  Egyedi méretező
+                </button>
+              )}
               <div style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: 3, border: `1px solid ${profileTheme.borderColor}`, borderRadius: 10, background: profileTheme.tablePanelBackground }}>
                 <button type="button" title="Kicsinyítés" onClick={() => changeProductionMonitorZoom(-1)} disabled={productionMonitorZoomPercent <= PRODUCTION_MONITOR_MIN_ZOOM} style={{ ...buttonSecondary, minWidth: 38, padding: "8px 10px" }}>−</button>
                 <button type="button" title="100%-os méret visszaállítása" onClick={() => setProductionMonitorZoomPercent(100)} style={{ ...buttonSecondary, minWidth: 68, padding: "8px 10px" }}>{productionMonitorZoomPercent}%</button>
@@ -18233,6 +18291,33 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <button type="button" onClick={() => void toggleProductionMonitorFullscreen()} style={buttonSecondary}>Teljes képernyő</button>
               {!standalone && <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>}
             </div>
+
+            {standalone && standaloneProductionMonitorHeaderResizeMode && ([
+              { edge: "n" as TerminalEntryLayoutResizeEdge, title: "Felső él méretezése", cursor: "ns-resize", style: { top: -2, left: 12, right: 12, height: 9 } },
+              { edge: "s" as TerminalEntryLayoutResizeEdge, title: "Alsó él méretezése", cursor: "ns-resize", style: { bottom: -2, left: 12, right: 12, height: 9 } },
+              { edge: "e" as TerminalEntryLayoutResizeEdge, title: "Jobb él méretezése", cursor: "ew-resize", style: { right: -2, top: 12, bottom: 12, width: 9 } },
+              { edge: "w" as TerminalEntryLayoutResizeEdge, title: "Bal él méretezése", cursor: "ew-resize", style: { left: -2, top: 12, bottom: 12, width: 9 } },
+              { edge: "nw" as TerminalEntryLayoutResizeEdge, title: "Bal felső sarok méretezése", cursor: "nwse-resize", style: { left: -4, top: -4, width: 16, height: 16 } },
+              { edge: "ne" as TerminalEntryLayoutResizeEdge, title: "Jobb felső sarok méretezése", cursor: "nesw-resize", style: { right: -4, top: -4, width: 16, height: 16 } },
+              { edge: "sw" as TerminalEntryLayoutResizeEdge, title: "Bal alsó sarok méretezése", cursor: "nesw-resize", style: { left: -4, bottom: -4, width: 16, height: 16 } },
+              { edge: "se" as TerminalEntryLayoutResizeEdge, title: "Jobb alsó sarok méretezése", cursor: "nwse-resize", style: { right: -4, bottom: -4, width: 16, height: 16 } },
+            ]).map((handle) => (
+              <div
+                key={`standalone-monitor-header-${handle.edge}`}
+                onPointerDown={(event) => beginStandaloneProductionMonitorHeaderResize(event, handle.edge)}
+                title={`${handle.title} – kattints, tartsd lenyomva és húzd`}
+                style={{
+                  position: "absolute",
+                  zIndex: 150,
+                  cursor: handle.cursor,
+                  userSelect: "none",
+                  touchAction: "none",
+                  background: handle.edge.length === 2 ? "#38bdf8" : "transparent",
+                  borderRadius: 4,
+                  ...handle.style,
+                }}
+              />
+            ))}
           </div>
 
           {productionMonitorEditMode && (
@@ -20577,6 +20662,33 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const requestedWorkerName = String(params.get("worker") || "").trim();
     if (requestedWorkerName) setStandaloneProductionMonitorWorkerName(requestedWorkerName);
     setStandaloneProductionMonitor(true);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(STANDALONE_PRODUCTION_MONITOR_HEADER_SIZE_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<StandaloneProductionMonitorHeaderSize>;
+      const width = Number(parsed.width);
+      const height = Number(parsed.height);
+      setStandaloneProductionMonitorHeaderSize({
+        width: Number.isFinite(width) && width > 0 ? Math.max(STANDALONE_PRODUCTION_MONITOR_HEADER_MIN_WIDTH, width) : 0,
+        height: Number.isFinite(height)
+          ? Math.min(STANDALONE_PRODUCTION_MONITOR_HEADER_MAX_HEIGHT, Math.max(STANDALONE_PRODUCTION_MONITOR_HEADER_MIN_HEIGHT, height))
+          : STANDALONE_PRODUCTION_MONITOR_HEADER_DEFAULT_HEIGHT,
+      });
+    } catch {
+      // Hibás régi helyi méretbeállításnál a kompakt alapméret marad aktív.
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      standaloneProductionMonitorHeaderResizeCleanupRef.current?.();
+      standaloneProductionMonitorHeaderResizeCleanupRef.current = null;
+      standaloneProductionMonitorHeaderResizeInteractionRef.current = null;
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -24421,6 +24533,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const statusLabel = getProductionMonitorPlanStatusLabel(planStatusFilter);
     const normalizedWantedStatus = normalizeLooseText(statusLabel);
+    const assemblyStationName = monitorStations.find(
+      (station) => normalizePlanColumnName(station) === "szereles"
+    ) || ATVETEL_SOURCE_STATION;
 
     type MonitorPlanAggregate = {
       itemId: string;
@@ -24469,25 +24584,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       readMonitorPlanValue(row, ["termek", "termék", "megnevezes", "megnevezés", "product_name"])
     );
 
-    const getPlanInstallationDate = (row: Record<string, unknown>): string => {
+    const getPlanCompletionDate = (row: Record<string, unknown>): string => {
       const rawValue = readMonitorPlanValue(row, [
-        "beepites_datuma",
-        "beepitesi_datum",
-        "beépítés dátuma",
-        "beépítési dátum",
+        "elkeszules_datum",
+        "elkészülés_dátum",
+        "elkeszules datum",
+        "elkészülés dátum",
+        "elkeszulesdatum",
       ]);
 
       return parseSpreadsheetDate(rawValue) || valueAsText(rawValue).slice(0, 10);
     };
 
-    const addStationPlanRow = (station: string, row: Record<string, unknown>): void => {
-      // A monitorba CSAK olyan sor kerülhet, amelynek van beépítési dátuma,
-      // és az a felső Dátumtól / Dátumig tartományba esik.
-      const installationDate = getPlanInstallationDate(row);
+    const addAssemblyPlanRow = (row: Record<string, unknown>): void => {
+      // A Termelési monitor sora KIZÁRÓLAG a szereles_terv napi tervéből származik.
+      // A dátumszűrés alapja a szereles_terv.elkeszules_datum.
+      const completionDate = getPlanCompletionDate(row);
       if (
-        !/^\d{4}-\d{2}-\d{2}$/.test(installationDate)
-        || installationDate < startDateKey
-        || installationDate > endDateKey
+        !/^\d{4}-\d{2}-\d{2}$/.test(completionDate)
+        || completionDate < startDateKey
+        || completionDate > endDateKey
       ) {
         return;
       }
@@ -24513,36 +24629,54 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           sequenceNumber,
           plannedQuantity: Number.isFinite(quantityNumber) ? quantityNumber : null,
           productName,
-          requiredStations: new Set<string>(),
+          requiredStations: new Set<string>([assemblyStationName]),
         };
         sequenceNumber += 1;
         aggregates.push(aggregate);
         aggregatesByOrder.set(normalizedOrder, aggregate);
-      }
-
-      // Egy gyártási/rendelési szám a monitoron pontosan EGY sor.
-      // Ugyanez a sor több munkaállomáson halad végig, ezért az állomásokat
-      // ugyanahhoz a rekordhoz gyűjtjük össze.
-      aggregate.requiredStations.add(station);
-      if (!aggregate.productName && productName) aggregate.productName = productName;
-
-      const quantityRaw = readMonitorPlanValue(row, ["mennyiseg", "mennyiség", "planned_quantity"]);
-      const quantityNumber = Number(quantityRaw);
-      if (Number.isFinite(quantityNumber)) {
-        aggregate.plannedQuantity = aggregate.plannedQuantity === null
-          ? quantityNumber
-          : Math.max(aggregate.plannedQuantity, quantityNumber);
+      } else {
+        aggregate.requiredStations.add(assemblyStationName);
+        if (!aggregate.productName && productName) aggregate.productName = productName;
+        const quantityRaw = readMonitorPlanValue(row, ["mennyiseg", "mennyiség", "planned_quantity"]);
+        const quantityNumber = Number(quantityRaw);
+        if (Number.isFinite(quantityNumber)) {
+          aggregate.plannedQuantity = aggregate.plannedQuantity === null
+            ? quantityNumber
+            : Math.max(aggregate.plannedQuantity, quantityNumber);
+        }
       }
     };
 
-    // A monitor közvetlenül a munkaállomási *_terv táblákból épül fel.
-    // Dátumszűrés alapja KIZÁRÓLAG a beépítési dátum.
-    //
-    // Itt szándékosan nem szűrünk Supabase-oldalon elkeszules_datum-ra:
-    // a sor csak akkor kerül be, ha a saját *_terv rekord beepites_datuma
-    // mezője (vagy régi importnál az adat JSON azonos mezője) a kiválasztott
-    // tartományba esik. Üres beépítési dátum = a sor nem jelenik meg.
+    // 1) A látható sorlista kizárólag a Szerelés napi tervéből épül fel.
+    const assemblyPlanResponse = await supabase
+      .from("szereles_terv")
+      .select("*")
+      .limit(10000);
+
+    if (assemblyPlanResponse.error) throw assemblyPlanResponse.error;
+
+    const assemblyPlanRows = ((assemblyPlanResponse.data || []) as Record<string, unknown>[])
+      .slice()
+      .sort((left, right) => {
+        const leftOrder = Number(left.excel_sorrend);
+        const rightOrder = Number(right.excel_sorrend);
+        const leftSafe = Number.isFinite(leftOrder) ? leftOrder : Number.MAX_SAFE_INTEGER;
+        const rightSafe = Number.isFinite(rightOrder) ? rightOrder : Number.MAX_SAFE_INTEGER;
+        if (leftSafe !== rightSafe) return leftSafe - rightSafe;
+        const leftId = Number(left.id);
+        const rightId = Number(right.id);
+        if (Number.isFinite(leftId) && Number.isFinite(rightId)) return leftId - rightId;
+        return 0;
+      });
+
+    assemblyPlanRows.forEach(addAssemblyPlanRow);
+
+    // 2) A többi munkaállomás saját *_terv táblája csak azt dönti el,
+    // hogy a Szerelés napi tervének adott rendeléséhez az oszlop releváns-e.
+    // Más állomás terve SOHA nem hozhat létre új sort ezen a monitoron.
     for (const station of monitorStations) {
+      if (normalizeLooseText(station) === normalizeLooseText(assemblyStationName)) continue;
+
       const tableName = buildStationPlanTableName(station);
       const response = await supabase
         .from(tableName)
@@ -24550,12 +24684,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         .limit(10000);
 
       if (response.error) {
-        console.warn(`A ${tableName} tábla nem olvasható a termelési monitorhoz:`, response.error);
+        console.warn(`A ${tableName} tábla nem olvasható a termelési monitor állomás-kapcsolatához:`, response.error);
         continue;
       }
 
       ((response.data || []) as Record<string, unknown>[]).forEach((row) => {
-        addStationPlanRow(station, row);
+        const orderNumber = getPlanOrderNumber(row);
+        if (!orderNumber) return;
+        const aggregate = aggregatesByOrder.get(normalizeLooseText(orderNumber));
+        if (aggregate) aggregate.requiredStations.add(station);
       });
     }
 
@@ -24683,7 +24820,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const syntheticPlan: ProductionPlanRow = {
       id: `monitor-${planStatusFilter}-${startDateKey}-${endDateKey}`,
       plan_date: monitorDateRangeLabel,
-      name: `${statusLabel} termelési monitor`,
+      name: `Szerelés napi terv · ${statusLabel}`,
       is_active: true,
       uploaded_by: null,
       created_at: new Date().toISOString(),
@@ -24742,6 +24879,121 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     } catch (error) {
       setMessage({ type: "error", text: `A teljes képernyős mód nem indítható: ${normalizeError(error)}` });
     }
+  }
+
+  function persistStandaloneProductionMonitorHeaderSize(size: StandaloneProductionMonitorHeaderSize): void {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        STANDALONE_PRODUCTION_MONITOR_HEADER_SIZE_STORAGE_KEY,
+        JSON.stringify(size)
+      );
+    } catch {
+      // A monitor ettől még használható; legfeljebb a méret nem marad meg újratöltés után.
+    }
+  }
+
+  function stopStandaloneProductionMonitorHeaderResize(): void {
+    standaloneProductionMonitorHeaderResizeCleanupRef.current?.();
+    standaloneProductionMonitorHeaderResizeCleanupRef.current = null;
+    standaloneProductionMonitorHeaderResizeInteractionRef.current = null;
+  }
+
+  function beginStandaloneProductionMonitorHeaderResize(
+    event: React.PointerEvent<HTMLElement>,
+    edge: TerminalEntryLayoutResizeEdge
+  ): void {
+    if (!standaloneProductionMonitor || !standaloneProductionMonitorHeaderResizeMode || typeof window === "undefined") return;
+    const element = standaloneProductionMonitorHeaderRef.current;
+    if (!element) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    stopStandaloneProductionMonitorHeaderResize();
+
+    const rect = element.getBoundingClientRect();
+    const interaction: StandaloneProductionMonitorHeaderResizeInteraction = {
+      pointerId: event.pointerId,
+      edge,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      initialWidth: rect.width,
+      initialHeight: rect.height,
+    };
+    standaloneProductionMonitorHeaderResizeInteractionRef.current = interaction;
+
+    let latestSize: StandaloneProductionMonitorHeaderSize = {
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    };
+
+    const snap = (value: number): number => Math.round(value / 8) * 8;
+    const onPointerMove = (nativeEvent: PointerEvent): void => {
+      const active = standaloneProductionMonitorHeaderResizeInteractionRef.current;
+      if (!active || active.pointerId !== nativeEvent.pointerId) return;
+      nativeEvent.preventDefault();
+
+      const deltaX = nativeEvent.clientX - active.startClientX;
+      const deltaY = nativeEvent.clientY - active.startClientY;
+      const horizontalDelta = active.edge.includes("e")
+        ? deltaX
+        : active.edge.includes("w")
+          ? -deltaX
+          : 0;
+      const verticalDelta = active.edge.includes("s")
+        ? deltaY
+        : active.edge.includes("n")
+          ? -deltaY
+          : 0;
+
+      const availableWidth = Math.max(320, window.innerWidth - 24);
+      const minimumWidth = Math.min(STANDALONE_PRODUCTION_MONITOR_HEADER_MIN_WIDTH, availableWidth);
+      const nextWidth = horizontalDelta === 0
+        ? active.initialWidth
+        : Math.min(availableWidth, Math.max(minimumWidth, snap(active.initialWidth + horizontalDelta)));
+      const nextHeight = verticalDelta === 0
+        ? active.initialHeight
+        : Math.min(
+            STANDALONE_PRODUCTION_MONITOR_HEADER_MAX_HEIGHT,
+            Math.max(STANDALONE_PRODUCTION_MONITOR_HEADER_MIN_HEIGHT, snap(active.initialHeight + verticalDelta))
+          );
+
+      latestSize = { width: Math.round(nextWidth), height: Math.round(nextHeight) };
+      setStandaloneProductionMonitorHeaderSize(latestSize);
+    };
+
+    const cleanup = (): void => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
+      window.removeEventListener("blur", onWindowBlur);
+      if (standaloneProductionMonitorHeaderResizeCleanupRef.current === cleanup) {
+        standaloneProductionMonitorHeaderResizeCleanupRef.current = null;
+      }
+      standaloneProductionMonitorHeaderResizeInteractionRef.current = null;
+    };
+    const onPointerUp = (nativeEvent: PointerEvent): void => {
+      const active = standaloneProductionMonitorHeaderResizeInteractionRef.current;
+      if (!active || active.pointerId !== nativeEvent.pointerId) return;
+      persistStandaloneProductionMonitorHeaderSize(latestSize);
+      cleanup();
+    };
+    const onPointerCancel = (nativeEvent: PointerEvent): void => {
+      const active = standaloneProductionMonitorHeaderResizeInteractionRef.current;
+      if (!active || active.pointerId !== nativeEvent.pointerId) return;
+      persistStandaloneProductionMonitorHeaderSize(latestSize);
+      cleanup();
+    };
+    const onWindowBlur = (): void => {
+      persistStandaloneProductionMonitorHeaderSize(latestSize);
+      cleanup();
+    };
+
+    standaloneProductionMonitorHeaderResizeCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", onPointerMove, { passive: false });
+    window.addEventListener("pointerup", onPointerUp, { passive: false });
+    window.addEventListener("pointercancel", onPointerCancel);
+    window.addEventListener("blur", onWindowBlur);
   }
 
   function getOrderedDashboardStations(): string[] {
