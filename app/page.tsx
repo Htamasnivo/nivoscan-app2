@@ -17903,10 +17903,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const runtime = getTableRuntime(table);
       const isActiveTable = table.id === activeProductionMonitorTable.id;
       const theme = runtime.theme;
+      const standaloneTableWindowId = `table:${table.id}`;
+      const standaloneTableHasSavedSize = standalone && Boolean(standaloneProductionMonitorWindowLayout[standaloneTableWindowId]);
       return (
         <section
           data-office-window="production-monitor:tables"
-          data-standalone-production-monitor-window={standalone ? `table:${table.id}` : undefined}
+          data-standalone-production-monitor-window={standalone ? standaloneTableWindowId : undefined}
           key={table.id}
           onClick={() => productionMonitorEditMode && switchProductionMonitorTable(table.id)}
           style={{
@@ -17918,10 +17920,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             border: productionMonitorEditMode && isActiveTable ? `3px solid ${theme.accentColor}` : `1px solid ${theme.borderColor}`,
             marginBottom: 14,
             cursor: productionMonitorEditMode ? "pointer" : "default",
-            ...(standalone ? getStandaloneProductionMonitorWindowStyle(`table:${table.id}`) : {}),
+            ...(standaloneTableHasSavedSize ? { display: "flex", flexDirection: "column", minHeight: 0 } : {}),
+            ...(standalone ? getStandaloneProductionMonitorWindowStyle(standaloneTableWindowId) : {}),
+            ...(standaloneTableHasSavedSize ? { overflow: "hidden" } : {}),
           }}
         >
-          {standalone && renderStandaloneProductionMonitorWindowChrome(`table:${table.id}`, table.title || table.name || `Táblázat ${tableIndex + 1}`)}
+          {standalone && renderStandaloneProductionMonitorWindowChrome(standaloneTableWindowId, table.title || table.name || `Táblázat ${tableIndex + 1}`)}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
             <div
               style={{
@@ -17953,7 +17957,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               Ennél a táblázatnál minden mező el van rejtve. A szerkesztőben jelölj ki legalább egy mezőt.
             </div>
           ) : (
-            <div style={{ overflowX: "hidden", overflowY: "auto", maxHeight: standalone ? 520 : 650 }}>
+            <div
+              style={{
+                overflowX: "hidden",
+                overflowY: "auto",
+                maxHeight: standaloneTableHasSavedSize ? "none" : standalone ? 520 : 650,
+                ...(standaloneTableHasSavedSize ? { flex: "1 1 auto", minHeight: 0, width: "100%", boxSizing: "border-box" } : {}),
+              }}
+            >
               <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "separate", borderSpacing: 0, fontFamily: theme.fontFamily }}>
                 <colgroup>
                   {runtime.visibleFieldIds.map((fieldId) => (
