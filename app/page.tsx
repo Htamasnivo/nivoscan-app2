@@ -633,6 +633,7 @@ function createDefaultOfficeThemePresetMap(): Record<OfficePageKey, OfficeThemeP
 const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]> = {
   dashboard: [
     { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Oldal fejléc és szűrők" }, { id:"order-filter", label:"Rendelésszűrő sáv" },
+    { id:"end-excel-export", label:"END Excel export gomb" },
     { id:"kpis", label:"Összesítő KPI kártyák" }, { id:"worker-performance", label:"Dolgozói teljesítmény" }, { id:"station-efficiency", label:"Munkaállomás hatékonyság" },
     { id:"open-work", label:"Folyamatban lévő munkák" }, { id:"event-log", label:"Eseménynapló" },
   ],
@@ -8249,11 +8250,13 @@ export default function Page() {
   const [statsDateTo, setStatsDateTo] = useState("");
   const [expandedOrders, setExpandedOrders] = useState<Record<string, boolean>>({});
   const [rawWorkLogs, setRawWorkLogs] = useState<WorkLogRow[]>([]);
-  const [dashboardFilterMode, setDashboardFilterMode] = useState<DashboardFilterMode>("daily");
+  const [dashboardFilterMode, setDashboardFilterMode] = useState<DashboardFilterMode>("custom");
   const [dashboardDate, setDashboardDate] = useState(getLocalDateKey(new Date()));
   const [dashboardDateTo, setDashboardDateTo] = useState(getLocalDateKey(new Date()));
   const [dashboardSelectedStation, setDashboardSelectedStation] = useState("all");
   const [dashboardSelectedWorker, setDashboardSelectedWorker] = useState("all");
+  // END Excel export: null = minden munkaállomás, tömb = csak a külön kijelölt állomások.
+  const [dashboardEndExportStations, setDashboardEndExportStations] = useState<string[] | null>(null);
   const [dashboardOrderFilters, setDashboardOrderFilters] = useState<string[]>([]);
   const [dashboardOrderInput, setDashboardOrderInput] = useState("");
   const [dashboardOrderSuggestions, setDashboardOrderSuggestions] = useState<string[]>([]);
@@ -8698,11 +8701,28 @@ export default function Page() {
 
   function getOfficeWindowTheme(pageKey: OfficePageKey, windowKey: string): OfficeThemeConfig {
     const key = officeWindowStateKey(pageKey, windowKey);
-    return officeWindowThemeByKey[key] || getOfficeTheme(pageKey);
+    if (officeWindowThemeByKey[key]) return officeWindowThemeByKey[key];
+
+    // Az END Excel export gomb alapból külön, neon narancs-sárga kiemelést kap.
+    // A felhasználó ezt ugyanúgy külön szerkesztheti és mentheti, mint bármelyik irodai ablakot.
+    if (pageKey === "dashboard" && windowKey === "end-excel-export") {
+      return ensureReadableOfficeTheme({
+        ...getOfficeTheme(pageKey),
+        borderColor: "#FFD54A",
+        accentColor: "#FFB000",
+        secondaryButtonBackground: "#FFB000",
+        buttonText: "#1A1000",
+      });
+    }
+
+    return getOfficeTheme(pageKey);
   }
 
   function getOfficeWindowPreset(pageKey: OfficePageKey, windowKey: string): OfficeThemePresetId {
-    return officeWindowPresetByKey[officeWindowStateKey(pageKey, windowKey)] || officeThemePresetByPage[pageKey] || "industrial-night";
+    const key = officeWindowStateKey(pageKey, windowKey);
+    if (officeWindowPresetByKey[key]) return officeWindowPresetByKey[key];
+    if (pageKey === "dashboard" && windowKey === "end-excel-export") return "custom";
+    return officeThemePresetByPage[pageKey] || "industrial-night";
   }
 
   function getOfficeWindowDefinitions(pageKey: OfficePageKey): OfficeWindowDefinition[] {
@@ -9022,12 +9042,37 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function clearDashboardSecondaryFilters(): void {
     setDashboardSelectedStation("all");
     setDashboardSelectedWorker("all");
+    setDashboardEndExportStations(null);
     dashboardOrderFiltersRef.current = [];
     setDashboardOrderFilters([]);
     setDashboardOrderInput("");
     setDashboardOrderSuggestions([]);
     setDashboardOrderSuggestionsOpen(false);
-    void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, []);
+    void loadManagementDashboardView("custom", dashboardDate, dashboardDateTo, []);
+  }
+
+  function toggleDashboardEndExportStation(stationName: string): void {
+    const allStations = getOrderedDashboardStations();
+    const normalizedTarget = normalizeLooseText(stationName);
+
+    setDashboardEndExportStations((current) => {
+      if (current === null) {
+        return allStations.filter((station) => normalizeLooseText(station) !== normalizedTarget);
+      }
+
+      const alreadySelected = current.some(
+        (station) => normalizeLooseText(station) === normalizedTarget
+      );
+      const next = alreadySelected
+        ? current.filter((station) => normalizeLooseText(station) !== normalizedTarget)
+        : [...current, stationName];
+
+      const allSelected = allStations.length > 0 && allStations.every((station) =>
+        next.some((selected) => normalizeLooseText(selected) === normalizeLooseText(station))
+      );
+
+      return allSelected ? null : next;
+    });
   }
 
 
@@ -11110,12 +11155,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const selectedScopeLabel = officeThemeScope === "__page__"
       ? `TELJES OLDAL – ${items.find((item) => item.id === managementSection)?.label || managementSection}`
       : `Ablak – ${windowDefs.find((item) => item.id === officeThemeScope)?.label || officeThemeScope}`;
-    const colorFields: Array<[string, keyof OfficeThemeConfig]> = [
-      ["Oldal / ablak háttere", selectedWindowKey ? "panelBackground" : "pageBackground"], ["Panel háttere", "panelBackground"], ["Másodlagos panel", "panelAltBackground"],
-      ["Fejléc háttere", "headerBackground"], ["Szekció háttere", "sectionBackground"], ["Fő szöveg", "textColor"], ["Halvány szöveg", "mutedText"],
-      ["Szegély", "borderColor"], ["Kiemelő szín", "accentColor"], ["Input háttér", "inputBackground"], ["Input szöveg", "inputText"],
-      ["Elsődleges gomb", "primaryButtonBackground"], ["Másodlagos gomb", "secondaryButtonBackground"], ["Gombszöveg", "buttonText"], ["Aktív állapot", "activeColor"], ["Hiba állapot", "errorColor"],
-    ];
+    const colorFields: Array<[string, keyof OfficeThemeConfig]> = selectedWindowKey === "end-excel-export"
+      ? [
+          ["END export gomb háttér", "secondaryButtonBackground"],
+          ["END export gomb szöveg", "buttonText"],
+          ["END export gomb szegély", "borderColor"],
+          ["END export kiemelő szín", "accentColor"],
+        ]
+      : [
+          ["Oldal / ablak háttere", selectedWindowKey ? "panelBackground" : "pageBackground"], ["Panel háttere", "panelBackground"], ["Másodlagos panel", "panelAltBackground"],
+          ["Fejléc háttere", "headerBackground"], ["Szekció háttere", "sectionBackground"], ["Fő szöveg", "textColor"], ["Halvány szöveg", "mutedText"],
+          ["Szegély", "borderColor"], ["Kiemelő szín", "accentColor"], ["Input háttér", "inputBackground"], ["Input szöveg", "inputText"],
+          ["Elsődleges gomb", "primaryButtonBackground"], ["Másodlagos gomb", "secondaryButtonBackground"], ["Gombszöveg", "buttonText"], ["Aktív állapot", "activeColor"], ["Hiba állapot", "errorColor"],
+        ];
     if (!selectedWindowKey) colorFields.push(["Menüsor háttere", "navBackground"], ["Aktív menüpont", "navActiveBackground"], ["Menüsor szövege", "navText"]);
     const updateSelected = (patch: Partial<OfficeThemeConfig>) => selectedWindowKey ? updateOfficeWindowTheme(managementSection, selectedWindowKey, patch) : updateOfficeTheme(managementSection, patch);
     const applyPreset = (presetId: Exclude<OfficeThemePresetId,"custom">) => selectedWindowKey ? applyOfficeWindowPreset(managementSection, selectedWindowKey, presetId) : applyOfficeThemePreset(managementSection, presetId);
@@ -11135,7 +11187,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               }
 
               setManagementSection(item.id); setOfficeThemeScope("__page__");
-              if (item.id === "dashboard") void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
+              if (item.id === "dashboard") void loadManagementDashboardView("custom", dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
               else if (item.id === "production-plan") void loadProductionPlans(productionPlanDate);
               else if (item.id === "production-monitor") void loadProductionMonitor(
                 productionMonitorDate,
@@ -19916,7 +19968,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (managementSection === "executive-report") return ExecutiveReportAdmin();
     if (managementSection === "report-delivery") return ReportDeliveryAdmin();
 
-    const dashboardRange = getDashboardDateRange(dashboardFilterMode, dashboardDate, dashboardDateTo);
+    const dashboardRange = getDashboardDateRange("custom", dashboardDate, dashboardDateTo);
     const hasDashboardOrderSearch = dashboardOrderFilters.some(
       (value) => Boolean(normalizeDashboardOrderSearch(value))
     );
@@ -20051,49 +20103,50 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={{ color: officeTheme.mutedText }}>Termelési terv, munkaállomási teljesítés és dolgozói munkaidő egyetlen nézetben.</div>
             <div style={{ color: officeTheme.mutedText, fontSize: 13, marginTop: 6 }}>
               {hasDashboardOrderSearch
-                ? "Keresési tartomány: teljes work_logs – nincs dátum/nézet korlátozás"
+                ? "Keresési tartomány: teljes work_logs – a műszerfal rendeléskeresése továbbra is dátumtól független"
                 : `Aktuális időszak: ${dashboardRange.label}`}
             </div>
             <div style={{ color: officeTheme.mutedText, fontSize: 13, marginTop: 4 }}>Utolsó frissítés: {dashboardData.lastUpdatedAt ? formatDateTime(dashboardData.lastUpdatedAt) : "-"}</div>
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", maxWidth: 980 }}>
-            <select
-              value={dashboardFilterMode}
-              onChange={(event) => {
-                const nextMode = event.target.value as DashboardFilterMode;
-                setDashboardFilterMode(nextMode);
-                void loadManagementDashboardView(nextMode, dashboardDate, dashboardDateTo);
-              }}
-              style={{ ...dashboardFilterFieldStyle, width: 185 }}
-              aria-label="Időszak típusa"
-            >
-              <option value="daily">Napi nézet</option>
-              <option value="weekly">Heti nézet</option>
-              <option value="monthly">Havi nézet</option>
-              <option value="custom">Egyedi intervallum</option>
-            </select>
             <button type="button" onClick={() => shiftDashboardPeriod(-1)} style={{ ...buttonSecondary, minWidth: 44 }} title="Előző időszak">←</button>
-            <input
-              type="date"
-              value={dashboardDate}
-              onChange={(event) => {
-                setDashboardDate(event.target.value);
-                void loadManagementDashboardView(dashboardFilterMode, event.target.value, dashboardDateTo);
-              }}
-              style={{ ...dashboardFilterFieldStyle, width: 175 }}
-            />
-            {dashboardFilterMode === "custom" && (
+            <label style={{ display: "grid", gap: 3, color: officeTheme.mutedText, fontSize: 11, fontWeight: 800 }}>
+              <span>Dátumtól</span>
               <input
                 type="date"
-                value={dashboardDateTo}
+                value={dashboardDate}
+                max={dashboardDateTo || undefined}
                 onChange={(event) => {
-                  setDashboardDateTo(event.target.value);
-                  void loadManagementDashboardView("custom", dashboardDate, event.target.value);
+                  const nextFrom = event.target.value;
+                  if (!nextFrom) return;
+                  const nextTo = !dashboardDateTo || nextFrom > dashboardDateTo ? nextFrom : dashboardDateTo;
+                  setDashboardFilterMode("custom");
+                  setDashboardDate(nextFrom);
+                  if (nextTo !== dashboardDateTo) setDashboardDateTo(nextTo);
+                  void loadManagementDashboardView("custom", nextFrom, nextTo);
                 }}
                 style={{ ...dashboardFilterFieldStyle, width: 175 }}
               />
-            )}
+            </label>
+            <label style={{ display: "grid", gap: 3, color: officeTheme.mutedText, fontSize: 11, fontWeight: 800 }}>
+              <span>Dátumig</span>
+              <input
+                type="date"
+                value={dashboardDateTo}
+                min={dashboardDate || undefined}
+                onChange={(event) => {
+                  const nextTo = event.target.value;
+                  if (!nextTo) return;
+                  const nextFrom = !dashboardDate || nextTo < dashboardDate ? nextTo : dashboardDate;
+                  setDashboardFilterMode("custom");
+                  if (nextFrom !== dashboardDate) setDashboardDate(nextFrom);
+                  setDashboardDateTo(nextTo);
+                  void loadManagementDashboardView("custom", nextFrom, nextTo);
+                }}
+                style={{ ...dashboardFilterFieldStyle, width: 175 }}
+              />
+            </label>
             <button type="button" onClick={() => shiftDashboardPeriod(1)} style={{ ...buttonSecondary, minWidth: 44 }} title="Következő időszak">→</button>
             <button type="button" onClick={resetDashboardToToday} style={buttonSecondary}>Mai nap</button>
             <select
@@ -20233,10 +20286,72 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <button type="button" onClick={() => addDashboardOrderFilter()} style={{ ...buttonSecondary, minWidth: 48 }}>+</button>
             </div>
             <button type="button" onClick={clearDashboardSecondaryFilters} style={buttonSecondary}>Szűrők törlése</button>
-            <button type="button" onClick={() => void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo)} disabled={loadingDashboard} style={buttonSecondary}>
+            <button type="button" onClick={() => void loadManagementDashboardView("custom", dashboardDate, dashboardDateTo)} disabled={loadingDashboard} style={buttonSecondary}>
               {loadingDashboard ? "Frissítés..." : "Frissítés"}
             </button>
             <button type="button" onClick={exportDashboardAsExcel} style={buttonPrimary}>Excel export</button>
+            <details style={{ position: "relative" }}>
+              <summary
+                style={{
+                  ...buttonSecondary,
+                  listStyle: "none",
+                  cursor: "pointer",
+                  userSelect: "none",
+                  whiteSpace: "nowrap",
+                }}
+                title="Az END Excel exporthoz egyszerre több munkaállomás is kijelölhető"
+              >
+                {dashboardEndExportStations === null
+                  ? "END állomások: Összes"
+                  : `END állomások: ${dashboardEndExportStations.length}`}
+              </summary>
+              <div
+                style={{
+                  position: "absolute",
+                  right: 0,
+                  top: "calc(100% + 6px)",
+                  zIndex: 12000,
+                  width: 280,
+                  maxHeight: 390,
+                  overflowY: "auto",
+                  padding: 10,
+                  borderRadius: 10,
+                  border: `1px solid ${officeTheme.borderColor}`,
+                  background: officeTheme.panelBackground,
+                  color: officeTheme.textColor,
+                  boxShadow: "0 16px 38px rgba(0,0,0,0.42)",
+                }}
+              >
+                <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 6px", fontWeight: 900, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={dashboardEndExportStations === null}
+                    onChange={() => setDashboardEndExportStations(null)}
+                  />
+                  Összes munkaállomás
+                </label>
+                <div style={{ height: 1, background: officeTheme.borderColor, margin: "4px 0 6px" }} />
+                {getOrderedDashboardStations().map((stationName) => {
+                  const checked = dashboardEndExportStations === null
+                    || dashboardEndExportStations.some(
+                      (selected) => normalizeLooseText(selected) === normalizeLooseText(stationName)
+                    );
+                  return (
+                    <label key={`dashboard-end-export-${stationName}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 6px", cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleDashboardEndExportStation(stationName)}
+                      />
+                      {stationName}
+                    </label>
+                  );
+                })}
+              </div>
+            </details>
+            <span data-office-window="dashboard:end-excel-export" style={{ display: "contents" }}>
+              <button type="button" onClick={() => void exportDashboardEndAsExcel()} style={buttonSecondary}>END Excel export</button>
+            </span>
             <button type="button" onClick={() => void exportDashboardAsPdf()} style={buttonPrimary}>Dolgozói A4 PDF</button>
             <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Kijelentkezés</button>
           </div>
@@ -25694,38 +25809,28 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   function shiftDashboardPeriod(direction: -1 | 1): void {
     const current = dashboardDate ? new Date(`${dashboardDate}T00:00:00`) : new Date();
-    const next = new Date(current);
+    const currentTo = dashboardDateTo ? new Date(`${dashboardDateTo}T00:00:00`) : new Date(current);
+    const intervalDays = Math.max(1, Math.round((currentTo.getTime() - current.getTime()) / 86400000) + 1);
 
-    if (dashboardFilterMode === "monthly") {
-      next.setMonth(next.getMonth() + direction, 1);
-    } else if (dashboardFilterMode === "weekly") {
-      next.setDate(next.getDate() + (7 * direction));
-    } else if (dashboardFilterMode === "custom") {
-      const currentTo = dashboardDateTo ? new Date(`${dashboardDateTo}T00:00:00`) : new Date(current);
-      const intervalDays = Math.max(1, Math.round((currentTo.getTime() - current.getTime()) / 86400000) + 1);
-      next.setDate(next.getDate() + (intervalDays * direction));
-      const nextTo = new Date(currentTo);
-      nextTo.setDate(nextTo.getDate() + (intervalDays * direction));
-      const nextDateKey = getLocalDateKey(next);
-      const nextToKey = getLocalDateKey(nextTo);
-      setDashboardDate(nextDateKey);
-      setDashboardDateTo(nextToKey);
-      void loadManagementDashboardView("custom", nextDateKey, nextToKey);
-      return;
-    } else {
-      next.setDate(next.getDate() + direction);
-    }
+    const next = new Date(current);
+    next.setDate(next.getDate() + (intervalDays * direction));
+    const nextTo = new Date(currentTo);
+    nextTo.setDate(nextTo.getDate() + (intervalDays * direction));
 
     const nextDateKey = getLocalDateKey(next);
+    const nextToKey = getLocalDateKey(nextTo);
+    setDashboardFilterMode("custom");
     setDashboardDate(nextDateKey);
-    void loadManagementDashboardView(dashboardFilterMode, nextDateKey, dashboardDateTo);
+    setDashboardDateTo(nextToKey);
+    void loadManagementDashboardView("custom", nextDateKey, nextToKey);
   }
 
   function resetDashboardToToday(): void {
     const today = getLocalDateKey(new Date());
+    setDashboardFilterMode("custom");
     setDashboardDate(today);
     setDashboardDateTo(today);
-    void loadManagementDashboardView(dashboardFilterMode, today, today);
+    void loadManagementDashboardView("custom", today, today);
   }
 
   async function fetchDashboardData(
@@ -26326,6 +26431,185 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
     downloadBlob(`vezetoi_dashboard_${dashboardDate}.xlsx`, new Blob([output]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  }
+
+  async function exportDashboardEndAsExcel(): Promise<void> {
+    if (!supabase) {
+      setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
+      return;
+    }
+
+    const XLSX = window.XLSX;
+    if (!XLSX?.utils?.book_new) {
+      setMessage({ type: "error", text: "Az Excel export könyvtár még nem töltődött be." });
+      return;
+    }
+
+    const range = getDashboardDateRange("custom", dashboardDate, dashboardDateTo);
+    const rangeStartMs = new Date(range.startIso).getTime();
+    const rangeEndMs = new Date(range.endIso).getTime();
+    const filteredWorkerStats = getFilteredDashboardWorkerStats();
+    const selectedStationValue = filteredWorkerStats.selectedStationValue;
+    const selectedWorkerValue = filteredWorkerStats.selectedWorkerValue;
+    const exportStationKeys = dashboardEndExportStations === null
+      ? null
+      : new Set(dashboardEndExportStations.map((station) => normalizeLooseText(station)));
+
+    if (exportStationKeys && exportStationKeys.size === 0) {
+      setMessage({ type: "error", text: "Jelölj ki legalább egy munkaállomást az END Excel exporthoz." });
+      return;
+    }
+
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+
+    const fetchPagedEndCandidates = async (
+      tableName: string,
+      dateColumn: "end_time" | "end_timestamp" | "created_at",
+      actionOnly: boolean
+    ): Promise<WorkLogRow[]> => {
+      const rows: WorkLogRow[] = [];
+      const pageSize = 1000;
+
+      for (let from = 0; ; from += pageSize) {
+        let query = supabase
+          .from(tableName)
+          .select(selectColumns)
+          .gte(dateColumn, range.startIso)
+          .lt(dateColumn, range.endIso)
+          .order(dateColumn, { ascending: true })
+          .range(from, from + pageSize - 1);
+
+        if (actionOnly) query = query.eq("action", "END");
+
+        const response = await query;
+        if (response.error) throw response.error;
+        const page = ((response.data || []) as WorkLogRow[]);
+        rows.push(...page);
+        if (page.length < pageSize) break;
+      }
+
+      return rows;
+    };
+
+    try {
+      let candidates: WorkLogRow[] = [];
+      let sourceTable = "work_logs";
+
+      try {
+        const [byEndTime, byEndTimestamp, byActionCreatedAt] = await Promise.all([
+          fetchPagedEndCandidates(sourceTable, "end_time", false),
+          fetchPagedEndCandidates(sourceTable, "end_timestamp", false),
+          fetchPagedEndCandidates(sourceTable, "created_at", true),
+        ]);
+        candidates = [...byEndTime, ...byEndTimestamp, ...byActionCreatedAt];
+      } catch (primaryError) {
+        console.warn("END Excel export: work_logs lekérdezés sikertelen, work_log fallback következik:", primaryError);
+        sourceTable = "work_log";
+        const [byEndTime, byEndTimestamp, byActionCreatedAt] = await Promise.all([
+          fetchPagedEndCandidates(sourceTable, "end_time", false),
+          fetchPagedEndCandidates(sourceTable, "end_timestamp", false),
+          fetchPagedEndCandidates(sourceTable, "created_at", true),
+        ]);
+        candidates = [...byEndTime, ...byEndTimestamp, ...byActionCreatedAt];
+      }
+
+      const seen = new Set<string>();
+      const endLogs = candidates
+        .map((log) => ({
+          ...log,
+          worker_name: log.worker_name
+            || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"]
+            || null,
+        }))
+        .filter((log) => {
+          const action = String(log.action || "").toUpperCase();
+          const endAt = String(log.end_time || log.end_timestamp || (action === "END" ? log.created_at : "") || "");
+          const endMs = new Date(endAt).getTime();
+          if (!endAt || !Number.isFinite(endMs) || endMs < rangeStartMs || endMs >= rangeEndMs) return false;
+          if (!(action === "END" || Boolean(log.end_time || log.end_timestamp))) return false;
+          if (!isFullyCompletedEndLog(log)) return false;
+          if (!matchesDashboardOrderFilters(log.order_number, dashboardOrderFiltersRef.current)) return false;
+
+          const workerName = getDashboardLogWorkerName(log);
+          if (selectedWorkerValue !== "all" && normalizeLooseText(workerName) !== normalizeLooseText(selectedWorkerValue)) return false;
+
+          const stationName = resolveLogStation(log, workers);
+          const stationKey = normalizeLooseText(stationName);
+          if (selectedStationValue !== "all" && stationKey !== normalizeLooseText(selectedStationValue)) return false;
+          if (exportStationKeys && !exportStationKeys.has(stationKey)) return false;
+
+          const uniqueKey = [
+            String(log.order_number || ""),
+            stationKey,
+            String(log.worker_id || ""),
+            String(log.worker_name || ""),
+            action,
+            String(log.created_at || ""),
+            String(log.start_time || log.start_timestamp || ""),
+            endAt,
+            String(log.batch_code || ""),
+            String(log.operation_code || ""),
+            String(log.ujragyartas_sorszam ?? ""),
+          ].join("|");
+          if (seen.has(uniqueKey)) return false;
+          seen.add(uniqueKey);
+          return true;
+        })
+        .sort((left, right) => {
+          const leftAction = String(left.action || "").toUpperCase();
+          const rightAction = String(right.action || "").toUpperCase();
+          const leftAt = String(left.end_time || left.end_timestamp || (leftAction === "END" ? left.created_at : "") || "");
+          const rightAt = String(right.end_time || right.end_timestamp || (rightAction === "END" ? right.created_at : "") || "");
+          return new Date(rightAt).getTime() - new Date(leftAt).getTime();
+        });
+
+      if (endLogs.length === 0) {
+        setMessage({
+          type: "info",
+          text: "A kiválasztott szűrők mellett nincs exportálható END lejelentés.",
+        });
+        return;
+      }
+
+      const workbook = XLSX.utils.book_new();
+      const eventRows: Array<Array<string | number>> = [
+        ["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
+        ...endLogs.map((log) => {
+          const action = String(log.action || "").toUpperCase();
+          const endAt = String(log.end_time || log.end_timestamp || (action === "END" ? log.created_at : "") || "");
+          const startAt = getDashboardLogStartAt(log);
+          return [
+            formatDateTime(endAt),
+            startAt ? formatDateTime(startAt) : "-",
+            endAt ? formatDateTime(endAt) : "-",
+            getDashboardLogElapsedLabel(log),
+            getDashboardLogWorkerName(log),
+            log.order_number || "-",
+            "END",
+            resolveLogStation(log, workers),
+            getNoteBeforeContext(log.note) || "",
+          ];
+        }),
+      ];
+
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(eventRows), "END eseménynapló");
+      const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+      const safeFrom = dashboardDate || "tol";
+      const safeTo = dashboardDateTo || dashboardDate || "ig";
+      downloadBlob(
+        `vezetoi_dashboard_END_${safeFrom}_${safeTo}.xlsx`,
+        new Blob([output]),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+
+      setMessage({
+        type: "success",
+        text: `END Excel export elkészült: ${endLogs.length} teljesen lezárt END sor.`,
+      });
+    } catch (error) {
+      console.error("END Excel export hiba:", error);
+      setMessage({ type: "error", text: `Az END Excel export sikertelen: ${normalizeError(error)}` });
+    }
   }
 
   function normalizeDashboardPdfProductType(rawValue: string): string {
