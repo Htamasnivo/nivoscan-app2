@@ -6187,6 +6187,7 @@ function restoreNivoScrollSnapshotAfterRender(snapshot: NivoScrollSnapshot): voi
 }
 
 const NIVO_BACKGROUND_REFRESH_MS = 10 * 1000;
+const PRODUCTION_MONITOR_BACKGROUND_REFRESH_MS = 5 * 1000;
 
 // A háttérfrissítések globálisan sorosítva futnak.
 // Realtime + 10 mp-es timer így SOHA nem tud két egymással versenyző
@@ -21536,7 +21537,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         activeProductionMonitorProfile.planStatusFilter,
         productionMonitorDateTo
       ));
-    }, NIVO_BACKGROUND_REFRESH_MS);
+    }, PRODUCTION_MONITOR_BACKGROUND_REFRESH_MS);
 
     return () => window.clearInterval(intervalId);
   }, [
@@ -21595,7 +21596,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       ;
 
     // A monitor adatforrása most a munkaállomási *_terv tábla, ezért ezek
-    // változásaira is azonnal frissítünk. A 10 mp-es háttérfrissítés ettől
+    // változásaira is azonnal frissítünk. Az 5 mp-es háttérfrissítés ettől
     // függetlenül biztonsági tartalékként megmarad.
     getOrderedDashboardStations().forEach((station) => {
       channel = channel.on(
