@@ -18413,18 +18413,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             )}
 
             <div style={{ display: "flex", gap: standalone ? 6 : 8, flexWrap: standalone ? "nowrap" : "wrap", alignItems: "flex-end", justifyContent: standalone ? "center" : "flex-end", marginLeft: standalone ? 0 : "auto", overflowX: standalone ? "auto" : undefined, paddingBottom: standalone ? 1 : 0 }}>
-              <select
-                value={activeProductionMonitorProfile.id}
-                onChange={(event) => switchProfile(event.target.value)}
-                title="Aktív monitor kiválasztása"
-                style={{ ...fieldStyle, width: 210, background: "#ffffff", color: "#111827" }}
-              >
-                {productionMonitorProfiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.name} · {getProductionMonitorPlanStatusLabel(profile.planStatusFilter)}
-                  </option>
-                ))}
-              </select>
+              {!standalone && (
+                <select
+                  value={activeProductionMonitorProfile.id}
+                  onChange={(event) => switchProfile(event.target.value)}
+                  title="Aktív monitor kiválasztása"
+                  style={{ ...fieldStyle, width: 210, background: "#ffffff", color: "#111827" }}
+                >
+                  {productionMonitorProfiles.map((profile) => (
+                    <option key={profile.id} value={profile.id}>
+                      {profile.name} · {getProductionMonitorPlanStatusLabel(profile.planStatusFilter)}
+                    </option>
+                  ))}
+                </select>
+              )}
               <select
                 value={activeProductionMonitorProfile.themePresetId}
                 onChange={(event) => {
@@ -18439,67 +18441,95 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 ))}
                 <option value="custom">Egyedi stílus</option>
               </select>
-              <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
-                <span>Dátumtól · Elkészülési dátum</span>
-                <input
-                  type="date"
-                  value={productionMonitorDate}
-                  max={productionMonitorDateTo || undefined}
-                  onChange={(event) => {
-                    const nextFrom = event.target.value;
-                    if (!nextFrom) return;
-
-                    const nextTo = !productionMonitorDateTo || nextFrom > productionMonitorDateTo
-                      ? nextFrom
-                      : productionMonitorDateTo;
-
-                    setProductionMonitorDate(nextFrom);
-                    if (nextTo !== productionMonitorDateTo) setProductionMonitorDateTo(nextTo);
-
-                    void loadProductionMonitor(
-                      nextFrom,
-                      activeProductionMonitorProfile.planStatusFilter,
-                      nextTo
-                    );
+              {standalone ? (
+                <div
+                  title="A külön monitor mindig a mai Szerelés napi tervét mutatja"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    minHeight: 42,
+                    padding: "7px 16px",
+                    borderRadius: 10,
+                    border: `2px solid ${profileTheme.accentColor}`,
+                    background: profileTheme.tablePanelBackground,
+                    color: profileTheme.headerPanelText,
+                    fontSize: 18,
+                    fontWeight: 900,
+                    whiteSpace: "nowrap",
+                    boxSizing: "border-box",
                   }}
-                  style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
-                />
-              </label>
+                >
+                  Mai dátum: {formatDateOnly(`${getLocalDateKey(new Date())}T12:00:00`)}
+                </div>
+              ) : (
+                <>
+                  <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
+                    <span>Dátumtól · Elkészülési dátum</span>
+                    <input
+                      type="date"
+                      value={productionMonitorDate}
+                      max={productionMonitorDateTo || undefined}
+                      onChange={(event) => {
+                        const nextFrom = event.target.value;
+                        if (!nextFrom) return;
 
-              <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
-                <span>Dátumig · Elkészülési dátum</span>
-                <input
-                  type="date"
-                  value={productionMonitorDateTo}
-                  min={productionMonitorDate || undefined}
-                  onChange={(event) => {
-                    const nextTo = event.target.value;
-                    if (!nextTo) return;
+                        const nextTo = !productionMonitorDateTo || nextFrom > productionMonitorDateTo
+                          ? nextFrom
+                          : productionMonitorDateTo;
 
-                    const nextFrom = !productionMonitorDate || nextTo < productionMonitorDate
-                      ? nextTo
-                      : productionMonitorDate;
+                        setProductionMonitorDate(nextFrom);
+                        if (nextTo !== productionMonitorDateTo) setProductionMonitorDateTo(nextTo);
 
-                    if (nextFrom !== productionMonitorDate) setProductionMonitorDate(nextFrom);
-                    setProductionMonitorDateTo(nextTo);
+                        void loadProductionMonitor(
+                          nextFrom,
+                          activeProductionMonitorProfile.planStatusFilter,
+                          nextTo
+                        );
+                      }}
+                      style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
+                    />
+                  </label>
 
-                    void loadProductionMonitor(
-                      nextFrom,
-                      activeProductionMonitorProfile.planStatusFilter,
-                      nextTo
-                    );
-                  }}
-                  style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
-                />
-              </label>
+                  <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
+                    <span>Dátumig · Elkészülési dátum</span>
+                    <input
+                      type="date"
+                      value={productionMonitorDateTo}
+                      min={productionMonitorDate || undefined}
+                      onChange={(event) => {
+                        const nextTo = event.target.value;
+                        if (!nextTo) return;
+
+                        const nextFrom = !productionMonitorDate || nextTo < productionMonitorDate
+                          ? nextTo
+                          : productionMonitorDate;
+
+                        if (nextFrom !== productionMonitorDate) setProductionMonitorDate(nextFrom);
+                        setProductionMonitorDateTo(nextTo);
+
+                        void loadProductionMonitor(
+                          nextFrom,
+                          activeProductionMonitorProfile.planStatusFilter,
+                          nextTo
+                        );
+                      }}
+                      style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
+                    />
+                  </label>
+                </>
+              )}
 
               <button
                 type="button"
-                onClick={() => void loadProductionMonitor(
-                  productionMonitorDate,
-                  activeProductionMonitorProfile.planStatusFilter,
-                  productionMonitorDateTo
-                )}
+                onClick={() => {
+                  const todayKey = getLocalDateKey(new Date());
+                  void loadProductionMonitor(
+                    standalone ? todayKey : productionMonitorDate,
+                    activeProductionMonitorProfile.planStatusFilter,
+                    standalone ? todayKey : productionMonitorDateTo
+                  );
+                }}
                 disabled={loadingProductionMonitor}
                 style={buttonSecondary}
               >
@@ -20969,6 +20999,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     // a mai nap → mai nap alapállapotból indul.
     const requestedWorkerName = String(params.get("worker") || "").trim();
     if (requestedWorkerName) setStandaloneProductionMonitorWorkerName(requestedWorkerName);
+    const todayKey = getLocalDateKey(new Date());
+    setProductionMonitorDate(todayKey);
+    setProductionMonitorDateTo(todayKey);
     setStandaloneProductionMonitor(true);
   }, []);
 
@@ -21694,17 +21727,24 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
     if (!monitorVisible) return;
 
-    void loadProductionMonitor(
-      productionMonitorDate,
-      activeProductionMonitorProfile.planStatusFilter,
-      productionMonitorDateTo
-    );
-    const intervalId = window.setInterval(() => {
-      void runNivoBackgroundRefresh(() => loadProductionMonitor(
-        productionMonitorDate,
+    const refreshProductionMonitor = (): Promise<void> => {
+      const todayKey = getLocalDateKey(new Date());
+      const dateFrom = standaloneProductionMonitor ? todayKey : productionMonitorDate;
+      const dateTo = standaloneProductionMonitor ? todayKey : productionMonitorDateTo;
+      if (standaloneProductionMonitor) {
+        if (productionMonitorDate !== todayKey) setProductionMonitorDate(todayKey);
+        if (productionMonitorDateTo !== todayKey) setProductionMonitorDateTo(todayKey);
+      }
+      return loadProductionMonitor(
+        dateFrom,
         activeProductionMonitorProfile.planStatusFilter,
-        productionMonitorDateTo
-      ));
+        dateTo
+      );
+    };
+
+    void refreshProductionMonitor();
+    const intervalId = window.setInterval(() => {
+      void runNivoBackgroundRefresh(refreshProductionMonitor);
     }, PRODUCTION_MONITOR_BACKGROUND_REFRESH_MS);
 
     return () => window.clearInterval(intervalId);
