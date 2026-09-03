@@ -269,6 +269,9 @@ type WorkLogRow = {
   tok_kesz_at?: string | null;
   nyilo_kesz_worker_name?: string | null;
   nyilo_kesz_at?: string | null;
+  // 5-ös esemény / Szerelés: a két ajtórész tényleges gyártási ideje percben.
+  tok_tenyleges_perc?: number | null;
+  nyilo_tenyleges_perc?: number | null;
   ajtolapok_kesz?: boolean | null;
   toklec_kesz?: boolean | null;
   ajtolapok_kesz_worker_name?: string | null;
@@ -1252,6 +1255,8 @@ type ProductionCardRow = {
   tokKeszAt: string | null;
   nyiloKeszWorkerName: string;
   nyiloKeszAt: string | null;
+  tokTenylegesPerc: number | null;
+  nyiloTenylegesPerc: number | null;
 
   panelWorkflow: boolean;
   ajtolapokKesz: boolean;
@@ -1724,6 +1729,8 @@ const PRODUCTION_CARD_END_WORKER_FIELD_ID = "__card_end_worker__";
 const PRODUCTION_CARD_ELAPSED_FIELD_ID = "__card_elapsed_time__";
 const PRODUCTION_CARD_TOK_FIELD_ID = "__card_tok_completed__";
 const PRODUCTION_CARD_NYILO_FIELD_ID = "__card_nyilo_completed__";
+const PRODUCTION_CARD_TOK_ACTUAL_FIELD_ID = "__card_tok_actual_time__";
+const PRODUCTION_CARD_NYILO_ACTUAL_FIELD_ID = "__card_nyilo_actual_time__";
 const PRODUCTION_CARD_AJTOLAPOK_FIELD_ID = "__card_ajtolapok_completed__";
 const PRODUCTION_CARD_TOKLEC_KESZ_FIELD_ID = "__card_toklec_completed__";
 const PRODUCTION_CARD_KULSO_LAP_KESZ_FIELD_ID = "__card_kulso_lap_completed__";
@@ -3330,13 +3337,20 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
     ]));
   }
 
-  const planFieldIds = stationPlanDefinitions.map((field) => {
-    if (field.key === "sorszam") return PRODUCTION_CARD_ORDER_FIELD_ID;
-    if (field.key === "megnevezes") return PRODUCTION_CARD_PRODUCT_FIELD_ID;
-    if (field.key === "mennyiseg") return PRODUCTION_CARD_QUANTITY_FIELD_ID;
-    if (field.key === "elkeszules_datum") return PRODUCTION_CARD_DATE_FIELD_ID;
-    if (field.key === "tipus") return PRODUCTION_CARD_TYPE_FIELD_ID;
-    return `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${field.key}`;
+  const isSzerelesProductionCard = getStationPlanIdentityKey(stationName) === "szereles";
+  const planFieldIds = stationPlanDefinitions.flatMap((field) => {
+    let baseFieldId: string;
+    if (field.key === "sorszam") baseFieldId = PRODUCTION_CARD_ORDER_FIELD_ID;
+    else if (field.key === "megnevezes") baseFieldId = PRODUCTION_CARD_PRODUCT_FIELD_ID;
+    else if (field.key === "mennyiseg") baseFieldId = PRODUCTION_CARD_QUANTITY_FIELD_ID;
+    else if (field.key === "elkeszules_datum") baseFieldId = PRODUCTION_CARD_DATE_FIELD_ID;
+    else if (field.key === "tipus") baseFieldId = PRODUCTION_CARD_TYPE_FIELD_ID;
+    else baseFieldId = `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${field.key}`;
+
+    if (!isSzerelesProductionCard) return [baseFieldId];
+    if (field.key === "nyilo_normaido") return [baseFieldId, PRODUCTION_CARD_NYILO_ACTUAL_FIELD_ID];
+    if (field.key === "tok_normaido") return [baseFieldId, PRODUCTION_CARD_TOK_ACTUAL_FIELD_ID];
+    return [baseFieldId];
   });
 
   // Ezeknél a kártyáknál az Excel üzleti mezői a mestermezők. A kötelező
@@ -3385,6 +3399,8 @@ function getProductionCardFieldLabel(fieldId: string): string {
   if (fieldId === PRODUCTION_CARD_ELAPSED_FIELD_ID) return "Eltelt idő";
   if (fieldId === PRODUCTION_CARD_TOK_FIELD_ID) return "Tok";
   if (fieldId === PRODUCTION_CARD_NYILO_FIELD_ID) return "Nyíló";
+  if (fieldId === PRODUCTION_CARD_TOK_ACTUAL_FIELD_ID) return "Tok tényleges";
+  if (fieldId === PRODUCTION_CARD_NYILO_ACTUAL_FIELD_ID) return "Nyíló tényleges";
   if (fieldId === PRODUCTION_CARD_AJTOLAPOK_FIELD_ID) return "Ajtólapok";
   if (fieldId === PRODUCTION_CARD_TOKLEC_KESZ_FIELD_ID) return "Tokléc";
   if (fieldId === PRODUCTION_CARD_KULSO_LAP_KESZ_FIELD_ID) return "Külső lap kész";
@@ -3646,15 +3662,15 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
   const theme = cloneProductionMonitorTheme(PRODUCTION_MONITOR_THEME_PRESETS["industrial-night"].theme);
   const table = createDefaultProductionMonitorTable(`${cleanStationName} termelési kártya`, "card-table-default", theme);
   table.dataSource = "production-plan";
-  const usesSzinterExcelSchema = ["szinter", "kezi_szinter"].includes(
-    getStationPlanIdentityKey(cleanStationName)
-  );
+  const stationIdentityKey = getStationPlanIdentityKey(cleanStationName);
+  const usesSzinterExcelSchema = ["szinter", "kezi_szinter"].includes(stationIdentityKey);
+  const usesSzerelesExcelSchema = stationIdentityKey === "szereles";
   const allProductionCardFieldIds = [...getProductionCardFieldIdsForTable(table, cleanStationName)];
   const crossStationStatusFieldIds = allProductionCardFieldIds.filter(
     isProductionCardCrossStationStatusField
   );
 
-  table.fieldOrder = usesSzinterExcelSchema
+  table.fieldOrder = usesSzinterExcelSchema || usesSzerelesExcelSchema
     ? allProductionCardFieldIds
     : [
         ...PRODUCTION_CARD_FIELD_IDS,
@@ -3662,7 +3678,7 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
       ];
 
   table.hiddenFieldIds = Array.from(new Set([
-    ...(usesSzinterExcelSchema ? [] : [PRODUCTION_CARD_DATE_FIELD_ID]),
+    ...(usesSzinterExcelSchema || usesSzerelesExcelSchema ? [] : [PRODUCTION_CARD_DATE_FIELD_ID]),
     PRODUCTION_CARD_AJTOLAPOK_FIELD_ID,
     PRODUCTION_CARD_TOKLEC_KESZ_FIELD_ID,
     PRODUCTION_CARD_KULSO_LAP_KESZ_FIELD_ID,
@@ -3816,10 +3832,35 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
           ? PRODUCTION_CARD_SCRAP_FIELD_IDS
           : getProductionCardFieldIdsForTable(tableForFields, stationName);
         const validFieldSet = new Set(validFields);
-        const nextFieldOrder = Array.from(new Set([
+        let nextFieldOrder = Array.from(new Set([
           ...table.fieldOrder.filter((fieldId) => validFieldSet.has(fieldId)),
           ...validFields.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
         ]));
+
+        if (dataSource === "production-plan" && getStationPlanIdentityKey(stationName) === "szereles") {
+          const placeFieldAfter = (fieldOrder: string[], fieldId: string, anchorFieldId: string): string[] => {
+            const withoutField = fieldOrder.filter((candidate) => candidate !== fieldId);
+            const anchorIndex = withoutField.indexOf(anchorFieldId);
+            if (anchorIndex < 0) return [...withoutField, fieldId];
+            return [
+              ...withoutField.slice(0, anchorIndex + 1),
+              fieldId,
+              ...withoutField.slice(anchorIndex + 1),
+            ];
+          };
+
+          nextFieldOrder = placeFieldAfter(
+            nextFieldOrder,
+            PRODUCTION_CARD_NYILO_ACTUAL_FIELD_ID,
+            `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}nyilo_normaido`
+          );
+          nextFieldOrder = placeFieldAfter(
+            nextFieldOrder,
+            PRODUCTION_CARD_TOK_ACTUAL_FIELD_ID,
+            `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}tok_normaido`
+          );
+        }
+
         const newlyAddedOptionalFields = [
           PRODUCTION_CARD_SCRAP_ELAPSED_FIELD_ID,
           PRODUCTION_CARD_BACKLOG_ELAPSED_FIELD_ID,
@@ -5086,6 +5127,8 @@ type DoorCompletionSnapshot = {
   tokKeszAt: string | null;
   nyiloKeszWorkerName: string;
   nyiloKeszAt: string | null;
+  tokTenylegesPerc: number | null;
+  nyiloTenylegesPerc: number | null;
   isReproduction: boolean;
   reproductionNumber: number | null;
 };
@@ -5099,6 +5142,8 @@ const EMPTY_DOOR_COMPLETION_SNAPSHOT: DoorCompletionSnapshot = {
   tokKeszAt: null,
   nyiloKeszWorkerName: "",
   nyiloKeszAt: null,
+  tokTenylegesPerc: null,
+  nyiloTenylegesPerc: null,
   isReproduction: false,
   reproductionNumber: null,
 };
@@ -5112,6 +5157,102 @@ function getWorkLogEventTime(log: WorkLogRow): number {
 function getWorkLogReproductionNumber(log: WorkLogRow): number | null {
   const numeric = Number(log.ujragyartas_sorszam);
   return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : null;
+}
+
+function normalizeDoorActualMinutes(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return null;
+  return Math.max(0, Math.round(numeric));
+}
+
+function calculateDoorActualDurations(
+  startedAt: string | null | undefined,
+  tokCompletedAt: string | null | undefined,
+  nyiloCompletedAt: string | null | undefined
+): { tokMinutes: number | null; nyiloMinutes: number | null } {
+  if (!startedAt) return { tokMinutes: null, nyiloMinutes: null };
+
+  const startMs = new Date(startedAt).getTime();
+  if (!Number.isFinite(startMs)) return { tokMinutes: null, nyiloMinutes: null };
+
+  const tokMs = tokCompletedAt ? new Date(tokCompletedAt).getTime() : Number.NaN;
+  const nyiloMs = nyiloCompletedAt ? new Date(nyiloCompletedAt).getTime() : Number.NaN;
+  const hasTok = Number.isFinite(tokMs) && tokMs >= startMs;
+  const hasNyilo = Number.isFinite(nyiloMs) && nyiloMs >= startMs;
+
+  const roundedMinutes = (fromMs: number, toMs: number): number =>
+    Math.max(0, Math.round((toMs - fromMs) / 60000));
+
+  if (hasTok && hasNyilo) {
+    // Egy mentésben kipipált Tok + Nyíló esetén nincs értelmes első/második sorrend:
+    // mindkettő a rendelés START-jától eddig futott.
+    if (Math.abs(tokMs - nyiloMs) < 1000) {
+      return {
+        tokMinutes: roundedMinutes(startMs, tokMs),
+        nyiloMinutes: roundedMinutes(startMs, nyiloMs),
+      };
+    }
+
+    if (tokMs < nyiloMs) {
+      return {
+        tokMinutes: roundedMinutes(startMs, tokMs),
+        nyiloMinutes: roundedMinutes(tokMs, nyiloMs),
+      };
+    }
+
+    return {
+      tokMinutes: roundedMinutes(nyiloMs, tokMs),
+      nyiloMinutes: roundedMinutes(startMs, nyiloMs),
+    };
+  }
+
+  if (hasTok) {
+    return {
+      tokMinutes: roundedMinutes(startMs, tokMs),
+      nyiloMinutes: null,
+    };
+  }
+
+  if (hasNyilo) {
+    return {
+      tokMinutes: null,
+      nyiloMinutes: roundedMinutes(startMs, nyiloMs),
+    };
+  }
+
+  return { tokMinutes: null, nyiloMinutes: null };
+}
+
+function getProductionCardDoorActualMinutes(
+  row: ProductionCardRow,
+  part: "tok" | "nyilo"
+): number | null {
+  if (!row.startedAt) return null;
+  // A két új mező kizárólag a Szerelés kártyán kerül be a mezőlistába.
+  // Köteg START-nál még nincs Tok/Nyíló work_logs sor, ezért az in-progress
+  // állapot önmagában is elég ahhoz, hogy mindkét számláló START-ról elinduljon.
+  if (!row.doorWorkflow && row.status !== "in-progress") return null;
+
+  const fixedValue = part === "tok" ? row.tokTenylegesPerc : row.nyiloTenylegesPerc;
+  const partDone = part === "tok" ? row.tokKesz : row.nyiloKesz;
+  if (partDone) {
+    const normalizedFixed = normalizeDoorActualMinutes(fixedValue);
+    if (normalizedFixed !== null) return normalizedFixed;
+
+    const calculated = calculateDoorActualDurations(row.startedAt, row.tokKeszAt, row.nyiloKeszAt);
+    return part === "tok" ? calculated.tokMinutes : calculated.nyiloMinutes;
+  }
+
+  // Amíg egyik rész sincs kész, mindkét idő a rendelés START-jától fut.
+  // Az első rész készre jelentése után a másik rész számlálója automatikusan
+  // nulláról indul újra az első rész kész időpontjától.
+  const oppositeCompletedAt = part === "tok" ? row.nyiloKeszAt : row.tokKeszAt;
+  const runningFrom = oppositeCompletedAt || row.startedAt;
+  const runningFromMs = new Date(runningFrom).getTime();
+  const nowMs = Date.now();
+  if (!Number.isFinite(runningFromMs) || nowMs < runningFromMs) return null;
+  return Math.max(0, Math.round((nowMs - runningFromMs) / 60000));
 }
 
 function resolveDoorCompletionSnapshot(logs: WorkLogRow[]): DoorCompletionSnapshot {
@@ -5153,6 +5294,15 @@ function resolveDoorCompletionSnapshot(logs: WorkLogRow[]): DoorCompletionSnapsh
     .sort((left, right) => getWorkLogEventTime(left) - getWorkLogEventTime(right))
     .at(-1);
 
+  const latestTokActualMinutes = [...doorLogs]
+    .reverse()
+    .map((log) => normalizeDoorActualMinutes(log.tok_tenyleges_perc))
+    .find((value) => value !== null) ?? null;
+  const latestNyiloActualMinutes = [...doorLogs]
+    .reverse()
+    .map((log) => normalizeDoorActualMinutes(log.nyilo_tenyleges_perc))
+    .find((value) => value !== null) ?? null;
+
   return {
     isDoorWorkflow: true,
     tokKesz,
@@ -5162,6 +5312,8 @@ function resolveDoorCompletionSnapshot(logs: WorkLogRow[]): DoorCompletionSnapsh
     tokKeszAt: latestTokLog?.tok_kesz_at || latestTokLog?.end_time || latestTokLog?.end_timestamp || null,
     nyiloKeszWorkerName: String(latestNyiloLog?.nyilo_kesz_worker_name || latestNyiloLog?.worker_name || "").trim(),
     nyiloKeszAt: latestNyiloLog?.nyilo_kesz_at || latestNyiloLog?.end_time || latestNyiloLog?.end_timestamp || null,
+    tokTenylegesPerc: latestTokActualMinutes,
+    nyiloTenylegesPerc: latestNyiloActualMinutes,
     isReproduction: cycleLogs.some((log) => log.ujragyartas === true),
     reproductionNumber: latestReproductionNumber,
   };
@@ -13025,6 +13177,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (fieldId === PRODUCTION_CARD_ELAPSED_FIELD_ID) {
       return getProductionCardElapsedValue(row.startedAt, row.endedAt);
     }
+    if (fieldId === PRODUCTION_CARD_NYILO_ACTUAL_FIELD_ID) {
+      const minutes = getProductionCardDoorActualMinutes(row, "nyilo");
+      return minutes === null ? "–" : formatDuration(minutes);
+    }
+    if (fieldId === PRODUCTION_CARD_TOK_ACTUAL_FIELD_ID) {
+      const minutes = getProductionCardDoorActualMinutes(row, "tok");
+      return minutes === null ? "–" : formatDuration(minutes);
+    }
     if (fieldId === PRODUCTION_CARD_TOK_FIELD_ID) return row.doorWorkflow ? (row.tokKesz ? "Kész" : "Folyamatban") : "";
     if (fieldId === PRODUCTION_CARD_NYILO_FIELD_ID) return row.doorWorkflow ? (row.nyiloKesz ? "Kész" : "Folyamatban") : "";
     if (fieldId === PRODUCTION_CARD_AJTOLAPOK_FIELD_ID) return row.panelWorkflow ? (row.ajtolapokKesz ? "Kész" : "Folyamatban") : "";
@@ -13185,6 +13345,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     tokKeszAt: string | null;
     nyiloKeszWorkerName: string;
     nyiloKeszAt: string | null;
+    tokTenylegesPerc: number | null;
+    nyiloTenylegesPerc: number | null;
     panelWorkflow: boolean;
     ajtolapokKesz: boolean;
     toklecKesz: boolean;
@@ -13326,6 +13488,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         tokKeszAt: doorSnapshot.tokKeszAt,
         nyiloKeszWorkerName: doorSnapshot.nyiloKeszWorkerName,
         nyiloKeszAt: doorSnapshot.nyiloKeszAt,
+        tokTenylegesPerc: doorSnapshot.tokTenylegesPerc,
+        nyiloTenylegesPerc: doorSnapshot.nyiloTenylegesPerc,
         panelWorkflow: panelSnapshot.isPanelWorkflow,
         ajtolapokKesz: panelSnapshot.ajtolapokKesz,
         toklecKesz: panelSnapshot.toklecKesz,
@@ -13391,6 +13555,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         tokKeszAt: doorSnapshot.tokKeszAt,
         nyiloKeszWorkerName: doorSnapshot.nyiloKeszWorkerName,
         nyiloKeszAt: doorSnapshot.nyiloKeszAt,
+        tokTenylegesPerc: doorSnapshot.tokTenylegesPerc,
+        nyiloTenylegesPerc: doorSnapshot.nyiloTenylegesPerc,
         panelWorkflow: panelSnapshot.isPanelWorkflow,
         ajtolapokKesz: panelSnapshot.ajtolapokKesz,
         toklecKesz: panelSnapshot.toklecKesz,
@@ -13429,6 +13595,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       tokKeszAt: null,
       nyiloKeszWorkerName: "",
       nyiloKeszAt: null,
+      tokTenylegesPerc: null,
+      nyiloTenylegesPerc: null,
       panelWorkflow: false,
       ajtolapokKesz: false,
       toklecKesz: false,
@@ -14037,7 +14205,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const orderNumbers = Array.from(new Set(planRows.map((row) => row.orderNumber)));
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, tok_tenyleges_perc, nyilo_tenyleges_perc, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const chunk = orderNumbers.slice(index, index + 100);
       const { data: logData, error: logError } = await supabase
@@ -33128,6 +33296,11 @@ body {
           0,
           Math.round((new Date(nowIso).getTime() - new Date(segmentStart).getTime()) / 60000)
         );
+        const doorActualDurations = calculateDoorActualDurations(
+          batchStartTime,
+          tokAt,
+          nyiloAt
+        );
 
         const logPayload = {
           worker_id: activeWorker.id,
@@ -33166,6 +33339,8 @@ body {
           tok_kesz_at: tokAt || null,
           nyilo_kesz_worker_name: nyiloWorker || null,
           nyilo_kesz_at: nyiloAt || null,
+          tok_tenyleges_perc: doorActualDurations.tokMinutes,
+          nyilo_tenyleges_perc: doorActualDurations.nyiloMinutes,
 
           selejt_megjegyzes:
             item.state.outerScrap || item.state.innerScrap || item.state.toklecScrap
@@ -33190,6 +33365,8 @@ body {
               szakasz_start_time: segmentStart,
               szakasz_end_time: nowIso,
               szakasz_ido_perc: segmentMinutes,
+              tok_tenyleges_perc: doorActualDurations.tokMinutes,
+              nyilo_tenyleges_perc: doorActualDurations.nyiloMinutes,
               kulso_lap_selejt: item.state.outerScrap,
               belso_lap_selejt: item.state.innerScrap,
               toklec_selejt: item.state.toklecScrap,
@@ -34730,6 +34907,8 @@ body {
           tok_kesz_at: isDoorTwoPartWorker(activeWorker) ? doorCompletionForStart.tokKeszAt : null,
           nyilo_kesz_worker_name: isDoorTwoPartWorker(activeWorker) ? doorCompletionForStart.nyiloKeszWorkerName || null : null,
           nyilo_kesz_at: isDoorTwoPartWorker(activeWorker) ? doorCompletionForStart.nyiloKeszAt : null,
+          tok_tenyleges_perc: isDoorTwoPartWorker(activeWorker) ? doorCompletionForStart.tokTenylegesPerc : null,
+          nyilo_tenyleges_perc: isDoorTwoPartWorker(activeWorker) ? doorCompletionForStart.nyiloTenylegesPerc : null,
 
           ajtolapok_kesz: isPanelTwoPartWorker(activeWorker) ? panelCompletionForStart.ajtolapokKesz : null,
           toklec_kesz: isPanelTwoPartWorker(activeWorker) ? panelCompletionForStart.toklecKesz : null,
@@ -36028,6 +36207,14 @@ body {
 
         linkedStartTime = openLog.start_time || openLog.start_timestamp || openLog.created_at || null;
 
+        const doorActualDurations = isDoorTwoPartEnd
+          ? calculateDoorActualDurations(
+              linkedStartTime,
+              finalTokCompletedAt,
+              finalNyiloCompletedAt
+            )
+          : { tokMinutes: null, nyiloMinutes: null };
+
         const partialTwoPartSave =
           (isDoorTwoPartEnd && doorCompletionPercent < 100)
           || (isPanelTwoPartEnd && panelCompletionPercent < 100)
@@ -36071,6 +36258,8 @@ body {
             darab: finalDarab,
             szal: finalSzal,
             partial_save: partialTwoPartSave,
+            tok_tenyleges_perc: isDoorTwoPartEnd ? doorActualDurations.tokMinutes : null,
+            nyilo_tenyleges_perc: isDoorTwoPartEnd ? doorActualDurations.nyiloMinutes : null,
           }),
           scrap_qty: finalScrapQty,
           darab: finalDarab,
@@ -36085,6 +36274,8 @@ body {
           tok_kesz_at: isDoorTwoPartEnd ? finalTokCompletedAt : null,
           nyilo_kesz_worker_name: isDoorTwoPartEnd ? finalNyiloWorkerName || null : null,
           nyilo_kesz_at: isDoorTwoPartEnd ? finalNyiloCompletedAt : null,
+          tok_tenyleges_perc: isDoorTwoPartEnd ? doorActualDurations.tokMinutes : null,
+          nyilo_tenyleges_perc: isDoorTwoPartEnd ? doorActualDurations.nyiloMinutes : null,
 
           ajtolapok_kesz: isPanelTwoPartEnd ? cumulativeAjtolapokKesz : null,
           toklec_kesz: isPanelTwoPartEnd ? cumulativePanelToklecKesz : null,
@@ -36241,6 +36432,8 @@ body {
           tok_kesz_at: null,
           nyilo_kesz_worker_name: null,
           nyilo_kesz_at: null,
+          tok_tenyleges_perc: null,
+          nyilo_tenyleges_perc: null,
 
           ajtolapok_kesz: isPanelTwoPartWorker(activeWorker) ? false : null,
           toklec_kesz: isPanelTwoPartWorker(activeWorker) ? false : null,
