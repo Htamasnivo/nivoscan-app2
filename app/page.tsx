@@ -18071,11 +18071,25 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
 
     const getTableRuntime = (table: ProductionMonitorTableConfig) => {
-      const orderedFieldIds = [
+      const persistedOrderedFieldIds = [
         ...table.fieldOrder.filter((fieldId) => validFieldIdSet.has(fieldId)),
         ...allFieldIds.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
       ];
-      const visibleFieldIds = orderedFieldIds.filter((fieldId) => !table.hiddenFieldIds.includes(fieldId));
+      // A Lemaradások mező a Termelési monitor rendszermezője: mindig közvetlenül
+      // a Sorszám után jelenik meg a normál és a külön monitoros nézetben is.
+      // A korábban mentett felhasználói elrendezés nem rejtheti el véletlenül.
+      const orderedFieldIds = [
+        PRODUCTION_MONITOR_ORDER_FIELD_ID,
+        PRODUCTION_MONITOR_BACKLOG_FIELD_ID,
+        ...persistedOrderedFieldIds.filter((fieldId) =>
+          fieldId !== PRODUCTION_MONITOR_ORDER_FIELD_ID
+          && fieldId !== PRODUCTION_MONITOR_BACKLOG_FIELD_ID
+        ),
+      ];
+      const visibleFieldIds = orderedFieldIds.filter((fieldId) =>
+        fieldId === PRODUCTION_MONITOR_BACKLOG_FIELD_ID
+        || !table.hiddenFieldIds.includes(fieldId)
+      );
       const visibleFieldCount = Math.max(visibleFieldIds.length, 1);
       const baseHeaderFontSize = visibleFieldCount >= 11 ? 10 : visibleFieldCount >= 9 ? 11 : 13;
       const baseCellFontSize = visibleFieldCount >= 11 ? 10 : visibleFieldCount >= 9 ? 11 : 13;
