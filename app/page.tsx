@@ -1745,6 +1745,7 @@ const PRODUCTION_MONITOR_LAYOUT_STORAGE_KEY = "nivo-production-monitor-layout-v1
 const PRODUCTION_MONITOR_PROFILES_STORAGE_KEY = "nivo-production-monitor-profiles-v2";
 const STANDALONE_PRODUCTION_MONITOR_HEADER_SIZE_STORAGE_KEY = "nivo-production-monitor-standalone-header-size-v1";
 const STANDALONE_PRODUCTION_MONITOR_WINDOWS_STORAGE_KEY = "nivo-production-monitor-standalone-windows-v1";
+const STANDALONE_PRODUCTION_MONITOR_FIELD_ORDER_STORAGE_KEY = "nivo-production-monitor-standalone-field-order-v1";
 const STANDALONE_PRODUCTION_MONITOR_WINDOW_GRID = 8;
 const STANDALONE_PRODUCTION_MONITOR_WINDOW_MIN_WIDTH = 150;
 const STANDALONE_PRODUCTION_MONITOR_WINDOW_MIN_HEIGHT = 56;
@@ -8070,6 +8071,7 @@ export default function Page() {
   const [standaloneProductionMonitorWorkerName, setStandaloneProductionMonitorWorkerName] = useState("");
   const [standaloneProductionMonitorWindowEditMode, setStandaloneProductionMonitorWindowEditMode] = useState(false);
   const [standaloneProductionMonitorWindowLayout, setStandaloneProductionMonitorWindowLayout] = useState<StandaloneProductionMonitorWindowLayout>({});
+  const [standaloneProductionMonitorFieldOrders, setStandaloneProductionMonitorFieldOrders] = useState<Record<string, string[]>>({});
   const standaloneProductionMonitorWindowInteractionRef = useRef<StandaloneProductionMonitorWindowInteraction | null>(null);
   const standaloneProductionMonitorWindowCleanupRef = useRef<(() => void) | null>(null);
   const [productionPlanDate, setProductionPlanDate] = useState(getLocalDateKey(new Date()));
@@ -18082,9 +18084,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       ...productionMonitorData.stations.map(getProductionMonitorStationFieldId),
     ];
     const validFieldIdSet = new Set(allFieldIds);
+    const standaloneActiveFieldOrderKey = `${activeProductionMonitorProfile.id}:${activeProductionMonitorTable.id}`;
+    const editorFieldOrder = standalone
+      ? (standaloneProductionMonitorFieldOrders[standaloneActiveFieldOrderKey] || productionMonitorFieldOrder)
+      : productionMonitorFieldOrder;
     const activeOrderedFieldIds = [
-      ...productionMonitorFieldOrder.filter((fieldId) => validFieldIdSet.has(fieldId)),
-      ...allFieldIds.filter((fieldId) => !productionMonitorFieldOrder.includes(fieldId)),
+      ...editorFieldOrder.filter((fieldId) => validFieldIdSet.has(fieldId)),
+      ...allFieldIds.filter((fieldId) => !editorFieldOrder.includes(fieldId)),
     ];
     const activeVisibleFieldIds = activeOrderedFieldIds.filter((fieldId) => !productionMonitorHiddenFieldIds.includes(fieldId));
     const selectedFieldId = validFieldIdSet.has(selectedProductionMonitorStyleFieldId)
@@ -18096,6 +18102,58 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const monitorTitleFontSize = Math.max(16, Math.round(profileTheme.titleFontSize * zoomRatio));
     const activeMonitorStatusLabel = getProductionMonitorPlanStatusLabel(activeProductionMonitorProfile.planStatusFilter);
 
+    const setEditorProductionMonitorFieldOrder = (
+      value: React.SetStateAction<string[]>
+    ): void => {
+      if (!standalone) {
+        setProductionMonitorFieldOrder(value);
+        return;
+      }
+
+      setStandaloneProductionMonitorFieldOrders((current) => {
+        const previous = current[standaloneActiveFieldOrderKey] || activeProductionMonitorTable.fieldOrder;
+        const nextOrder = typeof value === "function"
+          ? (value as (previous: string[]) => string[])(previous)
+          : value;
+        const next = { ...current, [standaloneActiveFieldOrderKey]: nextOrder };
+        if (typeof window !== "undefined") {
+          try {
+            window.localStorage.setItem(
+              STANDALONE_PRODUCTION_MONITOR_FIELD_ORDER_STORAGE_KEY,
+              JSON.stringify(next)
+            );
+          } catch {
+            // A külön monitor ettől még használható; csak a sorrend nem marad meg újranyitás után.
+          }
+        }
+        return next;
+      });
+    };
+
+    const reorderEditorProductionMonitorField = (draggedFieldId: string, targetFieldId: string): void => {
+      if (!draggedFieldId || !targetFieldId || draggedFieldId === targetFieldId) return;
+      setEditorProductionMonitorFieldOrder((currentOrder) => {
+        const normalizedOrder = getCurrentProductionMonitorFieldOrder(currentOrder, activeProductionMonitorTable);
+        if (!normalizedOrder.includes(draggedFieldId) || !normalizedOrder.includes(targetFieldId)) return normalizedOrder;
+        const nextOrder = normalizedOrder.filter((fieldId) => fieldId !== draggedFieldId);
+        const targetIndex = nextOrder.indexOf(targetFieldId);
+        nextOrder.splice(targetIndex < 0 ? nextOrder.length : targetIndex, 0, draggedFieldId);
+        return nextOrder;
+      });
+    };
+
+    const moveEditorProductionMonitorField = (fieldId: string, direction: -1 | 1): void => {
+      setEditorProductionMonitorFieldOrder((currentOrder) => {
+        const normalizedOrder = getCurrentProductionMonitorFieldOrder(currentOrder, activeProductionMonitorTable);
+        const currentIndex = normalizedOrder.indexOf(fieldId);
+        const nextIndex = currentIndex + direction;
+        if (currentIndex < 0 || nextIndex < 0 || nextIndex >= normalizedOrder.length) return normalizedOrder;
+        const nextOrder = [...normalizedOrder];
+        [nextOrder[currentIndex], nextOrder[nextIndex]] = [nextOrder[nextIndex], nextOrder[currentIndex]];
+        return nextOrder;
+      });
+    };
+
     const handleFieldDragStart = (fieldId: string): void => {
       productionMonitorDraggedFieldIdRef.current = fieldId;
     };
@@ -18103,7 +18161,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const handleFieldDrop = (targetFieldId: string): void => {
       const draggedFieldId = productionMonitorDraggedFieldIdRef.current;
       productionMonitorDraggedFieldIdRef.current = null;
-      if (draggedFieldId) reorderProductionMonitorField(draggedFieldId, targetFieldId);
+      if (draggedFieldId) reorderEditorProductionMonitorField(draggedFieldId, targetFieldId);
     };
 
     const editorLabelStyle: React.CSSProperties = {
@@ -18175,20 +18233,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
 
     const getTableRuntime = (table: ProductionMonitorTableConfig) => {
-      const persistedOrderedFieldIds = [
-        ...table.fieldOrder.filter((fieldId) => validFieldIdSet.has(fieldId)),
-        ...allFieldIds.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
-      ];
-      // A Lemaradások mező a Termelési monitor rendszermezője: mindig közvetlenül
-      // a Sorszám után jelenik meg a normál és a külön monitoros nézetben is.
-      // A korábban mentett felhasználói elrendezés nem rejtheti el véletlenül.
+      const standaloneTableFieldOrderKey = `${activeProductionMonitorProfile.id}:${table.id}`;
+      const sourceFieldOrder = standalone
+        ? (standaloneProductionMonitorFieldOrders[standaloneTableFieldOrderKey] || table.fieldOrder)
+        : table.fieldOrder;
+      // A táblázat pontosan az elmentett felhasználói mezősorrendet követi.
+      // A külön monitor saját helyi sorrendet tarthat fenn, a normál monitor profiljától függetlenül.
       const orderedFieldIds = [
-        PRODUCTION_MONITOR_ORDER_FIELD_ID,
-        PRODUCTION_MONITOR_BACKLOG_FIELD_ID,
-        ...persistedOrderedFieldIds.filter((fieldId) =>
-          fieldId !== PRODUCTION_MONITOR_ORDER_FIELD_ID
-          && fieldId !== PRODUCTION_MONITOR_BACKLOG_FIELD_ID
-        ),
+        ...sourceFieldOrder.filter((fieldId) => validFieldIdSet.has(fieldId)),
+        ...allFieldIds.filter((fieldId) => !sourceFieldOrder.includes(fieldId)),
       ];
       const visibleFieldIds = orderedFieldIds.filter((fieldId) =>
         fieldId === PRODUCTION_MONITOR_BACKLOG_FIELD_ID
@@ -18926,8 +18979,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                             <span style={{ fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis" }} title={getProductionMonitorFieldLabel(fieldId)}>{getProductionMonitorFieldLabel(fieldId)}</span>
                           </label>
                           <button type="button" title="Mező formázása" onClick={(event) => { event.stopPropagation(); setSelectedProductionMonitorStyleFieldId(fieldId); setProductionMonitorEditorTab("field"); }} style={{ ...buttonSecondary, padding: "6px 8px" }}>✎</button>
-                          <button type="button" title="Mozgatás balra" onClick={(event) => { event.stopPropagation(); moveProductionMonitorField(fieldId, -1); }} disabled={fieldIndex === 0} style={{ ...buttonSecondary, padding: "6px 9px", minWidth: 34 }}>←</button>
-                          <button type="button" title="Mozgatás jobbra" onClick={(event) => { event.stopPropagation(); moveProductionMonitorField(fieldId, 1); }} disabled={fieldIndex === activeOrderedFieldIds.length - 1} style={{ ...buttonSecondary, padding: "6px 9px", minWidth: 34 }}>→</button>
+                          <button type="button" title="Mozgatás balra" onClick={(event) => { event.stopPropagation(); moveEditorProductionMonitorField(fieldId, -1); }} disabled={fieldIndex === 0} style={{ ...buttonSecondary, padding: "6px 9px", minWidth: 34 }}>←</button>
+                          <button type="button" title="Mozgatás jobbra" onClick={(event) => { event.stopPropagation(); moveEditorProductionMonitorField(fieldId, 1); }} disabled={fieldIndex === activeOrderedFieldIds.length - 1} style={{ ...buttonSecondary, padding: "6px 9px", minWidth: 34 }}>→</button>
                         </div>
                       );
                     })}
@@ -21301,6 +21354,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       }
     } catch {
       // Hibás helyi elrendezésnél a normál monitor-elrendezés marad aktív.
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(STANDALONE_PRODUCTION_MONITOR_FIELD_ORDER_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const next: Record<string, string[]> = {};
+      Object.entries(parsed || {}).forEach(([key, value]) => {
+        if (!Array.isArray(value)) return;
+        next[key] = value.filter((fieldId): fieldId is string => typeof fieldId === "string");
+      });
+      setStandaloneProductionMonitorFieldOrders(next);
+    } catch {
+      // Hibás helyi külön-monitor sorrendnél a normál monitor sorrendje marad az alap.
     }
   }, []);
 
