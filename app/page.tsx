@@ -1809,6 +1809,23 @@ const PRODUCTION_CARD_FIELD_IDS = [
 type StationPlanFieldDataType = "text" | "integer" | "date";
 type StationPlanFieldDefinition = { key: string; label: string; dataType: StationPlanFieldDataType };
 
+type DashboardPlanFieldOption = StationPlanFieldDefinition & {
+  stationNames: string[];
+};
+
+type DashboardPlanFieldFilterState = {
+  fieldKey: string;
+  value: string;
+};
+
+type DashboardPlanFieldMatchResult = {
+  active: boolean;
+  fieldKey: string;
+  dataType: StationPlanFieldDataType | null;
+  orderNumbers: string[];
+  normalizedOrderKeys: Set<string>;
+};
+
 // A 2026-08-19-én feltöltött Napi_termelesi_terv_minta Excel a mester-séma.
 // A munkaállomásoknál pontosan az adott munkafül névvel rendelkező oszlopokat várjuk.
 const STATION_PLAN_REQUIRED_FIELD_KEYS = new Set(["sorszam", "megnevezes", "mennyiseg", "elkeszules_datum", "tipus"]);
@@ -2440,6 +2457,32 @@ function getStationPlanFieldLabel(fieldKey: string): string {
   }
 
   return fieldKey.replace(/_/g, " ");
+}
+
+function buildDashboardPlanFieldOptions(stationNames: string[]): DashboardPlanFieldOption[] {
+  const byKey = new Map<string, DashboardPlanFieldOption>();
+
+  stationNames.forEach((stationName) => {
+    getStationPlanFieldDefinitions(stationName).forEach((field) => {
+      const existing = byKey.get(field.key);
+      if (existing) {
+        if (!existing.stationNames.some((name) => normalizeLooseText(name) === normalizeLooseText(stationName))) {
+          existing.stationNames.push(stationName);
+        }
+        return;
+      }
+
+      byKey.set(field.key, {
+        ...field,
+        label: getStationPlanFieldLabel(field.key),
+        stationNames: [stationName],
+      });
+    });
+  });
+
+  return Array.from(byKey.values()).sort((left, right) =>
+    left.label.localeCompare(right.label, "hu") || left.key.localeCompare(right.key, "hu")
+  );
 }
 
 const PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID = "__scrap_order_number__";
@@ -8413,6 +8456,11 @@ export default function Page() {
   const [dashboardDateTo, setDashboardDateTo] = useState(getLocalDateKey(new Date()));
   const [dashboardSelectedStation, setDashboardSelectedStation] = useState("all");
   const [dashboardSelectedWorker, setDashboardSelectedWorker] = useState("all");
+  const [dashboardPlanFieldKey, setDashboardPlanFieldKey] = useState("");
+  const [dashboardPlanFieldValue, setDashboardPlanFieldValue] = useState("");
+  const dashboardPlanFieldKeyRef = useRef("");
+  const dashboardPlanFieldValueRef = useRef("");
+  const dashboardPlanFieldFilterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // END Excel export: null = minden munkaállomás, tömb = csak a külön kijelölt állomások.
   const [dashboardEndExportStations, setDashboardEndExportStations] = useState<string[] | null>(null);
   const [dashboardOrderFilters, setDashboardOrderFilters] = useState<string[]>([]);
@@ -9197,10 +9245,28 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, next);
   }
 
+  function scheduleDashboardPlanFieldFilterRefresh(delayMs = 450): void {
+    if (dashboardPlanFieldFilterTimerRef.current) {
+      clearTimeout(dashboardPlanFieldFilterTimerRef.current);
+    }
+    dashboardPlanFieldFilterTimerRef.current = setTimeout(() => {
+      dashboardPlanFieldFilterTimerRef.current = null;
+      void loadManagementDashboardView("custom", dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
+    }, delayMs);
+  }
+
   function clearDashboardSecondaryFilters(): void {
     setDashboardSelectedStation("all");
     setDashboardSelectedWorker("all");
     setDashboardEndExportStations(null);
+    if (dashboardPlanFieldFilterTimerRef.current) {
+      clearTimeout(dashboardPlanFieldFilterTimerRef.current);
+      dashboardPlanFieldFilterTimerRef.current = null;
+    }
+    dashboardPlanFieldKeyRef.current = "";
+    dashboardPlanFieldValueRef.current = "";
+    setDashboardPlanFieldKey("");
+    setDashboardPlanFieldValue("");
     dashboardOrderFiltersRef.current = [];
     setDashboardOrderFilters([]);
     setDashboardOrderInput("");
@@ -20221,6 +20287,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const hasDashboardOrderSearch = dashboardOrderFilters.some(
       (value) => Boolean(normalizeDashboardOrderSearch(value))
     );
+    const dashboardPlanFieldOptions = getDashboardPlanFieldOptions();
+    const selectedDashboardPlanFieldOption = dashboardPlanFieldOptions.find(
+      (field) => field.key === dashboardPlanFieldKey
+    ) || null;
+    const dashboardPlanFieldFilterActive = Boolean(
+      selectedDashboardPlanFieldOption
+      && (selectedDashboardPlanFieldOption.dataType === "date" || dashboardPlanFieldValue.trim())
+    );
     const officeTheme = getOfficeTheme("dashboard");
     const availableStationRows = dashboardData.stationEfficiencyRows;
     const filteredWorkerStats = getFilteredDashboardWorkerStats();
@@ -20351,9 +20425,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <h2 style={{ margin: "6px 0 4px", fontSize: 30, color: officeTheme.textColor }}>Vezetői műszerfal</h2>
             <div style={{ color: officeTheme.mutedText }}>Termelési terv, munkaállomási teljesítés és dolgozói munkaidő egyetlen nézetben.</div>
             <div style={{ color: officeTheme.mutedText, fontSize: 13, marginTop: 6 }}>
-              {hasDashboardOrderSearch
-                ? "Keresési tartomány: teljes work_logs – a műszerfal rendeléskeresése továbbra is dátumtól független"
-                : `Aktuális időszak: ${dashboardRange.label}`}
+              {dashboardPlanFieldFilterActive
+                ? selectedDashboardPlanFieldOption?.dataType === "date"
+                  ? `${selectedDashboardPlanFieldOption.label}: ${dashboardRange.label}${hasDashboardOrderSearch ? " · rendelésszám-szűrővel" : ""}`
+                  : `_terv szűrő: ${selectedDashboardPlanFieldOption?.label} tartalmazza: "${dashboardPlanFieldValue.trim()}"${hasDashboardOrderSearch ? " · rendelésszám-szűrővel" : ""}`
+                : hasDashboardOrderSearch
+                  ? "Keresési tartomány: teljes work_logs – a műszerfal rendeléskeresése továbbra is dátumtól független"
+                  : `Aktuális időszak: ${dashboardRange.label}`}
             </div>
             <div style={{ color: officeTheme.mutedText, fontSize: 13, marginTop: 4 }}>Utolsó frissítés: {dashboardData.lastUpdatedAt ? formatDateTime(dashboardData.lastUpdatedAt) : "-"}</div>
           </div>
@@ -20398,6 +20476,54 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             </label>
             <button type="button" onClick={() => shiftDashboardPeriod(1)} style={{ ...buttonSecondary, minWidth: 44 }} title="Következő időszak">→</button>
             <button type="button" onClick={resetDashboardToToday} style={buttonSecondary}>Mai nap</button>
+            <select
+              value={dashboardPlanFieldKey}
+              onChange={(event) => {
+                const nextFieldKey = event.target.value;
+                if (dashboardPlanFieldFilterTimerRef.current) {
+                  clearTimeout(dashboardPlanFieldFilterTimerRef.current);
+                  dashboardPlanFieldFilterTimerRef.current = null;
+                }
+                dashboardPlanFieldKeyRef.current = nextFieldKey;
+                dashboardPlanFieldValueRef.current = "";
+                setDashboardPlanFieldKey(nextFieldKey);
+                setDashboardPlanFieldValue("");
+                void loadManagementDashboardView("custom", dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
+              }}
+              style={{ ...dashboardFilterFieldStyle, width: 235 }}
+              aria-label="_terv mező szűrése"
+              title="Az összes ismert munkaállomási _terv tábla üzleti mezői"
+            >
+              <option value="">_terv mező: nincs</option>
+              {dashboardPlanFieldOptions.map((field) => (
+                <option key={`dashboard-plan-field-${field.key}`} value={field.key}>{field.label}</option>
+              ))}
+            </select>
+            {selectedDashboardPlanFieldOption && selectedDashboardPlanFieldOption.dataType !== "date" && (
+              <input
+                value={dashboardPlanFieldValue}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  dashboardPlanFieldValueRef.current = nextValue;
+                  setDashboardPlanFieldValue(nextValue);
+                  scheduleDashboardPlanFieldFilterRefresh();
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  if (dashboardPlanFieldFilterTimerRef.current) {
+                    clearTimeout(dashboardPlanFieldFilterTimerRef.current);
+                    dashboardPlanFieldFilterTimerRef.current = null;
+                  }
+                  void loadManagementDashboardView("custom", dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
+                }}
+                placeholder={`${selectedDashboardPlanFieldOption.label} keresése`}
+                inputMode={selectedDashboardPlanFieldOption.dataType === "integer" ? "numeric" : "text"}
+                style={{ ...dashboardFilterFieldStyle, width: 220 }}
+                aria-label={`${selectedDashboardPlanFieldOption.label} szűrőérték`}
+                title={selectedDashboardPlanFieldOption.dataType === "text" ? "Részleges, kis- és nagybetűtől független keresés" : "Pontos számegyezés"}
+              />
+            )}
             <select
               value={selectedStationValue}
               onChange={(event) => {
@@ -20615,7 +20741,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               </button>
             ))}
             <span style={{ color: officeTheme.mutedText, fontSize: 11 }}>
-              Gyorskód: R260716178 → 07178. A részleges keresés is működik. A rendelésszám-szűrés az egész work_logs táblában keres; a Napi/Heti/Havi/Egyedi nézet és a dátum nem korlátozza.
+              {dashboardPlanFieldFilterActive && selectedDashboardPlanFieldOption?.dataType === "date"
+                ? `Gyorskód: R260716178 → 07178. A rendelésszám-szűrés a teljes work_logs történetben keres, miközben a Dátumtól / Dátumig a(z) ${selectedDashboardPlanFieldOption.label} _terv mezőre érvényes.`
+                : dashboardPlanFieldFilterActive
+                  ? `Gyorskód: R260716178 → 07178. A rendelésszám-szűrés a teljes work_logs történetben keres, és a(z) ${selectedDashboardPlanFieldOption?.label} _terv mezőszűrővel együtt érvényes.`
+                  : "Gyorskód: R260716178 → 07178. A részleges keresés is működik. A rendelésszám-szűrés az egész work_logs táblában keres; a dátum nem korlátozza."}
             </span>
           </div>
         )}
@@ -25648,13 +25778,146 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
   }
 
+  function getDashboardPlanFieldOptions(): DashboardPlanFieldOption[] {
+    return buildDashboardPlanFieldOptions(
+      getProductionPlanStationUniverse(getOrderedDashboardStations())
+    );
+  }
+
+  function getDashboardPlanFieldOptionByKey(fieldKey: string): DashboardPlanFieldOption | null {
+    const cleanKey = String(fieldKey || "").trim();
+    if (!cleanKey) return null;
+    return getDashboardPlanFieldOptions().find((field) => field.key === cleanKey) || null;
+  }
+
+  function getCurrentDashboardPlanFieldFilterState(): DashboardPlanFieldFilterState {
+    return {
+      fieldKey: dashboardPlanFieldKeyRef.current,
+      value: dashboardPlanFieldValueRef.current,
+    };
+  }
+
+  async function fetchDashboardPlanFieldMatches(
+    range: { startIso: string; endIso: string },
+    filterState: DashboardPlanFieldFilterState | null | undefined
+  ): Promise<DashboardPlanFieldMatchResult> {
+    const emptyResult: DashboardPlanFieldMatchResult = {
+      active: false,
+      fieldKey: "",
+      dataType: null,
+      orderNumbers: [],
+      normalizedOrderKeys: new Set<string>(),
+    };
+
+    if (!supabase) return emptyResult;
+
+    const fieldKey = String(filterState?.fieldKey || "").trim();
+    if (!fieldKey) return emptyResult;
+
+    const fieldOption = getDashboardPlanFieldOptionByKey(fieldKey);
+    if (!fieldOption) return emptyResult;
+
+    const rawValue = String(filterState?.value || "").trim();
+    const active = fieldOption.dataType === "date" || rawValue.length > 0;
+    if (!active) return emptyResult;
+
+    const normalizedOrderKeys = new Set<string>();
+    const orderNumberByKey = new Map<string, string>();
+    const startDateKey = getLocalDateKey(new Date(range.startIso));
+    const endDateKey = getLocalDateKey(new Date(range.endIso));
+    const integerValue = fieldOption.dataType === "integer"
+      ? parseSpreadsheetNumber(rawValue)
+      : null;
+
+    if (fieldOption.dataType === "integer" && integerValue === null) {
+      return {
+        active: true,
+        fieldKey,
+        dataType: fieldOption.dataType,
+        orderNumbers: [],
+        normalizedOrderKeys,
+      };
+    }
+
+    for (const stationName of fieldOption.stationNames) {
+      const tableName = buildStationPlanTableName(stationName);
+
+      try {
+        let query = supabase.from(tableName).select("*");
+
+        if (fieldOption.dataType === "date") {
+          query = query
+            .gte(fieldKey, startDateKey)
+            .lt(fieldKey, endDateKey);
+        } else if (fieldOption.dataType === "integer") {
+          query = query.eq(fieldKey, integerValue as number);
+        } else {
+          query = query.ilike(fieldKey, `%${rawValue}%`);
+        }
+
+        const response = await query.limit(10000);
+        if (response.error) {
+          // Egyes _terv táblákban az adott mező fizikailag nem létezik.
+          // A felhasználói kérés szerint ezt az állomást egyszerűen kihagyjuk.
+          console.warn(`A ${tableName}.${fieldKey} mező nem használható a vezetői _terv szűréshez:`, response.error);
+          continue;
+        }
+
+        ((response.data || []) as Array<Record<string, unknown>>).forEach((row) => {
+          const adat = row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)
+            ? row.adat as Record<string, unknown>
+            : {};
+          const directOrder = readRecordValue(row, [
+            "sorszam",
+            "order_number",
+            "rendelesszam",
+            "rendeles_szam",
+            "gyartasi_szam",
+            "gyartasi_szam_projekt_neve",
+            "rsz",
+          ]);
+          const fallbackOrder = readRecordValue(adat, [
+            "sorszam",
+            "order_number",
+            "rendelesszam",
+            "rendeles_szam",
+            "gyartasi_szam",
+            "gyartasi_szam_projekt_neve",
+            "rsz",
+          ]);
+          const orderNumber = String(directOrder ?? fallbackOrder ?? "").trim();
+          const normalizedOrder = normalizeLooseText(orderNumber);
+          if (!orderNumber || !normalizedOrder) return;
+          normalizedOrderKeys.add(normalizedOrder);
+          if (!orderNumberByKey.has(normalizedOrder)) orderNumberByKey.set(normalizedOrder, orderNumber);
+        });
+      } catch (error) {
+        console.warn(`A ${tableName} tábla kihagyva a vezetői _terv mezőszűrésből:`, error);
+      }
+    }
+
+    return {
+      active: true,
+      fieldKey,
+      dataType: fieldOption.dataType,
+      orderNumbers: Array.from(orderNumberByKey.values()).sort((a, b) => a.localeCompare(b, "hu")),
+      normalizedOrderKeys,
+    };
+  }
+
   async function fetchDashboardPlanEfficiency(
     range: { startIso: string; endIso: string },
-    orderFilters: string[] = dashboardOrderFiltersRef.current
+    orderFilters: string[] = dashboardOrderFiltersRef.current,
+    planFieldMatch: DashboardPlanFieldMatchResult | null = null
   ): Promise<DashboardStationEfficiencyRow[]> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
     const stations = getOrderedDashboardStations();
+    const planFieldFilterActive = Boolean(planFieldMatch?.active);
+    const planFieldTargetsDate = planFieldFilterActive && planFieldMatch?.dataType === "date";
+    const planFieldOrderKeys = planFieldMatch?.normalizedOrderKeys || new Set<string>();
+    const matchesPlanFieldOrder = (orderNumber: string): boolean =>
+      !planFieldFilterActive || planFieldOrderKeys.has(normalizeLooseText(orderNumber));
     const planOrdersByStation = new Map<string, Set<string>>();
     stations.forEach((station) => planOrdersByStation.set(station, new Set<string>()));
 
@@ -25684,7 +25947,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const appendHistoryRows = (rows: WorkLogRow[]): void => {
         rows.forEach((row) => {
           const orderNumber = String(row.order_number || "").trim();
-          if (!orderNumber || !matchesDashboardOrderFilters(orderNumber, orderFilters)) return;
+          if (
+            !orderNumber
+            || !matchesDashboardOrderFilters(orderNumber, orderFilters)
+            || !matchesPlanFieldOrder(orderNumber)
+          ) return;
 
           const uniqueKey = [
             orderNumber,
@@ -25785,31 +26052,67 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const endDateKey = getLocalDateKey(new Date(range.endIso));
     let stationTablePlanCount = 0;
 
-    for (const station of stations) {
-      const tableName = buildStationPlanTableName(station);
-      const response = await supabase
-        .from(tableName)
-        .select("sorszam, elkeszules_datum")
-        .gte("elkeszules_datum", startDateKey)
-        .lt("elkeszules_datum", endDateKey)
-        .limit(10000);
+    if (planFieldTargetsDate && planFieldMatch?.active) {
+      const matchingOrders = planFieldMatch.orderNumbers.filter((orderNumber) =>
+        matchesDashboardOrderFilters(orderNumber, orderFilters)
+      );
 
-      if (response.error) {
-        console.warn(`A ${tableName} tábla nem olvasható a vezetői műszerfalhoz:`, response.error);
-        continue;
+      for (const station of stations) {
+        const tableName = buildStationPlanTableName(station);
+        const target = planOrdersByStation.get(station)!;
+
+        for (let index = 0; index < matchingOrders.length; index += 100) {
+          const chunkOrders = matchingOrders.slice(index, index + 100);
+          const response = await supabase
+            .from(tableName)
+            .select("sorszam")
+            .in("sorszam", chunkOrders)
+            .limit(10000);
+
+          if (response.error) {
+            console.warn(`A ${tableName} tábla nem olvasható a vezetői _terv dátumszűréshez:`, response.error);
+            break;
+          }
+
+          ((response.data || []) as Array<{ sorszam?: string | null }>).forEach((row) => {
+            const orderNumber = String(row.sorszam || "").trim();
+            if (orderNumber && matchesPlanFieldOrder(orderNumber)) target.add(orderNumber);
+          });
+        }
+
+        stationTablePlanCount += target.size;
       }
+    } else {
+      for (const station of stations) {
+        const tableName = buildStationPlanTableName(station);
+        const response = await supabase
+          .from(tableName)
+          .select("sorszam, elkeszules_datum")
+          .gte("elkeszules_datum", startDateKey)
+          .lt("elkeszules_datum", endDateKey)
+          .limit(10000);
 
-      const target = planOrdersByStation.get(station)!;
-      ((response.data || []) as Array<{ sorszam?: string | null }>).forEach((row) => {
-        const orderNumber = String(row.sorszam || "").trim();
-        if (orderNumber && matchesDashboardOrderFilters(orderNumber, orderFilters)) target.add(orderNumber);
-      });
-      stationTablePlanCount += target.size;
+        if (response.error) {
+          console.warn(`A ${tableName} tábla nem olvasható a vezetői műszerfalhoz:`, response.error);
+          continue;
+        }
+
+        const target = planOrdersByStation.get(station)!;
+        ((response.data || []) as Array<{ sorszam?: string | null }>).forEach((row) => {
+          const orderNumber = String(row.sorszam || "").trim();
+          if (
+            orderNumber
+            && matchesDashboardOrderFilters(orderNumber, orderFilters)
+            && matchesPlanFieldOrder(orderNumber)
+          ) target.add(orderNumber);
+        });
+        stationTablePlanCount += target.size;
+      }
     }
 
     // Kompatibilitási tartalék: ha a munkaállomásonkénti *_terv táblák még üresek,
     // a korábbi production_plans / production_plan_items napi terveit használjuk.
-    if (stationTablePlanCount === 0 && stations.length > 0) {
+    if (!planFieldFilterActive && stationTablePlanCount === 0 && stations.length > 0) {
       const planResponse = await supabase
         .from("production_plans")
         .select("id, plan_date")
@@ -25881,6 +26184,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
 
     const rangeEndMs = new Date(range.endIso).getTime();
+    const completionCutoffMs = planFieldTargetsDate ? Date.now() + 60_000 : rangeEndMs;
     const completedOrdersByStation = new Map<string, Set<string>>();
     stations.forEach((station) => completedOrdersByStation.set(station, new Set<string>()));
 
@@ -25890,7 +26194,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const endAt = log.end_time || log.end_timestamp || (String(log.action || "").toUpperCase() === "END" ? log.created_at : null);
       if (!endAt || !isFullyCompletedEndLog(log)) return;
       const endMs = new Date(endAt).getTime();
-      if (!Number.isFinite(endMs) || endMs >= rangeEndMs) return;
+      if (!Number.isFinite(endMs) || endMs >= completionCutoffMs) return;
       const resolvedStation = resolveLogStation(log, workers);
       const canonicalStation = stations.find(
         (station) => normalizeLooseText(station) === normalizeLooseText(resolvedStation)
@@ -25930,12 +26234,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   async function fetchDashboardStationTypePerformance(
-    range: { startIso: string; endIso: string }
+    range: { startIso: string; endIso: string },
+    orderFilters: string[] = dashboardOrderFiltersRef.current,
+    planFieldMatch: DashboardPlanFieldMatchResult | null = null
   ): Promise<DashboardStationTypePerformanceRow[]> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
     const stations = getOrderedDashboardStations();
     if (stations.length === 0) return [];
+
+    const planFieldFilterActive = Boolean(planFieldMatch?.active);
+    const planFieldTargetsDate = planFieldFilterActive && planFieldMatch?.dataType === "date";
+    const planFieldOrderKeys = planFieldMatch?.normalizedOrderKeys || new Set<string>();
+    const matchesPlanFieldOrder = (orderNumber: string): boolean =>
+      !planFieldFilterActive || planFieldOrderKeys.has(normalizeLooseText(orderNumber));
 
     const startDateKey = getLocalDateKey(new Date(range.startIso));
     const endDateKey = getLocalDateKey(new Date(range.endIso));
@@ -25979,9 +26291,41 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       };
     };
 
-    let completedSource = await loadCompletedRowsFromTable("work_logs");
-    if (completedSource.error) {
-      completedSource = await loadCompletedRowsFromTable("work_log");
+    const loadCompletedRowsByExactOrders = async (
+      sourceTable: "work_logs" | "work_log",
+      orderNumbers: string[]
+    ): Promise<{ rows: WorkLogRow[]; error: unknown | null }> => {
+      const rows: WorkLogRow[] = [];
+
+      for (let index = 0; index < orderNumbers.length; index += 100) {
+        const chunkOrders = orderNumbers.slice(index, index + 100);
+        const response = await supabase
+          .from(sourceTable)
+          .select(completedSelectColumns)
+          .in("order_number", chunkOrders)
+          .limit(10000);
+
+        if (response.error) return { rows: [], error: response.error };
+        rows.push(...(((response.data || []) as WorkLogRow[])));
+      }
+
+      return { rows, error: null };
+    };
+
+    let completedSource: { rows: WorkLogRow[]; error: unknown | null };
+    if (planFieldTargetsDate && planFieldMatch?.active) {
+      const matchingOrders = planFieldMatch.orderNumbers.filter((orderNumber) =>
+        matchesDashboardOrderFilters(orderNumber, orderFilters)
+      );
+      completedSource = await loadCompletedRowsByExactOrders("work_logs", matchingOrders);
+      if (completedSource.error) {
+        completedSource = await loadCompletedRowsByExactOrders("work_log", matchingOrders);
+      }
+    } else {
+      completedSource = await loadCompletedRowsFromTable("work_logs");
+      if (completedSource.error) {
+        completedSource = await loadCompletedRowsFromTable("work_log");
+      }
     }
     if (completedSource.error) {
       throw completedSource.error;
@@ -25991,7 +26335,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const rangeEndMs = new Date(range.endIso).getTime();
     completedSource.rows.forEach((log) => {
       const orderNumber = String(log.order_number || "").trim();
-      if (!orderNumber || !isFullyCompletedEndLog(log)) return;
+      if (
+        !orderNumber
+        || !isFullyCompletedEndLog(log)
+        || !matchesDashboardOrderFilters(orderNumber, orderFilters)
+        || !matchesPlanFieldOrder(orderNumber)
+      ) return;
 
       // Mennyiségi részjelentés (pl. 300-ból 150 db) még NEM lezárt rendelés.
       // Csak akkor számítjuk a Standard/Plusz/Extra teljesítésbe, amikor a
@@ -26002,7 +26351,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       const endAt = String(log.end_time || log.end_timestamp || "");
       const endMs = new Date(endAt).getTime();
-      if (!Number.isFinite(endMs) || endMs < rangeStartMs || endMs >= rangeEndMs) return;
+      if (!Number.isFinite(endMs)) return;
+      if (!planFieldTargetsDate && (endMs < rangeStartMs || endMs >= rangeEndMs)) return;
 
       const resolvedStation = resolveLogStation(log, workers);
       const canonicalStation = stations.find(
@@ -26024,24 +26374,52 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       // Ha a *_terv táblában nincs tipus oszlop, ez a lekérdezés hibára fut.
       // Ilyenkor az adott munkaállomás nem kap Standard/Plusz/Extra boxot.
-      const planResponse = await supabase
-        .from(tableName)
-        .select("sorszam, elkeszules_datum, tipus, adat")
-        .gte("elkeszules_datum", startDateKey)
-        .lt("elkeszules_datum", endDateKey)
-        .limit(10000);
+      let planRows: DashboardTypePlanSourceRow[] = [];
 
-      if (planResponse.error) {
-        console.warn(`A ${tableName} tipus mezője nem olvasható; Standard/Plusz/Extra KPI kihagyva ennél az állomásnál:`, planResponse.error);
-        return null;
+      if (planFieldTargetsDate && planFieldMatch?.active) {
+        const matchingOrders = planFieldMatch.orderNumbers.filter((orderNumber) =>
+          matchesDashboardOrderFilters(orderNumber, orderFilters)
+        );
+
+        for (let index = 0; index < matchingOrders.length; index += 100) {
+          const chunkOrders = matchingOrders.slice(index, index + 100);
+          const planResponse = await supabase
+            .from(tableName)
+            .select("sorszam, tipus, adat")
+            .in("sorszam", chunkOrders)
+            .limit(10000);
+
+          if (planResponse.error) {
+            console.warn(`A ${tableName} tipus mezője nem olvasható; Standard/Plusz/Extra KPI kihagyva ennél az állomásnál:`, planResponse.error);
+            return null;
+          }
+          planRows.push(...((planResponse.data || []) as DashboardTypePlanSourceRow[]));
+        }
+      } else {
+        const planResponse = await supabase
+          .from(tableName)
+          .select("sorszam, elkeszules_datum, tipus, adat")
+          .gte("elkeszules_datum", startDateKey)
+          .lt("elkeszules_datum", endDateKey)
+          .limit(10000);
+
+        if (planResponse.error) {
+          console.warn(`A ${tableName} tipus mezője nem olvasható; Standard/Plusz/Extra KPI kihagyva ennél az állomásnál:`, planResponse.error);
+          return null;
+        }
+        planRows = (planResponse.data || []) as DashboardTypePlanSourceRow[];
       }
 
       const metrics = createEmptyDashboardTypeMetrics();
       const plannedTypeByOrder = new Map<string, DashboardTrackedPlanType>();
 
-      ((planResponse.data || []) as DashboardTypePlanSourceRow[]).forEach((row) => {
+      planRows.forEach((row) => {
         const orderNumber = String(row.sorszam || "").trim();
-        if (!orderNumber) return;
+        if (
+          !orderNumber
+          || !matchesDashboardOrderFilters(orderNumber, orderFilters)
+          || !matchesPlanFieldOrder(orderNumber)
+        ) return;
         const typeValue = row.tipus ?? row.adat?.tipus ?? null;
         const trackedType = normalizeDashboardTrackedPlanType(typeValue);
         if (!trackedType) return;
@@ -26091,6 +26469,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         (key) => metrics[key].plannedOrders > 0 || metrics[key].completedOrders > 0
       );
 
+      if (planFieldFilterActive && !hasTrackedDataNow) return null;
+
       if (!hasTrackedDataNow) {
         const typeProbe = await supabase
           .from(tableName)
@@ -26139,12 +26519,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   async function fetchDashboardData(
     range: { startIso: string; endIso: string },
-    orderFilters: string[] = dashboardOrderFiltersRef.current
+    orderFilters: string[] = dashboardOrderFiltersRef.current,
+    planFieldFilter: DashboardPlanFieldFilterState | null = null
   ): Promise<DashboardData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
     const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
     const hasOrderFilter = orderFilters.some((value) => Boolean(normalizeDashboardOrderSearch(value)));
+    const planFieldMatch = await fetchDashboardPlanFieldMatches(range, planFieldFilter);
+    const planFieldTargetsDate = planFieldMatch.active && planFieldMatch.dataType === "date";
+    const matchesPlanFieldOrder = (orderNumber: string | null | undefined): boolean =>
+      !planFieldMatch.active || planFieldMatch.normalizedOrderKeys.has(normalizeLooseText(String(orderNumber || "")));
 
     const normalizeDashboardLogRow = (row: WorkLogRow): WorkLogRow => ({
       ...row,
@@ -26180,13 +26565,50 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return result;
     };
 
+    const fetchDashboardLogsByExactOrders = async (orderNumbers: string[]): Promise<WorkLogRow[]> => {
+      if (orderNumbers.length === 0) return [];
+      const groups: WorkLogRow[][] = [];
+
+      for (let index = 0; index < orderNumbers.length; index += 100) {
+        const chunkOrders = orderNumbers.slice(index, index + 100);
+        let response = await supabase
+          .from("work_logs")
+          .select(selectColumns)
+          .in("order_number", chunkOrders)
+          .order("created_at", { ascending: true })
+          .limit(10000);
+
+        if (response.error) {
+          response = await supabase
+            .from("work_log")
+            .select(selectColumns)
+            .in("order_number", chunkOrders)
+            .order("created_at", { ascending: true })
+            .limit(10000);
+        }
+
+        if (response.error) throw response.error;
+        groups.push((response.data || []) as WorkLogRow[]);
+      }
+
+      return mergeDashboardLogs(...groups);
+    };
+
     // Normál műszerfalnál a kiválasztott időszakot olvassuk.
     // RENDELÉSSZÁM-SZŰRÉSNÉL viszont EZ A LEKÉRÉS NEM FUT LE:
     // ilyenkor az egész work_logs táblában keresünk, teljesen függetlenül
     // a Napi / Heti / Havi / Egyedi nézettől és a kiválasztott dátumtól.
     let periodLogs: WorkLogRow[] = [];
 
-    if (!hasOrderFilter) {
+    if (planFieldTargetsDate) {
+      // Dátum típusú _terv mezőnél a Dátumtól / Dátumig NEM a work_logs időpontját
+      // szűri. Előbb kiválasztjuk a tervmező alapján a rendeléseket, majd azok teljes
+      // work_logs történetét töltjük be, hogy minden munkaállomás állapota látható maradjon.
+      const matchingOrders = planFieldMatch.orderNumbers.filter((orderNumber) =>
+        matchesDashboardOrderFilters(orderNumber, orderFilters)
+      );
+      periodLogs = await fetchDashboardLogsByExactOrders(matchingOrders);
+    } else if (!hasOrderFilter) {
       const bufferedStart = new Date(range.startIso);
       bufferedStart.setDate(bufferedStart.getDate() - 1);
 
@@ -26214,7 +26636,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     let fullOrderHistoryLogs: WorkLogRow[] = [];
 
-    if (hasOrderFilter) {
+    if (hasOrderFilter && !planFieldTargetsDate) {
       const historyGroups: WorkLogRow[][] = [];
 
       for (const rawFilter of orderFilters) {
@@ -26255,15 +26677,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         .filter((log) => matchesDashboardOrderFilters(log.order_number, orderFilters));
     }
 
-    const allFetchedLogs = hasOrderFilter
-      ? mergeDashboardLogs(periodLogs, fullOrderHistoryLogs)
-      : periodLogs;
+    const allFetchedLogs = planFieldTargetsDate
+      ? periodLogs
+      : hasOrderFilter
+        ? mergeDashboardLogs(periodLogs, fullOrderHistoryLogs)
+        : periodLogs;
+
+    const planFilteredFetchedLogs = planFieldMatch.active
+      ? allFetchedLogs.filter((log) => matchesPlanFieldOrder(log.order_number))
+      : allFetchedLogs;
 
     const availableOrderNumbers = Array.from(new Set(
-      allFetchedLogs.map((log) => String(log.order_number || "").trim()).filter(Boolean)
+      planFilteredFetchedLogs.map((log) => String(log.order_number || "").trim()).filter(Boolean)
     )).sort((a, b) => a.localeCompare(b, "hu"));
 
-    const rawOrderFilteredLogs = allFetchedLogs.filter((log) =>
+    const rawOrderFilteredLogs = planFilteredFetchedLogs.filter((log) =>
       matchesDashboardOrderFilters(log.order_number, orderFilters)
     );
 
@@ -26351,9 +26779,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const rangeStartMs = new Date(range.startIso).getTime();
     const rangeEndMs = new Date(range.endIso).getTime();
 
-    // Rendelésszám-szűrésnél az Eseménynapló a TELJES rendelési előzményt kapja,
-    // nem csak a fent kiválasztott nap/hét/hónap eseményeit.
-    const visibleLogs = hasOrderFilter
+    // Rendelésszám-szűrésnél, illetve dátum típusú _terv mező szűrésénél
+    // az Eseménynapló a kiválasztott rendelések TELJES előzményét kapja.
+    const useFullHistoryMode = hasOrderFilter || planFieldTargetsDate;
+    const visibleLogs = useFullHistoryMode
       ? [...orderFilteredLogs]
       : orderFilteredLogs.filter((log) => {
           const eventMs = new Date(getDashboardLogEventAt(log)).getTime();
@@ -26368,7 +26797,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     // előzményéből számolódnak. Ehhez a számítási időablakot a rendelés első
     // eseményétől a jelen pillanatig / utolsó eseményig nyitjuk ki.
     let calculationRange = range;
-    if (hasOrderFilter && calculationLogs.length > 0) {
+    if (useFullHistoryMode && calculationLogs.length > 0) {
       const timestamps: number[] = [];
       calculationLogs.forEach((log) => {
         [
@@ -26396,8 +26825,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const [built, stationEfficiencyRows, stationTypePerformanceRows] = await Promise.all([
       Promise.resolve(buildDashboardData(calculationLogs, workers, calculationRange)),
-      fetchDashboardPlanEfficiency(range, orderFilters),
-      fetchDashboardStationTypePerformance(range),
+      fetchDashboardPlanEfficiency(range, orderFilters, planFieldMatch),
+      fetchDashboardStationTypePerformance(range, orderFilters, planFieldMatch),
     ]);
 
     return {
@@ -26450,7 +26879,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!backgroundRefresh) setLoadingDashboard(true);
     try {
       const range = getDashboardDateRange(filterMode, dateKey, dateToKey);
-      const nextDashboardData = await fetchDashboardData(range, orderFilters);
+      const currentPlanFieldFilter = getCurrentDashboardPlanFieldFilterState();
+      const currentPlanFieldOption = getDashboardPlanFieldOptionByKey(currentPlanFieldFilter.fieldKey);
+      const currentPlanFieldFilterActive = Boolean(
+        currentPlanFieldOption
+        && (currentPlanFieldOption.dataType === "date" || currentPlanFieldFilter.value.trim())
+      );
+      const nextDashboardData = await fetchDashboardData(range, orderFilters, currentPlanFieldFilter);
       setDashboardData(nextDashboardData);
 
       if (!backgroundRefresh) {
@@ -26462,11 +26897,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         orderTypeLatestValueRef.current = "";
         setFlowStage("dashboard");
         setStep(7);
+        const hasOrderSearch = orderFilters.some((value) => Boolean(normalizeDashboardOrderSearch(value)));
+        const planFieldLabel = currentPlanFieldOption?.label || currentPlanFieldFilter.fieldKey;
         setMessage({
           type: "success",
-          text: orderFilters.some((value) => Boolean(normalizeDashboardOrderSearch(value)))
-            ? "Rendelésszám keresés betöltve a teljes work_logs táblából – a dátum és a nézet nem korlátozza."
-            : `Vezetői műszerfal betöltve: ${range.label}`,
+          text: currentPlanFieldFilterActive
+            ? currentPlanFieldOption?.dataType === "date"
+              ? `Vezetői műszerfal betöltve: ${planFieldLabel} ${range.label}${hasOrderSearch ? " · rendelésszám-szűrővel" : ""}.`
+              : `Vezetői műszerfal betöltve: ${planFieldLabel} tartalmazza: "${currentPlanFieldFilter.value.trim()}"${hasOrderSearch ? " · rendelésszám-szűrővel" : ""}.`
+            : hasOrderSearch
+              ? "Rendelésszám keresés betöltve a teljes work_logs táblából – a dátum és a nézet nem korlátozza."
+              : `Vezetői műszerfal betöltve: ${range.label}`,
         });
       }
     } catch (error) {
@@ -26750,6 +27191,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
 
     const range = getDashboardDateRange("custom", dashboardDate, dashboardDateTo);
+    const currentPlanFieldFilter = getCurrentDashboardPlanFieldFilterState();
     const rangeStartMs = new Date(range.startIso).getTime();
     const rangeEndMs = new Date(range.endIso).getTime();
     const filteredWorkerStats = getFilteredDashboardWorkerStats();
@@ -26795,26 +27237,69 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return rows;
     };
 
+    const fetchEndCandidatesByExactOrders = async (tableName: string, orderNumbers: string[]): Promise<WorkLogRow[]> => {
+      const rows: WorkLogRow[] = [];
+      for (let index = 0; index < orderNumbers.length; index += 100) {
+        const chunkOrders = orderNumbers.slice(index, index + 100);
+        const response = await supabase
+          .from(tableName)
+          .select(selectColumns)
+          .in("order_number", chunkOrders)
+          .order("created_at", { ascending: true })
+          .limit(10000);
+        if (response.error) throw response.error;
+        rows.push(...(((response.data || []) as WorkLogRow[])));
+      }
+      return rows;
+    };
+
     try {
+      const planFieldMatch = await fetchDashboardPlanFieldMatches(range, currentPlanFieldFilter);
+      const planFieldTargetsDate = planFieldMatch.active && planFieldMatch.dataType === "date";
+      const matchesPlanFieldOrder = (orderNumber: string | null | undefined): boolean =>
+        !planFieldMatch.active || planFieldMatch.normalizedOrderKeys.has(normalizeLooseText(String(orderNumber || "")));
+
       let candidates: WorkLogRow[] = [];
       let sourceTable = "work_logs";
 
-      try {
-        const [byEndTime, byEndTimestamp, byActionCreatedAt] = await Promise.all([
-          fetchPagedEndCandidates(sourceTable, "end_time", false),
-          fetchPagedEndCandidates(sourceTable, "end_timestamp", false),
-          fetchPagedEndCandidates(sourceTable, "created_at", true),
-        ]);
-        candidates = [...byEndTime, ...byEndTimestamp, ...byActionCreatedAt];
-      } catch (primaryError) {
-        console.warn("END Excel export: work_logs lekérdezés sikertelen, work_log fallback következik:", primaryError);
-        sourceTable = "work_log";
-        const [byEndTime, byEndTimestamp, byActionCreatedAt] = await Promise.all([
-          fetchPagedEndCandidates(sourceTable, "end_time", false),
-          fetchPagedEndCandidates(sourceTable, "end_timestamp", false),
-          fetchPagedEndCandidates(sourceTable, "created_at", true),
-        ]);
-        candidates = [...byEndTime, ...byEndTimestamp, ...byActionCreatedAt];
+      if (planFieldTargetsDate) {
+        const matchingOrders = planFieldMatch.orderNumbers.filter((orderNumber) =>
+          matchesDashboardOrderFilters(orderNumber, dashboardOrderFiltersRef.current)
+        );
+
+        if (matchingOrders.length === 0) {
+          setMessage({
+            type: "info",
+            text: "A kiválasztott szűrők mellett nincs exportálható END lejelentés.",
+          });
+          return;
+        }
+
+        try {
+          candidates = await fetchEndCandidatesByExactOrders(sourceTable, matchingOrders);
+        } catch (primaryError) {
+          console.warn("END Excel export: work_logs lekérdezés sikertelen, work_log fallback következik:", primaryError);
+          sourceTable = "work_log";
+          candidates = await fetchEndCandidatesByExactOrders(sourceTable, matchingOrders);
+        }
+      } else {
+        try {
+          const [byEndTime, byEndTimestamp, byActionCreatedAt] = await Promise.all([
+            fetchPagedEndCandidates(sourceTable, "end_time", false),
+            fetchPagedEndCandidates(sourceTable, "end_timestamp", false),
+            fetchPagedEndCandidates(sourceTable, "created_at", true),
+          ]);
+          candidates = [...byEndTime, ...byEndTimestamp, ...byActionCreatedAt];
+        } catch (primaryError) {
+          console.warn("END Excel export: work_logs lekérdezés sikertelen, work_log fallback következik:", primaryError);
+          sourceTable = "work_log";
+          const [byEndTime, byEndTimestamp, byActionCreatedAt] = await Promise.all([
+            fetchPagedEndCandidates(sourceTable, "end_time", false),
+            fetchPagedEndCandidates(sourceTable, "end_timestamp", false),
+            fetchPagedEndCandidates(sourceTable, "created_at", true),
+          ]);
+          candidates = [...byEndTime, ...byEndTimestamp, ...byActionCreatedAt];
+        }
       }
 
       const seen = new Set<string>();
@@ -26829,10 +27314,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           const action = String(log.action || "").toUpperCase();
           const endAt = String(log.end_time || log.end_timestamp || (action === "END" ? log.created_at : "") || "");
           const endMs = new Date(endAt).getTime();
-          if (!endAt || !Number.isFinite(endMs) || endMs < rangeStartMs || endMs >= rangeEndMs) return false;
+          if (!endAt || !Number.isFinite(endMs)) return false;
+          if (!planFieldTargetsDate && (endMs < rangeStartMs || endMs >= rangeEndMs)) return false;
           if (!(action === "END" || Boolean(log.end_time || log.end_timestamp))) return false;
           if (!isFullyCompletedEndLog(log)) return false;
           if (!matchesDashboardOrderFilters(log.order_number, dashboardOrderFiltersRef.current)) return false;
+          if (!matchesPlanFieldOrder(log.order_number)) return false;
 
           const workerName = getDashboardLogWorkerName(log);
           if (selectedWorkerValue !== "all" && normalizeLooseText(workerName) !== normalizeLooseText(selectedWorkerValue)) return false;
