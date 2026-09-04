@@ -427,6 +427,40 @@ type DashboardPdfWorkerAnalysis = {
   typeCounts: Record<string, number>;
 };
 
+type DashboardPlanFieldMatchedPlanRow = {
+  stationName: string;
+  orderNumber: string;
+  excelOrder: number;
+  sourceRowId: string;
+  fieldValue: string;
+};
+
+type DashboardPlanOrderEndEvent = {
+  workerName: string;
+  endedAt: string;
+  reproductionNumber: number | null;
+  isReproduction: boolean;
+};
+
+type DashboardPlanOrderEndRow = {
+  stationName: string;
+  orderNumber: string;
+  excelOrder: number;
+  sourceRowId: string;
+  fieldValue: string;
+  endEvents: DashboardPlanOrderEndEvent[];
+};
+
+type DashboardPlanOrderEndDisplayRow = {
+  sequence: number;
+  stationName: string;
+  orderNumber: string;
+  endStatus: string;
+  endedAt: string;
+  workerName: string;
+  reproductionLabel: string;
+};
+
 type DashboardData = {
   logs: WorkLogRow[];
   availableOrderNumbers: string[];
@@ -439,6 +473,7 @@ type DashboardData = {
   stationEfficiencyRows: DashboardStationEfficiencyRow[];
   stationTypePerformanceRows: DashboardStationTypePerformanceRow[];
   stationWorkerPerformance: DashboardStationWorkerPerformance[];
+  planOrderEndRows: DashboardPlanOrderEndRow[];
   totalMinutes: number;
   totalScrap: number;
   dailyEfficiencyPct: number;
@@ -1824,6 +1859,7 @@ type DashboardPlanFieldMatchResult = {
   dataType: StationPlanFieldDataType | null;
   orderNumbers: string[];
   normalizedOrderKeys: Set<string>;
+  matchedPlanRows: DashboardPlanFieldMatchedPlanRow[];
 };
 
 // A 2026-08-19-én feltöltött Napi_termelesi_terv_minta Excel a mester-séma.
@@ -7917,6 +7953,7 @@ function buildDashboardData(
     stationEfficiencyRows: [],
     stationTypePerformanceRows: [],
     stationWorkerPerformance,
+    planOrderEndRows: [],
     totalMinutes,
     totalScrap: scrapRows.reduce((sum, row) => sum + row.scrapQty, 0),
     dailyEfficiencyPct,
@@ -8506,6 +8543,7 @@ export default function Page() {
     stationEfficiencyRows: [],
     stationTypePerformanceRows: [],
     stationWorkerPerformance: [],
+    planOrderEndRows: [],
     totalMinutes: 0,
     totalScrap: 0,
     dailyEfficiencyPct: 0,
@@ -20750,6 +20788,44 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           </div>
         )}
 
+        {dashboardPlanFieldFilterActive && dashboardData.planOrderEndRows.length > 0 && (() => {
+          const planOrderEndRows = getDashboardPlanOrderEndDisplayRows();
+          return (
+            <div style={{ margin: "0 0 18px", padding: 12, borderRadius: 14, background: officeTheme.panelBackground, border: `1px solid ${officeTheme.borderColor}` }}>
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 10 }}>
+                <strong style={{ color: officeTheme.textColor, fontSize: 15 }}>Szűrt tervsorszámok és END lejelentések</strong>
+                <span style={{ color: officeTheme.mutedText, fontSize: 11 }}>A *_terv eredeti sorrendjében · minden teljes END külön sor</span>
+              </div>
+              <div style={{ overflowX: "auto", maxHeight: 360, overflowY: "auto", borderRadius: 10, border: `1px solid ${officeTheme.borderColor}` }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 850 }}>
+                  <thead style={{ position: "sticky", top: 0, zIndex: 2 }}>
+                    <tr>
+                      {["Sorrend", "Sorszám", "Munkaállomás", "END állapot", "END időpont", "Befejező dolgozó", "Gyártás"].map((label) => (
+                        <th key={label} style={{ padding: "8px 10px", textAlign: "left", background: officeTheme.headerBackground, color: officeTheme.textColor, borderBottom: `1px solid ${officeTheme.borderColor}`, fontSize: 11 }}>{label}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {planOrderEndRows.length ? planOrderEndRows.map((row, index) => (
+                      <tr key={`${row.stationName}-${row.orderNumber}-${row.endedAt || "none"}-${index}`}>
+                        <td style={{ padding: "8px 10px", borderBottom: `1px solid ${officeTheme.borderColor}`, color: officeTheme.mutedText }}>{row.sequence}</td>
+                        <td style={{ padding: "8px 10px", borderBottom: `1px solid ${officeTheme.borderColor}`, color: officeTheme.textColor, fontWeight: 900 }}>{row.orderNumber}</td>
+                        <td style={{ padding: "8px 10px", borderBottom: `1px solid ${officeTheme.borderColor}`, color: officeTheme.textColor }}>{row.stationName}</td>
+                        <td style={{ padding: "8px 10px", borderBottom: `1px solid ${officeTheme.borderColor}`, color: row.endStatus === "END" ? "#4ade80" : officeTheme.mutedText, fontWeight: 900 }}>{row.endStatus}</td>
+                        <td style={{ padding: "8px 10px", borderBottom: `1px solid ${officeTheme.borderColor}`, color: officeTheme.textColor }}>{row.endedAt ? formatDateTime(row.endedAt) : "-"}</td>
+                        <td style={{ padding: "8px 10px", borderBottom: `1px solid ${officeTheme.borderColor}`, color: officeTheme.textColor }}>{row.workerName || "-"}</td>
+                        <td style={{ padding: "8px 10px", borderBottom: `1px solid ${officeTheme.borderColor}`, color: officeTheme.textColor }}>{row.reproductionLabel || "-"}</td>
+                      </tr>
+                    )) : (
+                      <tr><td colSpan={7} style={{ padding: 14, color: officeTheme.mutedText }}>A jelenlegi munkaállomás/dolgozó szűrő mellett nincs megjeleníthető sor.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
+
         <div data-office-window="dashboard:kpis" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12, marginBottom: 18, padding: 12 }}>
           {dashboardCards.map((card) => (
             <div key={card.label} style={cardStyle}>
@@ -25807,6 +25883,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       dataType: null,
       orderNumbers: [],
       normalizedOrderKeys: new Set<string>(),
+      matchedPlanRows: [],
     };
 
     if (!supabase) return emptyResult;
@@ -25823,6 +25900,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const normalizedOrderKeys = new Set<string>();
     const orderNumberByKey = new Map<string, string>();
+    const matchedPlanRows: DashboardPlanFieldMatchedPlanRow[] = [];
+    const stationOrder = getOrderedDashboardStations();
+    const stationOrderIndex = new Map(stationOrder.map((station, index) => [normalizeLooseText(station), index]));
     const startDateKey = getLocalDateKey(new Date(range.startIso));
     const endDateKey = getLocalDateKey(new Date(range.endIso));
     const integerValue = fieldOption.dataType === "integer"
@@ -25836,6 +25916,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         dataType: fieldOption.dataType,
         orderNumbers: [],
         normalizedOrderKeys,
+        matchedPlanRows: [],
       };
     }
 
@@ -25863,7 +25944,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           continue;
         }
 
-        ((response.data || []) as Array<Record<string, unknown>>).forEach((row) => {
+        ((response.data || []) as Array<Record<string, unknown>>).forEach((row, rowIndex) => {
           const adat = row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)
             ? row.adat as Record<string, unknown>
             : {};
@@ -25890,11 +25971,37 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           if (!orderNumber || !normalizedOrder) return;
           normalizedOrderKeys.add(normalizedOrder);
           if (!orderNumberByKey.has(normalizedOrder)) orderNumberByKey.set(normalizedOrder, orderNumber);
+
+          const excelOrderCandidate = parseSpreadsheetNumber(row.excel_sorrend);
+          const idOrderCandidate = parseSpreadsheetNumber(row.id);
+          const matchedDirectValue = row[fieldKey];
+          const matchedFallbackValue = matchedDirectValue === null || matchedDirectValue === undefined || String(matchedDirectValue).trim() === ""
+            ? readRecordValue(adat, getStationPlanFieldLookupKeys(fieldKey))
+            : matchedDirectValue;
+          matchedPlanRows.push({
+            stationName,
+            orderNumber,
+            excelOrder: excelOrderCandidate !== null
+              ? excelOrderCandidate
+              : idOrderCandidate !== null
+                ? idOrderCandidate
+                : rowIndex + 1,
+            sourceRowId: String(row.id ?? `${stationName}-${rowIndex + 1}`),
+            fieldValue: valueAsText(matchedFallbackValue),
+          });
         });
       } catch (error) {
         console.warn(`A ${tableName} tábla kihagyva a vezetői _terv mezőszűrésből:`, error);
       }
     }
+
+    matchedPlanRows.sort((left, right) => {
+      const leftStation = stationOrderIndex.get(normalizeLooseText(left.stationName)) ?? Number.MAX_SAFE_INTEGER;
+      const rightStation = stationOrderIndex.get(normalizeLooseText(right.stationName)) ?? Number.MAX_SAFE_INTEGER;
+      if (leftStation !== rightStation) return leftStation - rightStation;
+      if (left.excelOrder !== right.excelOrder) return left.excelOrder - right.excelOrder;
+      return left.orderNumber.localeCompare(right.orderNumber, "hu");
+    });
 
     return {
       active: true,
@@ -25902,7 +26009,146 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       dataType: fieldOption.dataType,
       orderNumbers: Array.from(orderNumberByKey.values()).sort((a, b) => a.localeCompare(b, "hu")),
       normalizedOrderKeys,
+      matchedPlanRows,
     };
+  }
+
+  function buildDashboardPlanOrderEndRows(
+    planFieldMatch: DashboardPlanFieldMatchResult,
+    historyLogs: WorkLogRow[],
+    orderFilters: string[]
+  ): DashboardPlanOrderEndRow[] {
+    if (!planFieldMatch.active) return [];
+
+    const endEventsByOrderStation = new Map<string, DashboardPlanOrderEndEvent[]>();
+    const seenEndEvents = new Set<string>();
+
+    historyLogs.forEach((log) => {
+      const action = String(log.action || "").toUpperCase();
+      const endedAt = String(log.end_time || log.end_timestamp || (action === "END" ? log.created_at : "") || "").trim();
+      if (!endedAt || !(action === "END" || Boolean(log.end_time || log.end_timestamp))) return;
+      if (!isFullyCompletedEndLog(log)) return;
+
+      const orderNumber = String(log.order_number || "").trim();
+      if (!orderNumber || !matchesDashboardOrderFilters(orderNumber, orderFilters)) return;
+      const stationName = resolveLogStation(log, workers);
+      if (!stationName) return;
+
+      const workerName = getDashboardLogWorkerName(log);
+      const reproductionNumber = getWorkLogReproductionNumber(log);
+      const isReproduction = Boolean(log.ujragyartas)
+        || reproductionNumber !== null
+        || normalizeLooseText(String(log.gyartas_tipus || "")).includes("ujragyart");
+      const eventKey = [
+        normalizeLooseText(orderNumber),
+        normalizeLooseText(stationName),
+        endedAt,
+        normalizeLooseText(workerName),
+        String(reproductionNumber ?? ""),
+        String(log.batch_code || ""),
+        String(log.operation_code || ""),
+      ].join("|");
+      if (seenEndEvents.has(eventKey)) return;
+      seenEndEvents.add(eventKey);
+
+      const groupKey = `${normalizeLooseText(orderNumber)}|${normalizeLooseText(stationName)}`;
+      if (!endEventsByOrderStation.has(groupKey)) endEventsByOrderStation.set(groupKey, []);
+      endEventsByOrderStation.get(groupKey)!.push({
+        workerName,
+        endedAt,
+        reproductionNumber,
+        isReproduction,
+      });
+    });
+
+    endEventsByOrderStation.forEach((events) => {
+      events.sort((left, right) => new Date(left.endedAt).getTime() - new Date(right.endedAt).getTime());
+    });
+
+    return planFieldMatch.matchedPlanRows
+      .filter((row) => matchesDashboardOrderFilters(row.orderNumber, orderFilters))
+      .map((row) => ({
+        stationName: row.stationName,
+        orderNumber: row.orderNumber,
+        excelOrder: row.excelOrder,
+        sourceRowId: row.sourceRowId,
+        fieldValue: row.fieldValue,
+        endEvents: endEventsByOrderStation.get(`${normalizeLooseText(row.orderNumber)}|${normalizeLooseText(row.stationName)}`) || [],
+      }));
+  }
+
+  function getDashboardPlanOrderEndDisplayRows(
+    sourceData: DashboardData = dashboardData,
+    stationFilterOverride?: string,
+    workerFilterOverride?: string
+  ): DashboardPlanOrderEndDisplayRow[] {
+    const filteredWorkerStats = getFilteredDashboardWorkerStats();
+    const stationFilter = stationFilterOverride ?? filteredWorkerStats.selectedStationValue;
+    const workerFilter = workerFilterOverride ?? filteredWorkerStats.selectedWorkerValue;
+    const planRows = sourceData.planOrderEndRows.filter((row) =>
+      stationFilter === "all" || normalizeLooseText(row.stationName) === normalizeLooseText(stationFilter)
+    );
+
+    const displayRows: DashboardPlanOrderEndDisplayRow[] = [];
+    planRows.forEach((row, rowIndex) => {
+      const visibleEndEvents = row.endEvents.filter((event) =>
+        workerFilter === "all" || normalizeLooseText(event.workerName) === normalizeLooseText(workerFilter)
+      );
+      const sequence = Number.isFinite(row.excelOrder) ? row.excelOrder : rowIndex + 1;
+
+      if (!visibleEndEvents.length) {
+        displayRows.push({
+          sequence,
+          stationName: row.stationName,
+          orderNumber: row.orderNumber,
+          endStatus: "Nincs END",
+          endedAt: "",
+          workerName: "",
+          reproductionLabel: "",
+        });
+        return;
+      }
+
+      visibleEndEvents.forEach((event) => {
+        displayRows.push({
+          sequence,
+          stationName: row.stationName,
+          orderNumber: row.orderNumber,
+          endStatus: "END",
+          endedAt: event.endedAt,
+          workerName: event.workerName,
+          reproductionLabel: event.isReproduction
+            ? `Újragyártás${event.reproductionNumber ? ` #${event.reproductionNumber}` : ""}`
+            : "Normál",
+        });
+      });
+    });
+
+    return displayRows;
+  }
+
+  function appendDashboardPlanOrderEndSheet(
+    workbook: any,
+    XLSX: any,
+    sourceData: DashboardData = dashboardData,
+    stationFilterOverride?: string,
+    workerFilterOverride?: string
+  ): void {
+    if (!sourceData.planOrderEndRows.length) return;
+    const rows = getDashboardPlanOrderEndDisplayRows(sourceData, stationFilterOverride, workerFilterOverride);
+    const sheetRows: Array<Array<string | number>> = [
+      ["Sorrend", "Sorszám", "Munkaállomás", "END állapot", "END időpont", "Befejező dolgozó", "Gyártás"],
+      ...rows.map((row) => [
+        row.sequence,
+        row.orderNumber,
+        row.stationName,
+        row.endStatus,
+        row.endedAt ? formatDateTime(row.endedAt) : "-",
+        row.workerName || "-",
+        row.reproductionLabel || "-",
+      ]),
+    ];
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(sheetRows), "Szűrt tervsorszámok END");
   }
 
   async function fetchDashboardPlanEfficiency(
@@ -26823,6 +27069,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       }
     }
 
+    let planOrderEndRows: DashboardPlanOrderEndRow[] = [];
+    if (planFieldMatch.active && planFieldMatch.matchedPlanRows.length > 0) {
+      const matchingPlanOrders = Array.from(new Set(
+        planFieldMatch.matchedPlanRows
+          .map((row) => row.orderNumber)
+          .filter((orderNumber) => matchesDashboardOrderFilters(orderNumber, orderFilters))
+      ));
+      const planHistoryLogs = planFieldTargetsDate
+        ? periodLogs
+        : await fetchDashboardLogsByExactOrders(matchingPlanOrders);
+      planOrderEndRows = buildDashboardPlanOrderEndRows(planFieldMatch, planHistoryLogs, orderFilters);
+    }
+
     const [built, stationEfficiencyRows, stationTypePerformanceRows] = await Promise.all([
       Promise.resolve(buildDashboardData(calculationLogs, workers, calculationRange)),
       fetchDashboardPlanEfficiency(range, orderFilters, planFieldMatch),
@@ -26837,6 +27096,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       availableOrderNumbers,
       stationEfficiencyRows,
       stationTypePerformanceRows,
+      planOrderEndRows,
       totalScrap: visibleLogs.reduce((sum, row) => sum + (Number(row.scrap_qty || 0) || 0), 0),
       lastUpdatedAt: new Date().toISOString(),
     };
@@ -27174,6 +27434,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     ];
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(eventRows), "Eseménynapló");
 
+    appendDashboardPlanOrderEndSheet(
+      workbook,
+      XLSX,
+      dashboardData,
+      filteredWorkerStats.selectedStationValue,
+      filteredWorkerStats.selectedWorkerValue
+    );
+
     const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
     downloadBlob(`vezetoi_dashboard_${dashboardDate}.xlsx`, new Blob([output]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   }
@@ -27384,6 +27652,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       ];
 
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(eventRows), "END eseménynapló");
+      appendDashboardPlanOrderEndSheet(
+        workbook,
+        XLSX,
+        dashboardData,
+        selectedStationValue,
+        selectedWorkerValue
+      );
       const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
       const safeFrom = dashboardDate || "tol";
       const safeTo = dashboardDateTo || dashboardDate || "ig";
@@ -28242,6 +28517,69 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         });
       }
     });
+
+    const pdfPlanOrderEndRows = getDashboardPlanOrderEndDisplayRows(
+      options.sourceData,
+      options.stationFilter,
+      options.workerFilter
+    );
+    if (options.sourceData.planOrderEndRows.length > 0) {
+      pdf.addPage("a4", "portrait");
+      doc.setFillColor(255, 255, 255);
+      doc.rect(0, 0, pageWidth, 103, "F");
+      drawLogoAt(marginX + 2, 16, 84, 38);
+      doc.setDrawColor(...borderGray);
+      doc.line(122, 15, 122, 62);
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(11);
+      doc.setTextColor(...ink);
+      doc.text("SZŰRT TERVSORSZÁMOK ÉS END LEJELENTÉSEK", 137, 31);
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(6.6);
+      doc.setTextColor(...middleGray);
+      doc.text(`${options.rangeLabel} • ${options.stationFilter === "all" ? "Összes munkaállomás" : options.stationFilter}`, 137, 48);
+      doc.setFillColor(...charcoal);
+      doc.rect(marginX, 72, contentWidth, 25, "F");
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(8.4);
+      doc.setTextColor(255, 255, 255);
+      doc.text("A *_TERV EREDETI SORRENDJÉBEN", marginX + 10, 88);
+
+      pdf.autoTable({
+        startY: 110,
+        head: [["Sorrend", "Sorszám", "Munkaállomás", "END", "END idő", "Dolgozó", "Gyártás"]],
+        body: pdfPlanOrderEndRows.map((row) => [
+          String(row.sequence),
+          row.orderNumber,
+          row.stationName,
+          row.endStatus,
+          row.endedAt ? formatDateTime(row.endedAt) : "-",
+          row.workerName || "-",
+          row.reproductionLabel || "-",
+        ]),
+        theme: "grid",
+        margin: { left: marginX, right: marginX, top: 110, bottom: 45 },
+        styles: {
+          font: PDF_FONT_FAMILY,
+          fontSize: 6.3,
+          cellPadding: 3.5,
+          overflow: "linebreak",
+          textColor: ink,
+          lineColor: borderGray,
+          lineWidth: 0.35,
+          valign: "middle",
+        },
+        headStyles: {
+          font: PDF_FONT_FAMILY,
+          fontStyle: "bold",
+          fillColor: [76, 79, 84],
+          textColor: [255, 255, 255],
+          lineColor: [155, 158, 163],
+          lineWidth: 0.35,
+        },
+        alternateRowStyles: { fillColor: paleGray },
+      });
+    }
 
     const pageCount = pdf.getNumberOfPages();
     for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
