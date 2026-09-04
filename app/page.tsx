@@ -878,6 +878,10 @@ type ProductionMonitorRow = {
   sequenceNumber: number;
   plannedQuantity: number | null;
   productName: string;
+  completionDate?: string;
+  backlogDays?: number | null;
+  backlogLabel?: string;
+  isBacklog?: boolean;
   requiredStations: string[];
   overallStatus: ProductionMonitorStatus;
   stations: Record<string, ProductionMonitorCell>;
@@ -2982,6 +2986,7 @@ const DEFAULT_PRODUCTION_PLAN_SERVER_PATH = "P:\\Gyartas\\Termelesi_terv\\Napi_t
 const PRODUCTION_PLAN_SERVER_IMPORT_API = "/api/production-plan-import";
 
 const PRODUCTION_MONITOR_ORDER_FIELD_ID = "__order_number__";
+const PRODUCTION_MONITOR_BACKLOG_FIELD_ID = "__backlog__";
 const PRODUCTION_MONITOR_MIN_ZOOM = 60;
 const PRODUCTION_MONITOR_MAX_ZOOM = 150;
 const PRODUCTION_MONITOR_ZOOM_STEP = 10;
@@ -12788,6 +12793,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
     profile.tables[0].fieldOrder = [
       PRODUCTION_MONITOR_ORDER_FIELD_ID,
+      PRODUCTION_MONITOR_BACKLOG_FIELD_ID,
       ...productionMonitorData.stations.map(getProductionMonitorStationFieldId),
     ];
     setProductionMonitorProfiles((currentProfiles) => [...currentProfiles, profile]);
@@ -12869,6 +12875,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const table = createDefaultProductionMonitorTable(tableName, tableId, activeProductionMonitorProfile.theme);
     table.fieldOrder = [
       PRODUCTION_MONITOR_ORDER_FIELD_ID,
+      PRODUCTION_MONITOR_BACKLOG_FIELD_ID,
       ...productionMonitorData.stations.map(getProductionMonitorStationFieldId),
     ];
     updateActiveProductionMonitorProfile((profile) => ({
@@ -12949,6 +12956,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   function getProductionMonitorFieldLabel(fieldId: string): string {
     if (fieldId === PRODUCTION_MONITOR_ORDER_FIELD_ID) return "Sorszám";
+    if (fieldId === PRODUCTION_MONITOR_BACKLOG_FIELD_ID) return "Lemaradások";
     return fieldId.startsWith("station:") ? fieldId.slice("station:".length) : fieldId;
   }
 
@@ -12958,6 +12966,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   ): string[] {
     const validFieldIds = [
       PRODUCTION_MONITOR_ORDER_FIELD_ID,
+      PRODUCTION_MONITOR_BACKLOG_FIELD_ID,
       ...productionMonitorData.stations.map(getProductionMonitorStationFieldId),
     ];
     const validFieldIdSet = new Set(validFieldIds);
@@ -13010,6 +13019,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function resetProductionMonitorTableLayout(): void {
     const fieldOrder = [
       PRODUCTION_MONITOR_ORDER_FIELD_ID,
+      PRODUCTION_MONITOR_BACKLOG_FIELD_ID,
       ...productionMonitorData.stations.map(getProductionMonitorStationFieldId),
     ];
     updateActiveProductionMonitorTable((table) => ({
@@ -13031,6 +13041,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
     resetProfile.tables[0].fieldOrder = [
       PRODUCTION_MONITOR_ORDER_FIELD_ID,
+      PRODUCTION_MONITOR_BACKLOG_FIELD_ID,
       ...productionMonitorData.stations.map(getProductionMonitorStationFieldId),
     ];
     setProductionMonitorProfiles((profiles) => profiles.map((profile) => profile.id === profileId ? resetProfile : profile));
@@ -17963,6 +17974,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const waiting = productionMonitorData.rows.filter((row) => row.overallStatus === "waiting").length;
     const allFieldIds = [
       PRODUCTION_MONITOR_ORDER_FIELD_ID,
+      PRODUCTION_MONITOR_BACKLOG_FIELD_ID,
       ...productionMonitorData.stations.map(getProductionMonitorStationFieldId),
     ];
     const validFieldIdSet = new Set(allFieldIds);
@@ -18276,6 +18288,30 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               title={row.orderNumber}
                             >
                               {row.orderNumber}
+                            </td>
+                          );
+                        }
+
+                        if (fieldId === PRODUCTION_MONITOR_BACKLOG_FIELD_ID) {
+                          return (
+                            <td
+                              key={`${table.id}-${row.orderNumber}-${fieldId}`}
+                              title={row.completionDate ? `Elkészülési dátum: ${row.completionDate}` : ""}
+                              style={{
+                                padding: `${runtime.cellVerticalPadding}px 6px`,
+                                background: currentFieldStyle.cellBackground || theme.orderCellBackground,
+                                color: currentFieldStyle.cellTextColor || theme.orderCellText,
+                                borderBottom: `1px solid ${theme.borderColor}`,
+                                borderRight: `1px solid ${theme.borderColor}`,
+                                textAlign: currentFieldStyle.textAlign,
+                                fontWeight: cellBold ? 900 : 400,
+                                fontStyle: cellItalic ? "italic" : "normal",
+                                fontSize: runtime.cellFontSize,
+                                lineHeight: 1.15,
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {row.backlogLabel || "–"}
                             </td>
                           );
                         }
@@ -21684,6 +21720,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const validFieldIds = [
       PRODUCTION_MONITOR_ORDER_FIELD_ID,
+      PRODUCTION_MONITOR_BACKLOG_FIELD_ID,
       ...productionMonitorData.stations.map((station) => `station:${station}`),
     ];
     const validFieldIdSet = new Set(validFieldIds);
@@ -24915,6 +24952,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       sequenceNumber: number;
       plannedQuantity: number | null;
       productName: string;
+      completionDate: string;
       requiredStations: Set<string>;
     };
 
@@ -24969,16 +25007,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
 
     const addAssemblyPlanRow = (row: Record<string, unknown>): void => {
-      // A Termelési monitor sora KIZÁRÓLAG a szereles_terv napi tervéből származik.
-      // A dátumszűrés alapja a szereles_terv.elkeszules_datum.
+      // A Termelési monitor sora KIZÁRÓLAG a szereles_terv tervéből származik.
+      // A kiválasztott időszak sorai mellett a mai vagy korábbi, még nem teljesen
+      // lezárt szerelési rendelések is bekerülnek lemaradásként. A tényleges
+      // lezártságot a work_logs feldolgozása után ellenőrizzük.
       const completionDate = getPlanCompletionDate(row);
-      if (
-        !/^\d{4}-\d{2}-\d{2}$/.test(completionDate)
-        || completionDate < startDateKey
-        || completionDate > endDateKey
-      ) {
-        return;
-      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(completionDate)) return;
+
+      const isInsideSelectedRange = completionDate >= startDateKey && completionDate <= endDateKey;
+      const canBeBacklogCandidate = completionDate <= todayKey;
+      if (!isInsideSelectedRange && !canBeBacklogCandidate) return;
 
       const rowStatus = normalizeLooseText(valueAsText(
         readMonitorPlanValue(row, ["statusz", "státusz", "status"])
@@ -25001,6 +25039,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           sequenceNumber,
           plannedQuantity: Number.isFinite(quantityNumber) ? quantityNumber : null,
           productName,
+          completionDate,
           requiredStations: new Set<string>([assemblyStationName]),
         };
         sequenceNumber += 1;
@@ -25009,6 +25048,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       } else {
         aggregate.requiredStations.add(assemblyStationName);
         if (!aggregate.productName && productName) aggregate.productName = productName;
+        // Ha ugyanaz a rendelés több tervnapon is szerepel, a legfrissebb
+        // elkészülési dátum tekintendő érvényesnek (átütemezés kezelése).
+        if (completionDate > aggregate.completionDate) aggregate.completionDate = completionDate;
         const quantityRaw = readMonitorPlanValue(row, ["mennyiseg", "mennyiség", "planned_quantity"]);
         const quantityNumber = Number(quantityRaw);
         if (Number.isFinite(quantityNumber)) {
@@ -25119,9 +25161,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       )));
     }
 
+    const productionMonitorDateDiffDays = (fromDateKey: string, toDateKey: string): number => {
+      const parseKey = (value: string): number | null => {
+        const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!match) return null;
+        return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+      };
+      const fromMs = parseKey(fromDateKey);
+      const toMs = parseKey(toDateKey);
+      if (fromMs === null || toMs === null) return 0;
+      return Math.max(0, Math.round((toMs - fromMs) / 86400000));
+    };
+
     const rows: ProductionMonitorRow[] = aggregates
-      .sort((left, right) => left.sequenceNumber - right.sequenceNumber)
-      .map((aggregate) => {
+      .sort((left, right) => {
+        if (left.completionDate !== right.completionDate) {
+          return left.completionDate.localeCompare(right.completionDate);
+        }
+        return left.sequenceNumber - right.sequenceNumber;
+      })
+      .map((aggregate): ProductionMonitorRow | null => {
         const orderNumber = aggregate.orderNumber;
         const orderLogs = logs.filter(
           (log) => normalizeLooseText(log.order_number) === normalizeLooseText(orderNumber)
@@ -25177,17 +25236,39 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               ? "in-progress"
               : "waiting";
 
+        const assemblyCell = stationCells[assemblyStationName] || getMonitorCellFromLogs([]);
+        const isInsideSelectedRange = aggregate.completionDate >= startDateKey && aggregate.completionDate <= endDateKey;
+        const isBacklog = aggregate.completionDate <= todayKey && assemblyCell.status !== "done";
+
+        // A kiválasztott időszakon kívül csak a Szerelésen még nem teljesen kész
+        // mai vagy korábbi rendelések maradnak a monitoron.
+        if (!isInsideSelectedRange && !isBacklog) return null;
+
+        const backlogDays = aggregate.completionDate <= todayKey
+          ? productionMonitorDateDiffDays(aggregate.completionDate, todayKey)
+          : null;
+        const backlogLabel = aggregate.completionDate === todayKey
+          ? "Mai"
+          : backlogDays !== null && backlogDays > 0
+            ? `${backlogDays} nap`
+            : "–";
+
         return {
           itemId: aggregate.itemId,
           orderNumber,
           sequenceNumber: aggregate.sequenceNumber,
           plannedQuantity: aggregate.plannedQuantity,
           productName: aggregate.productName,
+          completionDate: aggregate.completionDate,
+          backlogDays,
+          backlogLabel,
+          isBacklog,
           requiredStations,
           overallStatus,
           stations: stationCells,
         };
-      });
+      })
+      .filter((row): row is ProductionMonitorRow => row !== null);
 
     const syntheticPlan: ProductionPlanRow = {
       id: `monitor-${planStatusFilter}-${startDateKey}-${endDateKey}`,
