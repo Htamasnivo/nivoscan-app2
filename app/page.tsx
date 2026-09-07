@@ -4088,6 +4088,45 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
 
 // Csak megjelenést másol: a célkártyák azonosítója, neve, típusa és adatai megmaradnak.
 // A célon nem létező forrásmezők kimaradnak, a cél saját mezői változatlanok.
+// Csak a színeket állítja vissza: minden más megjelenési beállítás megmarad.
+// A rendszerkártyák saját alapértelmezett színpalettáját használja.
+function resetUnifiedProductionCardThemeColors(
+  theme: ProductionMonitorTheme,
+  defaultTheme: ProductionMonitorTheme,
+  dataSource: ProductionCardTableDataSource = "production-plan"
+): ProductionMonitorTheme {
+  const defaultColors = applyProductionCardPriorityDefaultColors(defaultTheme, dataSource);
+  return normalizeProductionMonitorTheme({
+    ...theme,
+    ...Object.fromEntries(
+      Object.entries(defaultColors).filter(([key]) => /(?:Background|Text|Color)$/.test(key))
+    ),
+  });
+}
+
+function resetUnifiedProductionCardColors(
+  table: ProductionMonitorTableConfig,
+  defaultTheme: ProductionMonitorTheme
+): ProductionMonitorTableConfig {
+  const theme = resetUnifiedProductionCardThemeColors(table.theme, defaultTheme, table.dataSource);
+  return {
+    ...table,
+    theme,
+    fieldStyles: Object.fromEntries(
+      Object.entries(table.fieldStyles || {}).map(([fieldId, style]) => [
+        fieldId,
+        {
+          ...style,
+          headerBackground: "",
+          headerTextColor: "",
+          cellBackground: "",
+          cellTextColor: "",
+        },
+      ])
+    ),
+  };
+}
+
 function unifyProductionCardPresentation(
   profile: ProductionMonitorProfile,
   sourceTableId: string,
@@ -4096,6 +4135,7 @@ function unifyProductionCardPresentation(
 ): ProductionMonitorProfile {
   const source = profile.tables.find((table) => table.id === sourceTableId);
   if (!source) return profile;
+  const defaultTheme = createDefaultProductionCardProfile(stationName).theme;
 
   const sourceFields = getProductionCardFieldIdsForTable(source, stationName);
   const sourceSet = new Set(sourceFields);
@@ -4112,8 +4152,9 @@ function unifyProductionCardPresentation(
   const sourceFor = (fieldId: string): string | undefined =>
     sourceSet.has(fieldId) ? fieldId : sourceByKey.get(getColumnKey(fieldId))?.[0];
 
+  const resetSource = resetUnifiedProductionCardColors(source, defaultTheme);
   const tables = profile.tables.map((table) => {
-    if (table.id === sourceTableId) return table;
+    if (table.id === sourceTableId) return resetSource;
     const validFields = getProductionCardFieldIdsForTable(table, stationName);
     const validSet = new Set(validFields);
     const targetOrder = Array.from(new Set([
@@ -4151,19 +4192,20 @@ function unifyProductionCardPresentation(
         );
       }
     });
-    return {
+    const copiedTable: ProductionMonitorTableConfig = {
       ...table,
       fieldOrder,
       hiddenFieldIds,
       fieldStyles,
       theme: cloneProductionMonitorTheme(source.theme),
     };
+    return resetUnifiedProductionCardColors(copiedTable, defaultTheme);
   });
 
   return normalizeProductionCardProfile({
     ...profile,
     themePresetId: source.id === profile.activeTableId ? "custom" : profile.themePresetId,
-    theme: cloneProductionMonitorTheme(source.theme),
+    theme: resetUnifiedProductionCardThemeColors(source.theme, defaultTheme),
     tables,
   }, stationName);
 }
@@ -15335,7 +15377,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
     if (!window.confirm(
       `A(z) „${sourceTable.name}” kártya teljes megjelenését átmásolod a(z) „${stationName}” munkaállomás további ${targetCount} kártyájára. `
-      + "A közös oszlopok sorrendje, láthatósága, mérete, színei, tipográfiája és formázása felülíródik. "
+      + "A közös oszlopok sorrendje, láthatósága, mérete, tipográfiája és formázása felülíródik. "
+      + "A színek minden kártyán a saját alapértelmezett értékükre állnak vissza, nem másolódnak át. "
       + "A célkártyák saját mezői, nevei és termelési adatai megmaradnak. Folytatod?"
     )) return;
 
@@ -15373,7 +15416,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       });
       setMessage({
         type: "success",
-        text: `A(z) „${stationName}” munkaállomás ${targetCount} további kártyájának teljes megjelenése egységesítve és elmentve. Más munkaállomás nem változott.`,
+        text: `A(z) „${stationName}” munkaállomás ${targetCount} további kártyájának megjelenése egységesítve és elmentve. A színek az alapértelmezett értékükre álltak vissza. Más munkaállomás nem változott.`,
       });
     } catch (error) {
       console.error("A munkaállomáson belüli kártyaegységesítés sikertelen:", error);
