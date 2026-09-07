@@ -203,6 +203,9 @@ type LoggedInDolgozoRow = {
 };
 
 type OrderProductionMeta = {
+  szereles_start_reszek?: string[];
+  terv_sor_id?: string | null;
+  terv_megnevezes?: string | null;
   ujragyartas: boolean;
   ujragyartas_sorszam: number | null;
   gyartas_tipus: "egyedi" | "keszlet";
@@ -272,6 +275,7 @@ type WorkLogRow = {
   // 5-ös esemény / Szerelés: a két ajtórész tényleges gyártási ideje percben.
   tok_tenyleges_perc?: number | null;
   nyilo_tenyleges_perc?: number | null;
+  szereles_start_reszek?: string[] | null;
   ajtolapok_kesz?: boolean | null;
   toklec_kesz?: boolean | null;
   ajtolapok_kesz_worker_name?: string | null;
@@ -1027,6 +1031,7 @@ const EVENT_FIVE_REPAIR_STATION_OPTIONS = [
 ] as const;
 
 type ScrapReplacementRow = {
+  sos?: boolean;
   id: number | string;
   order_number: string;
   kulso_lap_selejt: boolean;
@@ -1234,6 +1239,7 @@ type ProductionCardPriorityRow = {
   endWorkerName: string;
   startedAt: string | null;
   endedAt: string | null;
+  crossStationStatuses?: Record<string, ProductionMonitorStatus>;
 };
 
 type PriorityHistoryRow = {
@@ -1268,6 +1274,7 @@ type ProductionCardBacklogRow = {
   // Így a Lemaradások kártyán ugyanazok az Excel/Supabase mezők
   // jeleníthetők meg, mint a normál napi termelési kártyán.
   planData: Record<string, unknown>;
+  crossStationStatuses?: Record<string, ProductionMonitorStatus>;
 };
 
 type ProductionCardRow = {
@@ -1351,6 +1358,8 @@ type ExecutiveReportRowDescriptor = {
   startedAt: string | null;
   doorWorkflow: boolean;
   panelWorkflow: boolean;
+  sos?: boolean;
+  planRowId?: string;
 };
 
 type ExecutiveReportSelection = ExecutiveReportRowDescriptor & {
@@ -1842,7 +1851,7 @@ const PRODUCTION_CARD_FIELD_IDS = [
   PRODUCTION_CARD_LAP_TOKLEC_KESZ_FIELD_ID,
  ] as const;
 
-type StationPlanFieldDataType = "text" | "integer" | "date";
+type StationPlanFieldDataType = "text" | "integer" | "date" | "boolean";
 type StationPlanFieldDefinition = { key: string; label: string; dataType: StationPlanFieldDataType };
 
 type DashboardPlanFieldOption = StationPlanFieldDefinition & {
@@ -2437,9 +2446,52 @@ function registerFenyezoBusinessPlanFields(rows: Array<Record<string, unknown>>)
   });
 }
 
+const STATION_PLAN_SOS_FIELD: StationPlanFieldDefinition = { key: "sos", label: "SOS", dataType: "boolean" };
+const STATION_PLAN_DISCOVERED_FIELDS = new Map<string, StationPlanFieldDefinition[]>();
+
+function normalizeSosValue(value: unknown): boolean {
+  if (value === true || value === 1) return true;
+  const text = normalizeLooseText(String(value ?? ""));
+  return ["true", "1", "igen", "yes", "sos", "surgos", "x"].includes(text);
+}
+function getPlanSosValue(data: Record<string, unknown> | null | undefined): boolean {
+  if (!data) return false;
+  const nested = data.adat && typeof data.adat === "object" && !Array.isArray(data.adat)
+    ? data.adat as Record<string, unknown> : {};
+  return normalizeSosValue(data.sos ?? nested.sos);
+}
+function getSosRowSortValue(data: Record<string, unknown> | null | undefined): number {
+  return getPlanSosValue(data) ? 0 : 1;
+}
+const PRODUCTION_CARD_SOS_ROW_BACKGROUND = "#073B4C";
+const PRODUCTION_CARD_SOS_ROW_TEXT = "#F0FDFA";
+const PRODUCTION_CARD_SOS_ROW_BORDER = "#2DD4BF";
+
+function registerStationPlanFields(stationName: string, rows: Array<Record<string, unknown>>): void {
+  const stationKey = getStationPlanIdentityKey(stationName);
+  const existing = STATION_PLAN_DISCOVERED_FIELDS.get(stationKey) || [];
+  const fields = new Map(existing.map((field) => [field.key, field]));
+  rows.forEach((row) => Object.keys(row || {}).forEach((key) => {
+    if (key.startsWith("__") || fields.has(key)) return;
+    const known = [...(STATION_PLAN_EXCEL_FIELD_DEFINITIONS[stationKey] || []), ...(LEGACY_STATION_PLAN_FIELD_DEFINITIONS[stationKey] || [])]
+      .find((field) => field.key === key);
+    fields.set(key, known || { key, label: key === "sos" ? "SOS" : key.replace(/_/g, " "), dataType: "text" });
+  }));
+  STATION_PLAN_DISCOVERED_FIELDS.set(stationKey, Array.from(fields.values()));
+}
+
+function parsePlanSosCell(value: unknown): boolean {
+  if (value === null || value === undefined || String(value).trim() === "") return false;
+  const normalized = normalizeLooseText(String(value));
+  if (["false", "0", "nem", "no", "n"].includes(normalized)) return false;
+  if (normalizeSosValue(value)) return true;
+  throw new Error(`Érvénytelen SOS érték: ${String(value)}. Használj Igen/Nem vagy 1/0 értéket.`);
+}
+
 function getStationPlanExcelFieldDefinitions(stationName: string | null | undefined): StationPlanFieldDefinition[] {
   const key = getStationPlanIdentityKey(stationName);
-  return STATION_PLAN_EXCEL_FIELD_DEFINITIONS[key] || STATION_PLAN_BASE_FIELD_DEFINITIONS;
+  const definitions = STATION_PLAN_EXCEL_FIELD_DEFINITIONS[key] || STATION_PLAN_BASE_FIELD_DEFINITIONS;
+  return definitions.some((field) => field.key === "sos") ? definitions : [...definitions, STATION_PLAN_SOS_FIELD];
 }
 
 function getStationPlanFieldDefinitions(stationName: string | null | undefined): StationPlanFieldDefinition[] {
@@ -2470,6 +2522,10 @@ function getStationPlanFieldDefinitions(stationName: string | null | undefined):
     });
   }
 
+  (STATION_PLAN_DISCOVERED_FIELDS.get(key) || []).forEach((field) => {
+    if (!definitionsByKey.has(field.key)) definitionsByKey.set(field.key, field);
+  });
+  if (!definitionsByKey.has("sos")) definitionsByKey.set("sos", STATION_PLAN_SOS_FIELD);
   return Array.from(definitionsByKey.values());
 }
 
@@ -3398,6 +3454,7 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
       PRODUCTION_CARD_PRIORITY_START_WORKER_FIELD_ID,
       PRODUCTION_CARD_PRIORITY_END_WORKER_FIELD_ID,
       PRODUCTION_CARD_PRIORITY_ELAPSED_FIELD_ID,
+      ...getProductionCardCrossStationStatusFields(stationName),
     ]));
   }
 
@@ -3419,6 +3476,7 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
     return Array.from(new Set([
       ...backlogPlanFieldIds,
       ...PRODUCTION_CARD_BACKLOG_FIELD_IDS,
+      ...getProductionCardCrossStationStatusFields(stationName),
     ]));
   }
 
@@ -3470,6 +3528,7 @@ function getProductionCardFieldLabel(fieldId: string): string {
       getProductionCardCrossStationNameFromFieldId(fieldId)
     );
   }
+  if (fieldId === `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}sos`) return "SOS";
   if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
     return getStationPlanFieldLabel(fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length));
   }
@@ -3956,7 +4015,7 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
           PRODUCTION_CARD_LAP_TOKLEC_KESZ_FIELD_ID,
           PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID,
           ...(
-            dataSource === "production-plan"
+            dataSource === "production-plan" || dataSource === "priority" || dataSource === "backlog"
               ? validFields.filter(isProductionCardCrossStationStatusField)
               : []
           ),
@@ -5624,6 +5683,15 @@ function isFullyCompletedEndLog(log: WorkLogRow): boolean {
   return Number(completionValue) >= 100;
 }
 
+function normalizeSzerelesStartParts(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return ["nyilo", "tok"].filter((part) => value.includes(part));
+}
+function getSzerelesStartPartsLabel(parts: unknown): string {
+  const selected = normalizeSzerelesStartParts(parts);
+  return selected.length === 2 ? "Nyíló + Tok" : selected[0] === "nyilo" ? "Nyíló" : selected[0] === "tok" ? "Tok" : "Nincs kiválasztva";
+}
+
 function normalizeOrderProductionMeta(value: unknown): OrderProductionMeta {
   const candidate = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const reproductionNumber = Number(candidate.ujragyartas_sorszam);
@@ -5633,6 +5701,9 @@ function normalizeOrderProductionMeta(value: unknown): OrderProductionMeta {
     ujragyartas_sorszam: Number.isFinite(reproductionNumber) && reproductionNumber > 0 ? Math.trunc(reproductionNumber) : null,
     gyartas_tipus: productionType,
     gyartasi_kor: null,
+    szereles_start_reszek: normalizeSzerelesStartParts(candidate.szereles_start_reszek),
+    terv_sor_id: candidate.terv_sor_id == null ? null : String(candidate.terv_sor_id),
+    terv_megnevezes: candidate.terv_megnevezes == null ? null : String(candidate.terv_megnevezes),
   };
 }
 
@@ -8226,6 +8297,8 @@ export default function Page() {
   const [executiveReportSelections, setExecutiveReportSelections] = useState<Record<string, ExecutiveReportSelection>>({});
   const [loadingExecutiveReport, setLoadingExecutiveReport] = useState(false);
   const [savingExecutiveReport, setSavingExecutiveReport] = useState(false);
+  const [executiveReportSosBusy, setExecutiveReportSosBusy] = useState<Record<string, boolean>>({});
+  const [executiveReportSosOverrides, setExecutiveReportSosOverrides] = useState<Record<string, boolean>>({});
   const [executiveReportEditMode, setExecutiveReportEditMode] = useState(false);
   const [executiveReportEditorTab, setExecutiveReportEditorTab] = useState<"layout" | "typography" | "colors" | "field">("layout");
   const [executiveReportSelectedFieldId, setExecutiveReportSelectedFieldId] = useState(PRODUCTION_CARD_ORDER_FIELD_ID);
@@ -8459,6 +8532,7 @@ export default function Page() {
   // 5-ös esemény / Szerelés: kézzel kijelölt javítási vagy újragyártási célállomások.
   const [eventFiveRepairStationKeys, setEventFiveRepairStationKeys] = useState<string[]>([]);
   const [eventFiveRepairAction, setEventFiveRepairAction] = useState<EventFiveRepairAction>("");
+  const [szerelesStartParts, setSzerelesStartParts] = useState<string[]>([]);
   // Csőlézer / Összeállítás / Lakatos (+ Asztalos saját selejt) külön Selejt módja.
   const [standaloneScrapReportMode, setStandaloneScrapReportMode] = useState(false);
   const [standaloneScrapNote, setStandaloneScrapNote] = useState("");
@@ -11855,6 +11929,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const key = normalizePlanColumnName(field.key);
     const label = normalizePlanColumnName(field.label);
 
+    if (field.key === "sos") return "Nem";
     if (field.dataType === "date") return getLocalDateKey(new Date());
     if (field.dataType === "integer") return 1;
     if (key.includes("normaido")) return "1:30";
@@ -12100,7 +12175,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             const rawValue = definition.key === "hegesztett_pant2"
               ? (row.hegesztett_pant_1 ?? row.hegesztett_pant2 ?? row[normalizedDefinitionKey])
               : (row[normalizedDefinitionKey] ?? row[normalizedDefinitionLabel]);
-            if (definition.dataType === "date") {
+            if (definition.dataType === "boolean") {
+              if (Object.prototype.hasOwnProperty.call(row, normalizedDefinitionKey)
+                || Object.prototype.hasOwnProperty.call(row, normalizedDefinitionLabel)) {
+                data[definition.key] = parsePlanSosCell(rawValue);
+              }
+            } else if (definition.dataType === "date") {
               data[definition.key] = rawValue === null || rawValue === undefined || String(rawValue).trim() === ""
                 ? null
                 : parseSpreadsheetDate(rawValue);
@@ -13355,10 +13435,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return "in-progress";
   }
 
+  function getProductionCardCrossStatusValue(status: ProductionMonitorStatus | undefined): string {
+    if (status === "done") return "Kész";
+    if (status === "in-progress") return "Folyamatban";
+    if (status === "waiting") return "Várakozik";
+    return "–";
+  }
+
   function getPriorityCardFieldValue(row: ProductionCardPriorityRow, fieldId: string): string | number {
+    if (isProductionCardCrossStationStatusField(fieldId)) {
+      return getProductionCardCrossStatusValue(row.crossStationStatuses?.[getProductionCardCrossStationNameFromFieldId(fieldId)]);
+    }
     if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
       const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
-      const value = row.data?.[key];
+      const value = getProductionCardPlanValue(row.data, key);
       if (value === null || value === undefined) return "";
       if (normalizePlanColumnName(key).includes("normaido")) return formatExcelDuration(value);
       if (typeof value === "object") return JSON.stringify(value);
@@ -13375,6 +13465,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getBacklogCardFieldValue(row: ProductionCardBacklogRow, fieldId: string): string | number {
+    if (isProductionCardCrossStationStatusField(fieldId)) {
+      return getProductionCardCrossStatusValue(row.crossStationStatuses?.[getProductionCardCrossStationNameFromFieldId(fieldId)]);
+    }
     if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
       const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
       const value = getProductionCardPlanValue(row.planData, key);
@@ -13801,10 +13894,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+  async function loadStationPlanSchemaForStation(stationName: string): Promise<void> {
+    if (!supabase || !stationName) return;
+    const tableName = buildStationPlanTableName(stationName);
+    const { data, error } = await supabase.rpc("nivo_plan_columns", { p_table_name: tableName });
+    if (error) {
+      console.warn(`A(z) ${tableName} teljes mezőlistája nem olvasható; az ismert mezők megmaradnak:`, error);
+      return;
+    }
+    const definitions: StationPlanFieldDefinition[] = ((data || []) as Array<{ column_name: string; data_type: string }>).map((column) => {
+      const type = String(column.data_type || "").toLowerCase();
+      const dataType: StationPlanFieldDataType = type.includes("boolean") ? "boolean"
+        : type.includes("date") || type.includes("timestamp") ? "date"
+        : type.includes("integer") || type.includes("numeric") || type.includes("double precision") ? "integer" : "text";
+      return { key: column.column_name, label: column.column_name === "sos" ? "SOS" : column.column_name.replace(/_/g, " "), dataType };
+    });
+    const stationKey = getStationPlanIdentityKey(stationName);
+    const existing = new Map((STATION_PLAN_DISCOVERED_FIELDS.get(stationKey) || []).map((field) => [field.key, field]));
+    definitions.forEach((field) => existing.set(field.key, field));
+    STATION_PLAN_DISCOVERED_FIELDS.set(stationKey, Array.from(existing.values()));
+  }
+
   async function fetchProductionCardProfileForStation(stationName: string): Promise<{ profile: ProductionMonitorProfile; updatedAt: string }> {
     const cleanStationName = String(stationName || "").trim();
     if (!cleanStationName) return { profile: createDefaultProductionCardProfile(), updatedAt: "" };
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    await loadStationPlanSchemaForStation(cleanStationName);
 
     const { data, error } = await supabase
       .from(PRODUCTION_CARD_SETTINGS_TABLE)
@@ -13945,6 +14060,42 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+  function getNivoPlanRowId(data: Record<string, unknown> | null | undefined): string {
+    if (!data) return "";
+    const metadata = data.adat && typeof data.adat === "object" && !Array.isArray(data.adat)
+      ? data.adat as Record<string, unknown> : {};
+    return String(data.nivo_terv_sor_id ?? data.id ?? metadata.nivo_terv_sor_id ?? metadata.id ?? "").trim();
+  }
+
+  function getNivoPlanLogRowId(log: WorkLogRow): string {
+    const metadata = getStructuredNoteMetadata(log.note);
+    return String(metadata.terv_sor_id ?? metadata.reszjelentes_terv_sor_id ?? "").trim();
+  }
+
+  function filterNivoPlanRowLogs(
+    sourceLogs: WorkLogRow[], planData: Record<string, unknown>,
+    sourceRowId: string, sameOrderRowCount: number
+  ): WorkLogRow[] {
+    return filterWorkLogsForQuantityPlanLifecycle(sourceLogs, planData).filter((log) => {
+      const linkedId = getNivoPlanLogRowId(log);
+      if (linkedId) return linkedId === sourceRowId;
+      // A régi naplót csak akkor lehet biztonsággal hozzárendelni, ha
+      // ugyanazon sorszámhoz nincs több lehetséges tervsor.
+      return sameOrderRowCount <= 1;
+    });
+  }
+
+  function filterNivoPlanRowBatches(
+    sourceBatches: ProductionBatchRow[], planData: Record<string, unknown>,
+    sourceRowId: string, sameOrderRowCount: number, orderNumber: string
+  ): ProductionBatchRow[] {
+    return filterProductionBatchesForQuantityPlanLifecycle(sourceBatches, planData).filter((batch) => {
+      const meta = getProductionMetaForOrder(batch.production_meta, orderNumber);
+      const linkedId = String(meta.terv_sor_id || "").trim();
+      return linkedId ? linkedId === sourceRowId : sameOrderRowCount <= 1;
+    });
+  }
+
   async function fetchPriorityRowsForStation(stationName: string): Promise<ProductionCardPriorityRow[]> {
     if (!supabase || !stationName) return [];
 
@@ -13982,10 +14133,36 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       ((orderData || []) as PriorityOrderDbRow[]).map((order) => [order.id, order])
     );
 
+    const planDataByOrder = new Map<string, Record<string, unknown>[]>();
+    const planTableName = getExactProductionCardPlanTableName(stationName);
+    const priorityOrderNumbers = Array.from(new Set(((orderData || []) as PriorityOrderDbRow[]).map((row) => String(row.order_number || "").trim()).filter(Boolean)));
+    for (let index = 0; index < priorityOrderNumbers.length; index += 100) {
+      const { data: planRowsForPriority, error: planError } = await supabase.from(planTableName)
+        .select("*").in("sorszam", priorityOrderNumbers.slice(index, index + 100)).limit(10000);
+      if (planError) { console.warn("Prioritási tervmezők nem olvashatók:", planError); continue; }
+      for (const raw of (planRowsForPriority || []) as Record<string, unknown>[]) {
+        const key = normalizeLooseText(String(raw.sorszam || ""));
+        const rows = planDataByOrder.get(key) || [];
+        rows.push(raw); planDataByOrder.set(key, rows);
+      }
+    }
+
     return stationRows
       .map((station) => {
         const order = ordersById.get(station.priority_order_id);
         if (!order) return null;
+        const priorityData = order.data && typeof order.data === "object" ? order.data as Record<string, unknown> : {};
+        const candidates = planDataByOrder.get(normalizeLooseText(String(order.order_number || ""))) || [];
+        const explicitId = String(priorityData.nivo_terv_sor_id || "").trim();
+        const productName = String(getProductionCardPlanValue(priorityData, "termek") || getProductionCardPlanValue(priorityData, "megnevezes") || "").trim();
+        const matching = candidates.filter((raw) => explicitId
+          ? String(raw.id ?? "") === explicitId
+          : !productName || normalizeLooseText(String(raw.termek ?? raw.megnevezes ?? "")) === normalizeLooseText(productName));
+        const matchingPlan = matching.length === 1 ? matching[0] : null;
+        const physicalJson = matchingPlan?.adat && typeof matchingPlan.adat === "object" && !Array.isArray(matchingPlan.adat) ? matchingPlan.adat as Record<string, unknown> : {};
+        const hydratedData = matchingPlan ? { ...physicalJson, ...matchingPlan, ...priorityData,
+          sos: getPlanSosValue(matchingPlan) || getPlanSosValue(priorityData),
+          nivo_terv_sor_id: String(matchingPlan.id) } : priorityData;
         const normalizedStatus = String(station.status || "VARAKOZIK").toUpperCase();
         const status: ProductionMonitorStatus = normalizedStatus === "FOLYAMATBAN"
           ? "in-progress"
@@ -13996,7 +14173,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           id: station.id,
           priorityOrderId: station.priority_order_id,
           orderNumber: String(order.order_number || "").trim(),
-          data: order.data && typeof order.data === "object" ? order.data : {},
+          data: hydratedData,
           status,
           statusLabel: status === "in-progress" ? "Folyamatban" : status === "done" ? "Kész" : "Várakozik",
           startWorkerName: String(station.start_worker_name || "").trim(),
@@ -14020,6 +14197,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const tableName = getExactProductionCardPlanTableName(cleanStationName);
     const priorityRows = await fetchPriorityRowsForStation(cleanStationName);
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    await loadStationPlanSchemaForStation(cleanStationName);
     if (!cleanStationName || !dateKey) {
       return { stationName: cleanStationName, dateKey, tableName, rows: [], lastUpdatedAt: new Date().toISOString(), errorMessage: "" };
     }
@@ -14044,6 +14222,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       .order("id", { ascending: true })
       .limit(10000);
 
+    if (!stationPlanResponse.error) registerStationPlanFields(cleanStationName, (stationPlanResponse.data || []) as Record<string, unknown>[]);
     if (stationPlanResponse.error) {
       sourceErrors.push(`A(z) ${tableName} tábla nem olvasható: ${normalizeError(stationPlanResponse.error)}`);
     } else {
@@ -14322,7 +14501,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const orderNumbers = Array.from(new Set(planRows.map((row) => row.orderNumber)));
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, tok_tenyleges_perc, nyilo_tenyleges_perc, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, tok_tenyleges_perc, nyilo_tenyleges_perc, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const chunk = orderNumbers.slice(index, index + 100);
       const { data: logData, error: logError } = await supabase
@@ -14406,6 +14585,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         );
 
       const overdueOrderNumbers = Array.from(new Set(overdueSourceRows.map((row) => row.orderNumber)));
+      const szinterPlanRowCounts = new Map<string, number>();
+      if (getStationPlanIdentityKey(cleanStationName) === "szinter") {
+        for (let index = 0; index < overdueOrderNumbers.length; index += 100) {
+          const { data: allPlanRows, error: allPlanError } = await supabase.from(tableName)
+            .select("id,sorszam").in("sorszam", overdueOrderNumbers.slice(index, index + 100)).limit(10000);
+          if (allPlanError) throw allPlanError;
+          for (const row of (allPlanRows || []) as Array<{ id: string | number; sorszam: string }>) {
+            const key = normalizeLooseText(String(row.sorszam || ""));
+            szinterPlanRowCounts.set(key, (szinterPlanRowCounts.get(key) || 0) + 1);
+          }
+        }
+      }
       const overdueLogs: WorkLogRow[] = [];
       for (let index = 0; index < overdueOrderNumbers.length; index += 100) {
         const chunk = overdueOrderNumbers.slice(index, index + 100);
@@ -14491,17 +14682,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           // A részjelentésből létrejött maradék sor csak a SAJÁT létrejötte utáni
           // START/END eseményeket láthatja. Így az előző 300 -> 150 END nem jelöli
           // automatikusan késznek az új 150 db-os maradék sort.
-          const effectiveRowLogs = isOpenQuantityRemainder
-            ? filterWorkLogsForQuantityPlanLifecycle(rowLogs, planRow.planData)
-            : rowLogs;
-          const effectiveRowBatchStarts = isOpenQuantityRemainder
-            ? filterProductionBatchesForQuantityPlanLifecycle(rowBatchStarts, planRow.planData)
-            : rowBatchStarts;
-          const rowWorkerStatus = isOpenQuantityRemainder
+          const isExactSzinterBacklog = getStationPlanIdentityKey(cleanStationName) === "szinter";
+          const sameOrderRowCount = szinterPlanRowCounts.get(normalizeLooseText(orderNumber)) || groupRows.length;
+          const effectiveRowLogs = isExactSzinterBacklog
+            ? filterNivoPlanRowLogs(rowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
+            : isOpenQuantityRemainder
+              ? filterWorkLogsForQuantityPlanLifecycle(rowLogs, planRow.planData)
+              : rowLogs;
+          const effectiveRowBatchStarts = isExactSzinterBacklog
+            ? filterNivoPlanRowBatches(rowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
+            : isOpenQuantityRemainder
+              ? filterProductionBatchesForQuantityPlanLifecycle(rowBatchStarts, planRow.planData)
+              : rowBatchStarts;
+          const rowWorkerStatus = (isOpenQuantityRemainder || isExactSzinterBacklog)
             ? resolveProductionCardWorkers(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
             : workerStatus;
 
-          const completedQuantity = isOpenQuantityRemainder
+          const completedQuantity = (isOpenQuantityRemainder || isExactSzinterBacklog)
             ? Math.min(
                 planRow.plannedQuantity,
                 calculateCompletedPlanQuantity(
@@ -14513,11 +14710,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               )
             : Math.min(planRow.plannedQuantity, Math.max(0, unallocatedCompletedQuantity));
 
-          if (!isOpenQuantityRemainder) {
+          if (!isOpenQuantityRemainder && !isExactSzinterBacklog) {
             unallocatedCompletedQuantity = Math.max(0, unallocatedCompletedQuantity - completedQuantity);
           }
 
-          const rowCompletionLogs = isOpenQuantityRemainder
+          const rowCompletionLogs = (isOpenQuantityRemainder || isExactSzinterBacklog)
             ? getRelevantCompletionLogsForQuantity(effectiveRowLogs, cleanStationName)
             : completionLogs;
           const rowCompletionTimes = rowCompletionLogs
@@ -14558,7 +14755,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     nyiloKesz: rowWorkerStatus.nyiloKesz,
                     completionPercent: (rowWorkerStatus.completionPercent || 0) as 0 | 50 | 100,
                   }, rowWorkerStatus.status === "in-progress")
-                : hasProgress ? "Pótlás folyamatban" : "Lemaradás – elvégzendő",
+                : hasProgress ? "Folyamatban" : "Lemaradás – elvégzendő",
             startWorkerName: rowWorkerStatus.startWorkerName,
             lastWorkerName: rowWorkerStatus.endedAt ? rowWorkerStatus.endWorkerName : "",
             startedAt: rowWorkerStatus.startedAt,
@@ -14589,7 +14786,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     // ugyanaz a sorszám/gyártási szám + megnevezés pár valóban szerepel.
     // ==========================================================
     const crossStationStatusesByPlanKey = new Map<string, Record<string, ProductionMonitorStatus>>();
-    planRows.forEach((planRow) => {
+    const crossStatusSourceRows = [
+      ...planRows,
+      ...backlogRows.map((row) => ({ orderNumber: row.orderNumber, productName: row.productName })),
+      ...priorityRows.map((row) => ({
+        orderNumber: row.orderNumber,
+        productName: String(getProductionCardPlanValue(row.data, "termek") || getProductionCardPlanValue(row.data, "megnevezes") || ""),
+      })),
+    ];
+    crossStatusSourceRows.forEach((planRow) => {
       crossStationStatusesByPlanKey.set(productionCardPlanRowKey(planRow), {});
     });
 
@@ -14599,7 +14804,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         (station) => normalizeLooseText(station) !== normalizeLooseText(cleanStationName)
       );
 
-    if (planRows.length > 0 && orderNumbers.length > 0) {
+    const crossOrderNumbers = Array.from(new Set(crossStatusSourceRows.map((row) => row.orderNumber).filter(Boolean)));
+    if (crossStatusSourceRows.length > 0 && crossOrderNumbers.length > 0) {
       for (const otherStationName of otherProductionCardStations) {
         const otherTableName = buildStationPlanTableName(otherStationName);
         const matchingPlanKeys = new Set<string>();
@@ -14607,8 +14813,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
         // A sorszam kompatibilitási mező minden *_terv táblában a
         // gyártási számot/rendelésszámot hordozza.
-        for (let index = 0; index < orderNumbers.length; index += 100) {
-          const chunk = orderNumbers.slice(index, index + 100);
+        for (let index = 0; index < crossOrderNumbers.length; index += 100) {
+          const chunk = crossOrderNumbers.slice(index, index + 100);
 
           const { data: otherPlanData, error: otherPlanError } = await supabase
             .from(otherTableName)
@@ -14703,7 +14909,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         }
 
         matchingPlanKeys.forEach((key) => {
-          const currentPlanRow = planRows.find(
+          const currentPlanRow = crossStatusSourceRows.find(
             (planRow) => productionCardPlanRowKey(planRow) === key
           );
           if (!currentPlanRow) return;
@@ -14736,6 +14942,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         });
       }
     }
+
+    priorityRows.forEach((row) => {
+      const productName = String(getProductionCardPlanValue(row.data, "termek") || getProductionCardPlanValue(row.data, "megnevezes") || "");
+      row.crossStationStatuses = crossStationStatusesByPlanKey.get(productionCardPlanRowKey({ orderNumber: row.orderNumber, productName })) || {};
+    });
+    backlogRows.forEach((row) => {
+      row.crossStationStatuses = crossStationStatusesByPlanKey.get(productionCardPlanRowKey(row)) || {};
+    });
 
     const rows: ProductionCardRow[] = planRows.map((planRow) => {
       const rowLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(planRow.orderNumber));
@@ -16089,6 +16303,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+  function getProductionCardRowSos(
+    row: ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
+    source: ProductionCardTableDataSource | undefined
+  ): boolean {
+    if (source === "priority") return getPlanSosValue((row as ProductionCardPriorityRow).data);
+    if (source === "backlog") return getPlanSosValue((row as ProductionCardBacklogRow).planData);
+    if (source === "scrap-replacement") return Boolean((row as ScrapReplacementRow).sos);
+    return getPlanSosValue((row as ProductionCardRow).planData);
+  }
+
   function renderProductionCardDisplay(
     profile: ProductionMonitorProfile,
     data: ProductionCardData,
@@ -16139,13 +16363,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       // Normál napi termelési kártya: a KÉSZ sor is megmarad.
       // Prioritás / Selejtpótlás / Lemaradások: a kész sor továbbra is eltűnik.
-      const sourceRows = isPriorityTable
+      const sourceRowsUnsorted = isPriorityTable
         ? rawSourceRows.filter((rawRow) => (rawRow as ProductionCardPriorityRow).status !== "done")
         : isScrapTable
           ? rawSourceRows.filter((rawRow) => getScrapReplacementCardStatus(rawRow as ScrapReplacementRow) !== "done")
           : isBacklogTable
             ? rawSourceRows.filter((rawRow) => (rawRow as ProductionCardBacklogRow).status !== "done")
             : [...data.rows];
+      const sourceRows = [...sourceRowsUnsorted].sort((left, right) =>
+        Number(getProductionCardRowSos(right as any, table.dataSource))
+        - Number(getProductionCardRowSos(left as any, table.dataSource))
+      );
       // FONTOS: minden munkaállomás SIMA termelési kártyáján a KÉSZ sor
       // mindig látható marad. Csak a Prioritás / Selejtpótlás / Lemaradás
       // rendszerkártyákról tűnik el a kész sor.
@@ -16314,6 +16542,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     const priorityRow = isPriorityTable ? rawRow as ProductionCardPriorityRow : null;
                     const scrapRow = isScrapTable ? rawRow as ScrapReplacementRow : null;
                     const backlogRow = isBacklogTable ? rawRow as ProductionCardBacklogRow : null;
+                    const rowSos = getProductionCardRowSos(rawRow as any, table.dataSource);
                     const status = priorityRow ? priorityRow.status : scrapRow ? getScrapReplacementCardStatus(scrapRow) : backlogRow ? backlogRow.status : productionRow!.status;
                     const rowKey = priorityRow
                       ? priorityRow.id
@@ -16354,6 +16583,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       >
                         {executiveReport && executiveDescriptor && executiveSelection && (
                           <td style={{ padding: 8, background: executiveSelection.selected ? "#172554" : "#0f172a", color: "#f8fafc", borderBottom: `1px solid ${theme.borderColor}`, borderRight: `2px solid ${theme.borderColor}`, verticalAlign: "top" }}>
+                            {executiveDescriptor.kind !== "scrap-replacement" && (
+                              <label style={{ display: "flex", alignItems: "center", gap: 9, fontWeight: 900, cursor: "pointer", color: "#5eead4", marginBottom: 8 }}>
+                                <input type="checkbox"
+                                  checked={executiveReportSosOverrides[executiveDescriptor.key] ?? executiveDescriptor.sos ?? false}
+                                  disabled={Boolean(executiveReportSosBusy[executiveDescriptor.key])}
+                                  onChange={(event) => void saveExecutiveReportSos(executiveDescriptor, event.target.checked)}
+                                  style={{ width: 20, height: 20 }} />
+                                SOS {executiveReportSosBusy[executiveDescriptor.key] ? "Mentés..." : ""}
+                              </label>
+                            )}
                             {executiveDescriptor.status === "done" ? (
                               <div style={{ color: "#86efac", fontWeight: 900, padding: 6 }}>Már kész</div>
                             ) : (
@@ -16384,14 +16623,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                           const style = getProductionCardFieldStyle(fieldId, table);
                           const cellBold = resolveProductionMonitorTriState(style.cellBold, theme.cellBold);
                           const cellItalic = resolveProductionMonitorTriState(style.cellItalic, theme.cellItalic);
-                          const isCrossStationStatusField =
-                            Boolean(productionRow)
-                            && isProductionCardCrossStationStatusField(fieldId);
+                          const isCrossStationStatusField = isProductionCardCrossStationStatusField(fieldId);
                           const crossStationName = isCrossStationStatusField
                             ? getProductionCardCrossStationNameFromFieldId(fieldId)
                             : "";
                           const crossStationStatus = isCrossStationStatusField
-                            ? productionRow!.crossStationStatuses?.[crossStationName]
+                            ? (productionRow?.crossStationStatuses || priorityRow?.crossStationStatuses || backlogRow?.crossStationStatuses)?.[crossStationName]
                             : undefined;
 
                           const isStatus = fieldId === PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID;
@@ -16445,6 +16682,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               : backlogRow
                                 ? getBacklogCardFieldValue(backlogRow, fieldId)
                                 : getProductionCardFieldValue(productionRow!, fieldId);
+                          const displayedValue = fieldId === `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}sos`
+                            ? (rowSos ? "SOS" : "–") : value;
                           const title = priorityRow
                             ? [priorityRow.startedAt ? `START: ${formatDateTime(priorityRow.startedAt)}` : "", priorityRow.startWorkerName ? `Indító: ${priorityRow.startWorkerName}` : "", priorityRow.endWorkerName ? `Befejező: ${priorityRow.endWorkerName}` : ""].filter(Boolean).join(" | ")
                             : scrapRow
@@ -16512,7 +16751,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               title={canOpenSzerelesDetailPdf ? `${String(value || "Rendelés")} · A teljes sor kattintható a szerelési _terv részletező PDF megnyitásához` : title}
                               style={{
                                 padding: `${Math.max(2, Math.round(theme.cellPadding * zoomRatio))}px 5px`,
-                                background: quantityPartialRow
+                                background: rowSos ? PRODUCTION_CARD_SOS_ROW_BACKGROUND : quantityPartialRow
                                   ? "#2563eb"
                                   : isCrossStationStatusField
                                     ? (style.cellBackground || background)
@@ -16522,7 +16761,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                         || style.cellBackground
                                         || background
                                       ),
-                                color: quantityPartialRow
+                                color: rowSos ? PRODUCTION_CARD_SOS_ROW_TEXT : quantityPartialRow
                                   ? "#eff6ff"
                                   : isCrossStationStatusField
                                     ? (style.cellTextColor || color)
@@ -16532,7 +16771,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                         || style.cellTextColor
                                         || color
                                       ),
-                                borderBottom: `1px solid ${theme.borderColor}`,
+                                borderBottom: `1px solid ${rowSos ? PRODUCTION_CARD_SOS_ROW_BORDER : theme.borderColor}`,
                                 borderRight: `1px solid ${theme.borderColor}`,
                                 textAlign: style.textAlign,
                                 fontWeight: cellBold ? 900 : 400,
@@ -16546,7 +16785,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                 textUnderlineOffset: canOpenSzerelesDetailPdf ? 3 : undefined,
                               }}
                             >
-                              {value === "" ? "–" : value}
+                              {rowSos && isOrder ? <span style={{ color: PRODUCTION_CARD_SOS_ROW_TEXT, fontWeight: 900, marginRight: 6 }}>SOS</span> : null}
+                              {displayedValue === "" ? "–" : displayedValue}
                             </td>
                           );
                         })}
@@ -16963,6 +17203,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         orderNumber: row.orderNumber,
         sourceId: String(row.id),
         priorityOrderId: row.priorityOrderId,
+        sos: getPlanSosValue(row.data),
+        planRowId: String(row.data.nivo_terv_sor_id || ""),
         status: row.status,
         startWorkerName: row.startWorkerName,
         startedAt: row.startedAt,
@@ -16996,6 +17238,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         stationName,
         orderNumber: row.orderNumber,
         sourceId: String(row.id),
+        sos: getPlanSosValue(row.planData),
+        planRowId: String(row.id),
         priorityOrderId: null,
         status: row.status,
         startWorkerName: row.startWorkerName,
@@ -17012,6 +17256,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       stationName,
       orderNumber: row.orderNumber,
       sourceId: row.sourceRowId,
+      sos: getPlanSosValue(row.planData),
+      planRowId: row.sourceRowId,
       priorityOrderId: null,
       status: row.status,
       startWorkerName: row.startWorkerName,
@@ -17312,6 +17558,48 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     await removeExecutiveReportedOrderFromProductionBatches(selection.stationName, selection.orderNumber);
     await finalizeExecutiveReportPriorityCard(selection, effectiveWorkerName, nowIso);
     await finalizeExecutiveReportScrapCard(selection, effectiveWorkerName, nowIso);
+  }
+
+  async function saveExecutiveReportSos(descriptor: ExecutiveReportRowDescriptor, wanted: boolean): Promise<void> {
+    if (!supabase || !activeWorker || executiveReportSosBusy[descriptor.key]) return;
+    setExecutiveReportSosBusy((current) => ({ ...current, [descriptor.key]: true }));
+    try {
+      const tableName = getExactProductionCardPlanTableName(descriptor.stationName);
+      let planRowId = String(descriptor.planRowId || "").trim();
+      if (!planRowId) {
+        const { data: candidates, error } = await supabase.from(tableName).select("*")
+          .eq("sorszam", descriptor.orderNumber).limit(10000);
+        if (error) throw error;
+        const rows = (candidates || []) as Record<string, unknown>[];
+        if (rows.length !== 1) {
+          throw new Error(`${descriptor.orderNumber}: nem azonosítható egyértelműen a tervsor. Az SOS-t a saját _terv sorazonosítójával állítsd be.`);
+        }
+        planRowId = String(rows[0].id ?? "").trim();
+      }
+      if (!planRowId) throw new Error("A tervsor nem rendelkezik egyedi id mezővel.");
+      const { data: saved, error: saveError } = await supabase.from(tableName)
+        .update({ sos: wanted }).eq("id", planRowId).select("id,sos").single();
+      if (saveError) throw saveError;
+      if (Boolean(saved?.sos) !== wanted) throw new Error("Az SOS mentése nem igazolható.");
+      if (descriptor.priorityOrderId) {
+        const { data: priority, error: priorityError } = await supabase.from(PRIORITY_ORDERS_TABLE)
+          .select("id,data").eq("id", descriptor.priorityOrderId).single();
+        if (priorityError) throw priorityError;
+        const oldData = priority?.data && typeof priority.data === "object" ? priority.data as Record<string, unknown> : {};
+        const { error: updateError } = await supabase.from(PRIORITY_ORDERS_TABLE)
+          .update({ data: { ...oldData, sos: wanted, nivo_terv_sor_id: planRowId } })
+          .eq("id", descriptor.priorityOrderId);
+        if (updateError) throw updateError;
+      }
+      setExecutiveReportSosOverrides((current) => ({ ...current, [descriptor.key]: wanted }));
+      setMessage({ type: "success", text: `${descriptor.orderNumber}: SOS ${wanted ? "bekapcsolva" : "kikapcsolva"}.` });
+      await loadExecutiveReportView(executiveReportStation, executiveReportDateFrom, executiveReportDateTo);
+      if (productionCardAdminStation) void loadProductionCardData(productionCardAdminStation, productionCardDate);
+    } catch (error) {
+      setMessage({ type: "error", text: `SOS mentési hiba: ${normalizeError(error)}` });
+    } finally {
+      setExecutiveReportSosBusy((current) => ({ ...current, [descriptor.key]: false }));
+    }
   }
 
   async function saveExecutiveReportSelections(): Promise<void> {
@@ -23281,7 +23569,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   ): StationPlanUploadRow[] {
     if (!rawMatrix.length) throw new Error(`${sourceLabel}: a munkafül üres.`);
 
-    const definitions = getStationPlanExcelFieldDefinitions(stationName);
+    const allDefinitions = getStationPlanExcelFieldDefinitions(stationName);
+    const hasSosHeader = (Array.isArray(rawMatrix[0]) ? rawMatrix[0] : []).some((value) => normalizeSpreadsheetHeader(String(value ?? "")) === "sos");
+    const definitions = hasSosHeader ? allDefinitions : allDefinitions.filter((field) => field.key !== "sos");
     const headerRow = Array.isArray(rawMatrix[0]) ? rawMatrix[0] : [];
     const expectedHeaders = definitions.map((definition) => normalizeSpreadsheetHeader(definition.label));
     const actualHeaders = headerRow.map((value) => normalizeSpreadsheetHeader(String(value ?? "")));
@@ -23348,6 +23638,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           normalizedValues[definition.key] = rawValue === null || rawValue === undefined || String(rawValue).trim() === ""
             ? null
             : parseStationPlanDateValue(rawValue);
+        } else if (definition.dataType === "boolean") {
+          normalizedValues[definition.key] = parsePlanSosCell(rawValue);
         } else if (definition.dataType === "integer") {
           normalizedValues[definition.key] = parseSpreadsheetNumber(rawValue);
         } else {
@@ -23401,6 +23693,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const isDurationField = normalizePlanColumnName(key).includes("normaido");
         if (isDurationField) adat[key] = formatExcelDuration(rawValue) || null;
         else if (definition?.dataType === "date") adat[key] = rawValue === "" ? null : (parseStationPlanDateValue(rawValue) || rawValue);
+        else if (definition?.dataType === "boolean") adat[key] = parsePlanSosCell(rawValue);
         else if (definition?.dataType === "integer") adat[key] = parseSpreadsheetNumber(rawValue);
         else if (rawValue instanceof Date) adat[key] = rawValue.toISOString();
         else adat[key] = rawValue;
@@ -24205,6 +24498,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const label = normalizePlanColumnName(field.label);
 
     if (key === "kiszallitasi_datum") return "";
+    if (field.key === "sos") return "Nem";
     if (field.dataType === "date") return getLocalDateKey(new Date());
     if (field.dataType === "integer") return 1;
     if (key.includes("normaido")) return toExcelDurationSerial("1:30");
@@ -24232,6 +24526,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const resolved = getProductionCardPlanValue(row, definition.key);
     if (resolved === null || resolved === undefined || String(resolved).trim() === "") return "";
 
+    if (definition.dataType === "boolean") return normalizeSosValue(resolved) ? "Igen" : "Nem";
     if (definition.dataType === "integer") {
       const parsed = parseSpreadsheetNumber(resolved);
       return parsed === null ? "" : parsed;
@@ -29630,6 +29925,7 @@ START: ${formatDateTime(startAt)}`
     setToklecScrap(false);
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
+    setSzerelesStartParts([]);
     setStandaloneScrapReportMode(false);
     setStandaloneScrapNote("");
     setTokKesz(false);
@@ -31090,6 +31386,7 @@ body {
     setToklecScrap(false);
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
+    setSzerelesStartParts([]);
     setTokKesz(false);
     setNyiloKesz(false);
     setTokKeszLocked(false);
@@ -34377,6 +34674,10 @@ body {
               ? item.note || null
               : null,
 
+          szereles_start_reszek: getStationPlanIdentityKey(currentMachineId) === "szereles"
+            ? (normalizeSzerelesStartParts(getProductionMetaForOrder(selectedEndBatch.production_meta, item.order).szereles_start_reszek).length
+              ? normalizeSzerelesStartParts(getProductionMetaForOrder(selectedEndBatch.production_meta, item.order).szereles_start_reszek) : null)
+            : null,
           note: buildStructuredNote(
             [item.note, batchNoteClean].filter(Boolean).join(" | ") || null,
             {
@@ -34384,6 +34685,7 @@ body {
               worker_id: activeWorker.id,
               machine_id: currentMachineId,
               event_bundle: 5,
+              szereles_start_reszek: normalizeSzerelesStartParts(getProductionMetaForOrder(selectedEndBatch.production_meta, item.order).szereles_start_reszek),
               original_batch_code: selectedEndBatch.batch_code,
               original_batch_start_time: batchStartTime,
               start_worker_name: selectedEndBatch.worker_name || null,
@@ -34880,6 +35182,9 @@ body {
             darab: reportedDarab,
             szal: finalSzal,
             ...getQuantityPlanAuditMetadata(quantityContexts[order], reportedDarab),
+            ...getNivoSzinterPlanAuditMetadata(currentMachineId, quantityContexts[order]),
+            ...(getStationPlanIdentityKey(currentMachineId) === "szinter" && orderProductionMeta.terv_sor_id
+              ? { terv_sor_id: orderProductionMeta.terv_sor_id, terv_megnevezes: orderProductionMeta.terv_megnevezes } : {}),
             action: "END" as WorkAction,
             operation_code: operationCode,
             operation_status: operationCode === "SZABAS" ? "MARASRA_VAR" : operationCode === "MARAS" ? "KESZ" : null,
@@ -35202,6 +35507,11 @@ body {
       return;
     }
 
+    const selectedStartPartsForSave = normalizeSzerelesStartParts(szerelesStartParts);
+    if (requiresSzerelesStartParts() && selectedStartPartsForSave.length === 0) {
+      setMessage({ type: "error", text: "Válaszd ki a Nyíló / Tok kezdő részt a rendelés hozzáadása előtt." });
+      return;
+    }
     if (orderDuplicateCheckInFlightRef.current) return;
     orderDuplicateCheckInFlightRef.current = true;
 
@@ -35239,7 +35549,10 @@ body {
 
       setBatchOrderProductionMeta((previous) => ({
         ...previous,
-        [candidate]: productionDecision.meta,
+        [candidate]: {
+          ...productionDecision.meta,
+          ...(requiresSzerelesStartParts() ? { szereles_start_reszek: selectedStartPartsForSave } : {}),
+        },
       }));
       setBatchOrders((previous) => [...previous, candidate]);
       setMessage({
@@ -35501,6 +35814,8 @@ body {
     created_at?: string | null;
     ujragyartas?: boolean | null;
     ujragyartas_sorszam?: number | null;
+    szereles_start_reszek?: string[] | null;
+    note?: string | null;
   } | null> {
     if (!supabase) return null;
 
@@ -35510,7 +35825,7 @@ body {
 
     let response = await supabase
       .from("work_logs")
-      .select("id, order_number, machine_id, start_time, end_time, start_timestamp, end_timestamp, action, created_at, ujragyartas, ujragyartas_sorszam")
+      .select("id, order_number, machine_id, start_time, end_time, start_timestamp, end_timestamp, action, created_at, ujragyartas, ujragyartas_sorszam, szereles_start_reszek, note")
       .eq("order_number", cleanOrderId)
       .eq("machine_id", currentMachineId)
       .not("start_time", "is", null)
@@ -35525,7 +35840,7 @@ body {
     if (!row) {
       response = await supabase
         .from("work_logs")
-        .select("id, order_number, machine_id, start_time, end_time, start_timestamp, end_timestamp, action, created_at, ujragyartas, ujragyartas_sorszam")
+        .select("id, order_number, machine_id, start_time, end_time, start_timestamp, end_timestamp, action, created_at, ujragyartas, ujragyartas_sorszam, szereles_start_reszek, note")
         .eq("order_number", cleanOrderId)
         .eq("machine_id", currentMachineId)
         .eq("action", "START")
@@ -35545,6 +35860,8 @@ body {
       created_at?: string | null;
       ujragyartas?: boolean | null;
       ujragyartas_sorszam?: number | null;
+      szereles_start_reszek?: string[] | null;
+      note?: string | null;
     };
   }
 
@@ -35746,6 +36063,33 @@ body {
   }
 
 
+  function requiresSzerelesStartParts(worker: Worker | null = activeWorker): boolean {
+    return Number(worker?.Esemeny_Koteg ?? worker?.esemeny_koteg ?? -1) === 5
+      && getStationPlanIdentityKey(getCurrentMachineIdForInsert()) === "szereles";
+  }
+
+  function renderSzerelesStartPartPicker(): React.JSX.Element | null {
+    if (!requiresSzerelesStartParts()) return null;
+    return (
+      <div style={{ marginBottom: 16, padding: 14, border: "1px solid #64748b", borderRadius: 12, background: "#0f172a" }}>
+        <strong style={{ color: "#f8fafc" }}>Melyik részt kezded el? *</strong>
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginTop: 10 }}>
+          {([ ["nyilo", "Nyíló"], ["tok", "Tok"] ] as const).map(([part, label]) => (
+            <label key={part} style={{ display: "flex", alignItems: "center", gap: 8, color: "#f8fafc", cursor: "pointer", fontWeight: 800 }}>
+              <input type="checkbox" checked={szerelesStartParts.includes(part)}
+                onChange={(event) => setSzerelesStartParts((current) => event.target.checked
+                  ? normalizeSzerelesStartParts([...current, part]) : current.filter((value) => value !== part))}
+                style={{ width: 21, height: 21 }} />{label}
+            </label>
+          ))}
+        </div>
+        <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 8 }}>
+          Egy vagy mindkettő választható. A teljes Eltelt idő és a két tényleges idő START-kor indul; az első készre jelentés után a másik rész ideje újraindul.
+        </div>
+      </div>
+    );
+  }
+
   async function finalizeSingleOrderCreation(orderId: string): Promise<void> {
     if (batchFinalizeInFlightRef.current) return;
     if (!supabase || !activeWorker) {
@@ -35767,6 +36111,8 @@ body {
       return;
     }
 
+    const selectedStartPartsForSave = normalizeSzerelesStartParts(szerelesStartParts);
+    let nivoStartPlanContextForSave: QuantityPlanContext | null = null;
     let orderProductionMeta: OrderProductionMeta = {
       ujragyartas: false,
       ujragyartas_sorszam: null,
@@ -35791,6 +36137,11 @@ body {
         return;
       }
 
+      if (requiresSzerelesStartParts() && selectedStartPartsForSave.length === 0) {
+        setMessage({ type: "error", text: "START előtt válaszd ki: Nyíló, Tok vagy mindkettő." });
+        focusAndSelectInput(orderInputRef);
+        return;
+      }
       const groupCheck = await findStartGroupConflicts([finalOrder]);
       if (groupCheck.conflicts.length > 0) {
         playSharpErrorBeep();
@@ -35886,6 +36237,9 @@ body {
         return;
       }
 
+      if (getStationPlanIdentityKey(currentMachineId) === "szinter") {
+        nivoStartPlanContextForSave = await fetchNivoSzinterStartContext(finalOrder);
+      }
       const activeScrapReplacement = routedScrapReplacementForStart
         || await fetchOpenSingleScrapReplacement(finalOrder, currentMachineId);
       if (activeScrapReplacement) await assertScrapReplacementRouteReady(activeScrapReplacement);
@@ -35909,6 +36263,7 @@ body {
           ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
           gyartas_tipus: orderProductionMeta.gyartas_tipus,
           gyartasi_kor: orderProductionMeta.gyartasi_kor,
+          szereles_start_reszek: requiresSzerelesStartParts() ? selectedStartPartsForSave : null,
           note: buildStructuredNote("Egyedi rendelés azonnali rögzítése", {
             worker_name: workerNameForSave,
             worker_id: activeWorker.id,
@@ -35923,6 +36278,8 @@ body {
             start_timestamp: nowIso,
             start_time: nowIso,
             single_order_saved_at: nowIso,
+            ...(requiresSzerelesStartParts() ? { szereles_start_reszek: selectedStartPartsForSave } : {}),
+            ...(nivoStartPlanContextForSave ? { terv_sor_id: nivoStartPlanContextForSave.rowId, terv_megnevezes: String(nivoStartPlanContextForSave.rawRow.megnevezes ?? "") } : {}),
             ujragyartas: orderProductionMeta.ujragyartas,
             ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
             gyartas_tipus: orderProductionMeta.gyartas_tipus,
@@ -36067,6 +36424,12 @@ body {
       ])
     ) as Record<string, OrderProductionMeta>;
 
+    if (requiresSzerelesStartParts() && ordersForSave.some((order) =>
+      normalizeSzerelesStartParts(productionMetaForSave[order]?.szereles_start_reszek).length === 0
+    )) {
+      setMessage({ type: "error", text: "A Szerelés köteg minden rendeléséhez kötelező Nyíló / Tok START-választás." });
+      return;
+    }
     if (ordersForSave.length === 0) {
       setMessage({ type: "error", text: "Nincs beolvasott rendelés!" });
       focusAndSelectInput(orderInputRef);
@@ -36110,6 +36473,16 @@ body {
         return;
       }
 
+      if (getStationPlanIdentityKey(currentMachineId) === "szinter") {
+        const contexts: Record<string, QuantityPlanContext | null> = {};
+        for (const order of ordersForSave) contexts[order] = await fetchNivoSzinterStartContext(order);
+        ordersForSave.forEach((order) => {
+          const context = contexts[order];
+          if (context) productionMetaForSave[order] = {
+            ...productionMetaForSave[order], terv_sor_id: String(context.rowId), terv_megnevezes: String(context.rawRow.megnevezes ?? ""),
+          };
+        });
+      }
       const generatedBatchCode = `BATCH-${Date.now()}`;
 
       const { data, error } = await supabase
@@ -36729,6 +37102,33 @@ body {
     );
   }
 
+  async function fetchNivoSzinterStartContext(orderNumber: string): Promise<QuantityPlanContext | null> {
+    const stationName = getCurrentMachineIdForInsert();
+    if (getStationPlanIdentityKey(stationName) !== "szinter") return null;
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const tableName = getExactProductionCardPlanTableName(stationName);
+    const { data, error } = await supabase.from(tableName).select("*")
+      .eq("sorszam", orderNumber).limit(10000);
+    if (error) throw error;
+    const active = ((data || []) as Record<string, unknown>[])
+      .map((row) => buildQuantityPlanContext(tableName, row))
+      .filter((row): row is QuantityPlanContext => Boolean(row))
+      .filter((row) => row.state !== "reszjelentes" && row.state !== "teljes");
+    const roots = new Set(active.map((row) => String(row.rootRowId)));
+    if (roots.size > 1) {
+      throw new Error(`${orderNumber}: több külön aktív Szinter tervsor található. A START pontos sorazonosító nélkül nem köthető biztonságosan egyikhez sem.`);
+    }
+    return chooseActiveQuantityPlanContext(active);
+  }
+
+  function getNivoSzinterPlanAuditMetadata(
+    stationName: string, context: QuantityPlanContext | null | undefined
+  ): Record<string, unknown> {
+    return getStationPlanIdentityKey(stationName) === "szinter" && context
+      ? { terv_sor_id: String(context.rowId), terv_megnevezes: String(context.rawRow.megnevezes ?? "") }
+      : {};
+  }
+
   function getQuantityPlanAuditMetadata(
     context: QuantityPlanContext | null | undefined,
     reportedQuantity: number | null
@@ -36903,6 +37303,11 @@ body {
       return;
     }
 
+    if (action === "START" && requiresSzerelesStartParts() && normalizeSzerelesStartParts(szerelesStartParts).length === 0
+      && !(await hasOpenStartForOrderAtActiveStation(finalOrderNumber))) {
+      setMessage({ type: "error", text: "START előtt válaszd ki: Nyíló, Tok vagy mindkettő." });
+      return;
+    }
     if (action === "START") {
       const missing = getMissingRouteParts(finalOrderNumber);
       if (missing.length > 0) {
@@ -37188,6 +37593,7 @@ body {
         darab: finalDarab,
         szal: finalSzal,
         ...getQuantityPlanAuditMetadata(quantityPlanContext, finalDarab),
+        ...getNivoSzinterPlanAuditMetadata(getCurrentMachineIdForInsert(), quantityPlanContext),
         kulso_lap_selejt: finalOuterSheetScrap,
         belso_lap_selejt: finalInnerSheetScrap,
         toklec_selejt: finalToklecScrap,
@@ -37250,6 +37656,8 @@ body {
           || (isPanelTwoPartEnd && panelCompletionPercent < 100)
           || (isThreePartEnd && threePartCompletionPercent < 100);
 
+        const linkedStartMetadata = getStructuredNoteMetadata(openLog.note);
+        const linkedStartParts = normalizeSzerelesStartParts(openLog.szereles_start_reszek || linkedStartMetadata.szereles_start_reszek);
         const endPayload = {
           worker_id: activeWorker.id,
           worker_name: activeWorker["Teljes nev"],
@@ -37276,8 +37684,14 @@ body {
           start_timestamp: linkedStartTime,
           end_time: nowForSave,
           end_timestamp: nowForSave,
+          szereles_start_reszek: isDoorTwoPartEnd ? (linkedStartParts.length ? linkedStartParts : null) : null,
           note: buildStructuredNote(finalNote, {
             ...auditMetadata,
+            ...(isDoorTwoPartEnd && linkedStartParts.length ? { szereles_start_reszek: linkedStartParts } : {}),
+            ...(getStationPlanIdentityKey(currentMachineId) === "szinter" ? {
+              ...getNivoSzinterPlanAuditMetadata(currentMachineId, quantityPlanContext),
+              ...(linkedStartMetadata.terv_sor_id ? { terv_sor_id: linkedStartMetadata.terv_sor_id } : {}),
+            } : {}),
             event_bundle: isThreePartEnd ? 7 : isPanelTwoPartEnd ? 6 : isDoorTwoPartEnd ? 5 : workerEventKoteg,
             action: "END" as WorkAction,
             start_time: linkedStartTime,
@@ -37444,10 +37858,13 @@ body {
           ujragyartas_sorszam: startProductionMeta.ujragyartas_sorszam,
           gyartas_tipus: startProductionMeta.gyartas_tipus,
           gyartasi_kor: startProductionMeta.gyartasi_kor,
+          szereles_start_reszek: requiresSzerelesStartParts() ? normalizeSzerelesStartParts(szerelesStartParts) : null,
           note: buildStructuredNote(finalNote, {
             ...auditMetadata,
             start_timestamp: nowForSave,
             start_time: nowForSave,
+            ...(requiresSzerelesStartParts() ? { szereles_start_reszek: normalizeSzerelesStartParts(szerelesStartParts) } : {}),
+            ...getNivoSzinterPlanAuditMetadata(currentMachineId, getStationPlanIdentityKey(currentMachineId) === "szinter" ? await fetchNivoSzinterStartContext(finalOrderNumber) : null),
             ujragyartas: startProductionMeta.ujragyartas,
             ujragyartas_sorszam: startProductionMeta.ujragyartas_sorszam,
             gyartas_tipus: startProductionMeta.gyartas_tipus,
@@ -40035,6 +40452,7 @@ body {
                     </div>
                   )}
 
+                  {renderSzerelesStartPartPicker()}
                   <div style={{ marginBottom: 16, background: "#020617", border: "1px solid #334155", borderRadius: 12, padding: 14 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 10 }}>
                       <strong>Beolvasott rendelések</strong>
@@ -40047,6 +40465,7 @@ body {
                         {batchOrders.map((item) => (
                           <li key={item} style={{ marginBottom: 6 }}>
                             <span style={{ fontWeight: 700 }}>{item}</span>
+                            {requiresSzerelesStartParts() && <span style={{ marginLeft: 8, fontSize: 12, color: "#5eead4" }}>{getSzerelesStartPartsLabel(batchOrderProductionMeta[item]?.szereles_start_reszek)}</span>}
                             <button
                               type="button"
                               onClick={() => {
@@ -40118,6 +40537,7 @@ body {
                 </>
               ) : (
                 <>
+              {renderSzerelesStartPartPicker()}
               <div style={{ marginBottom: 16 }}>
                 <label style={{ display: "block", marginBottom: 8, color: "#cbd5e1" }}>Rendelés szám</label>
                 <input
