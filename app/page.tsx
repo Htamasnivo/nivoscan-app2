@@ -4086,6 +4086,88 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
   });
 }
 
+// Csak megjelenést másol: a célkártyák azonosítója, neve, típusa és adatai megmaradnak.
+// A célon nem létező forrásmezők kimaradnak, a cél saját mezői változatlanok.
+function unifyProductionCardPresentation(
+  profile: ProductionMonitorProfile,
+  sourceTableId: string,
+  stationName: string,
+  getColumnKey: (fieldId: string) => string
+): ProductionMonitorProfile {
+  const source = profile.tables.find((table) => table.id === sourceTableId);
+  if (!source) return profile;
+
+  const sourceFields = getProductionCardFieldIdsForTable(source, stationName);
+  const sourceSet = new Set(sourceFields);
+  const sourceOrder = Array.from(new Set([
+    ...source.fieldOrder.filter((id) => sourceSet.has(id)),
+    ...sourceFields,
+  ]));
+  const sourceByKey = new Map<string, string[]>();
+  sourceOrder.forEach((id) => {
+    const key = getColumnKey(id);
+    sourceByKey.set(key, [...(sourceByKey.get(key) || []), id]);
+  });
+  const sourceRank = new Map(sourceOrder.map((id, index) => [id, index]));
+  const sourceFor = (fieldId: string): string | undefined =>
+    sourceSet.has(fieldId) ? fieldId : sourceByKey.get(getColumnKey(fieldId))?.[0];
+
+  const tables = profile.tables.map((table) => {
+    if (table.id === sourceTableId) return table;
+    const validFields = getProductionCardFieldIdsForTable(table, stationName);
+    const validSet = new Set(validFields);
+    const targetOrder = Array.from(new Set([
+      ...table.fieldOrder.filter((id) => validSet.has(id)),
+      ...validFields,
+    ]));
+    // A közös mezők a forrás sorrendjét kapják; a cél saját mezőinek helye megmarad.
+    const matched = targetOrder.filter((id) => sourceFor(id) !== undefined);
+    const originalRank = new Map(targetOrder.map((id, index) => [id, index]));
+    matched.sort((a, b) =>
+      (sourceRank.get(sourceFor(a)!) ?? Number.MAX_SAFE_INTEGER)
+      - (sourceRank.get(sourceFor(b)!) ?? Number.MAX_SAFE_INTEGER)
+      || (originalRank.get(a)! - originalRank.get(b)!)
+    );
+    let nextMatched = 0;
+    const fieldOrder = targetOrder.map((id) =>
+      sourceFor(id) !== undefined ? matched[nextMatched++] : id
+    );
+
+    const hiddenFieldIds = validFields.filter((id) => {
+      if (table.dataSource === "production-plan" && isRequiredProductionCardField(id)) return false;
+      const sourceId = sourceFor(id);
+      return sourceId === undefined
+        ? table.hiddenFieldIds.includes(id)
+        : source.hiddenFieldIds.includes(sourceId);
+    });
+    const fieldStyles: Record<string, ProductionMonitorFieldStyle> = {};
+    validFields.forEach((id) => {
+      const sourceId = sourceFor(id);
+      const style = sourceId === undefined ? table.fieldStyles?.[id] : source.fieldStyles?.[sourceId];
+      if (style) {
+        fieldStyles[id] = sanitizeProductionCardFieldStyle(
+          normalizeProductionMonitorFieldStyle(style),
+          sourceId === undefined ? table.theme : source.theme
+        );
+      }
+    });
+    return {
+      ...table,
+      fieldOrder,
+      hiddenFieldIds,
+      fieldStyles,
+      theme: cloneProductionMonitorTheme(source.theme),
+    };
+  });
+
+  return normalizeProductionCardProfile({
+    ...profile,
+    themePresetId: source.id === profile.activeTableId ? "custom" : profile.themePresetId,
+    theme: cloneProductionMonitorTheme(source.theme),
+    tables,
+  }, stationName);
+}
+
 function normalizeProductionMonitorFieldStyle(value: unknown): ProductionMonitorFieldStyle {
   const raw = value && typeof value === "object" ? value as Partial<ProductionMonitorFieldStyle> : {};
   const widthWeight = Number(raw.widthWeight);
@@ -8242,6 +8324,9 @@ export default function Page() {
   const [savingProductionCardSettings, setSavingProductionCardSettings] = useState(false);
   const [applyingProductionCardTypographyToAll, setApplyingProductionCardTypographyToAll] = useState(false);
   const [applyingProductionCardVisibilityToAll, setApplyingProductionCardVisibilityToAll] = useState(false);
+  const [applyingProductionCardUniformity, setApplyingProductionCardUniformity] = useState(false);
+  const productionCardUniformityBusyRef = useRef(false);
+  const productionCardSettingsWriteTailRef = useRef<Promise<void>>(Promise.resolve());
   const [productionCardLastSavedAt, setProductionCardLastSavedAt] = useState("");
   const [, setProductionCardElapsedTick] = useState(0);
   const productionCardDraggedFieldIdRef = useRef<string | null>(null);
@@ -14012,7 +14097,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+  function enqueueProductionCardSettingsWrite(task: () => Promise<void>): Promise<void> {
+    const result = productionCardSettingsWriteTailRef.current.then(task);
+    productionCardSettingsWriteTailRef.current = result.catch(() => undefined);
+    return result;
+  }
+
   async function saveProductionCardSettings(showFeedback = false): Promise<void> {
+    if (productionCardUniformityBusyRef.current) return;
     const stationName = productionCardAdminStation.trim();
     if (!stationName || !productionCardLayoutLoaded) return;
 
@@ -14026,7 +14118,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const serialized = JSON.stringify(safeProfile);
     if (!showFeedback && serialized === productionCardLastSavedPayloadRef.current) return;
 
-    try {
+    await enqueueProductionCardSettingsWrite(async () => {
+      try {
       setSavingProductionCardSettings(true);
       if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
       const savedAt = new Date().toISOString();
@@ -14040,7 +14133,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         }, { onConflict: "station_name" });
       if (error) throw error;
       productionCardLastSavedPayloadRef.current = serialized;
-      setProductionCardProfile(safeProfile);
+      if (getStationPlanIdentityKey(stationName) === getStationPlanIdentityKey(productionCardAdminStationLatestRef.current)) {
+        setProductionCardProfile(safeProfile);
+      }
       setProductionCardLastSavedAt(savedAt);
       if (showFeedback) {
         const savedActiveTable = safeProfile.tables.find((table) => table.id === safeProfile.activeTableId) || safeProfile.tables[0];
@@ -14058,6 +14153,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     } finally {
       setSavingProductionCardSettings(false);
     }
+    });
   }
 
   function getNivoPlanRowId(data: Record<string, unknown> | null | undefined): string {
@@ -15223,7 +15319,73 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return aliases[fieldId] || `field:${fieldId}`;
   }
 
+  async function applyCurrentProductionCardPresentationToThisStation(): Promise<void> {
+    const stationName = productionCardAdminStation.trim();
+    if (!supabase || !stationName || !productionCardLayoutLoaded || productionCardUniformityBusyRef.current) return;
+    if (applyingProductionCardVisibilityToAll || applyingProductionCardTypographyToAll) return;
+
+    const sourceTable = activeProductionCardTable;
+    const sourceProfile = normalizeProductionCardProfile(
+      sanitizeProductionCardProfile(productionCardProfile), stationName
+    );
+    const targetCount = sourceProfile.tables.filter((table) => table.id !== sourceTable.id).length;
+    if (targetCount === 0) {
+      setMessage({ type: "info", text: "Ezen a munkaállomáson nincs másik kártya." });
+      return;
+    }
+    if (!window.confirm(
+      `A(z) „${sourceTable.name}” kártya teljes megjelenését átmásolod a(z) „${stationName}” munkaállomás további ${targetCount} kártyájára. `
+      + "A közös oszlopok sorrendje, láthatósága, mérete, színei, tipográfiája és formázása felülíródik. "
+      + "A célkártyák saját mezői, nevei és termelési adatai megmaradnak. Folytatod?"
+    )) return;
+
+    productionCardUniformityBusyRef.current = true;
+    setApplyingProductionCardUniformity(true);
+    if (productionCardAutoSaveTimerRef.current !== null) {
+      window.clearTimeout(productionCardAutoSaveTimerRef.current);
+      productionCardAutoSaveTimerRef.current = null;
+    }
+    const loadSequence = productionCardSettingsLoadSequenceRef.current;
+    try {
+      await enqueueProductionCardSettingsWrite(async () => {
+        // Állomásváltás közben sem írhatunk egy másik állomás profiljába.
+        if (loadSequence !== productionCardSettingsLoadSequenceRef.current
+          || getStationPlanIdentityKey(stationName) !== getStationPlanIdentityKey(productionCardAdminStationLatestRef.current)) {
+          throw new Error("A munkaállomás megváltozott. Az egységesítés nem történt meg.");
+        }
+        const nextProfile = unifyProductionCardPresentation(
+          sourceProfile, sourceTable.id, stationName, getProductionCardGlobalColumnKey
+        );
+        const savedAt = new Date().toISOString();
+        const { error } = await supabase.from(PRODUCTION_CARD_SETTINGS_TABLE).upsert({
+          station_name: stationName,
+          settings: nextProfile,
+          updated_by: String(activeWorker?.["Teljes nev"] || "").trim() || null,
+          updated_at: savedAt,
+        }, { onConflict: "station_name" });
+        if (error) throw error;
+        if (loadSequence === productionCardSettingsLoadSequenceRef.current
+          && getStationPlanIdentityKey(stationName) === getStationPlanIdentityKey(productionCardAdminStationLatestRef.current)) {
+          productionCardLastSavedPayloadRef.current = JSON.stringify(nextProfile);
+          setProductionCardProfile(nextProfile);
+          setProductionCardLastSavedAt(savedAt);
+        }
+      });
+      setMessage({
+        type: "success",
+        text: `A(z) „${stationName}” munkaállomás ${targetCount} további kártyájának teljes megjelenése egységesítve és elmentve. Más munkaállomás nem változott.`,
+      });
+    } catch (error) {
+      console.error("A munkaállomáson belüli kártyaegységesítés sikertelen:", error);
+      setMessage({ type: "error", text: `Az egységesítés sikertelen: ${normalizeError(error)}` });
+    } finally {
+      productionCardUniformityBusyRef.current = false;
+      setApplyingProductionCardUniformity(false);
+    }
+  }
+
   async function applyCurrentProductionCardColumnVisibilityToAllStations(): Promise<void> {
+    if (productionCardUniformityBusyRef.current) return;
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
       return;
@@ -15346,6 +15508,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   async function applyCurrentProductionCardTypographyToAllStations(): Promise<void> {
+    if (productionCardUniformityBusyRef.current) return;
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
       return;
@@ -18095,12 +18258,22 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     <button
                       type="button"
                       onClick={() => void applyCurrentProductionCardColumnVisibilityToAllStations()}
-                      disabled={applyingProductionCardVisibilityToAll}
+                      disabled={applyingProductionCardVisibilityToAll || applyingProductionCardUniformity}
                       style={{ ...buttonPrimary, background: "#0369a1", color: "#ffffff", borderColor: "#38bdf8", fontWeight: 900, whiteSpace: "nowrap" }}
                     >
                       {applyingProductionCardVisibilityToAll
                         ? "Oszlopok alkalmazása..."
                         : "Látható oszlopok minden kártyára"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void applyCurrentProductionCardPresentationToThisStation()}
+                      disabled={!productionCardLayoutLoaded || applyingProductionCardUniformity || applyingProductionCardVisibilityToAll || applyingProductionCardTypographyToAll}
+                      style={{ ...buttonPrimary, background: "#36545b", color: "#ffffff", fontWeight: 900, whiteSpace: "normal" }}
+                    >
+                      {applyingProductionCardUniformity
+                        ? "Egységesítés és mentés..."
+                        : "Oszlopok egységesítése ezen a munkaállomáson"}
                     </button>
                   </div>
                   {allFieldIds.map((fieldId, index) => {
@@ -18158,7 +18331,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     <button
                       type="button"
                       onClick={() => void applyCurrentProductionCardTypographyToAllStations()}
-                      disabled={applyingProductionCardTypographyToAll}
+                      disabled={applyingProductionCardTypographyToAll || applyingProductionCardUniformity}
                       style={{ ...buttonPrimary, background: "#4338ca", color: "#ffffff", borderColor: "#818cf8", fontWeight: 900, whiteSpace: "nowrap" }}
                     >
                       {applyingProductionCardTypographyToAll ? "Alkalmazás minden kártyára..." : "Minden kártyára érvényes"}
