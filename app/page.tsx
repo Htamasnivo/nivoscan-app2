@@ -2,6 +2,10 @@
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import JsBarcode from "jsbarcode";
+import { RecurringWorksAdmin, RecurringWorkDialog, useRecurringAccess, recurringRead,
+  recurringCardSnapshot, recurringCardValues, recurringNameKey, recurringChoices,
+  recurringSourceKey, recurringInstanceFor, type RecurringSelection,
+  type RecurringCardSnapshot, type RecurringInstance } from "./recurring-work";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 declare global {
@@ -262,6 +266,8 @@ type WorkLogRow = {
   gyartas_tipus?: string | null;
   gyartasi_kor?: number | null;
   operation_code?: BatchOperationCode | null;
+  recurring_instance_id?: string | null;
+  recurring_segment_id?: string | null;
   kulso_lap_selejt?: boolean | null;
   belso_lap_selejt?: boolean | null;
   toklec_selejt?: boolean | null;
@@ -7208,6 +7214,10 @@ function focusScannerInputAfterEditableBlur(ref: React.RefObject<HTMLInputElemen
   }, 0);
 }
 
+function getRecurringLogSegmentId(log: WorkLogRow): string {
+  return String(log.recurring_segment_id || getStructuredNoteMetadata(log.note).recurring_segment_id || "").trim();
+}
+
 function buildOrderStatistics(logs: WorkLogRow[], workers: Worker[]): OrderStatsRow[] {
   const workerMap = new Map<number, Worker>();
   workers.forEach((worker) => workerMap.set(worker.id, worker));
@@ -7229,6 +7239,7 @@ function buildOrderStatistics(logs: WorkLogRow[], workers: Worker[]): OrderStats
 
     const openSessions: Array<{
       workerId: number;
+      recurringSegmentId?: string;
       role: string;
       station: string;
       workerName: string;
@@ -7244,6 +7255,24 @@ function buildOrderStatistics(logs: WorkLogRow[], workers: Worker[]): OrderStats
       const workerName = (log.worker_name || worker?.["Teljes nev"] || `Dolgozó #${log.worker_id}`).trim();
       const startAt = log.start_time || log.start_timestamp || log.created_at;
       const endAt = log.end_time || log.end_timestamp || null;
+      const recurringSegmentId = getRecurringLogSegmentId(log);
+      if (recurringSegmentId) {
+        if (log.action === "START" && !endAt) {
+          if (!openSessions.some(session => session.recurringSegmentId === recurringSegmentId)) {
+            openSessions.push({workerId:log.worker_id,recurringSegmentId,role,station,workerName,startAt});
+          }
+        } else if (log.action === "END" || endAt) {
+          const matchIndex = openSessions.findIndex(session => session.recurringSegmentId === recurringSegmentId);
+          const session = matchIndex >= 0 ? openSessions.splice(matchIndex,1)[0] : null;
+          const resolvedStartAt = session?.startAt || startAt;
+          const resolvedEndAt = endAt || log.created_at;
+          const durationMinutes = diffMinutes(resolvedStartAt,resolvedEndAt);
+          segments.push({orderNumber,role:session?.role||role,station:session?.station||station,
+            workerName:session?.workerName||workerName,startAt:resolvedStartAt,endAt:resolvedEndAt,
+            durationMinutes,durationLabel:formatDuration(durationMinutes),startDateLabel:formatDateOnly(resolvedStartAt),status:"lezárt"});
+        }
+        continue;
+      }
 
       if (log.action === "START" && endAt) {
         const durationMinutes = diffMinutes(startAt, endAt);
@@ -8223,6 +8252,10 @@ export default function Page() {
   const [selectedWorkerId, setSelectedWorkerId] = useState("");
   const [workers, setWorkers] = useState<Worker[]>([]);
   const [activeWorker, setActiveWorker] = useState<Worker | null>(null);
+  const recurringAccess = useRecurringAccess(supabase, activeWorker ? Number(activeWorker.id) : null);
+  const [recurringSelection, setRecurringSelection] = useState<RecurringSelection | null>(null);
+  const recurringSelectionRef = useRef<RecurringSelection | null>(null);
+  const recurringOpeningRef = useRef(false);
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode | null>(null);
   const [flowStage, setFlowStage] = useState<FlowStage>("idle");
   const [workerEventKoteg, setWorkerEventKoteg] = useState<0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8>(1);
@@ -12499,6 +12532,73 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+
+  // Visszatérő munkák: a konkrét terv-/prioritási sor saját állapota.
+  async function readRecurringCardSnapshot(stationName: string): Promise<RecurringCardSnapshot> {
+    if (!supabase) return {names:new Set<string>(),instances:new Map<string,RecurringInstance>()};
+    try {
+      const data = await recurringRead(supabase,stationName);
+      return recurringCardSnapshot(data);
+    } catch(error) {
+      if((error as {code?:string})?.code==="PGRST202")return {names:new Set<string>(),instances:new Map<string,RecurringInstance>()};
+      throw error;
+    }
+  }
+
+  function recurringCardDisplayStatus(snapshot:RecurringCardSnapshot, kind:"plan"|"backlog"|"priority", sourceId:string, name:string) {
+    const value=recurringCardValues(snapshot,kind,sourceId,name);
+    if(!value)return null;
+    return {status:value.status as ProductionMonitorStatus,statusLabel:value.statusLabel,
+      startWorkerName:value.startWorkerName,endWorkerName:value.endWorkerName,
+      startedAt:value.startedAt,endedAt:value.endedAt,
+      isReproduction:value.isReproduction,reproductionNumber:value.reproductionNumber};
+  }
+
+  async function tryOpenRecurringWork(rawName:string, requestedAction:"START"|"END"|"choose"="choose"):Promise<boolean> {
+    if (!supabase || !activeWorker) return false;
+    const name=String(rawName||"").trim();
+    if(!name || isStartBarcode(name) || isEndBarcode(name))return false;
+    if(recurringSelectionRef.current || recurringOpeningRef.current)return true;
+    recurringOpeningRef.current=true;
+    try{
+      const station=getCurrentMachineIdForInsert();
+      const read=await recurringRead(supabase,station,name);
+      if(!read.is_recurring)return false;
+      const next:RecurringSelection={station,name,read,requestedAction,
+        initialQuantity:requestedAction==="END"?endDarab:""};
+      recurringSelectionRef.current=next;
+      setRecurringSelection(next);
+      setOrderNumber(name);
+      closeScanner();
+      return true;
+    }catch(error){
+      // An older deployment without the migration keeps its original workflow.
+      // All other read errors block a potentially incorrect legacy START/END.
+      if((error as {code?:string})?.code==="PGRST202")return false;
+      setMessage({type:"error",text:`A visszatérő munka ellenőrzése sikertelen: ${normalizeError(error)}`});
+      return true;
+    }finally{recurringOpeningRef.current=false;}
+  }
+
+  function closeRecurringWork():void {
+    recurringSelectionRef.current=null;
+    setRecurringSelection(null);
+  }
+  function recurringWorkSaved(result:any,action:"START"|"END"):void {
+    const selected=recurringSelectionRef.current;
+    closeRecurringWork();
+    resetAfterSave();
+    const remaining=result?.remaining_quantity;
+    setMessage({type:"success",text:action==="START"
+      ? `START elmentve: ${selected?.name||""}. A kiválasztott sor folyamatban van.`
+      : result?.status==="done"
+        ? `END elmentve: ${selected?.name||""}. A konkrét sor kész.`
+        : `END elmentve: ${selected?.name||""}. A sor folyamatban marad${remaining!==null&&remaining!==undefined?`, még ${remaining} db szükséges`:""}.`});
+    if(selected){
+      void runNivoBackgroundRefresh(()=>loadProductionCardData(selected.station,getLocalDateKey(new Date())));
+    }
+  }
+
   function ProductionPlanAdmin(): React.JSX.Element {
     const officeTheme = getOfficeTheme("production-plan");
     const sectionCardStyle: React.CSSProperties = {
@@ -12801,6 +12901,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           </section>
 
         </div>
+        {supabase && <RecurringWorksAdmin
+          db={supabase}
+          stations={availableProductionStations}
+          requireToken={recurringAccess.requireToken}
+          waitForXlsx={waitForXlsx}
+          pdfFactory={waitForJsPdf}
+          registerFonts={registerPdfUnicodeFonts}
+          onMessage={(text,error)=>setMessage({type:error?"error":"success",text})}
+        />}
       </div>
     );
   }
@@ -14236,7 +14345,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
   }
 
-  async function fetchPriorityRowsForStation(stationName: string): Promise<ProductionCardPriorityRow[]> {
+  async function fetchPriorityRowsForStation(stationName: string, recurringSnapshot?:RecurringCardSnapshot): Promise<ProductionCardPriorityRow[]> {
     if (!supabase || !stationName) return [];
 
     const { data: stationData, error: stationError } = await supabase
@@ -14309,6 +14418,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           : normalizedStatus === "KESZ"
             ? "done"
             : "waiting";
+        const recurring=recurringSnapshot?recurringCardDisplayStatus(recurringSnapshot,"priority",String(station.id),productName):null;
         return {
           id: station.id,
           priorityOrderId: station.priority_order_id,
@@ -14322,6 +14432,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             : "",
           startedAt: station.started_at || null,
           endedAt: normalizedStatus === "KESZ" ? station.ended_at || null : null,
+          ...(recurring||{}),
         } as ProductionCardPriorityRow;
       })
       .filter((row): row is ProductionCardPriorityRow => Boolean(row))
@@ -14335,8 +14446,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     //   Szinter      -> public.szinter_terv
     //   Kézi szinter -> public.kezi_szinter_terv
     const tableName = getExactProductionCardPlanTableName(cleanStationName);
-    const priorityRows = await fetchPriorityRowsForStation(cleanStationName);
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const recurringSnapshot=await readRecurringCardSnapshot(cleanStationName);
+    const priorityRows = await fetchPriorityRowsForStation(cleanStationName,recurringSnapshot);
     await loadStationPlanSchemaForStation(cleanStationName);
     if (!cleanStationName || !dateKey) {
       return { stationName: cleanStationName, dateKey, tableName, rows: [], lastUpdatedAt: new Date().toISOString(), errorMessage: "" };
@@ -14613,6 +14725,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
 
     const planRows = stationPlanRows.filter((row) => {
+      if (recurringSnapshot.names.has(recurringNameKey(row.productName))) return true;
       if (!isManualStationPlanRow(row)) return true;
 
       const exactDetailedRows =
@@ -14724,7 +14837,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           && !isQuantityPartialClosedPlanData(row.planData)
         );
 
-      const overdueOrderNumbers = Array.from(new Set(overdueSourceRows.map((row) => row.orderNumber)));
+      const recurringOverdueRows=overdueSourceRows.filter(row=>recurringSnapshot.names.has(recurringNameKey(row.productName)));
+      const legacyOverdueRows=overdueSourceRows.filter(row=>!recurringSnapshot.names.has(recurringNameKey(row.productName)));
+      const overdueOrderNumbers = Array.from(new Set(legacyOverdueRows.map((row) => row.orderNumber)));
       const szinterPlanRowCounts = new Map<string, number>();
       if (getStationPlanIdentityKey(cleanStationName) === "szinter") {
         for (let index = 0; index < overdueOrderNumbers.length; index += 100) {
@@ -14784,7 +14899,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const timestampOfLog = (log: WorkLogRow): number => new Date(log.end_time || log.end_timestamp || log.start_time || log.start_timestamp || log.created_at || "").getTime();
 
       const overdueGroups = new Map<string, typeof overdueSourceRows>();
-      overdueSourceRows.forEach((row) => {
+      legacyOverdueRows.forEach((row) => {
         const key = normalizeLooseText(row.orderNumber);
         const group = overdueGroups.get(key) || [];
         group.push(row);
@@ -14914,6 +15029,24 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             completionPercent: rowWorkerStatus.completionPercent,
             planData: planRow.planData,
           });
+        });
+      });
+
+      recurringOverdueRows.forEach((planRow)=>{
+        const recurring=recurringCardValues(recurringSnapshot,"backlog",String(planRow.id),planRow.productName);
+        if(!recurring||recurring.status==="done")return;
+        const delayDays=Math.max(1,Math.floor((new Date(`${dateKey}T00:00:00`).getTime()-new Date(`${planRow.completionDate}T00:00:00`).getTime())/86400000));
+        backlogRows.push({
+          id:planRow.id,orderNumber:planRow.orderNumber,productName:planRow.productName,
+          plannedQuantity:planRow.plannedQuantity,completedQuantity:recurring.completedQuantity,
+          remainingQuantity:Math.max(0,planRow.plannedQuantity-recurring.completedQuantity),
+          completionDate:planRow.completionDate,delayDays,
+          status:recurring.status as ProductionMonitorStatus,
+          statusLabel:recurring.statusLabel==="Várakozik"?"Lemaradás – elvégzendő":recurring.statusLabel,
+          startWorkerName:recurring.startWorkerName,lastWorkerName:recurring.lastWorkerName,
+          startedAt:recurring.startedAt,endedAt:recurring.endedAt,
+          doorWorkflow:false,tokKesz:false,nyiloKesz:false,completionPercent:null,
+          planData:planRow.planData,crossStationStatuses:{},
         });
       });
 
@@ -15100,6 +15233,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
 
     const rows: ProductionCardRow[] = planRows.map((planRow) => {
+      const recurring=recurringCardDisplayStatus(recurringSnapshot,"plan",planRow.sourceRowId,planRow.productName);
+      if(recurring){
+        const base=resolveProductionCardWorkers([],[],planRow.orderNumber);
+        return {...planRow,...base,...recurring,crossStationStatuses:{}};
+      }
       const rowLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(planRow.orderNumber));
       const rowBatchStarts = batchStarts.filter((batch) =>
         Array.isArray(batch.order_ids) &&
@@ -30087,6 +30225,8 @@ START: ${formatDateTime(startAt)}`
   }
 
   function handleBackToName(): void {
+    recurringAccess.clear();
+    closeRecurringWork();
     setEntryPermissionDenied(false);
     setMessage(null);
     setBusy(false);
@@ -31565,6 +31705,8 @@ body {
   }
 
   function resetAfterSave(): void {
+    recurringAccess.clear();
+    closeRecurringWork();
     setEntryPermissionDenied(false);
     clearWorkerScanTimer();
     clearWorkerSubmitDebounceTimer();
@@ -35725,6 +35867,8 @@ body {
       return;
     }
 
+    if (await tryOpenRecurringWork(candidate,"choose")) return;
+
     if (batchOrders.some((order) => normalizeLooseText(order) === normalizeLooseText(candidate))) {
       setOrderNumber("");
       setMessage({ type: "info", text: `A rendelés már benne van a kötegben: ${candidate}` });
@@ -36056,6 +36200,7 @@ body {
       .not("start_time", "is", null)
       .is("end_time", null)
       .order("start_time", { ascending: false })
+      .is("recurring_instance_id",null)
       .limit(1);
 
     if (response.error) throw response.error;
@@ -36071,7 +36216,8 @@ body {
         .eq("action", "START")
         .is("end_time", null)
         .order("created_at", { ascending: false })
-        .limit(1);
+        .is("recurring_instance_id",null)
+      .limit(1);
       if (response.error) throw response.error;
       row = Array.isArray(response.data) && response.data.length > 0 ? response.data[0] : null;
     }
@@ -36171,6 +36317,7 @@ body {
       return;
     }
 
+    if (await tryOpenRecurringWork(finalOrder,"choose")) return;
     batchFinalizeInFlightRef.current = true;
     setBusy(true);
 
@@ -36335,6 +36482,8 @@ body {
       focusAndSelectInput(orderInputRef);
       return;
     }
+
+    if (await tryOpenRecurringWork(finalOrder,"choose")) return;
 
     const selectedStartPartsForSave = normalizeSzerelesStartParts(szerelesStartParts);
     let nivoStartPlanContextForSave: QuantityPlanContext | null = null;
@@ -36627,6 +36776,9 @@ body {
   }
   async function finalizeBatchCreation(): Promise<void> {
     if (batchFinalizeInFlightRef.current) return;
+    if (batchOrders.length>0) {
+      for(const candidate of batchOrders){if(await tryOpenRecurringWork(candidate,"choose"))return;}
+    }
     if (!supabase || !activeWorker) {
       setMessage({ type: "error", text: "Nincs kiválasztott dolgozó." });
       return;
@@ -37528,6 +37680,8 @@ body {
       return;
     }
 
+    if (await tryOpenRecurringWork(finalOrderNumber,action)) return;
+
     if (action === "START" && requiresSzerelesStartParts() && normalizeSzerelesStartParts(szerelesStartParts).length === 0
       && !(await hasOpenStartForOrderAtActiveStation(finalOrderNumber))) {
       setMessage({ type: "error", text: "START előtt válaszd ki: Nyíló, Tok vagy mindkettő." });
@@ -38210,6 +38364,7 @@ body {
       }
 
       if (workflowMode === "single") {
+        if (await tryOpenRecurringWork(finalOrder,"choose")) return;
         if (isInstantWarehouseWorker(activeWorker)) {
           // 8-as esemény: csak a rendelésszámot kell beolvasni.
           // START + END ugyanazzal az időponttal azonnal mentődik.
@@ -38235,6 +38390,7 @@ body {
     }
 
     const resolvedAction: WorkAction = pendingAction || "START";
+    if (await tryOpenRecurringWork(finalOrder,resolvedAction)) return;
 
     setOrderNumber(finalOrder);
     setPendingAction(resolvedAction);
@@ -38308,6 +38464,7 @@ body {
 
     if (effectiveAction === "END") {
       setEndBarcodeConfirmed(true);
+      if (await tryOpenRecurringWork(orderNumber,"END")) return;
       if (_autoAfterScan && !isFoilSheetScrapWorker(activeWorker)) {
         const quantityContext = singleEndPlanQuantityContext || await loadSingleEndQuantityPlanContext(orderNumber);
         if (quantityContext && quantityContext.plannedQuantity > 1 && !endDarab.trim()) {
@@ -41718,6 +41875,15 @@ body {
             </div>
           </div>
         )}
+        {recurringSelection && supabase && <RecurringWorkDialog
+          key={`${recurringSelection.station}:${recurringSelection.name}:${recurringSelection.requestedAction}`}
+          db={supabase}
+          selection={recurringSelection}
+          requireToken={recurringAccess.requireToken}
+          onClose={closeRecurringWork}
+          onSaved={recurringWorkSaved}
+        />}
+        {recurringAccess.dialog}
       </div>
     </main>
   );
