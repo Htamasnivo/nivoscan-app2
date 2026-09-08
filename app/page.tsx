@@ -4,7 +4,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "re
 import JsBarcode from "jsbarcode";
 import { RecurringWorksAdmin, RecurringWorkDialog, useRecurringAccess, recurringRead,
   recurringCardSnapshot, recurringCardValues, recurringNameKey, recurringChoices,
-  recurringSourceKey, recurringInstanceFor, type RecurringSelection,
+  recurringSourceKey, recurringInstanceFor, recurringRemaining, recurringMutate, recurringAuthenticate, type RecurringSelection,
   type RecurringCardSnapshot, type RecurringInstance } from "./recurring-work";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
@@ -1366,6 +1366,10 @@ type ExecutiveReportRowDescriptor = {
   panelWorkflow: boolean;
   sos?: boolean;
   planRowId?: string;
+  productName?: string;
+  plannedQuantity?: number | null;
+  scrapEventId?: string | null;
+  scrapReportedAt?: string | null;
 };
 
 type ExecutiveReportSelection = ExecutiveReportRowDescriptor & {
@@ -2511,9 +2515,9 @@ function getPlanSosValue(data: Record<string, unknown> | null | undefined): bool
 function getSosRowSortValue(data: Record<string, unknown> | null | undefined): number {
   return getPlanSosValue(data) ? 0 : 1;
 }
-const PRODUCTION_CARD_SOS_ROW_BACKGROUND = "#073B4C";
-const PRODUCTION_CARD_SOS_ROW_TEXT = "#F0FDFA";
-const PRODUCTION_CARD_SOS_ROW_BORDER = "#2DD4BF";
+const PRODUCTION_CARD_SOS_ROW_BACKGROUND = "#991b1b";
+const PRODUCTION_CARD_SOS_ROW_TEXT = "#ffffff";
+const PRODUCTION_CARD_SOS_ROW_BORDER = "#ef4444";
 
 function registerStationPlanFields(stationName: string, rows: Array<Record<string, unknown>>): void {
   const stationKey = getStationPlanIdentityKey(stationName);
@@ -4880,6 +4884,40 @@ function getStructuredNoteMetadata(value: string | null | undefined): Record<str
   } catch {
     return {};
   }
+}
+
+type ExecutiveCompletionMarker = {
+  log_id: string;
+  completed_at: string;
+  worker_name: string;
+  start_worker_name: string;
+  started_at: string | null;
+};
+
+function getExecutiveCompletionMarker(data: Record<string, unknown> | null | undefined): ExecutiveCompletionMarker | null {
+  const nested = data?.adat && typeof data.adat === "object" && !Array.isArray(data.adat)
+    ? data.adat as Record<string, unknown> : {};
+  const value = nested.nivo_vezetoi_kesz ?? data?.nivo_vezetoi_kesz;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const marker = value as Record<string, unknown>;
+  if (!marker.completed_at) return null;
+  return {
+    log_id: String(marker.log_id || ""),
+    completed_at: String(marker.completed_at),
+    worker_name: String(marker.worker_name || ""),
+    start_worker_name: String(marker.start_worker_name || ""),
+    started_at: marker.started_at ? String(marker.started_at) : null,
+  };
+}
+
+function isExecutiveCompletionLog(log: WorkLogRow): boolean {
+  const meta = getStructuredNoteMetadata(log.note);
+  return meta.vezetoi_lejelentes === true && Boolean(meta.source_card_id);
+}
+
+function executiveLogSourceId(log: WorkLogRow): string {
+  const meta = getStructuredNoteMetadata(log.note);
+  return String(meta.terv_sor_id ?? meta.reszjelentes_terv_sor_id ?? "").trim();
 }
 
 function isWorkshopStation(value: string | null | undefined): boolean {
@@ -8538,6 +8576,12 @@ export default function Page() {
   const [executiveReportSelections, setExecutiveReportSelections] = useState<Record<string, ExecutiveReportSelection>>({});
   const [loadingExecutiveReport, setLoadingExecutiveReport] = useState(false);
   const [savingExecutiveReport, setSavingExecutiveReport] = useState(false);
+  const executiveReportSaveInFlightRef = useRef(false);
+  const [executiveRecurringAuthWorkerId, setExecutiveRecurringAuthWorkerId] = useState<number | null>(null);
+  const [executiveRecurringAuthPassword, setExecutiveRecurringAuthPassword] = useState("");
+  const [executiveRecurringAuthBusy, setExecutiveRecurringAuthBusy] = useState(false);
+  const [executiveRecurringAuthError, setExecutiveRecurringAuthError] = useState("");
+  const executiveRecurringAuthPendingRef = useRef<{resolve:(token:string)=>void;reject:(error:Error)=>void}|null>(null);
   const [executiveReportSosBusy, setExecutiveReportSosBusy] = useState<Record<string, boolean>>({});
   const [executiveReportSosOverrides, setExecutiveReportSosOverrides] = useState<Record<string, boolean>>({});
   const [executiveReportEditMode, setExecutiveReportEditMode] = useState(false);
@@ -14915,6 +14959,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           row.orderNumber
           && row.completionDate
           && !isQuantityPartialClosedPlanData(row.planData)
+          && !getExecutiveCompletionMarker(row.planData)
         );
 
       const recurringOverdueRows=overdueSourceRows.filter(row=>recurringSnapshot.names.has(recurringNameKey(row.productName)));
@@ -14979,7 +15024,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const timestampOfLog = (log: WorkLogRow): number => new Date(log.end_time || log.end_timestamp || log.start_time || log.start_timestamp || log.created_at || "").getTime();
 
       const overdueGroups = new Map<string, typeof overdueSourceRows>();
-      legacyOverdueRows.forEach((row) => {
+      legacyOverdueRows.filter((row) => !getExecutiveCompletionMarker(row.planData)).forEach((row) => {
         const key = normalizeLooseText(row.orderNumber);
         const group = overdueGroups.get(key) || [];
         group.push(row);
@@ -14994,6 +15039,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const orderNumber = groupRows[0].orderNumber;
         const rowLogs = overdueLogs
           .filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(orderNumber))
+          .filter((log) => !isExecutiveCompletionLog(log))
           .filter((log) => {
             const timestamp = timestampOfLog(log);
             return Number.isFinite(timestamp) && timestamp < selectedDayEndTime;
@@ -15318,7 +15364,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const base=resolveProductionCardWorkers([],[],planRow.orderNumber);
         return {...planRow,...base,...recurring,crossStationStatuses:{}};
       }
-      const rowLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(planRow.orderNumber));
+      const rowLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(planRow.orderNumber) && !isExecutiveCompletionLog(log));
       const rowBatchStarts = batchStarts.filter((batch) =>
         Array.isArray(batch.order_ids) &&
         batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(planRow.orderNumber))
@@ -15331,7 +15377,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const resolvedStatus = resolveProductionCardWorkers(lifecycleLogs, lifecycleBatchStarts, planRow.orderNumber);
       const quantityMeta = getQuantityPartialPlanMetadata(planRow.planData);
 
-      const status = quantityMeta.state === "reszjelentes"
+      const executiveDone = getExecutiveCompletionMarker(planRow.planData);
+      const status = executiveDone
+        ? {
+            ...resolvedStatus,
+            status: "done" as ProductionMonitorStatus,
+            statusLabel: "Kész",
+            startWorkerName: executiveDone.start_worker_name || resolvedStatus.startWorkerName,
+            endWorkerName: executiveDone.worker_name,
+            startedAt: executiveDone.started_at || resolvedStatus.startedAt,
+            endedAt: executiveDone.completed_at,
+          }
+        : quantityMeta.state === "reszjelentes"
         ? {
             ...resolvedStatus,
             status: "done" as ProductionMonitorStatus,
@@ -16978,7 +17035,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     const priorityRow = isPriorityTable ? rawRow as ProductionCardPriorityRow : null;
                     const scrapRow = isScrapTable ? rawRow as ScrapReplacementRow : null;
                     const backlogRow = isBacklogTable ? rawRow as ProductionCardBacklogRow : null;
-                    const rowSos = getProductionCardRowSos(rawRow as any, table.dataSource);
+                    const storedRowSos = getProductionCardRowSos(rawRow as any, table.dataSource);
                     const status = priorityRow ? priorityRow.status : scrapRow ? getScrapReplacementCardStatus(scrapRow) : backlogRow ? backlogRow.status : productionRow!.status;
                     const rowKey = priorityRow
                       ? priorityRow.id
@@ -16995,6 +17052,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     const executiveDescriptor = executiveReport
                       ? getExecutiveReportDescriptor(table.dataSource, rawRow as ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow, data.stationName, rowIndex)
                       : null;
+                    const rowSos = executiveDescriptor
+                      ? executiveReportSosOverrides[executiveDescriptor.key] ?? storedRowSos
+                      : storedRowSos;
                     const executiveSelection = executiveDescriptor ? getExecutiveReportSelection(executiveDescriptor) : null;
                     const executiveWorkers = executiveReport ? getExecutiveReportWorkersForStation(data.stationName) : [];
                     const canOpenSzerelesDetailPdfRow = Boolean(
@@ -17015,12 +17075,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                             data.dateKey
                           );
                         } : undefined}
-                        style={{ cursor: canOpenSzerelesDetailPdfRow ? "pointer" : undefined }}
+                        style={{ cursor: canOpenSzerelesDetailPdfRow ? "pointer" : undefined, background: rowSos ? PRODUCTION_CARD_SOS_ROW_BACKGROUND : undefined }}
                       >
                         {executiveReport && executiveDescriptor && executiveSelection && (
-                          <td style={{ padding: 8, background: executiveSelection.selected ? "#172554" : "#0f172a", color: "#f8fafc", borderBottom: `1px solid ${theme.borderColor}`, borderRight: `2px solid ${theme.borderColor}`, verticalAlign: "top" }}>
+                          <td style={{ padding: 8, background: rowSos ? PRODUCTION_CARD_SOS_ROW_BACKGROUND : executiveSelection.selected ? "#172554" : "#0f172a", color: rowSos ? PRODUCTION_CARD_SOS_ROW_TEXT : "#f8fafc", borderBottom: `1px solid ${theme.borderColor}`, borderRight: `2px solid ${theme.borderColor}`, verticalAlign: "top" }}>
                             {executiveDescriptor.kind !== "scrap-replacement" && (
-                              <label style={{ display: "flex", alignItems: "center", gap: 9, fontWeight: 900, cursor: "pointer", color: "#5eead4", marginBottom: 8 }}>
+                              <label style={{ display: "flex", alignItems: "center", gap: 9, fontWeight: 900, cursor: "pointer", color: rowSos ? "#ffffff" : "#5eead4", marginBottom: 8 }}>
                                 <input type="checkbox"
                                   checked={executiveReportSosOverrides[executiveDescriptor.key] ?? executiveDescriptor.sos ?? false}
                                   disabled={Boolean(executiveReportSosBusy[executiveDescriptor.key])}
@@ -17030,7 +17090,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               </label>
                             )}
                             {executiveDescriptor.status === "done" ? (
-                              <div style={{ color: "#86efac", fontWeight: 900, padding: 6 }}>Már kész</div>
+                              <div style={{ color: rowSos ? "#ffffff" : "#86efac", fontWeight: 900, padding: 6 }}>Már kész</div>
                             ) : (
                               <div style={{ display: "grid", gap: 7 }}>
                                 <label style={{ display: "flex", alignItems: "center", gap: 9, fontWeight: 900, cursor: "pointer" }}>
@@ -17641,6 +17701,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         priorityOrderId: row.priorityOrderId,
         sos: getPlanSosValue(row.data),
         planRowId: String(row.data.nivo_terv_sor_id || ""),
+        productName: String(getProductionCardPlanValue(row.data, "termek") || getProductionCardPlanValue(row.data, "megnevezes") || ""),
+        plannedQuantity: parseSpreadsheetNumber(getProductionCardPlanValue(row.data, "mennyiseg")),
         status: row.status,
         startWorkerName: row.startWorkerName,
         startedAt: row.startedAt,
@@ -17658,6 +17720,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         orderNumber: row.order_number,
         sourceId: String(row.id),
         priorityOrderId: null,
+        scrapEventId: row.event_id || null,
+        scrapReportedAt: row.reported_at || null,
         status: getScrapReplacementCardStatus(row),
         startWorkerName: String(row.start_worker_name || "").trim(),
         startedAt: row.started_at || null,
@@ -17669,7 +17733,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (dataSource === "backlog") {
       const row = rawRow as ProductionCardBacklogRow;
       return {
-        key: `backlog|${normalizeLooseText(stationName)}|${row.id}|${rowIndex}`,
+        key: `backlog|${normalizeLooseText(stationName)}|${row.id}|${row.completionDate}`,
         kind: "backlog",
         stationName,
         orderNumber: row.orderNumber,
@@ -17677,6 +17741,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         sos: getPlanSosValue(row.planData),
         planRowId: String(row.id),
         priorityOrderId: null,
+        productName: row.productName,
+        plannedQuantity: row.plannedQuantity,
         status: row.status,
         startWorkerName: row.startWorkerName,
         startedAt: row.startedAt,
@@ -17687,7 +17753,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const row = rawRow as ProductionCardRow;
     return {
-      key: `plan|${normalizeLooseText(stationName)}|${row.sourceRowId}|${row.completionDate}|${rowIndex}`,
+      key: `plan|${normalizeLooseText(stationName)}|${row.sourceRowId}|${row.completionDate}`,
       kind: "production-plan",
       stationName,
       orderNumber: row.orderNumber,
@@ -17695,6 +17761,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       sos: getPlanSosValue(row.planData),
       planRowId: row.sourceRowId,
       priorityOrderId: null,
+      productName: row.productName,
+      plannedQuantity: parseSpreadsheetNumber(row.quantity),
       status: row.status,
       startWorkerName: row.startWorkerName,
       startedAt: row.startedAt,
@@ -17704,12 +17772,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getExecutiveReportSelection(descriptor: ExecutiveReportRowDescriptor): ExecutiveReportSelection {
-    return executiveReportSelections[descriptor.key] || {
+    const previous = executiveReportSelections[descriptor.key];
+    return {
+      selected: previous?.selected ?? false,
+      mode: previous?.mode ?? "vezetoi",
+      workerId: previous?.workerId ?? "",
+      note: previous?.note ?? "",
       ...descriptor,
-      selected: false,
-      mode: "vezetoi",
-      workerId: "",
-      note: "",
     };
   }
 
@@ -17736,42 +17805,75 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
   }
 
+  async function requestExecutiveRecurringToken(worker: Worker): Promise<string> {
+    if (activeWorker && String(worker.id) === String(activeWorker.id)) return recurringAccess.requireToken();
+    if (executiveRecurringAuthPendingRef.current) throw new Error("Egy dolgozói azonosítás már folyamatban van.");
+    setExecutiveRecurringAuthPassword("");
+    setExecutiveRecurringAuthError("");
+    setExecutiveRecurringAuthWorkerId(Number(worker.id));
+    return new Promise<string>((resolve, reject) => {
+      executiveRecurringAuthPendingRef.current = { resolve, reject };
+    });
+  }
+
+  async function submitExecutiveRecurringAuth(): Promise<void> {
+    if (!supabase || executiveRecurringAuthWorkerId === null || executiveRecurringAuthBusy) return;
+    setExecutiveRecurringAuthBusy(true);
+    setExecutiveRecurringAuthError("");
+    try {
+      const session = await recurringAuthenticate(supabase, executiveRecurringAuthWorkerId, executiveRecurringAuthPassword);
+      executiveRecurringAuthPendingRef.current?.resolve(session.token);
+      executiveRecurringAuthPendingRef.current = null;
+      setExecutiveRecurringAuthWorkerId(null);
+      setExecutiveRecurringAuthPassword("");
+    } catch (error) {
+      setExecutiveRecurringAuthError(normalizeError(error));
+    } finally {
+      setExecutiveRecurringAuthBusy(false);
+    }
+  }
+
+  function cancelExecutiveRecurringAuth(): void {
+    executiveRecurringAuthPendingRef.current?.reject(new Error("A dolgozói azonosítás megszakítva."));
+    executiveRecurringAuthPendingRef.current = null;
+    setExecutiveRecurringAuthWorkerId(null);
+    setExecutiveRecurringAuthPassword("");
+    setExecutiveRecurringAuthError("");
+  }
+
   async function removeExecutiveReportedOrderFromProductionBatches(
     stationName: string,
-    orderNumber: string
+    orderNumber: string,
+    sourceRowId: string,
+    sourceKind: ExecutiveReportRowKind,
+    openBatchCode: string | null
   ): Promise<void> {
     if (!supabase) return;
-
-    const { data, error } = await supabase
-      .from("production_batches")
-      .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta, operation_code, operation_status")
-      .eq("machine_id", stationName)
-      .limit(10000);
+    const { data, error } = await supabase.from("production_batches")
+      .select("id, batch_code, machine_id, order_ids, production_meta")
+      .eq("machine_id", stationName).limit(10000);
     if (error) throw error;
-
     const orderKey = normalizeLooseText(orderNumber);
-
     for (const batch of (data || []) as ProductionBatchRow[]) {
-      const orders = Array.isArray(batch.order_ids)
-        ? batch.order_ids.map((value) => String(value || "").trim()).filter(Boolean)
-        : [];
-      if (!orders.some((value) => normalizeLooseText(value) === orderKey)) continue;
-
-      const remaining = orders.filter((value) => normalizeLooseText(value) !== orderKey);
-      if (remaining.length === 0) {
-        const { error: deleteError } = await supabase
-          .from("production_batches")
-          .delete()
-          .eq("id", batch.id as string | number);
+      const orders = Array.isArray(batch.order_ids) ? batch.order_ids.map(value => String(value || "").trim()).filter(Boolean) : [];
+      if (!orders.some(value => normalizeLooseText(value) === orderKey)) continue;
+      const meta = getProductionMetaForOrder(batch.production_meta, orderNumber) as Record<string, unknown>;
+      const linkedId = String(meta.terv_sor_id || meta.reszjelentes_terv_sor_id || meta.nivo_terv_sor_id || "").trim();
+      const exactMatch = linkedId && sourceKind !== "scrap-replacement" && linkedId === sourceRowId;
+      const batchMatch = openBatchCode && String(batch.batch_code || "") === openBatchCode && (!linkedId || linkedId === sourceRowId);
+      // Never delete another same-name job's active batch.
+      if (!exactMatch && !batchMatch) continue;
+      if (orders.filter(value => normalizeLooseText(value) === orderKey).length !== 1) continue;
+      const remaining = orders.filter(value => normalizeLooseText(value) !== orderKey);
+      if (!remaining.length) {
+        const { error: deleteError } = await supabase.from("production_batches").delete().eq("id", batch.id as string | number);
         if (deleteError) throw deleteError;
       } else {
         const nextMeta = batch.production_meta && typeof batch.production_meta === "object"
           ? Object.fromEntries(Object.entries(batch.production_meta).filter(([key]) => normalizeLooseText(key) !== orderKey))
           : batch.production_meta || null;
-        const { error: updateError } = await supabase
-          .from("production_batches")
-          .update({ order_ids: remaining, production_meta: nextMeta })
-          .eq("id", batch.id as string | number);
+        const { error: updateError } = await supabase.from("production_batches")
+          .update({ order_ids: remaining, production_meta: nextMeta }).eq("id", batch.id as string | number);
         if (updateError) throw updateError;
       }
     }
@@ -17783,38 +17885,28 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     nowIso: string
   ): Promise<void> {
     if (!supabase || selection.kind !== "priority") return;
-
-    const { error } = await supabase
-      .from(PRIORITY_ORDER_STATIONS_TABLE)
-      .update({
-        status: "KESZ",
-        started_at: selection.startedAt || nowIso,
-        ended_at: nowIso,
-        start_worker_name: selection.startWorkerName || workerNameForSave,
-        end_worker_name: workerNameForSave,
-        updated_at: nowIso,
-      })
-      .eq("id", selection.sourceId);
-    if (error) throw error;
-
-    if (!selection.priorityOrderId) return;
-
-    const { data: allStations, error: stationsError } = await supabase
-      .from(PRIORITY_ORDER_STATIONS_TABLE)
-      .select("id, status")
-      .eq("priority_order_id", selection.priorityOrderId)
-      .limit(1000);
+    const { data: station, error: stationError } = await supabase.from(PRIORITY_ORDER_STATIONS_TABLE)
+      .select("id, priority_order_id, status, started_at, start_worker_name")
+      .eq("id", selection.sourceId).single();
+    if (stationError) throw stationError;
+    if (String(station.status || "").toUpperCase() !== "KESZ") {
+      const { data: saved, error } = await supabase.from(PRIORITY_ORDER_STATIONS_TABLE)
+        .update({ status: "KESZ", started_at: station.started_at || selection.startedAt || nowIso,
+          ended_at: nowIso, start_worker_name: station.start_worker_name || selection.startWorkerName || workerNameForSave,
+          end_worker_name: workerNameForSave, updated_at: nowIso })
+        .eq("id", selection.sourceId).select("id,status").single();
+      if (error) throw error;
+      if (String(saved?.status || "").toUpperCase() !== "KESZ") throw new Error("A prioritási sor lezárása nem igazolható.");
+    }
+    const priorityId = String(station.priority_order_id || selection.priorityOrderId || "");
+    if (!priorityId) return;
+    const { data: allStations, error: stationsError } = await supabase.from(PRIORITY_ORDER_STATIONS_TABLE)
+      .select("id,status").eq("priority_order_id", priorityId).limit(1000);
     if (stationsError) throw stationsError;
-
-    const allDone = (allStations || []).length > 0
-      && (allStations || []).every((row: { status?: string | null }) => String(row.status || "").toUpperCase() === "KESZ");
-
-    if (allDone) {
-      const { error: orderError } = await supabase
-        .from(PRIORITY_ORDERS_TABLE)
-        .update({ is_active: false, completed_at: nowIso, updated_at: nowIso })
-        .eq("id", selection.priorityOrderId);
-      if (orderError) throw orderError;
+    if ((allStations || []).length && (allStations || []).every(row => String(row.status || "").toUpperCase() === "KESZ")) {
+      const { error } = await supabase.from(PRIORITY_ORDERS_TABLE)
+        .update({ is_active: false, completed_at: nowIso, updated_at: nowIso }).eq("id", priorityId);
+      if (error) throw error;
     }
   }
 
@@ -17824,227 +17916,320 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     nowIso: string
   ): Promise<void> {
     if (!supabase || selection.kind !== "scrap-replacement") return;
-
-    const { error } = await supabase
-      .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
-      .update({
-        status: "KESZ",
-        completed_at: nowIso,
-        last_worker_name: workerNameForSave,
-        updated_at: nowIso,
-      })
-      .eq("order_number", selection.orderNumber)
-      .neq("status", "KESZ");
+    let query = supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).select("id,status,order_number,target_station,event_id,reported_at");
+    if (selection.scrapEventId) {
+      query = query.eq("event_id", selection.scrapEventId).eq("target_station", selection.stationName);
+    } else if (!selection.sourceId.startsWith("aggregate-")) {
+      query = query.eq("id", selection.sourceId);
+    } else {
+      query = query.eq("order_number", selection.orderNumber).is("event_id", null)
+        .eq("target_station", selection.stationName);
+      if (selection.scrapReportedAt) query = query.lte("reported_at", selection.scrapReportedAt);
+    }
+    const { data: rows, error } = await query.limit(10000);
     if (error) throw error;
+    if (!rows?.length) throw new Error("A kiválasztott selejtpótlási sor már nem található.");
+    const ids = rows.filter(row => String(row.status || "").toUpperCase() !== "KESZ").map(row => row.id);
+    if (!ids.length) return;
+    const { data: saved, error: saveError } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
+      .update({ status: "KESZ", completed_at: nowIso, last_worker_name: workerNameForSave, updated_at: nowIso })
+      .in("id", ids).select("id,status");
+    if (saveError) throw saveError;
+    if ((saved || []).length !== ids.length || (saved || []).some(row => String(row.status || "").toUpperCase() !== "KESZ")) {
+      throw new Error("A selejtpótlási sorok lezárása nem igazolható.");
+    }
   }
 
-  async function saveOneExecutiveReportCompletion(selection: ExecutiveReportSelection): Promise<void> {
+  async function saveOneExecutiveReportCompletion(selection: ExecutiveReportSelection): Promise<"completed" | "already-done"> {
     if (!supabase || !activeWorker) throw new Error("Nincs aktív irodai felhasználó.");
-
-    const leaderId = activeWorker.id;
-    const leaderName = String(activeWorker["Teljes nev"] || "").trim();
-    let effectiveWorker = activeWorker;
-
-    if (selection.mode === "dolgozoi") {
-      const chosen = workers.find((worker) => String(worker.id) === String(selection.workerId));
-      if (!chosen) throw new Error(`${selection.orderNumber}: válassz dolgozót.`);
-      // Vezetői jelentésben szándékosan bármely workers rekord kiválasztható,
-      // miközben a machine_id továbbra is a jelentett termelési kártya munkaállomása.
-      effectiveWorker = chosen;
-    }
-
-    if (selection.mode === "egyeb" && !selection.note.trim()) {
-      throw new Error(`${selection.orderNumber}: az Egyéb lejelentéshez kötelező az indoklás.`);
-    }
-
-    const effectiveWorkerId = effectiveWorker.id;
-    const effectiveWorkerName = String(effectiveWorker["Teljes nev"] || "").trim();
+    const leader = activeWorker;
+    const effectiveWorker = selection.mode === "dolgozoi"
+      ? workers.find(worker => String(worker.id) === String(selection.workerId))
+      : leader;
+    if (!effectiveWorker) throw new Error(`${selection.orderNumber}: válassz dolgozót.`);
+    if (selection.mode === "egyeb" && !selection.note.trim()) throw new Error("Az Egyéb lejelentéshez kötelező az indoklás.");
+    const workerName = String(effectiveWorker["Teljes nev"] || "").trim();
+    const leaderName = String(leader["Teljes nev"] || "").trim();
     const nowIso = new Date().toISOString();
+    const sourceKind = selection.kind === "backlog" ? "plan" : selection.kind === "production-plan" ? "plan" : selection.kind;
+    const sourceId = String(selection.sourceId || "").trim();
+    if (!sourceId) throw new Error("Hiányzik a konkrét kártyasor azonosítója.");
 
-    const { data: rawLogs, error: logError } = await supabase
-      .from("work_logs")
-      .select("id, worker_id, worker_name, order_number, action, created_at, note, start_timestamp, end_timestamp, start_time, end_time, machine_id, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at")
-      .eq("order_number", selection.orderNumber)
-      .eq("machine_id", selection.stationName)
-      .order("created_at", { ascending: true })
-      .limit(10000);
-    if (logError) throw logError;
+    // Re-read the exact source. Never infer a row from the order number alone.
+    let planRow: Record<string, unknown> | null = null;
+    const tableName = getExactProductionCardPlanTableName(selection.stationName);
+    if (sourceKind === "plan") {
+      const { data, error } = await supabase.from(tableName).select("*").eq("id", sourceId).single();
+      if (error) throw error;
+      planRow = data as Record<string, unknown>;
+      if (normalizeLooseText(String(planRow.sorszam || "")) !== normalizeLooseText(selection.orderNumber)) {
+        throw new Error("A tervsor azonosítója és a rendelésszám nem egyezik. Frissítsd a kártyát.");
+      }
+      if (getExecutiveCompletionMarker(planRow) || isQuantityPartialClosedPlanData(planRow)) return "already-done";
+    }
+    if (sourceKind === "priority") {
+      const { data, error } = await supabase.from(PRIORITY_ORDER_STATIONS_TABLE)
+        .select("id,priority_order_id,status").eq("id", sourceId).single();
+      if (error) throw error;
+      if (String(data.status || "").toUpperCase() === "KESZ") return "already-done";
+    }
+    if (sourceKind === "scrap-replacement") {
+      // The exact aggregate/event is checked by finalizeExecutiveReportScrapCard.
+      if (selection.status === "done") return "already-done";
+    }
 
-    const logs = (rawLogs || []) as WorkLogRow[];
-    const openStart = [...logs]
-      .filter((log) => Boolean(log.start_time || log.start_timestamp) && !Boolean(log.end_time || log.end_timestamp))
-      .sort((a, b) =>
-        new Date(String(a.start_time || a.start_timestamp || a.created_at)).getTime()
-        - new Date(String(b.start_time || b.start_timestamp || b.created_at)).getTime()
-      )
-      .at(-1) || null;
-
-    const door = resolveDoorCompletionSnapshot(logs);
-    const panel = resolvePanelCompletionSnapshot(logs);
-    const oldMetadata = openStart ? getStructuredNoteMetadata(openStart.note) : {};
-    const originalStartWorker = openStart
-      ? String(
-          oldMetadata.start_worker_name
-          || openStart.worker_name
-          || workers.find((worker) => Number(worker.id) === Number(openStart.worker_id))?.["Teljes nev"]
-          || selection.startWorkerName
-          || ""
-        ).trim()
-      : effectiveWorkerName;
-    const originalStartTime = openStart
-      ? String(openStart.start_time || openStart.start_timestamp || openStart.created_at || nowIso)
-      : nowIso;
-    const oldVisibleNote = openStart ? getNoteBeforeContext(openStart.note) : "";
+    const productName = String(selection.productName || (planRow
+      ? (isPrimaPowerPlanStation(selection.stationName) ? planRow.termek || planRow.megnevezes : planRow.megnevezes)
+      : "") || "").trim();
     const reason = selection.mode === "egyeb" ? selection.note.trim() : "";
-    const visibleNote = [oldVisibleNote, reason].filter(Boolean).join(" | ");
-
-    const metadata: Record<string, unknown> = {
-      vezetoi_lejelentes: true,
-      vezetoi_lejelentes_tipusa: selection.mode,
-      vezetoi_lejelento_id: leaderId,
-      vezetoi_lejelento_nev: leaderName,
-      vezetoi_cel_dolgozo_id: effectiveWorkerId,
-      vezetoi_cel_dolgozo_nev: effectiveWorkerName,
-      vezetoi_megjegyzes: reason || null,
-      start_worker_name: originalStartWorker,
-      start_time: originalStartTime,
-      closed_by_worker_id: effectiveWorkerId,
-      closed_by_worker_name: effectiveWorkerName,
-      end_time: nowIso,
-      end_timestamp: nowIso,
-      machine_id: selection.stationName,
-      order_number: selection.orderNumber,
-      source_card: selection.kind,
-    };
-
-    const twoPart: Record<string, unknown> = {};
-    if (selection.doorWorkflow || door.isDoorWorkflow) {
-      twoPart.tok_kesz = true;
-      twoPart.nyilo_kesz = true;
-      twoPart.reszleges_keszultseg = 100;
-      twoPart.tok_kesz_worker_name = door.tokKeszWorkerName || effectiveWorkerName;
-      twoPart.tok_kesz_at = door.tokKeszAt || nowIso;
-      twoPart.nyilo_kesz_worker_name = door.nyiloKeszWorkerName || effectiveWorkerName;
-      twoPart.nyilo_kesz_at = door.nyiloKeszAt || nowIso;
-    }
-    if (selection.panelWorkflow || panel.isPanelWorkflow) {
-      twoPart.ajtolapok_kesz = true;
-      twoPart.toklec_kesz = true;
-      twoPart.reszleges_keszultseg = 100;
-      twoPart.ajtolapok_kesz_worker_name = panel.ajtolapokKeszWorkerName || effectiveWorkerName;
-      twoPart.ajtolapok_kesz_at = panel.ajtolapokKeszAt || nowIso;
-      twoPart.toklec_kesz_worker_name = panel.toklecKeszWorkerName || effectiveWorkerName;
-      twoPart.toklec_kesz_at = panel.toklecKeszAt || nowIso;
-    }
-
     const audit = {
       vezetoi_lejelentes: true,
-      vezetoi_lejelento_id: leaderId,
-      vezetoi_lejelento_nev: leaderName,
       vezetoi_lejelentes_tipusa: selection.mode,
-      vezetoi_cel_dolgozo_id: effectiveWorkerId,
-      vezetoi_cel_dolgozo_nev: effectiveWorkerName,
+      vezetoi_lejelento_id: leader.id,
+      vezetoi_lejelento_nev: leaderName,
+      vezetoi_cel_dolgozo_id: effectiveWorker.id,
+      vezetoi_cel_dolgozo_nev: workerName,
       vezetoi_megjegyzes: reason || null,
+      source_card: selection.kind,
+      source_card_id: sourceId,
+      terv_sor_id: sourceKind === "plan" ? sourceId : String(selection.planRowId || ""),
     };
 
-    if (openStart?.id !== null && openStart?.id !== undefined) {
-      const { error } = await supabase
-        .from("work_logs")
-        .update({
-          worker_id: effectiveWorkerId,
-          worker_name: effectiveWorkerName,
-          end_time: nowIso,
-          end_timestamp: nowIso,
-          event_name: `Vezetői készre könyvelés – ${selection.mode}`,
-          event_code: "VEZETOI_KESZ",
-          note: buildStructuredNote(visibleNote, metadata),
-          ...audit,
-          ...twoPart,
-        })
-        .eq("id", openStart.id);
-      if (error) throw error;
-    } else {
-      const { error } = await supabase
-        .from("work_logs")
-        .insert([{
-          worker_id: effectiveWorkerId,
-          worker_name: effectiveWorkerName,
-          machine_id: selection.stationName,
-          order_number: selection.orderNumber,
-          action: "END",
-          created_at: nowIso,
-          start_time: nowIso,
-          start_timestamp: nowIso,
-          end_time: nowIso,
-          end_timestamp: nowIso,
-          event_name: `Vezetői készre könyvelés – ${selection.mode}`,
-          event_code: "VEZETOI_KESZ",
-          note: buildStructuredNote(visibleNote, metadata),
-          scrap_qty: null,
-          darab: null,
-          szal: null,
-          selejt_potlas: selection.kind === "scrap-replacement",
-          selejt_forras_munkaallomas: selection.kind === "scrap-replacement" ? selection.stationName : null,
-          ...audit,
-          ...twoPart,
-        }]);
-      if (error) throw error;
+    // Existing recurring-work RPCs own their counters and segments. Do not
+    // create a second, name-only legacy END for a registered recurring job.
+    if (sourceKind !== "scrap-replacement" && productName) {
+      const read = await recurringRead(supabase, selection.stationName, productName);
+      if (read.is_recurring) {
+        const candidate = (read.candidates || []).find(candidate =>
+          recurringSourceKey(candidate.kind, candidate.source_id) === recurringSourceKey(sourceKind, sourceId));
+        let instance = recurringInstanceFor(read.instances || [], sourceKind, sourceId);
+        if (!candidate && !instance) throw new Error("A visszatérő munka konkrét sora nem található. Frissítsd a kártyát.");
+        if (instance?.status === "done") return "already-done";
+        const token = await requestExecutiveRecurringToken(effectiveWorker);
+        // Re-read after authentication so a second terminal cannot cause a duplicate completion.
+        const current = await recurringRead(supabase, selection.stationName, productName);
+        instance = recurringInstanceFor(current.instances || [], sourceKind, sourceId);
+        if (instance?.status === "done") return "already-done";
+        if (!instance?.active_segment_id) {
+          const started = await recurringMutate(supabase, token, "start", {
+            station: selection.stationName, kind: sourceKind, source_id: sourceId,
+            megnevezes: productName, ...(instance ? { instance_id: instance.id } : {}),
+            reproduction: false,
+          });
+          instance = recurringInstanceFor((await recurringRead(supabase, selection.stationName, productName)).instances || [], sourceKind, sourceId);
+          if (!instance) throw new Error(`A START elmentődött, de a visszatérő munka nem olvasható vissza (${String(started?.instance_id || "")}).`);
+        }
+        const remaining = recurringRemaining(instance);
+        const quantity = remaining === null ? 1 : remaining;
+        if (!Number.isInteger(quantity) || quantity <= 0) throw new Error("A visszatérő munka maradék mennyisége nem érvényes.");
+        const auditText = `Vezetői készre könyvelés | Vezető: ${leaderName} | ${selection.mode === "dolgozoi" ? `Dolgozó: ${workerName}` : selection.mode === "egyeb" ? `Egyéb: ${reason}` : "Vezetői"} | Kártya: ${selection.kind} | Sor: ${sourceId}`;
+        const ended = await recurringMutate(supabase, token, "end", {
+          station: selection.stationName, instance_id: instance.id, quantity, note: auditText,
+        });
+        if (ended?.status !== "done") throw new Error("A visszatérő munka END-je nem igazolt kész állapotot.");
+        return "completed";
+      }
     }
 
-    await removeExecutiveReportedOrderFromProductionBatches(selection.stationName, selection.orderNumber);
-    await finalizeExecutiveReportPriorityCard(selection, effectiveWorkerName, nowIso);
-    await finalizeExecutiveReportScrapCard(selection, effectiveWorkerName, nowIso);
+    // Legacy work_logs completion. Only columns already used by this application
+    // are written; administrative audit fields live in the structured note.
+    const { data: rawLogs, error: logError } = await supabase.from("work_logs")
+      .select("id,worker_id,worker_name,order_number,action,created_at,note,start_time,start_timestamp,end_time,end_timestamp,machine_id,batch_code,recurring_instance_id,darab,szal,ujragyartas,ujragyartas_sorszam,gyartas_tipus,gyartasi_kor,operation_code,reszleges_keszultseg,tok_kesz,nyilo_kesz,tok_kesz_worker_name,tok_kesz_at,nyilo_kesz_worker_name,nyilo_kesz_at,ajtolapok_kesz,toklec_kesz,ajtolapok_kesz_worker_name,ajtolapok_kesz_at,toklec_kesz_worker_name,toklec_kesz_at,kulso_lap_kesz,belso_lap_kesz,lap_toklec_kesz,kulso_lap_kesz_worker_name,kulso_lap_kesz_at,belso_lap_kesz_worker_name,belso_lap_kesz_at,lap_toklec_kesz_worker_name,lap_toklec_kesz_at")
+      .eq("order_number", selection.orderNumber).order("created_at", { ascending: true }).limit(10000);
+    if (logError) throw logError;
+    const aliases = getProductionCardStationAliases(selection.stationName, machineIdRows);
+    const logs = ((rawLogs || []) as WorkLogRow[]).filter(log => isProductionCardStationMachineId(log.machine_id, aliases) && !log.recurring_instance_id);
+    const existingCompletion = [...logs].reverse().find(log => {
+      const meta = getStructuredNoteMetadata(log.note);
+      return meta.vezetoi_lejelentes === true && String(meta.source_card || "") === selection.kind
+        && String(meta.source_card_id || meta.terv_sor_id || "") === sourceId
+        && Boolean(log.end_time || log.end_timestamp);
+    });
+    const planned = sourceKind === "plan" ? parseSpreadsheetNumber(planRow?.mennyiseg) : selection.plannedQuantity ?? null;
+    const partialMeta = planRow ? getQuantityPartialPlanMetadata(planRow) : null;
+    const exactHistory = logs.filter(log => executiveLogSourceId(log) === sourceId && isFullyCompletedEndLog(log)
+      && (Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END"));
+    const alreadyReported = exactHistory.reduce((sum, log) => {
+      const value = parseSpreadsheetNumber(log.darab) ?? parseSpreadsheetNumber(log.szal);
+      return sum + (value !== null && Number.isFinite(value) && value > 0 ? value : 0);
+    }, 0);
+    const fullyReported = exactHistory.some(log => log.darab == null && log.szal == null)
+      || (planned !== null && planned > 0 && alreadyReported >= planned);
+    let savedLog: WorkLogRow | null = existingCompletion || (fullyReported ? exactHistory.at(-1) || null : null);
+    const previousCompletionMeta = existingCompletion ? getStructuredNoteMetadata(existingCompletion.note) : {};
+    let originalStartWorker = String(previousCompletionMeta.start_worker_name || selection.startWorkerName || workerName);
+    let originalStartTime = String(previousCompletionMeta.start_time || selection.startedAt || nowIso);
+    let openBatchCode: string | null = null;
+    if (!savedLog) {
+      const openCandidates = logs.filter(isProductionCardOpenStartLog);
+      const linked = openCandidates.filter(log => {
+        const metadata = getStructuredNoteMetadata(log.note);
+        if (metadata.recurring_work || metadata.recurring_instance_id) return false;
+        if (metadata.source_card_id && String(metadata.source_card_id) === sourceId && metadata.source_card === selection.kind) return true;
+        const planId = String(metadata.terv_sor_id || metadata.reszjelentes_terv_sor_id || "").trim();
+        if (metadata.source_card_id && metadata.source_card && metadata.source_card !== selection.kind) return false;
+        return Boolean(planId) && planId === (sourceKind === "plan" ? sourceId : String(selection.planRowId || ""));
+      });
+      let openStart: WorkLogRow | null = linked.at(-1) || null;
+      if (!openStart && openCandidates.length === 1) {
+        const candidate = openCandidates[0];
+        if (!executiveLogSourceId(candidate)) {
+          // An unlinked legacy START may be closed only when its plan is unambiguous.
+          const { data: possibleRows, error: countError } = await supabase.from(tableName)
+            .select("id").eq("sorszam", selection.orderNumber).limit(2);
+          if (countError) throw countError;
+          if ((possibleRows || []).length === 1) openStart = candidate;
+        }
+      }
+      const oldMeta = openStart ? getStructuredNoteMetadata(openStart.note) : {};
+      originalStartWorker = String(oldMeta.start_worker_name || openStart?.worker_name || selection.startWorkerName || workerName);
+      originalStartTime = String(openStart?.start_time || openStart?.start_timestamp || selection.startedAt || nowIso);
+      openBatchCode = openStart?.batch_code || null;
+      const remaining = planned !== null && Number.isFinite(planned) && planned > 0
+        ? Math.max(0, planned - alreadyReported) : null;
+      // A partial lifecycle already stores the remainder as its own plan row.
+      // Never subtract the original root's cumulative quantity a second time.
+      const quantity = remaining !== null ? remaining : sourceKind === "scrap-replacement" ? null : 1;
+      const wholeQuantity = quantity !== null && Number.isInteger(quantity) ? quantity : null;
+      const fractionalQuantity = quantity !== null && !Number.isInteger(quantity) ? quantity : null;
+      const door = resolveDoorCompletionSnapshot(openStart ? [openStart] : logs);
+      const panel = resolvePanelCompletionSnapshot(openStart ? [openStart] : logs);
+      const threePart = resolveThreePartCompletionSnapshot(openStart ? [openStart] : logs);
+      const twoPart: Record<string, unknown> = {};
+      if (threePart.isThreePartWorkflow) {
+        Object.assign(twoPart, {
+          kulso_lap_kesz: true, belso_lap_kesz: true, lap_toklec_kesz: true, reszleges_keszultseg: 100,
+          kulso_lap_kesz_worker_name: threePart.kulsoLapKeszWorkerName || workerName,
+          kulso_lap_kesz_at: threePart.kulsoLapKeszAt || nowIso,
+          belso_lap_kesz_worker_name: threePart.belsoLapKeszWorkerName || workerName,
+          belso_lap_kesz_at: threePart.belsoLapKeszAt || nowIso,
+          lap_toklec_kesz_worker_name: threePart.lapToklecKeszWorkerName || workerName,
+          lap_toklec_kesz_at: threePart.lapToklecKeszAt || nowIso,
+        });
+      }
+      if (!threePart.isThreePartWorkflow && (selection.doorWorkflow || door.isDoorWorkflow)) {
+        Object.assign(twoPart, { tok_kesz: true, nyilo_kesz: true, reszleges_keszultseg: 100,
+          tok_kesz_worker_name: door.tokKeszWorkerName || workerName, tok_kesz_at: door.tokKeszAt || nowIso,
+          nyilo_kesz_worker_name: door.nyiloKeszWorkerName || workerName, nyilo_kesz_at: door.nyiloKeszAt || nowIso });
+      }
+      if (!threePart.isThreePartWorkflow && (selection.panelWorkflow || panel.isPanelWorkflow)) {
+        Object.assign(twoPart, { ajtolapok_kesz: true, toklec_kesz: true, reszleges_keszultseg: 100,
+          ajtolapok_kesz_worker_name: panel.ajtolapokKeszWorkerName || workerName, ajtolapok_kesz_at: panel.ajtolapokKeszAt || nowIso,
+          toklec_kesz_worker_name: panel.toklecKeszWorkerName || workerName, toklec_kesz_at: panel.toklecKeszAt || nowIso });
+      }
+      const metadata = { ...oldMeta, ...audit, start_worker_name: originalStartWorker, start_time: originalStartTime,
+        ...(partialMeta ? { reszjelentes_csoport_id: partialMeta.groupId, reszjelentes_gyoker_sor_id: partialMeta.rootRowId } : {}),
+        closed_by_worker_id: effectiveWorker.id, closed_by_worker_name: workerName,
+        end_time: nowIso, end_timestamp: nowIso,
+        ...(wholeQuantity !== null ? { darab: wholeQuantity } : {}),
+        ...(fractionalQuantity !== null ? { szal: fractionalQuantity } : {}),
+        ...(openStart?.operation_code ? { original_operation_code: openStart.operation_code } : {}),
+      };
+      const visibleNote = [openStart ? getNoteBeforeContext(openStart.note) : "", reason].filter(Boolean).join(" | ");
+      const payload = {
+        worker_id: effectiveWorker.id, worker_name: workerName,
+        end_time: nowIso, end_timestamp: nowIso,
+        event_name: `Vezetői készre könyvelés – ${selection.mode}`, event_code: "VEZETOI_KESZ",
+        note: buildStructuredNote(visibleNote, metadata),
+        ...(wholeQuantity !== null ? { darab: wholeQuantity } : {}),
+        ...(fractionalQuantity !== null ? { szal: fractionalQuantity } : {}),
+        ...(isCarpenterStationName(selection.stationName) ? { operation_code: "MARAS" } : {}),
+        ...twoPart,
+      };
+      if (openStart?.id !== null && openStart?.id !== undefined) {
+        const { data, error } = await supabase.from("work_logs").update(payload).eq("id", openStart.id)
+          .is("end_time", null).is("end_timestamp", null).select("id,worker_id,worker_name,start_time,start_timestamp,end_time,end_timestamp,note,batch_code").single();
+        if (error) throw error;
+        savedLog = data as WorkLogRow;
+      } else {
+        const { data, error } = await supabase.from("work_logs").insert([{
+          ...payload, machine_id: selection.stationName, order_number: selection.orderNumber,
+          action: "END", created_at: nowIso, start_time: originalStartTime, start_timestamp: originalStartTime,
+          scrap_qty: null, darab: wholeQuantity, szal: fractionalQuantity,
+          selejt_potlas: sourceKind === "scrap-replacement",
+          selejt_forras_munkaallomas: sourceKind === "scrap-replacement" ? selection.stationName : null,
+          ujragyartas: false,
+        }]).select("id,worker_id,worker_name,start_time,start_timestamp,end_time,end_timestamp,note,batch_code").single();
+        if (error) throw error;
+        savedLog = data as WorkLogRow;
+      }
+    }
+    if (!savedLog?.id || !savedLog.end_time && !savedLog.end_timestamp) throw new Error("A munkanapló lezárása nem igazolható.");
+    const completedAt = String(savedLog.end_time || savedLog.end_timestamp || nowIso);
+    const savedWorkerName = String(savedLog.worker_name || workerName);
+    const marker: ExecutiveCompletionMarker = {
+      log_id: String(savedLog.id), completed_at: completedAt, worker_name: savedWorkerName,
+      start_worker_name: originalStartWorker, started_at: originalStartTime,
+    };
+    if (planRow) {
+      const oldData = planRow.adat && typeof planRow.adat === "object" && !Array.isArray(planRow.adat) ? planRow.adat as Record<string, unknown> : {};
+      const { data: saved, error } = await supabase.from(tableName)
+        .update({ adat: { ...oldData, nivo_vezetoi_kesz: marker } }).eq("id", sourceId).select("id,adat").single();
+      if (error) throw error;
+      if (!getExecutiveCompletionMarker(saved as Record<string, unknown>)) throw new Error("A tervsor kész állapota nem igazolható.");
+    }
+    await finalizeExecutiveReportPriorityCard(selection, savedWorkerName, completedAt);
+    await finalizeExecutiveReportScrapCard(selection, savedWorkerName, completedAt);
+    await removeExecutiveReportedOrderFromProductionBatches(selection.stationName, selection.orderNumber,
+      sourceKind === "plan" ? sourceId : String(selection.planRowId || sourceId), selection.kind, openBatchCode);
+    return existingCompletion ? "already-done" : "completed";
   }
 
   async function saveExecutiveReportSos(descriptor: ExecutiveReportRowDescriptor, wanted: boolean): Promise<void> {
     if (!supabase || !activeWorker || executiveReportSosBusy[descriptor.key]) return;
-    setExecutiveReportSosBusy((current) => ({ ...current, [descriptor.key]: true }));
+    const previous = executiveReportSosOverrides[descriptor.key] ?? descriptor.sos ?? false;
+    setExecutiveReportSosOverrides(current => ({ ...current, [descriptor.key]: wanted }));
+    setExecutiveReportSosBusy(current => ({ ...current, [descriptor.key]: true }));
     try {
       const tableName = getExactProductionCardPlanTableName(descriptor.stationName);
       let planRowId = String(descriptor.planRowId || "").trim();
-      if (!planRowId) {
-        const { data: candidates, error } = await supabase.from(tableName).select("*")
-          .eq("sorszam", descriptor.orderNumber).limit(10000);
+      if (descriptor.kind === "priority") {
+        const { data: station, error } = await supabase.from(PRIORITY_ORDER_STATIONS_TABLE)
+          .select("id,priority_order_id").eq("id", descriptor.sourceId).single();
         if (error) throw error;
-        const rows = (candidates || []) as Record<string, unknown>[];
-        if (rows.length !== 1) {
-          throw new Error(`${descriptor.orderNumber}: nem azonosítható egyértelműen a tervsor. Az SOS-t a saját _terv sorazonosítójával állítsd be.`);
-        }
-        planRowId = String(rows[0].id ?? "").trim();
-      }
-      if (!planRowId) throw new Error("A tervsor nem rendelkezik egyedi id mezővel.");
-      const { data: saved, error: saveError } = await supabase.from(tableName)
-        .update({ sos: wanted }).eq("id", planRowId).select("id,sos").single();
-      if (saveError) throw saveError;
-      if (Boolean(saved?.sos) !== wanted) throw new Error("Az SOS mentése nem igazolható.");
-      if (descriptor.priorityOrderId) {
         const { data: priority, error: priorityError } = await supabase.from(PRIORITY_ORDERS_TABLE)
-          .select("id,data").eq("id", descriptor.priorityOrderId).single();
+          .select("id,data").eq("id", station.priority_order_id).single();
         if (priorityError) throw priorityError;
-        const oldData = priority?.data && typeof priority.data === "object" ? priority.data as Record<string, unknown> : {};
-        const { error: updateError } = await supabase.from(PRIORITY_ORDERS_TABLE)
-          .update({ data: { ...oldData, sos: wanted, nivo_terv_sor_id: planRowId } })
-          .eq("id", descriptor.priorityOrderId);
-        if (updateError) throw updateError;
+        const oldData = priority.data && typeof priority.data === "object" ? priority.data as Record<string, unknown> : {};
+        planRowId = planRowId || String(oldData.nivo_terv_sor_id || "").trim();
+        const { data: saved, error: saveError } = await supabase.from(PRIORITY_ORDERS_TABLE)
+          .update({ data: { ...oldData, sos: wanted, ...(planRowId ? { nivo_terv_sor_id: planRowId } : {}) } })
+          .eq("id", priority.id).select("id,data").single();
+        if (saveError) throw saveError;
+        if (getPlanSosValue(saved?.data as Record<string, unknown>) !== wanted) throw new Error("Az SOS mentése nem igazolható.");
+      } else if (descriptor.kind === "scrap-replacement") {
+        throw new Error("A selejtpótlás SOS-ját a saját selejtpótlási felületen állítsd be.");
+      } else if (!planRowId) {
+        throw new Error("Hiányzik a konkrét tervsor azonosítója.");
       }
-      setExecutiveReportSosOverrides((current) => ({ ...current, [descriptor.key]: wanted }));
+      if (planRowId) {
+        const { data: raw, error: readError } = await supabase.from(tableName).select("*").eq("id", planRowId).single();
+        if (readError) throw readError;
+        const oldData = raw.adat && typeof raw.adat === "object" && !Array.isArray(raw.adat) ? raw.adat as Record<string, unknown> : {};
+        const payload: Record<string, unknown> = { adat: { ...oldData, sos: wanted } };
+        if (Object.prototype.hasOwnProperty.call(raw, "sos")) payload.sos = wanted;
+        const { data: saved, error } = await supabase.from(tableName).update(payload).eq("id", planRowId).select("*").single();
+        if (error) throw error;
+        if (getPlanSosValue(saved as Record<string, unknown>) !== wanted) throw new Error("Az SOS mentése nem igazolható.");
+      }
       setMessage({ type: "success", text: `${descriptor.orderNumber}: SOS ${wanted ? "bekapcsolva" : "kikapcsolva"}.` });
       await loadExecutiveReportView(executiveReportStation, executiveReportDateFrom, executiveReportDateTo);
       if (productionCardAdminStation) void loadProductionCardData(productionCardAdminStation, productionCardDate);
     } catch (error) {
+      setExecutiveReportSosOverrides(current => ({ ...current, [descriptor.key]: previous }));
       setMessage({ type: "error", text: `SOS mentési hiba: ${normalizeError(error)}` });
     } finally {
-      setExecutiveReportSosBusy((current) => ({ ...current, [descriptor.key]: false }));
+      setExecutiveReportSosBusy(current => ({ ...current, [descriptor.key]: false }));
     }
   }
 
   async function saveExecutiveReportSelections(): Promise<void> {
-    const selected = Object.values(executiveReportSelections).filter((row) => row.selected);
-    if (selected.length === 0) {
+    if (executiveReportSaveInFlightRef.current) return;
+    const selected = Object.values(executiveReportSelections).filter(row => row.selected);
+    if (!selected.length) {
       setMessage({ type: "error", text: "Jelölj ki legalább egy rendelést." });
       return;
     }
-
     for (const row of selected) {
       if (row.mode === "dolgozoi" && !row.workerId) {
         setMessage({ type: "error", text: `${row.orderNumber}: a Dolgozói opciónál válassz dolgozót.` });
@@ -18055,44 +18240,43 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         return;
       }
     }
-
     if (!window.confirm(`${selected.length} kijelölt sor készre könyvelése következik.\n\nBiztosan folytatod?`)) return;
-
+    executiveReportSaveInFlightRef.current = true;
     setSavingExecutiveReport(true);
+    const completedKeys: string[] = [];
+    const errors: string[] = [];
+    let newlyCompleted = 0;
     try {
-      const firstByOrder = new Map<string, ExecutiveReportSelection>();
-      selected.forEach((row) => {
-        const key = `${normalizeLooseText(row.stationName)}|${normalizeLooseText(row.orderNumber)}`;
-        if (!firstByOrder.has(key)) firstByOrder.set(key, row);
-      });
-
-      const processed = new Set<string>();
       for (const row of selected) {
-        const key = `${normalizeLooseText(row.stationName)}|${normalizeLooseText(row.orderNumber)}`;
-        if (!processed.has(key)) {
-          await saveOneExecutiveReportCompletion(firstByOrder.get(key) || row);
-          processed.add(key);
-        } else {
-          const effective = row.mode === "dolgozoi"
-            ? workers.find((worker) => String(worker.id) === String(row.workerId)) || activeWorker
-            : activeWorker;
-          const workerName = String(effective?.["Teljes nev"] || "").trim();
-          const nowIso = new Date().toISOString();
-          await finalizeExecutiveReportPriorityCard(row, workerName, nowIso);
-          await finalizeExecutiveReportScrapCard(row, workerName, nowIso);
+        try {
+          const result = await saveOneExecutiveReportCompletion(row);
+          completedKeys.push(row.key);
+          if (result === "completed") newlyCompleted += 1;
+        } catch (error) {
+          errors.push(`${row.orderNumber} (${row.kind}): ${normalizeError(error)}`);
         }
       }
-
-      setExecutiveReportSelections({});
-      await loadExecutiveReportView(executiveReportStation, executiveReportDateFrom, executiveReportDateTo);
-      if (productionCardAdminStation) void loadProductionCardData(productionCardAdminStation, productionCardDate);
-      void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
-
-      setMessage({ type: "success", text: `${processed.size} rendelés sikeresen készre könyvelve vezetői jelentéssel.` });
-    } catch (error) {
-      console.error("Vezetői készre könyvelési hiba:", error);
-      setMessage({ type: "error", text: `A vezetői készre könyvelés sikertelen: ${normalizeError(error)}` });
+      if (completedKeys.length) {
+        setExecutiveReportSelections(current => {
+          const next = { ...current };
+          completedKeys.forEach(key => { delete next[key]; });
+          return next;
+        });
+        try {
+          await loadExecutiveReportView(executiveReportStation, executiveReportDateFrom, executiveReportDateTo);
+          if (productionCardAdminStation) void loadProductionCardData(productionCardAdminStation, productionCardDate);
+          void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
+        } catch (error) {
+          errors.push(`Frissítés: ${normalizeError(error)}`);
+        }
+      }
+      if (errors.length) {
+        setMessage({ type: "error", text: `${newlyCompleted} sor készre könyvelve, ${errors.length} hiba. ${errors.join(" | ")}` });
+      } else {
+        setMessage({ type: "success", text: `${newlyCompleted} sor sikeresen készre könyvelve.${completedKeys.length > newlyCompleted ? ` ${completedKeys.length - newlyCompleted} sor már kész volt.` : ""}` });
+      }
     } finally {
+      executiveReportSaveInFlightRef.current = false;
       setSavingExecutiveReport(false);
     }
   }
@@ -18318,6 +18502,25 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             renderProductionCardDisplay(executiveReportProfile, executiveReportData, { executiveReport: true })
           )}
         </div>
+
+        {executiveRecurringAuthWorkerId !== null && (
+          <div style={{ position: "fixed", inset: 0, zIndex: 10030, background: "rgba(2,6,23,.86)", display: "grid", placeItems: "center", padding: 12 }}>
+            <form onSubmit={event => { event.preventDefault(); void submitExecutiveRecurringAuth(); }}
+              role="dialog" aria-modal="true" aria-label="Visszatérő munka dolgozói azonosítás"
+              style={{ width: "100%", maxWidth: 420, background: "#203438", color: "#f8fafc", border: "1px solid #526b70", borderRadius: 15, padding: 18, display: "grid", gap: 12 }}>
+              <strong>Dolgozói azonosítás</strong>
+              <span>{workers.find(worker => Number(worker.id) === executiveRecurringAuthWorkerId)?.["Teljes nev"] || "Dolgozó"}: a visszatérő munka a kiválasztott dolgozó nevére kerül. A saját jelszavával erősítse meg.</span>
+              <input type="password" autoComplete="current-password" value={executiveRecurringAuthPassword}
+                onChange={event => setExecutiveRecurringAuthPassword(event.target.value)}
+                style={{ padding: 10, border: "1px solid #64748b", borderRadius: 8, background: "#101f29", color: "#fff" }} />
+              {executiveRecurringAuthError && <div style={{ color: "#fecaca" }}>{executiveRecurringAuthError}</div>}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button type="submit" disabled={executiveRecurringAuthBusy || !executiveRecurringAuthPassword} style={buttonPrimary}>Azonosítás</button>
+                <button type="button" onClick={cancelExecutiveRecurringAuth} style={buttonSecondary}>Mégse</button>
+              </div>
+            </form>
+          </div>
+        )}
 
         <div data-office-window="executive-report:commit" style={{ ...panel, marginTop: 16 }}>
           <div style={{ marginBottom: 10, color: theme.mutedText, lineHeight: 1.55 }}>
