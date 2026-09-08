@@ -2349,6 +2349,44 @@ function getStationPlanIdentityKey(stationName: string | null | undefined): stri
   return normalized;
 }
 
+// A lemaradási kártya a gépkönyvtárban ismert név-/azonosító-változatokat is elfogadja.
+// A név normalizálása nem vonja össze a különböző munkaállomásokat (pl. Szinter / Kézi szinter).
+function getProductionCardStationMatchKey(value: unknown): string {
+  return getStationPlanIdentityKey(String(value ?? "")).replace(/_/g, "");
+}
+
+function getProductionCardStationAliases(stationName: string, machineRows: MachineIdRow[]): Set<string> {
+  const key = getProductionCardStationMatchKey(stationName);
+  const aliases = new Set<string>([key]);
+  if (!key) return aliases;
+  machineRows.forEach((row) => {
+    const names = [row.name, row.Name, row.machine_name, row.megnevezes];
+    if (!names.some((name) => name && getProductionCardStationMatchKey(name) === key)) return;
+    [row.id, row.machine_id, ...names].forEach((value) => {
+      const alias = getProductionCardStationMatchKey(value);
+      if (alias) aliases.add(alias);
+    });
+  });
+  return aliases;
+}
+
+function isProductionCardStationMachineId(
+  machineId: string | null | undefined,
+  aliases: Set<string>
+): boolean {
+  const key = getProductionCardStationMatchKey(machineId);
+  return Boolean(key) && aliases.has(key);
+}
+
+// Egy END sorban megőrzött start_time nem jelent új, nyitott START-ot.
+// A részleges END-et a meglévő lezárás-/részjelentés-logika kezeli.
+function isProductionCardOpenStartLog(log: WorkLogRow): boolean {
+  const action = String(log.action || "").trim().toUpperCase();
+  return action !== "END"
+    && !Boolean(log.end_time || log.end_timestamp)
+    && (action === "START" || Boolean(log.start_time || log.start_timestamp));
+}
+
 function getProductionPlanStationUniverse(machineNames: string[]): string[] {
   const machineByKey = new Map<string, string>();
   machineNames.forEach((station) => {
@@ -4088,45 +4126,6 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
 
 // Csak megjelenést másol: a célkártyák azonosítója, neve, típusa és adatai megmaradnak.
 // A célon nem létező forrásmezők kimaradnak, a cél saját mezői változatlanok.
-// Csak a színeket állítja vissza: minden más megjelenési beállítás megmarad.
-// A rendszerkártyák saját alapértelmezett színpalettáját használja.
-function resetUnifiedProductionCardThemeColors(
-  theme: ProductionMonitorTheme,
-  defaultTheme: ProductionMonitorTheme,
-  dataSource: ProductionCardTableDataSource = "production-plan"
-): ProductionMonitorTheme {
-  const defaultColors = applyProductionCardPriorityDefaultColors(defaultTheme, dataSource);
-  return normalizeProductionMonitorTheme({
-    ...theme,
-    ...Object.fromEntries(
-      Object.entries(defaultColors).filter(([key]) => /(?:Background|Text|Color)$/.test(key))
-    ),
-  });
-}
-
-function resetUnifiedProductionCardColors(
-  table: ProductionMonitorTableConfig,
-  defaultTheme: ProductionMonitorTheme
-): ProductionMonitorTableConfig {
-  const theme = resetUnifiedProductionCardThemeColors(table.theme, defaultTheme, table.dataSource);
-  return {
-    ...table,
-    theme,
-    fieldStyles: Object.fromEntries(
-      Object.entries(table.fieldStyles || {}).map(([fieldId, style]) => [
-        fieldId,
-        {
-          ...style,
-          headerBackground: "",
-          headerTextColor: "",
-          cellBackground: "",
-          cellTextColor: "",
-        },
-      ])
-    ),
-  };
-}
-
 function unifyProductionCardPresentation(
   profile: ProductionMonitorProfile,
   sourceTableId: string,
@@ -4135,7 +4134,6 @@ function unifyProductionCardPresentation(
 ): ProductionMonitorProfile {
   const source = profile.tables.find((table) => table.id === sourceTableId);
   if (!source) return profile;
-  const defaultTheme = createDefaultProductionCardProfile(stationName).theme;
 
   const sourceFields = getProductionCardFieldIdsForTable(source, stationName);
   const sourceSet = new Set(sourceFields);
@@ -4152,9 +4150,8 @@ function unifyProductionCardPresentation(
   const sourceFor = (fieldId: string): string | undefined =>
     sourceSet.has(fieldId) ? fieldId : sourceByKey.get(getColumnKey(fieldId))?.[0];
 
-  const resetSource = resetUnifiedProductionCardColors(source, defaultTheme);
   const tables = profile.tables.map((table) => {
-    if (table.id === sourceTableId) return resetSource;
+    if (table.id === sourceTableId) return table;
     const validFields = getProductionCardFieldIdsForTable(table, stationName);
     const validSet = new Set(validFields);
     const targetOrder = Array.from(new Set([
@@ -4192,20 +4189,19 @@ function unifyProductionCardPresentation(
         );
       }
     });
-    const copiedTable: ProductionMonitorTableConfig = {
+    return {
       ...table,
       fieldOrder,
       hiddenFieldIds,
       fieldStyles,
       theme: cloneProductionMonitorTheme(source.theme),
     };
-    return resetUnifiedProductionCardColors(copiedTable, defaultTheme);
   });
 
   return normalizeProductionCardProfile({
     ...profile,
     themePresetId: source.id === profile.activeTableId ? "custom" : profile.themePresetId,
-    theme: resetUnifiedProductionCardThemeColors(source.theme, defaultTheme),
+    theme: cloneProductionMonitorTheme(source.theme),
     tables,
   }, stationName);
 }
@@ -6626,7 +6622,9 @@ const PRODUCTION_MONITOR_BACKGROUND_REFRESH_MS = 5 * 1000;
 // React frissítést és két külön scroll-visszaállítást indítani.
 let nivoBackgroundRefreshRunning = false;
 let nivoBackgroundRefreshDepth = 0;
-let nivoBackgroundRefreshPendingTask: (() => void | Promise<void>) | null = null;
+// Az alapértelmezett feladat továbbra is felülírható; a termelési kártyák
+// külön kulcson várakoznak, hogy más monitor ne tudja eldobni a frissítésüket.
+const nivoBackgroundRefreshPendingTasks = new Map<string, () => void | Promise<void>>();
 
 function isNivoBackgroundRefreshRunning(): boolean {
   return nivoBackgroundRefreshDepth > 0;
@@ -6784,11 +6782,14 @@ async function waitForNivoReactPaints(): Promise<void> {
   });
 }
 
-async function runNivoBackgroundRefresh(task: () => void | Promise<void>): Promise<void> {
-  // Ha egy realtime esemény beérkezik egy már futó 10 mp-es frissítés közben,
-  // nem indítunk párhuzamos frissítést. Csak a legutolsó kérést tartjuk meg.
+async function runNivoBackgroundRefresh(
+  task: () => void | Promise<void>,
+  queueKey = "default"
+): Promise<void> {
+  // Azonos kulcson csak a legutolsó kérés marad meg. Más nézet nem dobhatja el
+  // a termelési kártya várakozó frissítését; párhuzamos DOM-frissítés továbbra sincs.
   if (nivoBackgroundRefreshRunning) {
-    nivoBackgroundRefreshPendingTask = task;
+    nivoBackgroundRefreshPendingTasks.set(queueKey, task);
     return;
   }
 
@@ -6819,12 +6820,12 @@ async function runNivoBackgroundRefresh(task: () => void | Promise<void>): Promi
     nivoBackgroundRefreshDepth = Math.max(0, nivoBackgroundRefreshDepth - 1);
     nivoBackgroundRefreshRunning = false;
 
-    const pendingTask = nivoBackgroundRefreshPendingTask;
-    nivoBackgroundRefreshPendingTask = null;
-
-    if (pendingTask) {
+    const pending = nivoBackgroundRefreshPendingTasks.entries().next().value;
+    if (pending) {
+      const [pendingKey, pendingTask] = pending;
+      nivoBackgroundRefreshPendingTasks.delete(pendingKey);
       queueMicrotask(() => {
-        void runNivoBackgroundRefresh(pendingTask);
+        void runNivoBackgroundRefresh(pendingTask, pendingKey);
       });
     }
   }
@@ -13708,8 +13709,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const threePartSnapshot = resolveThreePartCompletionSnapshot(logs);
     const completedCandidates = logs
       .filter((log) =>
-        (Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END")
-        && isFullyCompletedEndLog(log)
+        Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END"
       )
       .map((log) => {
         const metadata = getStructuredNoteMetadata(log.note);
@@ -13725,12 +13725,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           endedAt: String(log.end_time || log.end_timestamp || log.created_at || ""),
           isReproduction: log.ujragyartas === true,
           reproductionNumber: Number(log.ujragyartas_sorszam) > 0 ? Number(log.ujragyartas_sorszam) : null,
+          fullyCompleted: isFullyCompletedEndLog(log),
         };
       })
       .filter((item) => Boolean(item.eventAt));
 
     const startLogCandidates = logs
-      .filter((log) => Boolean(log.start_time || log.start_timestamp) || String(log.action || "").toUpperCase() === "START")
+      .filter(isProductionCardOpenStartLog)
       .map((log) => {
         const metadata = getStructuredNoteMetadata(log.note);
         const executiveLog = metadata.vezetoi_lejelentes === true;
@@ -13756,7 +13757,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       .filter((item) => Boolean(item.eventAt));
 
     const batchStartCandidates = productionBatchStarts
-      .filter((batch) => Boolean(batch.start_time || batch.operation_status))
+      .filter((batch) => Boolean(batch.start_time || batch.operation_status)
+        && normalizeBatchOperationStatus(batch.operation_status) !== "KESZ")
       .map((batch) => {
         const meta = getProductionMetaForOrder(batch.production_meta, orderNumber);
         const operationStatus = normalizeBatchOperationStatus(batch.operation_status);
@@ -13850,11 +13852,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     if (latestEnd) {
       const startForCompletedCycle = latestStart && latestStartTime <= latestEndTime ? latestStart : null;
-      const fullyCompleted = threePartSnapshot.isThreePartWorkflow
+      const fullyCompleted = latestEnd.fullyCompleted && (threePartSnapshot.isThreePartWorkflow
         ? threePartSnapshot.completionPercent >= 100
         : panelSnapshot.isPanelWorkflow
           ? panelSnapshot.completionPercent >= 100
-          : !doorSnapshot.isDoorWorkflow || doorSnapshot.completionPercent >= 100;
+          : !doorSnapshot.isDoorWorkflow || doorSnapshot.completionPercent >= 100);
       return {
         status: fullyCompleted ? "done" : "in-progress",
         statusLabel: buildReproductionStatusLabel(
@@ -13864,7 +13866,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               ? buildPanelCompletionStatusLabel(panelSnapshot)
               : doorSnapshot.isDoorWorkflow
                 ? buildDoorCompletionStatusLabel(doorSnapshot, false)
-                : "Kész",
+                : fullyCompleted ? "Kész" : "Folyamatban",
           latestEnd.isReproduction,
           latestEnd.reproductionNumber
         ),
@@ -14736,20 +14738,28 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         }
       }
       const overdueLogs: WorkLogRow[] = [];
+      const overdueStationAliases = getProductionCardStationAliases(cleanStationName, machineIdRows);
       for (let index = 0; index < overdueOrderNumbers.length; index += 100) {
         const chunk = overdueOrderNumbers.slice(index, index + 100);
-        const { data: overdueLogData, error: overdueLogError } = await supabase
-          .from("work_logs")
-          .select(selectColumns)
-          .in("order_number", chunk)
-          .eq("machine_id", cleanStationName)
-          .order("created_at", { ascending: true })
-          .limit(10000);
-        if (overdueLogError) throw overdueLogError;
-        overdueLogs.push(...(((overdueLogData || []) as WorkLogRow[]).map((log) => ({
-          ...log,
-          worker_name: log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || null,
-        }))));
+        const pageSize = 1000;
+        for (let offset = 0; ; offset += pageSize) {
+          const { data: overdueLogData, error: overdueLogError } = await supabase
+            .from("work_logs")
+            .select(`id,${selectColumns}`)
+            .in("order_number", chunk)
+            .order("created_at", { ascending: true })
+            .order("id", { ascending: true })
+            .range(offset, offset + pageSize - 1);
+          if (overdueLogError) throw overdueLogError;
+          const page = (overdueLogData || []) as WorkLogRow[];
+          overdueLogs.push(...page
+            .filter((log) => isProductionCardStationMachineId(log.machine_id, overdueStationAliases))
+            .map((log) => ({
+              ...log,
+              worker_name: log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || null,
+            })));
+          if (page.length < pageSize) break;
+        }
       }
 
       const overdueBatchStarts: ProductionBatchRow[] = [];
@@ -15377,8 +15387,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
     if (!window.confirm(
       `A(z) „${sourceTable.name}” kártya teljes megjelenését átmásolod a(z) „${stationName}” munkaállomás további ${targetCount} kártyájára. `
-      + "A közös oszlopok sorrendje, láthatósága, mérete, tipográfiája és formázása felülíródik. "
-      + "A színek minden kártyán a saját alapértelmezett értékükre állnak vissza, nem másolódnak át. "
+      + "A közös oszlopok sorrendje, láthatósága, mérete, színei, tipográfiája és formázása felülíródik. "
       + "A célkártyák saját mezői, nevei és termelési adatai megmaradnak. Folytatod?"
     )) return;
 
@@ -15416,7 +15425,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       });
       setMessage({
         type: "success",
-        text: `A(z) „${stationName}” munkaállomás ${targetCount} további kártyájának megjelenése egységesítve és elmentve. A színek az alapértelmezett értékükre álltak vissza. Más munkaállomás nem változott.`,
+        text: `A(z) „${stationName}” munkaállomás ${targetCount} további kártyájának teljes megjelenése egységesítve és elmentve. Más munkaállomás nem változott.`,
       });
     } catch (error) {
       console.error("A munkaállomáson belüli kártyaegységesítés sikertelen:", error);
@@ -22780,7 +22789,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "production-card") return;
     if (!productionCardAdminStation) return;
     const intervalId = window.setInterval(() => {
-      void runNivoBackgroundRefresh(() => loadProductionCardData(productionCardAdminStation, productionCardDate));
+      void runNivoBackgroundRefresh(() => loadProductionCardData(productionCardAdminStation, productionCardDate), "production-card-admin");
     }, NIVO_BACKGROUND_REFRESH_MS);
     return () => window.clearInterval(intervalId);
   }, [activeWorker?.id, terminalView, flowStage, managementSection, productionCardAdminStation, productionCardDate]);
@@ -22788,7 +22797,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   useEffect(() => {
     if (!supabase || managementSection !== "production-card" || !productionCardAdminStation) return;
     const tableName = getExactProductionCardPlanTableName(productionCardAdminStation);
-    const refresh = () => void runNivoBackgroundRefresh(() => loadProductionCardData(productionCardAdminStation, productionCardDate));
+    const refresh = () => void runNivoBackgroundRefresh(() => loadProductionCardData(productionCardAdminStation, productionCardDate), "production-card-admin");
     const channel = supabase
       .channel(`production-card-admin-${normalizeLooseText(productionCardAdminStation)}-${productionCardDate}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refresh)
@@ -22806,7 +22815,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (activeWorker && isManagementDashboardWorker(activeWorker)) return;
     void loadTerminalProductionCard(machineId);
     const intervalId = window.setInterval(() => {
-      void runNivoBackgroundRefresh(() => loadTerminalProductionCard(machineId));
+      void runNivoBackgroundRefresh(() => loadTerminalProductionCard(machineId), "production-card-terminal");
     }, NIVO_BACKGROUND_REFRESH_MS);
     return () => window.clearInterval(intervalId);
   }, [machineId, activeWorker?.id, workers.length, supabase]);
@@ -22816,7 +22825,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (activeWorker && isManagementDashboardWorker(activeWorker)) return;
     const today = getLocalDateKey(new Date());
     const tableName = getExactProductionCardPlanTableName(machineId);
-    const refreshData = () => void runNivoBackgroundRefresh(() => loadTerminalProductionCard(machineId));
+    const refreshData = () => void runNivoBackgroundRefresh(() => loadTerminalProductionCard(machineId), "production-card-terminal");
     const channel = supabase
       .channel(`production-card-terminal-${normalizeLooseText(machineId)}-${today}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refreshData)
