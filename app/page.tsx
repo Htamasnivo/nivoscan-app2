@@ -2064,9 +2064,13 @@ const STATION_PLAN_EXCEL_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefin
     { key: "ell", label: "Ell", dataType: "integer" },
   ],
   primapower: [
-    { key: "elkeszules_datum", label: "Elkeszülés_dátum", dataType: "date" },
+    { key: "elkeszules_datum", label: "Elkészülés_dátum", dataType: "date" },
     { key: "gyartasi_szam_projekt_neve", label: "Gyártási szám / Projekt", dataType: "text" },
     { key: "termek", label: "Termék", dataType: "text" },
+    { key: "nyitas", label: "Nyitás", dataType: "text" },
+    { key: "meret", label: "Méret", dataType: "text" },
+    { key: "szin_kivul", label: "Szín kívül", dataType: "text" },
+    { key: "szin_belul", label: "Szín belül", dataType: "text" },
     { key: "mennyiseg", label: "Mennyiség", dataType: "integer" },
     { key: "normaido", label: "Normaidő", dataType: "text" },
     { key: "megjegyzes", label: "Megjegyzés", dataType: "text" },
@@ -2517,11 +2521,76 @@ function registerStationPlanFields(stationName: string, rows: Array<Record<strin
   const fields = new Map(existing.map((field) => [field.key, field]));
   rows.forEach((row) => Object.keys(row || {}).forEach((key) => {
     if (key.startsWith("__") || fields.has(key)) return;
+    if (stationKey === "primapower" && PRIMAPOWER_EXACT_FIELD_NAMES.has(key)) return;
     const known = [...(STATION_PLAN_EXCEL_FIELD_DEFINITIONS[stationKey] || []), ...(LEGACY_STATION_PLAN_FIELD_DEFINITIONS[stationKey] || [])]
       .find((field) => field.key === key);
     fields.set(key, known || { key, label: key === "sos" ? "SOS" : key.replace(/_/g, " "), dataType: "text" });
   }));
   STATION_PLAN_DISCOVERED_FIELDS.set(stationKey, Array.from(fields.values()));
+}
+
+// PrimaPower: az Excel pontos 11 oszlopos sémája és a meglévő technikai
+// mezők közötti kapcsolat. A régi oszlopokat nem nevezzük át és nem töröljük.
+const PRIMAPOWER_EXACT_FIELDS: readonly { key: string; label: string }[] = [
+  { key: "elkeszules_datum", label: "Elkészülés_dátum" },
+  { key: "gyartasi_szam_projekt_neve", label: "Gyártási szám / Projekt" },
+  { key: "termek", label: "Termék" },
+  { key: "nyitas", label: "Nyitás" },
+  { key: "meret", label: "Méret" },
+  { key: "szin_kivul", label: "Szín kívül" },
+  { key: "szin_belul", label: "Szín belül" },
+  { key: "mennyiseg", label: "Mennyiség" },
+  { key: "normaido", label: "Normaidő" },
+  { key: "megjegyzes", label: "Megjegyzés" },
+  { key: "uzletag", label: "Üzletág" },
+];
+const PRIMAPOWER_NEW_FIELD_KEYS = ["nyitas", "meret", "szin_kivul", "szin_belul"] as const;
+const PRIMAPOWER_EXACT_FIELD_NAMES = new Set(PRIMAPOWER_EXACT_FIELDS.map((field) => field.label));
+
+function getPrimaPowerFieldValue(row: Record<string, unknown>, fieldKey: string): unknown {
+  const lookupKeys = getStationPlanFieldLookupKeys(fieldKey);
+  const wanted = new Set(lookupKeys.map(normalizePlanColumnName));
+  const nested = row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)
+    ? row.adat as Record<string, unknown> : {};
+  for (const source of [row, nested]) {
+    for (const key of lookupKeys) {
+      const value = source[key];
+      if (value !== null && value !== undefined && String(value).trim() !== "") return value;
+    }
+    for (const [key, value] of Object.entries(source)) {
+      if (key === "adat") continue;
+      if (wanted.has(normalizePlanColumnName(key))
+          && value !== null && value !== undefined && String(value).trim() !== "") return value;
+    }
+  }
+  return null;
+}
+
+function getPrimaPowerExactColumnValues(row: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  PRIMAPOWER_EXACT_FIELDS.forEach(({ key, label }) => {
+    result[label] = getPrimaPowerFieldValue(row, key);
+  });
+  return result;
+}
+
+function preservePrimaPowerNewFields(
+  incoming: StationPlanUploadRow,
+  existing: StationPlanUploadRow | StationPlanExistingRow
+): StationPlanUploadRow {
+  const next: StationPlanUploadRow = { ...incoming };
+  const nextAdat = { ...((next.adat || {}) as Record<string, unknown>) };
+  PRIMAPOWER_NEW_FIELD_KEYS.forEach((key) => {
+    const incomingValue = getPrimaPowerFieldValue(next as Record<string, unknown>, key);
+    const existingValue = getPrimaPowerFieldValue(existing as Record<string, unknown>, key);
+    if ((incomingValue === null || incomingValue === undefined || String(incomingValue).trim() === "")
+        && existingValue !== null && existingValue !== undefined && String(existingValue).trim() !== "") {
+      next[key] = existingValue;
+      nextAdat[key] = existingValue;
+    }
+  });
+  next.adat = nextAdat;
+  return { ...next, ...getPrimaPowerExactColumnValues(next as Record<string, unknown>) };
 }
 
 function parsePlanSosCell(value: unknown): boolean {
@@ -2535,6 +2604,7 @@ function parsePlanSosCell(value: unknown): boolean {
 function getStationPlanExcelFieldDefinitions(stationName: string | null | undefined): StationPlanFieldDefinition[] {
   const key = getStationPlanIdentityKey(stationName);
   const definitions = STATION_PLAN_EXCEL_FIELD_DEFINITIONS[key] || STATION_PLAN_BASE_FIELD_DEFINITIONS;
+  if (key === "primapower") return [...definitions];
   return definitions.some((field) => field.key === "sos") ? definitions : [...definitions, STATION_PLAN_SOS_FIELD];
 }
 
@@ -2567,6 +2637,7 @@ function getStationPlanFieldDefinitions(stationName: string | null | undefined):
   }
 
   (STATION_PLAN_DISCOVERED_FIELDS.get(key) || []).forEach((field) => {
+    if (key === "primapower" && PRIMAPOWER_EXACT_FIELD_NAMES.has(field.key)) return;
     if (!definitionsByKey.has(field.key)) definitionsByKey.set(field.key, field);
   });
   if (!definitionsByKey.has("sos")) definitionsByKey.set("sos", STATION_PLAN_SOS_FIELD);
@@ -3911,6 +3982,12 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
   };
   const priorityTable = createDefaultPriorityCardTable(theme, cleanStationName);
   const backlogTable = createDefaultBacklogCardTable(theme, cleanStationName);
+  if (stationIdentityKey === "primapower") {
+    const optionalIds = PRIMAPOWER_NEW_FIELD_KEYS.map((key) => `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${key}`);
+    [table, priorityTable, backlogTable].forEach((cardTable) => {
+      cardTable.hiddenFieldIds = Array.from(new Set([...cardTable.hiddenFieldIds, ...optionalIds]));
+    });
+  }
   const tables = isScrapReplacementProductionCardStation(cleanStationName)
     ? [priorityTable, createDefaultScrapReplacementCardTable(theme), backlogTable, table]
     : [priorityTable, backlogTable, table];
@@ -4050,6 +4127,9 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
         }
 
         const newlyAddedOptionalFields = [
+          ...(getStationPlanIdentityKey(stationName) === "primapower"
+            ? PRIMAPOWER_NEW_FIELD_KEYS.map((key) => `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${key}`)
+            : []),
           PRODUCTION_CARD_SCRAP_ELAPSED_FIELD_ID,
           PRODUCTION_CARD_BACKLOG_ELAPSED_FIELD_ID,
           PRODUCTION_CARD_AJTOLAPOK_FIELD_ID,
@@ -15852,6 +15932,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     table.dataSource = "production-plan";
     table.fieldOrder = [...getProductionCardFieldIdsForTable(table, productionCardAdminStation)];
     table.hiddenFieldIds = Array.from(new Set([
+      ...(getStationPlanIdentityKey(productionCardAdminStation) === "primapower"
+        ? PRIMAPOWER_NEW_FIELD_KEYS.map((key) => `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${key}`)
+        : []),
       ...[PRODUCTION_CARD_DATE_FIELD_ID].filter((fieldId) => !isRequiredProductionCardField(fieldId)),
       ...table.fieldOrder.filter(isProductionCardCrossStationStatusField),
     ]));
@@ -24073,6 +24156,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         elkeszules_datum: elkeszulesDatum,
         tipus,
         statusz: uzletag || null,
+        ...(isPrimaPower ? getPrimaPowerExactColumnValues({ ...normalizedValues, adat }) : {}),
       });
     });
 
@@ -24343,11 +24427,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         if (selectedAction === "add") {
           target.mennyiseg += row.mennyiseg;
         } else {
+          const safeRow = isPrimaPowerPlanStation(stationName) ? preservePrimaPowerNewFields(row, target) : row;
           const mergedAdat = {
             ...((target.adat && typeof target.adat === "object" && !Array.isArray(target.adat)) ? target.adat as Record<string, unknown> : {}),
-            ...((row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)) ? row.adat as Record<string, unknown> : {}),
+            ...((safeRow.adat && typeof safeRow.adat === "object" && !Array.isArray(safeRow.adat)) ? safeRow.adat as Record<string, unknown> : {}),
           };
-          Object.assign(target, row, { adat: mergedAdat, action: "insert", source_file: sourceFile });
+          Object.assign(target, safeRow, { adat: mergedAdat, action: "insert", source_file: sourceFile });
         }
         continue;
       }
@@ -24356,17 +24441,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         .sort((left, right) => Number(left.id) - Number(right.id))
         .at(-1);
       if (!latestDatabaseRow) throw new Error(`${stationName}: a konfliktusos tervsor nem található.`);
+      const safeRow = selectedAction === "update" && isPrimaPowerPlanStation(stationName)
+        ? preservePrimaPowerNewFields(row, latestDatabaseRow)
+        : row;
       const nextQuantity = selectedAction === "add"
         ? Number(latestDatabaseRow.mennyiseg || 0) + Number(row.mennyiseg || 0)
         : row.mennyiseg;
       const mergedAdat = selectedAction === "update"
         ? {
             ...((latestDatabaseRow.adat && typeof latestDatabaseRow.adat === "object" && !Array.isArray(latestDatabaseRow.adat)) ? latestDatabaseRow.adat as Record<string, unknown> : {}),
-            ...((row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)) ? row.adat as Record<string, unknown> : {}),
+            ...((safeRow.adat && typeof safeRow.adat === "object" && !Array.isArray(safeRow.adat)) ? safeRow.adat as Record<string, unknown> : {}),
           }
         : row.adat;
       actions.push({
-        ...row,
+        ...safeRow,
         adat: mergedAdat,
         mennyiseg: nextQuantity,
         action: selectedAction,
@@ -24374,7 +24462,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         source_file: sourceFile,
       });
       if (selectedAction === "add") latestDatabaseRow.mennyiseg = nextQuantity;
-      else Object.assign(latestDatabaseRow, row);
+      else Object.assign(latestDatabaseRow, safeRow);
     }
     return actions;
   }
@@ -24440,6 +24528,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const directFields: Record<string, unknown> = {};
       definitions.forEach((definition) => {
         if (definition.key === "sorszam" || definition.key === "elkeszules_datum") return;
+        if (isPrimaPowerPlanStation(stationName)
+            && PRIMAPOWER_NEW_FIELD_KEYS.some((key) => key === definition.key)) return;
         const value = rawRow[definition.key] !== undefined ? rawRow[definition.key] : sourceData[definition.key];
         directFields[definition.key] = value === undefined ? null : value;
       });
@@ -24959,7 +25049,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         foliazo: new Set(["ell"]),
         szereles: new Set(["nyilo_normaido", "tok_normaido", "ell"]),
         raktar: new Set(["ell"]),
-        primapower: new Set(["normaido"]),
+        primapower: new Set(["nyitas", "meret", "szin_kivul", "szin_belul", "normaido"]),
       };
       const plainByStation: Record<string, Set<string>> = {
         csolezer: new Set(["kiszallitasi_datum"]),
@@ -24984,14 +25074,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       activePane: "bottomLeft",
       state: "frozen",
     };
-    worksheet["!cols"] = definitions.map((definition) => ({
-      wch:
-        definition.key === "sorszam" ? 20 :
-        definition.key === "megnevezes" ? 32 :
-        definition.key.includes("datum") ? 18 :
-        definition.key === "mennyiseg" ? 12 :
-        20,
-    }));
+    worksheet["!cols"] = stationKey === "primapower"
+      ? [22, 30, 32, 14, 18, 20, 20, 14, 16, 28, 20].map((wch) => ({ wch }))
+      : definitions.map((definition) => ({
+          wch:
+            definition.key === "sorszam" ? 20 :
+            definition.key === "megnevezes" ? 32 :
+            definition.key.includes("datum") ? 18 :
+            definition.key === "mennyiseg" ? 12 :
+            20,
+        }));
     worksheet["!rows"] = [
       { hpt: 26 },
       ...Array.from({ length: Math.max(0, rowCount) }, () => ({ hpt: 22 })),
