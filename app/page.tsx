@@ -6403,16 +6403,25 @@ function isEditableInputElement(element: Element | null): boolean {
   return tagName === "input" || tagName === "textarea" || Boolean((element as HTMLElement).isContentEditable);
 }
 
-// NÍVÓ – scroll-only correction, 2026-09-09.
-// One owner for window and nested scroll positions. No persistence across reloads.
-type NivoScrollSnapshot = { epoch: number; scope: string };
+// NÍVÓ – scroll-only controller. The browser's current scroll position is the
+// source of truth; a saved position is never continuously imposed on it.
+type NivoScrollSnapshot = {
+  epoch: number;
+  scope: string;
+  positions: Map<string, { top: number; left: number; revision: number; intent: number }>;
+};
 type NivoScrollPosition = {
   top: number;
   left: number;
-  activeX: number;
-  activeY: number;
-  lastWrite: { top: number; left: number; until: number } | null;
+  maxX: number;
+  maxY: number;
   owner: HTMLElement;
+  revision: number;
+  intent: number;
+  intentUntil: number;
+  pendingX: boolean;
+  pendingY: boolean;
+  write: { top: number; left: number; until: number } | null;
 };
 
 class NivoScrollController {
@@ -6424,21 +6433,13 @@ class NivoScrollController {
   private mutationObserver: MutationObserver | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private observed = new Set<HTMLElement>();
-  private previousStyles = new Map<HTMLElement, { anchor: string; behavior: string }>();
   private raf: number | null = null;
-  private settleTimer: number | null = null;
-  private settleAt = 0;
   private restoring = 0;
   private previousRestoration: ScrollRestoration | null = null;
   private pointerScroll: { element: HTMLElement; x: boolean; y: boolean } | null = null;
-
   private now(): number { return performance.now(); }
-  private scrollingElement(): HTMLElement {
-    return (document.scrollingElement || document.documentElement) as HTMLElement;
-  }
-  private isRoot(element: HTMLElement): boolean {
-    return element === this.scrollingElement() || element === document.body || element === document.documentElement;
-  }
+  private scrollingElement(): HTMLElement { return (document.scrollingElement || document.documentElement) as HTMLElement; }
+  private isRoot(element: HTMLElement): boolean { return element === this.scrollingElement() || element === document.body || element === document.documentElement; }
   private maxY(element: HTMLElement): number { return Math.max(0, element.scrollHeight - element.clientHeight); }
   private maxX(element: HTMLElement): number { return Math.max(0, element.scrollWidth - element.clientWidth); }
   private clamp(value: number, maximum: number): number { return Math.max(0, Math.min(value, maximum)); }
@@ -6448,7 +6449,7 @@ class NivoScrollController {
     const style = window.getComputedStyle(element);
     return /(auto|scroll|overlay)/.test(style.overflowX + " " + style.overflowY);
   }
-  private rootOf(element: HTMLElement): HTMLElement | null {
+  private rootOf(element: HTMLElement): HTMLElement {
     let current: HTMLElement | null = element;
     while (current) {
       if (this.scrollable(current)) return this.isRoot(current) ? this.scrollingElement() : current;
@@ -6471,15 +6472,13 @@ class NivoScrollController {
     let current: HTMLElement | null = element;
     while (current && !this.isRoot(current)) {
       const stable = this.stableName(current);
-      if (stable) {
-        parts.unshift(stable);
-        break;
+      if (stable) parts.unshift(stable);
+      else {
+        let index = 0;
+        let sibling = current.previousElementSibling;
+        while (sibling) { if (sibling.tagName === current.tagName) index += 1; sibling = sibling.previousElementSibling; }
+        parts.unshift(current.tagName.toLowerCase() + ":" + index);
       }
-      // The DOM path is only a fallback; explicitly named windows take priority.
-      let index = 0;
-      let sibling = current.previousElementSibling;
-      while (sibling) { index += 1; sibling = sibling.previousElementSibling; }
-      parts.unshift(current.tagName.toLowerCase() + ":" + index);
       current = current.parentElement;
     }
     const key = parts.join("/");
@@ -6487,103 +6486,84 @@ class NivoScrollController {
     return key;
   }
   private track(element: HTMLElement): NivoScrollPosition {
-    if (!this.previousStyles.has(element)) {
-      this.previousStyles.set(element, { anchor: element.style.overflowAnchor, behavior: element.style.scrollBehavior });
-      element.style.overflowAnchor = "none";
-      element.style.scrollBehavior = "auto";
-    }
     const key = this.keyFor(element);
     let position = this.positions.get(key);
     if (!position) {
-      position = { top: element.scrollTop, left: element.scrollLeft, activeX: 0, activeY: 0, lastWrite: null, owner: element };
+      position = { top: element.scrollTop, left: element.scrollLeft, maxX: this.maxX(element), maxY: this.maxY(element), owner: element,
+        revision: 0, intent: 0, intentUntil: 0, pendingX: false, pendingY: false, write: null };
       this.positions.set(key, position);
     } else if (position.owner !== element) {
-      // React may replace a nested component during a refresh. The new DOM
-      // node must recover the last user position, not inherit a drag lock.
+      // Recover only a genuinely replaced node, not every ordinary rerender.
       position.owner = element;
-      position.activeX = 0; position.activeY = 0; position.lastWrite = null;
+      position.write = null;
+      position.pendingX = true; position.pendingY = true;
+      position.intentUntil = 0;
     }
     if (!this.isRoot(element) && this.resizeObserver && !this.observed.has(element)) {
-      this.observed.add(element);
-      this.resizeObserver.observe(element);
+      this.observed.add(element); this.resizeObserver.observe(element);
     }
     return position;
   }
-  private scheduleSettle(until: number): void {
-    if (!this.mounted || !this.scope) return;
-    if (this.settleTimer !== null && this.settleAt <= until) return;
-    if (this.settleTimer !== null) window.clearTimeout(this.settleTimer);
-    const epoch = this.epoch;
-    this.settleAt = until;
-    this.settleTimer = window.setTimeout(() => {
-      this.settleTimer = null; this.settleAt = 0;
-      if (epoch === this.epoch) this.reconcile();
-    }, Math.max(1, until - this.now() + 5));
-  }
-  private setPosition(element: HTMLElement, position: NivoScrollPosition): void {
-    const now = this.now();
-    const top = this.clamp(position.top, this.maxY(element));
+  private writePosition(element: HTMLElement, position: NivoScrollPosition, x: boolean, y: boolean): void {
     const left = this.clamp(position.left, this.maxX(element));
-    const mismatchY = Math.abs(element.scrollTop - top) > 0.5;
-    const mismatchX = Math.abs(element.scrollLeft - left) > 0.5;
-    if (mismatchY && now < position.activeY) this.scheduleSettle(position.activeY);
-    if (mismatchX && now < position.activeX) this.scheduleSettle(position.activeX);
-    const changeY = now >= position.activeY && mismatchY;
-    const changeX = now >= position.activeX && mismatchX;
-    if (!changeX && !changeY) return;
-    position.lastWrite = { top: changeY ? top : element.scrollTop, left: changeX ? left : element.scrollLeft, until: now + 500 };
+    const top = this.clamp(position.top, this.maxY(element));
+    if (x && Math.abs(element.scrollLeft - left) <= .5) x = false;
+    if (y && Math.abs(element.scrollTop - top) <= .5) y = false;
+    if (!x && !y) return;
+    position.write = { top: y ? top : element.scrollTop, left: x ? left : element.scrollLeft, until: this.now() + 300 };
+    const previous = element.style.scrollBehavior;
     this.restoring += 1;
     try {
-      // Direct pixel assignment never invokes smooth scrolling or row anchoring.
-      if (changeY) element.scrollTop = top;
-      if (changeX) element.scrollLeft = left;
-    } finally { this.restoring -= 1; }
+      element.style.scrollBehavior = "auto";
+      if (y) element.scrollTop = top;
+      if (x) element.scrollLeft = left;
+    } finally {
+      element.style.scrollBehavior = previous;
+      this.restoring -= 1;
+    }
   }
-  private releaseStyles(element: HTMLElement): void {
-    const previous = this.previousStyles.get(element);
-    if (!previous) return;
-    element.style.overflowAnchor = previous.anchor;
-    element.style.scrollBehavior = previous.behavior;
-    this.previousStyles.delete(element);
+  private reconcileElement(element: HTMLElement): void {
+    const position = this.track(element);
+    const maxX = this.maxX(element), maxY = this.maxY(element);
+    // Remember an offset during a temporary loading/empty state. Never turn a
+    // native layout clamp into the new desired user position.
+    if (maxX < position.maxX && element.scrollLeft < position.left - .5) position.pendingX = true;
+    if (maxY < position.maxY && element.scrollTop < position.top - .5) position.pendingY = true;
+    position.maxX = maxX; position.maxY = maxY;
+    if (position.pendingX || position.pendingY) {
+      this.writePosition(element, position, position.pendingX, position.pendingY);
+      position.pendingX = position.left > maxX + .5;
+      position.pendingY = position.top > maxY + .5;
+    }
   }
   reconcile(): void {
     if (!this.mounted || !this.scope) return;
-    const root = this.scrollingElement();
-    this.setPosition(root, this.track(root));
-    document.querySelectorAll<HTMLElement>("body *").forEach((element) => {
-      if (!this.isRoot(element) && this.scrollable(element)) this.setPosition(element, this.track(element));
+    this.reconcileElement(this.scrollingElement());
+    document.querySelectorAll<HTMLElement>("body *").forEach(element => {
+      if (!this.isRoot(element) && this.scrollable(element)) this.reconcileElement(element);
     });
-    // Detached panels must not remain retained by ResizeObserver or style bookkeeping.
     for (const element of this.observed) {
-      if (!element.isConnected || !this.scrollable(element)) {
-        this.resizeObserver?.unobserve(element);
-        this.observed.delete(element);
-        this.releaseStyles(element);
-      }
-    }
-    for (const element of this.previousStyles.keys()) {
-      if (!element.isConnected) this.releaseStyles(element);
+      if (!element.isConnected || !this.scrollable(element)) { this.resizeObserver?.unobserve(element); this.observed.delete(element); }
     }
   }
   private schedule(): void {
     if (!this.mounted || this.raf !== null) return;
     const epoch = this.epoch;
-    this.raf = window.requestAnimationFrame(() => {
-      this.raf = null;
-      if (epoch === this.epoch) this.reconcile();
-    });
+    this.raf = window.requestAnimationFrame(() => { this.raf = null; if (epoch === this.epoch) this.reconcile(); });
   }
   private mark(element: HTMLElement, x: boolean, y: boolean): void {
     const position = this.track(element);
-    const until = this.now() + 1200;
-    if (x) position.activeX = until;
-    if (y) position.activeY = until;
-    position.lastWrite = null;
+    // Invalidate any stale refresh snapshot as soon as the user starts scrolling.
+    position.intent += 1; position.revision += 1;
+    position.intentUntil = this.now() + 1200;
+    position.write = null;
+    if (x) { position.left = element.scrollLeft; position.pendingX = false; }
+    if (y) { position.top = element.scrollTop; position.pendingY = false; }
   }
   private canScroll(element: HTMLElement, delta: number, axis: "x" | "y"): boolean {
     const current = axis === "y" ? element.scrollTop : element.scrollLeft;
     const maximum = axis === "y" ? this.maxY(element) : this.maxX(element);
-    return maximum > 1 && (delta < 0 ? current > 0.5 : current < maximum - 0.5);
+    return maximum > 1 && (delta < 0 ? current > .5 : current < maximum - .5);
   }
   private findForDelta(target: EventTarget | null, delta: number, axis: "x" | "y"): HTMLElement | null {
     let current = target instanceof HTMLElement ? target : this.scrollingElement();
@@ -6611,9 +6591,17 @@ class NivoScrollController {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) return;
     const target = event.target instanceof HTMLElement ? event.target : null;
-    if (target?.closest("input,textarea,select,[contenteditable=true]")) return;
-    const element = target ? this.rootOf(target) : this.scrollingElement();
-    if (element) this.mark(element, true, true);
+    // Do not intercept or prevent keyboard input. Even PageDown from a focused
+    // input may scroll the page, so it must invalidate a pending snapshot.
+    // Keyboard scrolling can chain from a nested table to the page.
+    // Invalidate snapshots for every possible scroll ancestor.
+    let element: HTMLElement | null = target;
+    while (element) {
+      if (this.scrollable(element)) this.mark(this.isRoot(element) ? this.scrollingElement() : element, true, true);
+      if (this.isRoot(element)) break;
+      element = element.parentElement;
+    }
+    if (!target) this.mark(this.scrollingElement(), true, true);
   };
   private onPointerDown = (event: PointerEvent): void => {
     if (event.pointerType !== "mouse" || event.button !== 0) return;
@@ -6626,43 +6614,42 @@ class NivoScrollController {
         if (vertical || horizontal) {
           const scroller = this.isRoot(element) ? this.scrollingElement() : element;
           this.pointerScroll = { element: scroller, x: horizontal, y: vertical };
-          this.mark(scroller, horizontal, vertical);
-          return;
+          this.mark(scroller, horizontal, vertical); return;
         }
       }
       if (this.isRoot(element)) break;
       element = element.parentElement;
     }
   };
-  private onPointerMove = (): void => {
-    if (this.pointerScroll) this.mark(this.pointerScroll.element, this.pointerScroll.x, this.pointerScroll.y);
-  };
+  private onPointerMove = (): void => { if (this.pointerScroll) this.mark(this.pointerScroll.element, this.pointerScroll.x, this.pointerScroll.y); };
   private onPointerUp = (): void => {
     if (!this.pointerScroll) return;
     const { element, x, y } = this.pointerScroll;
-    this.mark(element, x, y);
-    const position = this.track(element);
-    if (x) position.left = element.scrollLeft;
-    if (y) position.top = element.scrollTop;
-    this.pointerScroll = null;
+    this.mark(element, x, y); this.pointerScroll = null;
   };
   private onScroll = (event: Event): void => {
     if (!this.mounted || this.restoring) return;
-    const element = event.target === document || event.target === window
-      ? this.scrollingElement() : event.target instanceof HTMLElement ? event.target : null;
+    const element = event.target === document || event.target === window ? this.scrollingElement() : event.target instanceof HTMLElement ? event.target : null;
     if (!element || !this.scrollable(element)) return;
     const position = this.track(element);
     const now = this.now();
-    const write = position.lastWrite;
-    if (write && now < write.until && Math.abs(element.scrollTop - write.top) < 0.5 && Math.abs(element.scrollLeft - write.left) < 0.5) {
-      position.lastWrite = null;
-      return;
+    const write = position.write;
+    if (write && now < write.until && Math.abs(element.scrollTop - write.top) < .5 && Math.abs(element.scrollLeft - write.left) < .5) {
+      position.write = null; return;
     }
-    const activeX = now < position.activeX;
-    const activeY = now < position.activeY;
-    if (activeX) { position.left = element.scrollLeft; position.activeX = now + 900; }
-    if (activeY) { position.top = element.scrollTop; position.activeY = now + 900; }
-    if (!activeX || !activeY) this.setPosition(element, position);
+    position.write = null;
+    const maxX = this.maxX(element), maxY = this.maxY(element);
+    const userIntent = now < position.intentUntil;
+    const clampedX = !userIntent && maxX < position.maxX && position.left > maxX + .5 && element.scrollLeft >= maxX - .5;
+    const clampedY = !userIntent && maxY < position.maxY && position.top > maxY + .5 && element.scrollTop >= maxY - .5;
+    if (clampedX) position.pendingX = true;
+    else { position.left = element.scrollLeft; position.pendingX = false; }
+    if (clampedY) position.pendingY = true;
+    else { position.top = element.scrollTop; position.pendingY = false; }
+    position.maxX = maxX; position.maxY = maxY;
+    if (!clampedX || !clampedY) position.revision += 1;
+    // No snap-back: ordinary native, keyboard, touch and programmatic scrolling
+    // are accepted immediately, even long after the last wheel event.
   };
   mount(): () => void {
     if (this.mounted) return () => {};
@@ -6689,8 +6676,7 @@ class NivoScrollController {
     this.mutationObserver?.disconnect(); this.mutationObserver = null;
     this.resizeObserver?.disconnect(); this.resizeObserver = null;
     if (this.raf !== null) window.cancelAnimationFrame(this.raf);
-    if (this.settleTimer !== null) window.clearTimeout(this.settleTimer);
-    this.raf = null; this.settleTimer = null; this.settleAt = 0;
+    this.raf = null;
     window.removeEventListener("wheel", this.onWheel, true);
     window.removeEventListener("touchstart", this.onTouch, true);
     window.removeEventListener("touchmove", this.onTouch, true);
@@ -6701,9 +6687,8 @@ class NivoScrollController {
     window.removeEventListener("pointercancel", this.onPointerUp, true);
     window.removeEventListener("scroll", this.onScroll, true);
     if (this.previousRestoration !== null) window.history.scrollRestoration = this.previousRestoration;
-    for (const element of this.previousStyles.keys()) this.releaseStyles(element);
-    this.observed.clear();
-    this.scope = ""; this.epoch += 1; this.positions.clear(); this.elementKeys = new WeakMap(); this.pointerScroll = null;
+    this.observed.clear(); this.positions.clear(); this.elementKeys = new WeakMap();
+    this.pointerScroll = null; this.scope = ""; this.epoch += 1;
   }
   setScope(scope: string): void {
     if (!this.mounted || this.scope === scope) return;
@@ -6711,21 +6696,18 @@ class NivoScrollController {
     this.positions.clear(); this.elementKeys = new WeakMap();
     if (this.raf !== null) window.cancelAnimationFrame(this.raf);
     this.raf = null; this.pointerScroll = null;
-    if (this.settleTimer !== null) window.clearTimeout(this.settleTimer);
-    this.settleTimer = null; this.settleAt = 0;
-    // A new screen starts at the top; filters and refreshes do not change scope.
+    // Only a real screen change resets positions. Filters and data refreshes
+    // do not change this scope.
     this.restoring += 1;
     try {
-      const root = this.scrollingElement();
       const reset = (element: HTMLElement) => {
-        const position = this.track(element);
-        position.top = 0; position.left = 0; position.activeX = 0; position.activeY = 0;
-        position.lastWrite = null;
+        const previous = element.style.scrollBehavior;
+        element.style.scrollBehavior = "auto";
         element.scrollTop = 0; element.scrollLeft = 0;
+        element.style.scrollBehavior = previous;
       };
-      reset(root);
-      window.scrollTo({ left: 0, top: 0, behavior: "auto" });
-      document.querySelectorAll<HTMLElement>("body *").forEach((element) => {
+      reset(this.scrollingElement());
+      document.querySelectorAll<HTMLElement>("body *").forEach(element => {
         if (!this.isRoot(element) && this.scrollable(element)) reset(element);
       });
     } finally { this.restoring -= 1; }
@@ -6733,11 +6715,22 @@ class NivoScrollController {
   }
   capture(): NivoScrollSnapshot {
     this.reconcile();
-    return { epoch: this.epoch, scope: this.scope };
+    const positions = new Map<string, { top: number; left: number; revision: number; intent: number }>();
+    for (const [key, position] of this.positions) {
+      if (position.owner.isConnected) positions.set(key, { top: position.top, left: position.left, revision: position.revision, intent: position.intent });
+    }
+    return { epoch: this.epoch, scope: this.scope, positions };
   }
   restore(snapshot: NivoScrollSnapshot): void {
     if (snapshot.epoch !== this.epoch || snapshot.scope !== this.scope) return;
     this.reconcile();
+    for (const [key, saved] of snapshot.positions) {
+      const position = this.positions.get(key);
+      if (!position || !position.owner.isConnected || position.intent !== saved.intent) continue;
+      position.top = saved.top; position.left = saved.left;
+      position.pendingX = true; position.pendingY = true;
+      this.reconcileElement(position.owner);
+    }
   }
   restoreAfterRender(snapshot: NivoScrollSnapshot): void {
     this.restore(snapshot);
