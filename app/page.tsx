@@ -9205,6 +9205,7 @@ export default function Page() {
 
 
   const batchFinalizeInFlightRef = useRef(false);
+  const groupTwoStartSubmitInFlightRef = useRef(false);
   const orderDuplicateCheckInFlightRef = useRef(false);
 
   const [busy, setBusy] = useState(false);
@@ -31953,6 +31954,12 @@ body {
     return worker?.Esemeny_Koteg ?? worker?.esemeny_koteg ?? null;
   }
 
+  // Only event bundle 2 skips the additional START / card-confirmation barcode.
+  // Worker authentication, END confirmation and all other bundles are unchanged.
+  function isGroupTwoCodeFreeStart(worker: Worker | null = activeWorker): boolean {
+    return Number(getWorkerEsemenyKotegValue(worker)) === 2;
+  }
+
   function hasWorkerEntryPermission(worker: Worker): boolean {
     const rawValue = getWorkerEsemenyKotegValue(worker);
     if (rawValue === null || rawValue === undefined) return false;
@@ -32495,7 +32502,9 @@ body {
       type: "info",
       text: workerEventKoteg === 5
         ? "5-ös Tok + Nyíló kötegmód aktív. Olvasd egymás után a rendeléseket. START-tal létrejön a köteg; END-nél rendelésenként külön jelölhető a Tok/Nyíló készültség."
-        : "Köteg rendelés mód aktív. Olvasd egymás után a rendelésszámokat. A pontos START kód véglegesíti és menti a köteget.",
+        : isGroupTwoCodeFreeStart()
+            ? "Köteg rendelés mód aktív. Olvasd egymás után a rendelésszámokat, majd nyomd meg a Mentés és indítás gombot. START-kód nem szükséges."
+          : "Köteg rendelés mód aktív. Olvasd egymás után a rendelésszámokat. A pontos START kód véglegesíti és menti a köteget.",
     });
   }
 
@@ -32618,49 +32627,7 @@ body {
     setOrderTypeScanError("");
   }
 
-  function handleEventSelection(event: EventCard): void {
-    setSelectedEventCard(event);
-    setEventConfirmationCode(event.barcodeValue);
-    setEventConfirmationInput("");
-    setMessage({
-      type: "info",
-      text: `${event.label} kijelölve. A továbblépéshez csippantsd le a kártyán látható esemény-visszaigazoló vonalkódot.`,
-    });
-  }
-
-  async function handleEventBarcodeSubmit(scannedValue?: string): Promise<void> {
-    if (eventBarcodeProcessingRef.current || eventBarcodeSubmitLockRef.current) return;
-    eventBarcodeProcessingRef.current = true;
-    eventBarcodeSubmitLockRef.current = true;
-    if (eventBarcodeAutoSubmitTimerRef.current) {
-      clearTimeout(eventBarcodeAutoSubmitTimerRef.current);
-      eventBarcodeAutoSubmitTimerRef.current = null;
-    }
-
-    try {
-      const candidate = (scannedValue ?? eventBarcodeLatestValueRef.current ?? eventConfirmationInput).trim();
-      if (!candidate) {
-        setEventScanError("Csippantsd le vagy írd be az esemény vonalkódját.");
-        setMessage({ type: "error", text: "Csippantsd le vagy írd be az esemény vonalkódját." });
-        eventBarcodeLatestValueRef.current = "";
-        setEventConfirmationInput("");
-        window.setTimeout(() => focusAndSelectInput(eventBarcodeInputRef), 0);
-        return;
-      }
-
-      const matchedEvent = filteredEvents.find(
-        (event) => (event.barcodeValue || "").trim().toLowerCase() === candidate.toLowerCase()
-      );
-
-      if (!matchedEvent) {
-        eventBarcodeLatestValueRef.current = "";
-        setEventConfirmationInput("");
-        setEventScanError(`Ismeretlen esemény vonalkód: ${candidate}`);
-        setMessage({ type: "error", text: `Ismeretlen esemény vonalkód: ${candidate}` });
-        window.setTimeout(() => focusAndSelectInput(eventBarcodeInputRef), 0);
-        return;
-      }
-
+  function applyConfirmedEvent(matchedEvent: EventCard): void {
       setSelectedEventCard(matchedEvent);
       setSelectedEvent(null);
       setEventConfirmationCode(matchedEvent.barcodeValue);
@@ -32699,6 +32666,19 @@ body {
       setOrderTypeScanError("");
       setManagementSelection(null);
       setTerminalView("scanner");
+
+      if (isGroupTwoCodeFreeStart()) {
+        setWorkflowMode("batch");
+        setPendingAction("START");
+        setBatchCode("");
+        setBatchOrders([]);
+        setBatchOrderProductionMeta({});
+        setFlowStage("order-scan");
+        setStep(5);
+        setMessage({ type: "success", text: `${matchedEvent.label} kiválasztva. Olvasd be a rendeléseket, majd nyomd meg a Mentés és indítás gombot. START-kód nem szükséges.` });
+        window.setTimeout(() => focusAndSelectInput(orderInputRef, { preventScroll: true }), 0);
+        return;
+      }
 
       if (workerEventKoteg === 6 || workerEventKoteg === 7 || workerEventKoteg === 8) {
         setWorkflowMode("single");
@@ -32755,6 +32735,56 @@ body {
       setStep(5);
       setMessage({ type: "success", text: `${matchedEvent.label} esemény beolvasva. Olvasd be a rendelésszámot; START nélkül azonnal mentésre kerül.` });
       window.setTimeout(() => focusAndSelectInput(orderInputRef), 0);
+  }
+
+  function handleEventSelection(event: EventCard): void {
+    if (isGroupTwoCodeFreeStart()) {
+      applyConfirmedEvent(event);
+      return;
+    }
+    setSelectedEventCard(event);
+    setEventConfirmationCode(event.barcodeValue);
+    setEventConfirmationInput("");
+    setMessage({
+      type: "info",
+      text: `${event.label} kijelölve. A továbblépéshez csippantsd le a kártyán látható esemény-visszaigazoló vonalkódot.`,
+    });
+  }
+
+  async function handleEventBarcodeSubmit(scannedValue?: string): Promise<void> {
+    if (eventBarcodeProcessingRef.current || eventBarcodeSubmitLockRef.current) return;
+    eventBarcodeProcessingRef.current = true;
+    eventBarcodeSubmitLockRef.current = true;
+    if (eventBarcodeAutoSubmitTimerRef.current) {
+      clearTimeout(eventBarcodeAutoSubmitTimerRef.current);
+      eventBarcodeAutoSubmitTimerRef.current = null;
+    }
+
+    try {
+      const candidate = (scannedValue ?? eventBarcodeLatestValueRef.current ?? eventConfirmationInput).trim();
+      if (!candidate) {
+        setEventScanError("Csippantsd le vagy írd be az esemény vonalkódját.");
+        setMessage({ type: "error", text: "Csippantsd le vagy írd be az esemény vonalkódját." });
+        eventBarcodeLatestValueRef.current = "";
+        setEventConfirmationInput("");
+        window.setTimeout(() => focusAndSelectInput(eventBarcodeInputRef), 0);
+        return;
+      }
+
+      const matchedEvent = filteredEvents.find(
+        (event) => (event.barcodeValue || "").trim().toLowerCase() === candidate.toLowerCase()
+      );
+
+      if (!matchedEvent) {
+        eventBarcodeLatestValueRef.current = "";
+        setEventConfirmationInput("");
+        setEventScanError(`Ismeretlen esemény vonalkód: ${candidate}`);
+        setMessage({ type: "error", text: `Ismeretlen esemény vonalkód: ${candidate}` });
+        window.setTimeout(() => focusAndSelectInput(eventBarcodeInputRef), 0);
+        return;
+      }
+
+      applyConfirmedEvent(matchedEvent);
     } finally {
       window.setTimeout(() => {
         eventBarcodeProcessingRef.current = false;
@@ -32775,6 +32805,10 @@ body {
   }
 
   function confirmSelectedEvent(): void {
+    if (isGroupTwoCodeFreeStart() && selectedEventCard) {
+      applyConfirmedEvent(selectedEventCard);
+      return;
+    }
     void handleEventBarcodeSubmit();
   }
 
@@ -36057,6 +36091,10 @@ body {
   }
 
   async function handleBatchStep(_autoAfterScan = false, scannedValue?: string): Promise<void> {
+    if (isGroupTwoCodeFreeStart()) {
+      handleOrderTypeSelection("batch");
+      return;
+    }
     const finalBatchCode = (scannedValue ?? batchCode).trim();
     if (!finalBatchCode) {
       setMessage({ type: "error", text: "Add meg vagy olvasd be a kötegkódot." });
@@ -37123,6 +37161,16 @@ body {
     }catch(error){setMessage({type:"error",text:committed?`A köteg mentése sikerült, de egy kapcsolódó művelet hibázott: ${normalizeError(error)}. Ne indítsd újra; ellenőrizd a köteget.`:normalizeError(error)});}
     finally{setBusy(false);window.setTimeout(()=>{batchFinalizeInFlightRef.current=false;},320);}
   }
+  async function finalizeGroupTwoBatchWithoutCode(): Promise<void> {
+    if (!isGroupTwoCodeFreeStart() || groupTwoStartSubmitInFlightRef.current || batchFinalizeInFlightRef.current || busy) return;
+    groupTwoStartSubmitInFlightRef.current = true;
+    try {
+      await finalizeBatchCreation();
+    } finally {
+      groupTwoStartSubmitInFlightRef.current = false;
+    }
+  }
+
   async function finalizeBatchCreation(): Promise<void> {
     if(requiresSzerelesStartParts()){await finalizeSzerelesBatchCreation();return;}
     if (batchFinalizeInFlightRef.current) return;
@@ -38015,7 +38063,7 @@ body {
   function getMissingRouteParts(finalOrderNumber?: string): string[] {
     const missing: string[] = [];
     if (workerEventKoteg === 3 && !selectedEventCard) missing.push("Esemény");
-    if (!actionBarcode.trim() || !isStartBarcode(actionBarcode)) missing.push("START kód");
+    if (!isGroupTwoCodeFreeStart() && (!actionBarcode.trim() || !isStartBarcode(actionBarcode))) missing.push("START kód");
     if (!(finalOrderNumber ?? orderNumber).trim()) missing.push("Rendelésszám");
     return missing;
   }
@@ -38773,7 +38821,8 @@ body {
         // A mentési tranzakció kizárólag a pontos START lezáró kódra fut le.
         if (isStartBarcode(finalOrder)) {
           setOrderNumber("");
-          await finalizeBatchCreation();
+          if (isGroupTwoCodeFreeStart()) await finalizeGroupTwoBatchWithoutCode();
+          else await finalizeBatchCreation();
           return;
         }
         await addOrderToBatch(finalOrder);
@@ -38855,6 +38904,21 @@ body {
   async function handleActionBarcodeSubmit(_autoAfterScan = false, scannedValue?: string): Promise<void> {
     const effectiveAction = pendingAction || "START";
     setPendingAction(effectiveAction);
+
+    if (effectiveAction === "START" && isGroupTwoCodeFreeStart()) {
+      if (workflowMode === "batch") {
+        await finalizeGroupTwoBatchWithoutCode();
+      } else if (workflowMode === "single" && orderNumber.trim()) {
+        await saveWorkLog("START", { orderNumber: orderNumber.trim() });
+      } else {
+        setActionBarcode("");
+        setFlowStage("order-scan");
+        setStep(5);
+        setMessage({ type: "info", text: "Olvasd be a rendelésszámot. START-kód nem szükséges." });
+        window.setTimeout(() => focusAndSelectInput(orderInputRef, { preventScroll: true }), 0);
+      }
+      return;
+    }
 
     const raw = (scannedValue ?? actionBarcode).trim();
     if (!raw) {
@@ -39178,7 +39242,7 @@ body {
           return;
         }
 
-        if (pendingAction === "START" && !isStartBarcode(scanned)) {
+        if (pendingAction === "START" && !isGroupTwoCodeFreeStart() && !isStartBarcode(scanned)) {
           setMessage({ type: "error", text: `Ez nem START kódnak tűnik: ${scanned}` });
           scannerLockRef.current = false;
           return;
@@ -40407,7 +40471,9 @@ body {
               ) : (
                 <>
                   <div style={{ marginBottom: 18, color: "#cbd5e1" }}>
-                    A dolgozó azonosítása sikeres. A következő lépés az esemény beolvasása. Az esemény után közvetlenül a rendelésszám megadása következik.
+                    {isGroupTwoCodeFreeStart()
+                      ? "A dolgozó azonosítása sikeres. Válaszd ki a termelési kártyát; a 2-es kötegnél nincs külön esemény-visszaigazoló kód."
+                      : "A dolgozó azonosítása sikeres. A következő lépés az esemény beolvasása. Az esemény után közvetlenül a rendelésszám megadása következik."}
                   </div>
 
                   {!authResolved ? (
@@ -40468,7 +40534,7 @@ body {
                             }}
                           >
                             <div style={{ width: "100%", maxWidth: "100%", margin: "0 auto", padding: "10px 12px 4px", boxSizing: "border-box", display: "flex", justifyContent: "center", alignItems: "center" }}>
-                              {renderPseudoBarcode(event.barcodeValue)}
+                              {!isGroupTwoCodeFreeStart() && renderPseudoBarcode(event.barcodeValue)}
                             </div>
                             <div style={{ fontSize: 17, fontWeight: 900, color: "#0f172a", lineHeight: 1.1 }}>
                               {event.label}
@@ -40487,7 +40553,7 @@ body {
                     </div>
                   )}
 
-                  {!authError && authResolved && (
+                  {!authError && authResolved && !isGroupTwoCodeFreeStart() && (
                     <div style={{ marginBottom: 18, background: "#0f172a", border: "1px solid #334155", borderRadius: 14, padding: 16 }}>
                       <div style={{ fontSize: 14, color: "#cbd5e1", marginBottom: 12 }}>
                         Esemény vonalkód beolvasása
@@ -40599,7 +40665,7 @@ body {
                     )}
                   </div>
 
-                  <div style={{ marginBottom: 18, background: "#0f172a", border: "1px solid #334155", borderRadius: 14, padding: 16 }}>
+                  {!isGroupTwoCodeFreeStart() && <div style={{ marginBottom: 18, background: "#0f172a", border: "1px solid #334155", borderRadius: 14, padding: 16 }}>
                     <div style={{ fontSize: 14, color: "#cbd5e1", marginBottom: 12 }}>
                       Módválasztó vonalkód beolvasása
                     </div>
@@ -40641,7 +40707,7 @@ body {
                     {!!orderTypeScanError && (
                       <div style={{ marginTop: 10, color: "#fca5a5", fontSize: 13 }}>{orderTypeScanError}</div>
                     )}
-                  </div>
+                  </div>}
 
                   <div
                     style={{
@@ -41326,6 +41392,10 @@ body {
                     )}
                     <button
                       onClick={() => {
+                        if (isGroupTwoCodeFreeStart()) {
+                          void finalizeGroupTwoBatchWithoutCode();
+                          return;
+                        }
                         setMessage({ type: "info", text: "A köteg adatbázisba mentése csak a pontos START vonalkód beolvasására indul. Olvasd be a START kódot a lista végén." });
                         focusAndSelectInput(orderInputRef);
                       }}
@@ -41339,7 +41409,9 @@ body {
                   <div style={{ marginTop: 14, fontSize: 13, color: standaloneScrapReportMode ? "#fca5a5" : "#94a3b8" }}>
                     {standaloneScrapReportMode
                       ? "Selejt mód aktív: olvasd be a selejtes rendelést. A köteghez nem adódik hozzá; kötelezően meg kell adni a hiba leírását."
-                      : "A scanner Enter billentyűje azonnal feldolgozza az aktuális mezőt. Adatbázis-mentés kizárólag a pontos START kód beolvasásakor történik."}
+                    : isGroupTwoCodeFreeStart()
+                        ? "A rendeléseket a scanner Enter billentyűje hozzáadja a listához. A Mentés és indítás gomb elindítja a köteget, külön START-kód nélkül."
+                        : "A scanner Enter billentyűje azonnal feldolgozza az aktuális mezőt. Adatbázis-mentés kizárólag a pontos START kód beolvasásakor történik."}
                   </div>
                 </>
               ) : (
@@ -41446,6 +41518,14 @@ body {
             <div>
               {pendingAction === "START" ? (
                 <>
+                  {isGroupTwoCodeFreeStart() ? (
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
+                      <button type="button" onClick={() => void handleActionBarcodeSubmit(false)} disabled={busy} style={buttonPrimary}>Mentés és indítás</button>
+                      <button type="button" onClick={handleBackFromAction} style={buttonSecondary}>Vissza</button>
+                      <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
+                    </div>
+                  ) : (
+                    <>
                   {requiresSzerelesStartParts() && szerelesOrderState && <div style={{marginBottom:16}}>
                     {renderSzerelesSessionStatus(szerelesOrderState)}
                     {renderSzerelesStartPartPicker()}
@@ -41489,6 +41569,8 @@ body {
                     <button onClick={handleBackFromAction} style={buttonSecondary}>Vissza</button>
                     <button onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
                   </div>
+                    </>
+                  )}
                 </>
               ) : (
                 <>
