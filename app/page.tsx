@@ -1047,7 +1047,7 @@ type AtvetelCurrentRow = {
 type AtvetelMonitorRow = {
   key: string;
   orderNumber: string;
-  beepitesiDatum: string;
+  elkeszulesDatum: string;
   telephely: string;
   atvetel: string;
   productionStatus: ProductionMonitorStatus;
@@ -8377,7 +8377,7 @@ export default function Page() {
   const productionMonitorProfilesLatestRef = useRef<ProductionMonitorProfile[]>(productionMonitorProfiles);
   const productionMonitorActiveProfileIdLatestRef = useRef(activeProductionMonitorProfileId);
 
-  // Átvétel monitor – kizárólag a szereles_terv.beepites_datuma alapján.
+  // Átvétel monitor – kizárólag a szereles_terv.elkeszules_datum alapján.
   const [atvetelDateFrom, setAtvetelDateFrom] = useState(getLocalDateKey(new Date()));
   const [atvetelDateTo, setAtvetelDateTo] = useState(getLocalDateKey(new Date()));
   const [atvetelSearch, setAtvetelSearch] = useState("");
@@ -8390,6 +8390,7 @@ export default function Page() {
   const [atvetelSavingOrder, setAtvetelSavingOrder] = useState("");
   const [atvetelClosingOrder, setAtvetelClosingOrder] = useState("");
   const [atvetelLoading, setAtvetelLoading] = useState(false);
+  const [atvetelExporting, setAtvetelExporting] = useState(false);
   const [atvetelLastUpdatedAt, setAtvetelLastUpdatedAt] = useState("");
 
 
@@ -20490,13 +20491,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     ).trim();
   }
 
-  function getAtvetelInstallationDate(row: Record<string, unknown>): string {
-    const rawValue = readAtvetelPlanValue(row, [
-      "beepites_datuma",
-      "beepitesi_datum",
-      "beépítés dátuma",
-      "beépítési dátum",
-    ]);
+  function getAtvetelCompletionDate(row: Record<string, unknown>): string {
+    const rawValue = readAtvetelPlanValue(row, ["elkeszules_datum"]);
     return parseSpreadsheetDate(rawValue) || valueAsText(rawValue).slice(0, 10);
   }
 
@@ -20543,12 +20539,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return result;
   }
 
-  async function loadAtvetelMonitor(
-    dateFrom = atvetelDateFrom,
-    dateTo = atvetelDateTo,
-    searchOverride = atvetelCommittedSearch
-  ): Promise<void> {
-    if (!supabase) return;
+  async function fetchAtvetelMonitorRows(
+    dateFrom: string,
+    dateTo: string,
+    searchOverride: string,
+    options?: { ignoreDateFilter?: boolean }
+  ): Promise<AtvetelMonitorRow[]> {
+    if (!supabase) return [];
 
     const today = getLocalDateKey(new Date());
     let startDate = /^\d{4}-\d{2}-\d{2}$/.test(dateFrom) ? dateFrom : today;
@@ -20562,167 +20559,180 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const normalizedGlobalSearch = normalizeDashboardOrderSearch(searchOverride);
     const searchWholeSourceTable = Boolean(normalizedGlobalSearch);
+    const ignoreDateFilter = options?.ignoreDateFilter === true;
+
+    // 1) Sorforrás KIZÁRÓLAG: public.szereles_terv
+    // 2) Dátumforrás KIZÁRÓLAG: elkeszules_datum
+    // 3) Üres elkészülési dátum: nem jelenik meg.
+    const sourceRows = await fetchAllAtvetelSourceRows();
+
+    const sourceByOrder = new Map<
+      string,
+      { orderNumber: string; elkeszulesDatum: string; telephely: string; atvetel: string }
+    >();
+
+    sourceRows.forEach((rawRow) => {
+      const orderNumber = getAtvetelSourceOrderNumber(rawRow);
+      const elkeszulesDatum = getAtvetelCompletionDate(rawRow);
+      const telephely = getAtvetelTelephely(rawRow);
+      const atvetel = getAtvetelSourceAtvetel(rawRow);
+
+      if (!orderNumber) return;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(elkeszulesDatum)) return;
+
+      // Normál nézetben az elkészülési dátumtartomány szűr. Enterrel aktivált
+      // rendeléskeresésnél a TELJES szereles_terv táblában keresünk,
+      // a dátumszűrőtől függetlenül. Az Excel "minden" export ezt a szűrést
+      // külön, explicit módon kapcsolhatja ki.
+      if (searchWholeSourceTable) {
+        if (!matchesDashboardOrderFilters(orderNumber, [searchOverride])) return;
+      } else if (!ignoreDateFilter && (elkeszulesDatum < startDate || elkeszulesDatum > endDate)) {
+        return;
+      }
+
+      const key = normalizeLooseText(orderNumber);
+      const existing = sourceByOrder.get(key);
+
+      // Egy rendelés a monitoron pontosan egy sor.
+      // Ha több szereles_terv sor van, a legkorábbi, feltételnek megfelelő
+      // elkészülési dátumot tartjuk meg.
+      if (!existing || elkeszulesDatum < existing.elkeszulesDatum) {
+        sourceByOrder.set(key, { orderNumber, elkeszulesDatum, telephely, atvetel });
+      }
+    });
+
+    const sourceOrders = Array.from(sourceByOrder.values())
+      .sort((left, right) =>
+        left.elkeszulesDatum.localeCompare(right.elkeszulesDatum)
+        || left.orderNumber.localeCompare(right.orderNumber, "hu", { numeric: true })
+      );
+
+    const orderNumbers = sourceOrders.map((row) => row.orderNumber);
+
+    // Aktuális Átvétel állapotok.
+    const currentRows: AtvetelCurrentRow[] = [];
+    for (let index = 0; index < orderNumbers.length; index += 100) {
+      const chunk = orderNumbers.slice(index, index + 100);
+      if (chunk.length === 0) continue;
+
+      const response = await supabase
+        .from(ATVETEL_CURRENT_TABLE)
+        .select("id, order_number, beepitesi_datum, production_status, folyamatban, atvette, megjegyzes, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
+        .in("order_number", chunk);
+
+      if (response.error) throw response.error;
+      currentRows.push(...((response.data || []) as AtvetelCurrentRow[]));
+    }
+
+    const currentByOrder = new Map(
+      currentRows.map((row) => [normalizeLooseText(row.order_number), row])
+    );
+
+    // Ugyanaz a work_logs státuszlogika, mint a termelési monitorban,
+    // de itt kizárólag a Szerelés munkaállomás állapota kell.
+    const logs: WorkLogRow[] = [];
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+
+    for (let index = 0; index < orderNumbers.length; index += 100) {
+      const chunk = orderNumbers.slice(index, index + 100);
+      if (chunk.length === 0) continue;
+
+      let response = await supabase
+        .from("work_logs")
+        .select(selectColumns)
+        .in("order_number", chunk)
+        .order("created_at", { ascending: true })
+        .limit(10000);
+
+      if (response.error) {
+        response = await supabase
+          .from("work_log")
+          .select(selectColumns)
+          .in("order_number", chunk)
+          .order("created_at", { ascending: true })
+          .limit(10000);
+      }
+
+      if (response.error) throw response.error;
+
+      logs.push(...(((response.data as WorkLogRow[]) || []).map((log) => ({
+        ...log,
+        worker_name:
+          log.worker_name
+          || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"]
+          || null,
+      }))));
+    }
+
+    const batchStarts: ProductionBatchRow[] = [];
+    if (orderNumbers.length > 0) {
+      const batchResponse = await supabase
+        .from("production_batches")
+        .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta, operation_code, operation_status")
+        .not("start_time", "is", null)
+        .limit(10000);
+
+      if (batchResponse.error) throw batchResponse.error;
+
+      const wantedOrders = new Set(
+        orderNumbers.map((orderNumber) => normalizeLooseText(orderNumber))
+      );
+
+      batchStarts.push(...(((batchResponse.data as ProductionBatchRow[]) || []).filter((batch) =>
+        normalizeLooseText(batch.machine_id) === normalizeLooseText(ATVETEL_SOURCE_STATION)
+        && Array.isArray(batch.order_ids)
+        && batch.order_ids.some((orderId) =>
+          wantedOrders.has(normalizeLooseText(String(orderId)))
+        )
+      )));
+    }
+
+    return sourceOrders.map((sourceRow) => {
+      const orderLogs = logs.filter(
+        (log) =>
+          normalizeLooseText(log.order_number) === normalizeLooseText(sourceRow.orderNumber)
+          && normalizeLooseText(resolveLogStation(log, workers)) === normalizeLooseText(ATVETEL_SOURCE_STATION)
+      );
+
+      const orderBatchStarts = batchStarts.filter((batch) =>
+        Array.isArray(batch.order_ids)
+        && batch.order_ids.some(
+          (orderId) =>
+            normalizeLooseText(String(orderId)) === normalizeLooseText(sourceRow.orderNumber)
+        )
+      );
+
+      const monitorCell = getMonitorCellFromLogs(
+        orderLogs,
+        orderBatchStarts,
+        sourceRow.orderNumber
+      );
+
+      return {
+        key: `${normalizeLooseText(sourceRow.orderNumber)}|${sourceRow.elkeszulesDatum}`,
+        orderNumber: sourceRow.orderNumber,
+        elkeszulesDatum: sourceRow.elkeszulesDatum,
+        telephely: sourceRow.telephely,
+        atvetel: sourceRow.atvetel,
+        productionStatus: monitorCell.status,
+        productionStatusLabel: monitorCell.label,
+        persisted: currentByOrder.get(normalizeLooseText(sourceRow.orderNumber)) || null,
+      };
+    });
+  }
+
+  async function loadAtvetelMonitor(
+    dateFrom = atvetelDateFrom,
+    dateTo = atvetelDateTo,
+    searchOverride = atvetelCommittedSearch
+  ): Promise<void> {
+    if (!supabase) return;
 
     const backgroundRefresh = isNivoBackgroundRefreshRunning();
     if (!backgroundRefresh) setAtvetelLoading(true);
 
     try {
-      // 1) Sorforrás KIZÁRÓLAG: public.szereles_terv
-      // 2) Dátumforrás KIZÁRÓLAG: beepites_datuma
-      // 3) Üres beépítési dátum: nem jelenik meg.
-      const sourceRows = await fetchAllAtvetelSourceRows();
-
-      const sourceByOrder = new Map<
-        string,
-        { orderNumber: string; beepitesiDatum: string; telephely: string; atvetel: string }
-      >();
-
-      sourceRows.forEach((rawRow) => {
-        const orderNumber = getAtvetelSourceOrderNumber(rawRow);
-        const beepitesiDatum = getAtvetelInstallationDate(rawRow);
-        const telephely = getAtvetelTelephely(rawRow);
-        const atvetel = getAtvetelSourceAtvetel(rawRow);
-
-        if (!orderNumber) return;
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(beepitesiDatum)) return;
-
-        // Normál nézetben a dátumtartomány szűr. Enterrel aktivált rendeléskeresésnél
-        // viszont a TELJES szereles_terv táblában keresünk, a dátumszűrőtől függetlenül.
-        if (searchWholeSourceTable) {
-          if (!matchesDashboardOrderFilters(orderNumber, [searchOverride])) return;
-        } else if (beepitesiDatum < startDate || beepitesiDatum > endDate) {
-          return;
-        }
-
-        const key = normalizeLooseText(orderNumber);
-        const existing = sourceByOrder.get(key);
-
-        // Egy rendelés a monitoron pontosan egy sor.
-        // Ha valamiért több szereles_terv sor van, a legkorábbi,
-        // kiválasztott tartományba eső beépítési dátumot tartjuk meg.
-        if (!existing || beepitesiDatum < existing.beepitesiDatum) {
-          sourceByOrder.set(key, { orderNumber, beepitesiDatum, telephely, atvetel });
-        }
-      });
-
-      const sourceOrders = Array.from(sourceByOrder.values())
-        .sort((left, right) =>
-          left.beepitesiDatum.localeCompare(right.beepitesiDatum)
-          || left.orderNumber.localeCompare(right.orderNumber, "hu", { numeric: true })
-        );
-
-      const orderNumbers = sourceOrders.map((row) => row.orderNumber);
-
-      // Aktuális Átvétel állapotok.
-      const currentRows: AtvetelCurrentRow[] = [];
-      for (let index = 0; index < orderNumbers.length; index += 100) {
-        const chunk = orderNumbers.slice(index, index + 100);
-        if (chunk.length === 0) continue;
-
-        const response = await supabase
-          .from(ATVETEL_CURRENT_TABLE)
-          .select("id, order_number, beepitesi_datum, production_status, folyamatban, atvette, megjegyzes, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
-          .in("order_number", chunk);
-
-        if (response.error) throw response.error;
-        currentRows.push(...((response.data || []) as AtvetelCurrentRow[]));
-      }
-
-      const currentByOrder = new Map(
-        currentRows.map((row) => [normalizeLooseText(row.order_number), row])
-      );
-
-      // Ugyanaz a work_logs státuszlogika, mint a termelési monitorban,
-      // de itt kizárólag a Szerelés munkaállomás állapota kell.
-      const logs: WorkLogRow[] = [];
-      const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
-
-      for (let index = 0; index < orderNumbers.length; index += 100) {
-        const chunk = orderNumbers.slice(index, index + 100);
-        if (chunk.length === 0) continue;
-
-        let response = await supabase
-          .from("work_logs")
-          .select(selectColumns)
-          .in("order_number", chunk)
-          .order("created_at", { ascending: true })
-          .limit(10000);
-
-        if (response.error) {
-          response = await supabase
-            .from("work_log")
-            .select(selectColumns)
-            .in("order_number", chunk)
-            .order("created_at", { ascending: true })
-            .limit(10000);
-        }
-
-        if (response.error) throw response.error;
-
-        logs.push(...(((response.data as WorkLogRow[]) || []).map((log) => ({
-          ...log,
-          worker_name:
-            log.worker_name
-            || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"]
-            || null,
-        }))));
-      }
-
-      const batchStarts: ProductionBatchRow[] = [];
-      if (orderNumbers.length > 0) {
-        const batchResponse = await supabase
-          .from("production_batches")
-          .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta, operation_code, operation_status")
-          .not("start_time", "is", null)
-          .limit(10000);
-
-        if (batchResponse.error) throw batchResponse.error;
-
-        const wantedOrders = new Set(
-          orderNumbers.map((orderNumber) => normalizeLooseText(orderNumber))
-        );
-
-        batchStarts.push(...(((batchResponse.data as ProductionBatchRow[]) || []).filter((batch) =>
-          normalizeLooseText(batch.machine_id) === normalizeLooseText(ATVETEL_SOURCE_STATION)
-          && Array.isArray(batch.order_ids)
-          && batch.order_ids.some((orderId) =>
-            wantedOrders.has(normalizeLooseText(String(orderId)))
-          )
-        )));
-      }
-
-      const nextRows: AtvetelMonitorRow[] = sourceOrders.map((sourceRow) => {
-        const orderLogs = logs.filter(
-          (log) =>
-            normalizeLooseText(log.order_number) === normalizeLooseText(sourceRow.orderNumber)
-            && normalizeLooseText(resolveLogStation(log, workers)) === normalizeLooseText(ATVETEL_SOURCE_STATION)
-        );
-
-        const orderBatchStarts = batchStarts.filter((batch) =>
-          Array.isArray(batch.order_ids)
-          && batch.order_ids.some(
-            (orderId) =>
-              normalizeLooseText(String(orderId)) === normalizeLooseText(sourceRow.orderNumber)
-          )
-        );
-
-        const monitorCell = getMonitorCellFromLogs(
-          orderLogs,
-          orderBatchStarts,
-          sourceRow.orderNumber
-        );
-
-        return {
-          key: `${normalizeLooseText(sourceRow.orderNumber)}|${sourceRow.beepitesiDatum}`,
-          orderNumber: sourceRow.orderNumber,
-          beepitesiDatum: sourceRow.beepitesiDatum,
-          telephely: sourceRow.telephely,
-          atvetel: sourceRow.atvetel,
-          productionStatus: monitorCell.status,
-          productionStatusLabel: monitorCell.label,
-          persisted: currentByOrder.get(normalizeLooseText(sourceRow.orderNumber)) || null,
-        };
-      });
+      const nextRows = await fetchAtvetelMonitorRows(dateFrom, dateTo, searchOverride);
 
       setAtvetelRows(nextRows);
 
@@ -20759,6 +20769,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (!backgroundRefresh) setAtvetelLoading(false);
     }
   }
+
 
   function updateAtvetelDraft(
     rowKey: string,
@@ -20824,7 +20835,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       // megjegyzés és a lezárási adatok is.
       const payload = {
         order_number: row.orderNumber,
-        beepitesi_datum: row.beepitesiDatum,
+        beepitesi_datum: row.elkeszulesDatum,
         production_status: row.productionStatusLabel,
         folyamatban: Boolean(draft.folyamatban),
         atvette: Boolean(draft.atvette),
@@ -20936,6 +20947,104 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return matchesDashboardOrderFilters(row.orderNumber, [atvetelCommittedSearch]);
     });
 
+    async function exportAtvetelExcel(): Promise<void> {
+      if (atvetelExporting) return;
+
+      setAtvetelExporting(true);
+      try {
+        const hasDateFilter = Boolean(atvetelDateFrom.trim() || atvetelDateTo.trim());
+        const hasOrderFilter = Boolean(normalizeDashboardOrderSearch(atvetelCommittedSearch));
+
+        let rowsToExport: AtvetelMonitorRow[];
+
+        // Ha nincs sem dátum-, sem rendelésszám-szűrés, a TELJES szereles_terv
+        // forrást exportáljuk. Egyébként pontosan a képernyő aktuális
+        // dátum/rendelésszám + lezárási állapot szűrésének megfelelő sorokat.
+        if (!hasDateFilter && !hasOrderFilter) {
+          const allRows = await fetchAtvetelMonitorRows("", "", "", { ignoreDateFilter: true });
+          rowsToExport = allRows.filter((row) => {
+            const closed = Boolean(row.persisted?.lezart);
+            if (atvetelClosureFilter === "open" && closed) return false;
+            if (atvetelClosureFilter === "closed" && !closed) return false;
+            return true;
+          });
+        } else {
+          rowsToExport = [...visibleRows];
+        }
+
+        rowsToExport.sort((left, right) =>
+          left.elkeszulesDatum.localeCompare(right.elkeszulesDatum)
+          || left.orderNumber.localeCompare(right.orderNumber, "hu", { numeric: true })
+        );
+
+        if (rowsToExport.length === 0) {
+          setMessage({ type: "error", text: "Nincs exportálható Átvétel sor a jelenlegi szűréshez." });
+          return;
+        }
+
+        const XLSX = await waitForXlsx();
+        const workbook = XLSX.utils.book_new();
+
+        const excelRows: Array<Array<string | number>> = [
+          [
+            "Rendelésszám",
+            "Elkészülés dátuma",
+            "Ajtó állapota",
+            "Telephely",
+            "Átvétel",
+            "Folyamatban",
+            "Átvette",
+            "Megjegyzés",
+          ],
+          ...rowsToExport.map((row) => {
+            const draft = atvetelDrafts[row.key] || {
+              folyamatban: Boolean(row.persisted?.folyamatban),
+              atvette: Boolean(row.persisted?.atvette),
+              megjegyzes: String(row.persisted?.megjegyzes || ""),
+              dirty: false,
+            };
+
+            return [
+              row.orderNumber,
+              row.elkeszulesDatum,
+              row.productionStatusLabel,
+              row.telephely || "",
+              row.atvetel || "",
+              draft.folyamatban ? "Igen" : "Nem",
+              draft.atvette ? "Igen" : "Nem",
+              draft.megjegyzes || "",
+            ];
+          }),
+        ];
+
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.aoa_to_sheet(excelRows),
+          "Átvétel"
+        );
+
+        const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+        downloadBlob(
+          "Átvétel.xlsx",
+          new Blob([output]),
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+
+        setMessage({
+          type: "success",
+          text: `Átvétel Excel export elkészült: ${rowsToExport.length} sor.`,
+        });
+      } catch (error) {
+        console.error("ÁTVÉTEL EXCEL EXPORT HIBA:", error);
+        setMessage({
+          type: "error",
+          text: `Az Átvétel Excel export sikertelen: ${normalizeError(error)}`,
+        });
+      } finally {
+        setAtvetelExporting(false);
+      }
+    }
+
     const pagePanel: React.CSSProperties = {
       background: officeTheme.panelBackground,
       border: `${officeTheme.borderWidth}px solid ${officeTheme.borderColor}`,
@@ -21024,7 +21133,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <div style={{ color: "#38bdf8", fontWeight: 900, fontSize: 12, letterSpacing: 1 }}>NÍVÓ ÁTVÉTELI MONITOR</div>
                 <h2 style={{ margin: "4px 0", color: officeTheme.textColor, fontSize: 28 }}>Átvétel</h2>
                 <div style={{ color: officeTheme.mutedText, fontSize: 13 }}>
-                  Sorforrás: <strong>szereles_terv</strong> · Szűrés alapja: <strong>Beépítési dátum</strong>
+                  Sorforrás: <strong>szereles_terv</strong> · Szűrés alapja: <strong>Elkészülés dátuma</strong>
                 </div>
                 <div style={{ color: officeTheme.mutedText, fontSize: 12, marginTop: 4 }}>
                   Utolsó frissítés: {atvetelLastUpdatedAt ? formatDateTime(atvetelLastUpdatedAt) : "–"}
@@ -21043,7 +21152,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <div style={{ display: "grid", gap: 7 }}>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                     <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
-                      Dátumtól · Beépítési dátum
+                      Dátumtól · Elkészülés dátuma
                       <input
                         type="date"
                         value={atvetelDateFrom}
@@ -21053,7 +21162,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     </label>
 
                     <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
-                      Dátumig · Beépítési dátum
+                      Dátumig · Elkészülés dátuma
                       <input
                         type="date"
                         value={atvetelDateTo}
@@ -21168,19 +21277,30 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   {visibleRows.length} megjelenített rendelés · minden sor külön Mentés és végleges Lezárás gombbal
                 </div>
               </div>
-              {(atvetelSearch || atvetelCommittedSearch) && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <button
                   type="button"
-                  onClick={() => {
-                    setAtvetelSearch("");
-                    setAtvetelCommittedSearch("");
-                    void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, "");
-                  }}
-                  style={buttonSecondary}
+                  onClick={() => void exportAtvetelExcel()}
+                  disabled={atvetelLoading || atvetelExporting}
+                  style={buttonPrimary}
                 >
-                  Keresés törlése
+                  {atvetelExporting ? "Excel export..." : "Excel export"}
                 </button>
-              )}
+
+                {(atvetelSearch || atvetelCommittedSearch) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAtvetelSearch("");
+                      setAtvetelCommittedSearch("");
+                      void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, "");
+                    }}
+                    style={buttonSecondary}
+                  >
+                    Keresés törlése
+                  </button>
+                )}
+              </div>
             </div>
 
             <div data-nivo-scroll-region="source-21071" style={{ overflowX: "auto", maxHeight: "calc(100vh - 310px)", overflowY: "auto", border: `1px solid ${officeTheme.borderColor}`, borderRadius: 12 }}>
@@ -21188,7 +21308,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <thead>
                   <tr>
                     <th style={tableHeaderStyle}>Rendelésszám</th>
-                    <th style={tableHeaderStyle}>Beépítési dátum</th>
+                    <th style={tableHeaderStyle}>Elkészülés dátuma</th>
                     <th style={tableHeaderStyle}>Ajtó állapota</th>
                     <th style={tableHeaderStyle}>Telephely</th>
                     <th style={tableHeaderStyle}>Átvétel</th>
@@ -21204,7 +21324,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       <td colSpan={9} style={{ ...tableCellStyle, textAlign: "center", padding: 30, color: officeTheme.mutedText }}>
                         {atvetelLoading
                           ? "Átvételi sorok betöltése..."
-                          : "A kiválasztott beépítési dátumtartományban nincs megjeleníthető szereles_terv sor."}
+                          : "A kiválasztott elkészülési dátumtartományban nincs megjeleníthető szereles_terv sor."}
                       </td>
                     </tr>
                   ) : visibleRows.map((row) => {
@@ -21227,7 +21347,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                         }}
                       >
                         <td style={{ ...tableCellStyle, fontWeight: 900, whiteSpace: "nowrap" }}>{row.orderNumber}</td>
-                        <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{row.beepitesiDatum}</td>
+                        <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{row.elkeszulesDatum}</td>
                         <td style={tableCellStyle}>
                           <span style={statusStyle(row.productionStatus)}>{row.productionStatusLabel}</span>
                         </td>
