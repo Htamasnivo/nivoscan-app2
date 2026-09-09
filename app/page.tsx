@@ -6536,8 +6536,11 @@ class NivoScrollController {
       position.pendingY = position.top > maxY + .5;
     }
   }
+  private isExecutiveReportScope(): boolean {
+    return this.scope.endsWith("|office:executive-report");
+  }
   reconcile(): void {
-    if (!this.mounted || !this.scope) return;
+    if (!this.mounted || !this.scope || this.isExecutiveReportScope()) return;
     this.reconcileElement(this.scrollingElement());
     document.querySelectorAll<HTMLElement>("body *").forEach(element => {
       if (!this.isRoot(element) && this.scrollable(element)) this.reconcileElement(element);
@@ -6714,6 +6717,7 @@ class NivoScrollController {
     this.reconcile();
   }
   capture(): NivoScrollSnapshot {
+    if (this.isExecutiveReportScope()) return { epoch: this.epoch, scope: this.scope, positions: new Map() };
     this.reconcile();
     const positions = new Map<string, { top: number; left: number; revision: number; intent: number }>();
     for (const [key, position] of this.positions) {
@@ -6722,7 +6726,7 @@ class NivoScrollController {
     return { epoch: this.epoch, scope: this.scope, positions };
   }
   restore(snapshot: NivoScrollSnapshot): void {
-    if (snapshot.epoch !== this.epoch || snapshot.scope !== this.scope) return;
+    if (this.isExecutiveReportScope() || snapshot.epoch !== this.epoch || snapshot.scope !== this.scope) return;
     this.reconcile();
     for (const [key, saved] of snapshot.positions) {
       const position = this.positions.get(key);
@@ -6825,6 +6829,267 @@ function NivoPersistentProductionCardScrollContainer({ scrollKey, style, childre
   // Stable module-level component. The same controller also handles all other panels.
   useLayoutEffect(() => { nivoScrollController.reconcile(); });
   return <div data-nivo-scroll-container={scrollKey} data-nivo-persistent-scroll="true" style={{ ...style, overflowAnchor: "none", scrollBehavior: "auto" }}>{children}</div>;
+}
+
+// NÍVÓ – Vezetői jelentés: külön, egyszeri görgetésvédelem.
+// Nem tárol adatot a böngészőben, és nem írja felül folyamatosan a felhasználó görgetését.
+type NivoExecutiveScrollEntry = {
+  owner: HTMLElement;
+  top: number;
+  left: number;
+  maxX: number;
+  maxY: number;
+  revision: number;
+  pendingX: boolean;
+  pendingY: boolean;
+};
+type NivoExecutiveScrollTransaction = {
+  revision: number;
+  anchor: HTMLElement | null;
+  anchorTop: number;
+  rootTop: number;
+  rootLeft: number;
+};
+
+class NivoExecutiveScrollGuard {
+  private root: HTMLElement | null = null;
+  private entries = new Map<string, NivoExecutiveScrollEntry>();
+  private keys = new WeakMap<HTMLElement, string>();
+  private revision = 0;
+  private writing = false;
+  private pending: NivoExecutiveScrollTransaction | null = null;
+  private mutationObserver: MutationObserver | null = null;
+  private resizeObserver: ResizeObserver | null = null;
+  private observed = new Set<HTMLElement>();
+  private raf: number | null = null;
+
+  private page(): HTMLElement { return (document.scrollingElement || document.documentElement) as HTMLElement; }
+  private maxX(el: HTMLElement): number { return Math.max(0, el.scrollWidth - el.clientWidth); }
+  private maxY(el: HTMLElement): number { return Math.max(0, el.scrollHeight - el.clientHeight); }
+  private clamp(value: number, max: number): number { return Math.max(0, Math.min(value, max)); }
+  private scrollable(el: HTMLElement): boolean {
+    if (el === this.page()) return true;
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) || el.isContentEditable) return false;
+    const style = window.getComputedStyle(el);
+    return /(auto|scroll|overlay)/.test(style.overflowX + " " + style.overflowY);
+  }
+  private keyFor(el: HTMLElement): string {
+    if (el === this.page()) return "@window";
+    if (el === this.root) return "@executive";
+    const cached = this.keys.get(el);
+    if (cached) return cached;
+    const parts: string[] = [];
+    let current: HTMLElement | null = el;
+    while (current && current !== this.root) {
+      const named = current.getAttribute("data-nivo-scroll-container")
+        || current.getAttribute("data-nivo-executive-scroll")
+        || current.getAttribute("data-office-window") || current.id;
+      if (named) { parts.unshift(named); break; }
+      let index = 0;
+      let sibling = current.previousElementSibling;
+      while (sibling) { if (sibling.tagName === current.tagName) index++; sibling = sibling.previousElementSibling; }
+      parts.unshift(current.tagName.toLowerCase() + ":" + index);
+      current = current.parentElement;
+    }
+    const key = parts.join("/");
+    this.keys.set(el, key);
+    return key;
+  }
+  private elements(): HTMLElement[] {
+    if (!this.root) return [];
+    return [this.page(), ...Array.from(this.root.querySelectorAll<HTMLElement>("*"))
+      .filter(el => el !== this.page() && this.scrollable(el))];
+  }
+  private entry(el: HTMLElement): NivoExecutiveScrollEntry {
+    const key = this.keyFor(el);
+    let entry = this.entries.get(key);
+    if (!entry) {
+      entry = { owner: el, top: el.scrollTop, left: el.scrollLeft,
+        maxX: this.maxX(el), maxY: this.maxY(el), revision: 0, pendingX: false, pendingY: false };
+      this.entries.set(key, entry);
+    }
+    return entry;
+  }
+  private setPosition(el: HTMLElement, left: number, top: number): void {
+    const x = this.clamp(left, this.maxX(el)), y = this.clamp(top, this.maxY(el));
+    if (Math.abs(el.scrollLeft - x) < .5 && Math.abs(el.scrollTop - y) < .5) return;
+    const behavior = el.style.scrollBehavior;
+    this.writing = true;
+    try {
+      el.style.scrollBehavior = "auto";
+      el.scrollLeft = x; el.scrollTop = y;
+    } finally { el.style.scrollBehavior = behavior; this.writing = false; }
+  }
+  private remember(el: HTMLElement, user = false): void {
+    const entry = this.entry(el);
+    if (entry.owner !== el) return;
+    const maxX = this.maxX(el), maxY = this.maxY(el);
+    if (user) {
+      entry.revision++;
+      entry.left = el.scrollLeft; entry.top = el.scrollTop;
+      entry.pendingX = false; entry.pendingY = false;
+    } else {
+      if (maxX < entry.maxX && el.scrollLeft < entry.left - .5) entry.pendingX = true;
+      else if (!entry.pendingX) entry.left = el.scrollLeft;
+      if (maxY < entry.maxY && el.scrollTop < entry.top - .5) entry.pendingY = true;
+      else if (!entry.pendingY) entry.top = el.scrollTop;
+    }
+    entry.maxX = maxX; entry.maxY = maxY;
+  }
+  private reconcileEntry(el: HTMLElement): void {
+    const entry = this.entry(el);
+    const maxX = this.maxX(el), maxY = this.maxY(el);
+    const replaced = entry.owner !== el;
+    if (replaced) entry.owner = el;
+    // A böngésző saját scroll anchoringját normál adatváltozáskor nem írjuk felül.
+    if (!replaced) this.remember(el);
+    if (replaced || entry.pendingX || entry.pendingY) {
+      this.setPosition(el, replaced || entry.pendingX ? entry.left : el.scrollLeft,
+        replaced || entry.pendingY ? entry.top : el.scrollTop);
+      entry.pendingX = entry.left > maxX + .5;
+      entry.pendingY = entry.top > maxY + .5;
+    }
+    entry.maxX = maxX; entry.maxY = maxY;
+    if (this.resizeObserver && !this.observed.has(el)) {
+      this.observed.add(el); this.resizeObserver.observe(el);
+    }
+  }
+  reconcile(): void {
+    if (!this.root) return;
+    for (const el of this.elements()) this.reconcileEntry(el);
+    for (const el of this.observed) {
+      if (!el.isConnected || (el !== this.page() && !this.scrollable(el))) {
+        this.resizeObserver?.unobserve(el); this.observed.delete(el);
+      }
+    }
+  }
+  private schedule(): void {
+    if (!this.root || this.raf !== null) return;
+    this.raf = window.requestAnimationFrame(() => { this.raf = null; this.reconcile(); });
+  }
+  private gesture = (event: Event): void => {
+    if (!this.root) return;
+    const target = event.target;
+    if (target !== document && target !== window && !(target instanceof Node && this.root.contains(target))) return;
+    if (event instanceof KeyboardEvent && !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) return;
+    if (event instanceof WheelEvent && event.ctrlKey) return;
+    this.revision++;
+    // A görgetés célja lehet belső táblázat vagy a teljes oldal; egyik
+    // korábbi pillanatkép sem írhatja felül az új felhasználói szándékot.
+    let el = target instanceof HTMLElement ? target : this.page();
+    while (el) {
+      if (this.scrollable(el)) this.remember(el, true);
+      if (el === this.page()) break;
+      el = el.parentElement as HTMLElement;
+    }
+    this.pending = null;
+  };
+  private onScroll = (event: Event): void => {
+    if (!this.root || this.writing) return;
+    const target = event.target;
+    const el = target === document || target === window ? this.page() : target instanceof HTMLElement ? target : null;
+    if (!el || (el !== this.page() && !this.root.contains(el)) || !this.scrollable(el)) return;
+    const previous = this.entry(el);
+    const moved = Math.abs(el.scrollTop - previous.top) > .5 || Math.abs(el.scrollLeft - previous.left) > .5;
+    const resized = this.maxX(el) !== previous.maxX || this.maxY(el) !== previous.maxY;
+    // A DOM átrendeződése és a böngésző natív anchoringja is scroll eseményt
+    // küldhet. Ez nem felhasználói szándék, ezért nem érvényteleníti a
+    // folyamatban lévő egyszeri szerkesztő/monitor tranzakciót.
+    if (!this.pending || (moved && !resized)) {
+      this.revision++;
+      this.pending = null;
+    }
+    this.remember(el);
+  };
+  private visibleAnchor(): HTMLElement | null {
+    if (!this.root) return null;
+    // A CSS selectorlista dokumentumsorrendben ad vissza elemeket, nem
+    // prioritási sorrendben. Először a ténylegesen látható monitor kell,
+    // különben a nagy cards konténer elfedné annak pontos pozícióját.
+    for (const selector of [
+      '[data-nivo-executive-scroll="cards"] [data-nivo-scroll-container]',
+      '[data-nivo-executive-scroll="cards"]',
+      '[data-nivo-executive-scroll="editor"]',
+      '[data-nivo-executive-scroll="header"]',
+    ]) {
+      for (const el of Array.from(this.root.querySelectorAll<HTMLElement>(selector))) {
+        const rect = el.getBoundingClientRect();
+        if (rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight) return el;
+      }
+    }
+    return null;
+  }
+  begin(): void {
+    if (!this.root) return;
+    this.reconcile();
+    const anchor = this.visibleAnchor();
+    this.pending = { revision: this.revision, anchor,
+      anchorTop: anchor?.getBoundingClientRect().top ?? 0,
+      rootTop: this.page().scrollTop, rootLeft: this.page().scrollLeft };
+  }
+  finish(): void {
+    if (!this.root) return;
+    const pending = this.pending;
+    this.pending = null;
+    if (pending && pending.revision === this.revision) {
+      const anchor = pending.anchor;
+      if (anchor && anchor.isConnected && this.root.contains(anchor)) {
+        const delta = anchor.getBoundingClientRect().top - pending.anchorTop;
+        if (Math.abs(delta) > .5) this.setPosition(this.page(), this.page().scrollLeft, this.page().scrollTop + delta);
+      } else {
+        // Eltűnt szerkesztő/táblázat esetén csak a még létező pozíciót tartjuk meg.
+        this.setPosition(this.page(), pending.rootLeft, pending.rootTop);
+      }
+      this.remember(this.page(), true);
+    }
+    this.reconcile();
+  }
+  mount(root: HTMLElement): () => void {
+    if (this.root === root) return () => {};
+    this.unmount();
+    this.root = root;
+    this.reconcile();
+    this.mutationObserver = new MutationObserver(() => this.schedule());
+    this.mutationObserver.observe(root, { childList: true, subtree: true, characterData: true });
+    if (typeof ResizeObserver !== "undefined") {
+      this.resizeObserver = new ResizeObserver(() => this.schedule());
+      this.reconcile();
+    }
+    window.addEventListener("scroll", this.onScroll, true);
+    window.addEventListener("wheel", this.gesture, { capture: true, passive: true });
+    window.addEventListener("touchstart", this.gesture, { capture: true, passive: true });
+    window.addEventListener("keydown", this.gesture, true);
+    window.addEventListener("pointerdown", this.gesture, true);
+    return () => this.unmount();
+  }
+  private unmount(): void {
+    window.removeEventListener("scroll", this.onScroll, true);
+    window.removeEventListener("wheel", this.gesture, true);
+    window.removeEventListener("touchstart", this.gesture, true);
+    window.removeEventListener("keydown", this.gesture, true);
+    window.removeEventListener("pointerdown", this.gesture, true);
+    this.mutationObserver?.disconnect(); this.mutationObserver = null;
+    this.resizeObserver?.disconnect(); this.resizeObserver = null;
+    if (this.raf !== null) window.cancelAnimationFrame(this.raf);
+    this.raf = null; this.root = null; this.pending = null;
+    this.entries.clear(); this.observed.clear(); this.keys = new WeakMap(); this.revision = 0;
+  }
+}
+
+type NivoExecutiveScrollBoundaryProps = {
+  guard: NivoExecutiveScrollGuard;
+  style: React.CSSProperties;
+  children: React.ReactNode;
+};
+function NivoExecutiveScrollBoundary({ guard, style, children }: NivoExecutiveScrollBoundaryProps): React.JSX.Element {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    return root ? guard.mount(root) : undefined;
+  }, [guard]);
+  useLayoutEffect(() => { guard.finish(); });
+  return <div ref={rootRef} data-nivo-executive-scroll="root" style={{ ...style, overflowAnchor: "none" }}
+    onClickCapture={() => guard.begin()} onChangeCapture={() => guard.begin()} onInputCapture={() => guard.begin()}>{children}</div>;
 }
 
 function focusAndSelectInput(
@@ -8150,6 +8415,9 @@ export default function Page() {
   const executiveRecurringAuthPendingRef = useRef<{resolve:(token:string)=>void;reject:(error:Error)=>void}|null>(null);
   const [executiveReportSosBusy, setExecutiveReportSosBusy] = useState<Record<string, boolean>>({});
   const [executiveReportSosOverrides, setExecutiveReportSosOverrides] = useState<Record<string, boolean>>({});
+  const executiveReportScrollGuardRef = useRef<NivoExecutiveScrollGuard | null>(null);
+  if (!executiveReportScrollGuardRef.current) executiveReportScrollGuardRef.current = new NivoExecutiveScrollGuard();
+  const executiveReportScrollGuard = executiveReportScrollGuardRef.current;
   const [executiveReportEditMode, setExecutiveReportEditMode] = useState(false);
   const [executiveReportEditorTab, setExecutiveReportEditorTab] = useState<"layout" | "typography" | "colors" | "field">("layout");
   const [executiveReportSelectedFieldId, setExecutiveReportSelectedFieldId] = useState(PRODUCTION_CARD_ORDER_FIELD_ID);
@@ -16564,7 +16832,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={{ color: theme.subtitleText, padding: 20, textAlign: "center" }}>Minden mező el van rejtve.</div>
           ) : (
             <NivoPersistentProductionCardScrollContainer
-              scrollKey={`production-card-scroll:${normalizeLooseText(data.stationName)}:${table.id}:${data.dateKey}`}
+              scrollKey={executiveReport ? `executive-report:table:${table.id}` : `production-card-scroll:${normalizeLooseText(data.stationName)}:${table.id}:${data.dateKey}`}
               style={{
                 overflowX: executiveReport || terminalEntrySurface ? "auto" : "hidden",
                 overflowY: "auto",
@@ -17029,6 +17297,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           updated_at: savedAt,
         }, { onConflict: "station_name" });
       if (error) throw error;
+      executiveReportScrollGuard.begin();
       setExecutiveReportProfile(safeProfile);
       setExecutiveReportLastSavedAt(savedAt);
       if (showFeedback) {
@@ -17053,6 +17322,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         JSON.parse(JSON.stringify(base.profile)) as ProductionMonitorProfile,
         stationName
       );
+      executiveReportScrollGuard.begin();
       setExecutiveReportProfile(nextProfile);
       setExecutiveReportSelectedFieldId(PRODUCTION_CARD_ORDER_FIELD_ID);
       setMessage({ type: "success", text: "A Vezetői jelentés szerkesztője átvette az aktuális dolgozói termelési kártya beállításait. Mentés után ez lesz a külön vezetői profil." });
@@ -17263,6 +17533,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       if (!stillCurrent) return;
 
+      executiveReportScrollGuard.begin();
       setExecutiveReportProfile(profileResult.profile);
       setExecutiveReportLastSavedAt(profileResult.updatedAt);
       setExecutiveReportData(dataResult);
@@ -17917,10 +18188,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
 
     return (
-      <div style={{ minHeight: "100vh", background: theme.pageBackground, color: theme.textColor, fontFamily: theme.fontFamily, padding: 18 }}>
+      <NivoExecutiveScrollBoundary guard={executiveReportScrollGuard} style={{ minHeight: "100vh", background: theme.pageBackground, color: theme.textColor, fontFamily: theme.fontFamily, padding: 18 }}>
         {ManagementNavigation()}
 
-        <div data-office-window="executive-report:header" style={{ ...panel, marginBottom: 16 }}>
+        <div data-nivo-executive-scroll="header" data-office-window="executive-report:header" style={{ ...panel, marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 14, flexWrap: "wrap" }}>
             <div>
               <div style={{ color: theme.accentColor, fontSize: 12, fontWeight: 900, letterSpacing: 1, textTransform: "uppercase" }}>NÍVÓ</div>
@@ -17991,7 +18262,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           );
 
           return (
-            <div data-office-window="executive-report:editor" style={{ ...panel, marginBottom: 16, background: profileTheme.editorBackground, border: `2px solid ${profileTheme.accentColor}`, color: "#0f172a" }}>
+            <div data-nivo-executive-scroll="editor" data-office-window="executive-report:editor" style={{ ...panel, marginBottom: 16, background: profileTheme.editorBackground, border: `2px solid ${profileTheme.accentColor}`, color: "#0f172a" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
                 <div>
                   <strong style={{ fontSize: 20 }}>Profi vezetői kártyaszerkesztő</strong>
@@ -18103,7 +18374,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           );
         })()}
 
-        <div data-office-window="executive-report:cards">
+        <div data-nivo-executive-scroll="cards" data-office-window="executive-report:cards">
           {!executiveReportStation ? (
             <div style={{ ...panel, textAlign: "center", padding: 28, color: theme.mutedText }}>Válassz munkaállomást.</div>
           ) : loadingExecutiveReport && !executiveReportData.lastUpdatedAt ? (
@@ -18159,7 +18430,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             {savingExecutiveReport ? "Készre könyvelés..." : `Készre könyvelés${selectedCount ? ` (${selectedCount})` : ""}`}
           </button>
         </div>
-      </div>
+      </NivoExecutiveScrollBoundary>
     );
   }
 
@@ -39286,7 +39557,8 @@ body {
         // megváltoztathatja a tartalom magasságát. Vertikális flex-középre
         // igazításnál ettől a teljes oldal elmozdult. A scanneres,
         // termelési-kártyás oldalt ezért felülről rögzítjük.
-        alignItems: terminalView === "scanner" && isUsableProductionCardStation(machineId)
+        alignItems: (terminalView === "management" && managementSection === "executive-report")
+          || (terminalView === "scanner" && isUsableProductionCardStation(machineId))
           ? "flex-start"
           : "center",
         justifyContent: "center",
