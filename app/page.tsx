@@ -185,12 +185,16 @@ type SzerelesPartState = {
   start_worker_name: string;
   end_worker_name: string;
   minutes: number;
+  time_unknown?: boolean;
 };
 type SzerelesOrderState = {
   cycle_id: string | null;
   reproduction_number: number;
   legacy_open: boolean;
   legacy_open_id: string | null;
+  legacy_open_count?: number;
+  legacy_started_at?: string | null;
+  legacy_start_worker_name?: string | null;
   parts: Record<SzerelesPart, SzerelesPartState>;
   full_start: string | null;
   full_end: string | null;
@@ -209,16 +213,18 @@ function normalizeSzerelesOrderState(value: unknown): SzerelesOrderState {
     const state = p.state === "in_progress" || p.state === "done" ? p.state : "not_started";
     return {part,state,done:state === "done",open_id:p.open_id == null ? null : String(p.open_id),started_at:p.started_at ? String(p.started_at) : null,
       ended_at:p.ended_at ? String(p.ended_at) : null,start_worker_name:String(p.start_worker_name || ""),end_worker_name:String(p.end_worker_name || ""),
-      minutes:Math.max(0,Number(p.minutes)||0)};
+      minutes:Math.max(0,Number(p.minutes)||0),time_unknown:p.time_unknown===true || (p.done===true && p.minutes==null)};
   };
   return {cycle_id:raw.cycle_id ? String(raw.cycle_id) : null,reproduction_number:Number(raw.reproduction_number)||0,
     legacy_open:raw.legacy_open===true,legacy_open_id:raw.legacy_open_id ? String(raw.legacy_open_id) : null,
+    legacy_open_count:Number(raw.legacy_open_count)||0,legacy_started_at:raw.legacy_started_at?String(raw.legacy_started_at):null,legacy_start_worker_name:raw.legacy_start_worker_name?String(raw.legacy_start_worker_name):null,
     parts:{nyilo:mapPart("nyilo"),tok:mapPart("tok")},full_start:raw.full_start ? String(raw.full_start) : null,
     full_end:raw.full_end ? String(raw.full_end) : null,done_count:Number(raw.done_count)||0,is_complete:raw.is_complete===true,
     total_minutes:raw.total_minutes == null ? null : Number(raw.total_minutes)};
 }
 function szerelesPartLabel(part: SzerelesPart): string { return part === "nyilo" ? "Nyíló" : "Tok"; }
 function szerelesStateLabel(state: SzerelesOrderState): string {
+  if(state.legacy_open)return "Régi közös START folyamatban";
   const running = (["nyilo","tok"] as SzerelesPart[]).filter(part => state.parts[part].state === "in_progress");
   const done = (["nyilo","tok"] as SzerelesPart[]).filter(part => state.parts[part].done);
   if (running.length) return [done.length ? `${done.map(szerelesPartLabel).join(" + ")} kész` : "",`${running.map(szerelesPartLabel).join(" + ")} folyamatban`].filter(Boolean).join(" • ");
@@ -228,6 +234,7 @@ function szerelesStateLabel(state: SzerelesOrderState): string {
 }
 function szerelesPartMinutes(state: SzerelesPartState, now=Date.now()): number | null {
   if (state.state === "not_started" && state.minutes===0) return null;
+  if (state.time_unknown && state.minutes===0 && state.state!=="in_progress") return null;
   const start=state.started_at ? new Date(state.started_at).getTime() : NaN;
   return Math.max(0,state.minutes+(state.state==="in_progress" && Number.isFinite(start) ? Math.round(Math.max(0,now-start)/60000) : 0));
 }
@@ -8989,6 +8996,7 @@ export default function Page() {
   const [szerelesStartParts, setSzerelesStartParts] = useState<string[]>([]);
   const [szerelesOrderState, setSzerelesOrderState] = useState<SzerelesOrderState | null>(null);
   const [szerelesEndParts, setSzerelesEndParts] = useState<SzerelesPart[]>([]);
+  const [szerelesLegacyEndMode, setSzerelesLegacyEndMode] = useState(false);
   const [szerelesNewCycle, setSzerelesNewCycle] = useState(false);
   const [szerelesRework, setSzerelesRework] = useState(false);
   const [szerelesBatchStates, setSzerelesBatchStates] = useState<Record<string,SzerelesOrderState>>({});
@@ -32158,7 +32166,7 @@ body {
   }
 
   function resetReportFlow(): void {
-    setSzerelesOrderState(null); setSzerelesEndParts([]); setSzerelesNewCycle(false); setSzerelesRework(false); setSzerelesBatchStates({});
+    setSzerelesOrderState(null); setSzerelesEndParts([]); setSzerelesLegacyEndMode(false); setSzerelesNewCycle(false); setSzerelesRework(false); setSzerelesBatchStates({});
     setOrderNumber("");
     setPendingAction(null);
     setActionBarcode("");
@@ -32214,7 +32222,7 @@ body {
 
   function resetAfterSave(): void {
     setSzerelesStartParts([]);
-    setSzerelesOrderState(null); setSzerelesEndParts([]); setSzerelesNewCycle(false); setSzerelesRework(false); setSzerelesBatchStates({});
+    setSzerelesOrderState(null); setSzerelesEndParts([]); setSzerelesLegacyEndMode(false); setSzerelesNewCycle(false); setSzerelesRework(false); setSzerelesBatchStates({});
     recurringAccess.clear();
     closeRecurringWork();
     setEntryPermissionDenied(false);
@@ -32328,7 +32336,7 @@ body {
   }
 
   function beginEventSelectionFlow(worker: Worker): void {
-    setSzerelesOrderState(null); setSzerelesEndParts([]); setSzerelesNewCycle(false); setSzerelesRework(false); setSzerelesBatchStates({});
+    setSzerelesOrderState(null); setSzerelesEndParts([]); setSzerelesLegacyEndMode(false); setSzerelesNewCycle(false); setSzerelesRework(false); setSzerelesBatchStates({});
     setActiveWorker(worker);
     setWorkflowMode(null);
     setBatchOrders([]);
@@ -32889,13 +32897,23 @@ body {
     setBusy(true);
     try {
       const state=await fetchSzerelesOrderState(clean);
-      setSzerelesOrderState(state);setSzerelesEndParts([]);setSzerelesStartParts([]);
+      setSzerelesOrderState(state);setSzerelesLegacyEndMode(false);setSzerelesEndParts([]);setSzerelesStartParts([]);
       setSzerelesNewCycle(false);setSzerelesRework(false);setOrderNumber(clean);
       setWorkflowMode("single");setPendingAction(null);setActionBarcode("");setEndBarcodeConfirmed(false);
       setFlowStage("szereles-choice");setStep(5);
       setMessage({type:"info",text:`${clean}: ${szerelesStateLabel(state)}. Válaszd ki a következő műveletet.`});
     }catch(error){setMessage({type:"error",text:normalizeError(error)});}
     finally{setBusy(false);}
+  }
+  function selectSzerelesLegacyEnd():void {
+    const state=szerelesOrderState;
+    if(!state?.legacy_open || !state.legacy_open_id)return;
+    if(state.legacy_open_count!==1){setMessage({type:"error",text:"Több régi START található. A lezárás egyedi ellenőrzést igényel."});return;}
+    setSzerelesLegacyEndMode(true);setSzerelesStartParts([]);setSzerelesEndParts([]);
+    setPendingAction("END");setActionBarcode("");setEndBarcodeConfirmed(false);setEndNote("");
+    setOuterSheetScrap(false);setInnerSheetScrap(false);setToklecScrap(false);setEventFiveRepairStationKeys([]);setEventFiveRepairAction("");
+    setFlowStage("start-scan");setStep(6);
+    window.setTimeout(()=>focusAndSelectInput(actionBarcodeInputRef,{preventScroll:true}),0);
   }
   function selectSzerelesAction(action:WorkAction):void {
     if(!szerelesOrderState)return;
@@ -32904,7 +32922,7 @@ body {
     if(action==="END" && !(["nyilo","tok"] as SzerelesPart[]).some(part=>state.parts[part].state==="in_progress")){
       setMessage({type:"error",text:"Nincs lezárható rész. Előbb indítsd el a Nyílót vagy a Tokot."});return;
     }
-    setSzerelesStartParts([]);setSzerelesEndParts([]);setSzerelesNewCycle(false);setSzerelesRework(false);
+    setSzerelesStartParts([]);setSzerelesEndParts([]);setSzerelesLegacyEndMode(false);setSzerelesNewCycle(false);setSzerelesRework(false);
     setPendingAction(action);setActionBarcode("");setEndBarcodeConfirmed(false);setEndNote("");
     setOuterSheetScrap(false);setInnerSheetScrap(false);setToklecScrap(false);setEventFiveRepairStationKeys([]);setEventFiveRepairAction("");
     setFlowStage("start-scan");setStep(6);
@@ -32920,7 +32938,7 @@ body {
           <div style={{fontSize:12,color:"#cbd5e1"}}>Befejező: {p.end_worker_name||"–"}</div>
           <div style={{fontSize:12,color:"#cbd5e1"}}>START: {p.started_at?formatDateTime(p.started_at):"–"}</div>
           <div style={{fontSize:12,color:"#cbd5e1"}}>END: {p.ended_at?formatDateTime(p.ended_at):"–"}</div>
-          <div style={{fontSize:13,color:"#f8fafc",marginTop:6}}>Saját idő: {minutes===null?"–":formatReportMinutes(minutes)}</div>
+          <div style={{fontSize:13,color:"#f8fafc",marginTop:6}}>Saját idő: {minutes===null?"Ismeretlen":formatReportMinutes(minutes)}{p.time_unknown && minutes!==null?" + korábbi ismeretlen idő":""}</div>
         </div>;
       })}
       <div style={{padding:12,border:"1px solid #334155",borderRadius:10,background:"#0f172a"}}>
@@ -32934,16 +32952,16 @@ body {
   function renderSzerelesEndPartPicker():React.JSX.Element|null {
     const state=szerelesOrderState;if(!state)return null;
     return <div style={{marginBottom:18,padding:16,borderRadius:14,border:"2px solid #22c55e",background:"linear-gradient(145deg,#052e16 0%,#064e3b 100%)"}}>
-      <div style={{fontWeight:900,fontSize:17,marginBottom:8}}>Ajtó készre jelentése – külön munkamenetek</div>
+      <div style={{fontWeight:900,fontSize:17,marginBottom:8}}>{szerelesLegacyEndMode&&state.legacy_open?"Régi közös munkamenet lezárása":"Ajtó készre jelentése – külön munkamenetek"}</div>
       {renderSzerelesSessionStatus(state)}
       <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>{(["nyilo","tok"] as SzerelesPart[]).map(part=>{
-        const p=state.parts[part];const available=p.state==="in_progress";
+        const p=state.parts[part];const available=szerelesLegacyEndMode&&state.legacy_open?true:p.state==="in_progress";
         return <label key={part} style={{padding:12,borderRadius:10,background:"#14532d",display:"flex",alignItems:"center",gap:8,opacity:available?1:.6}}>
           <input type="checkbox" disabled={!available} checked={szerelesEndParts.includes(part)} onChange={e=>setSzerelesEndParts(previous=>e.target.checked?[...previous,part]:previous.filter(value=>value!==part))}/>
           {szerelesPartLabel(part)} befejezés {p.done?"– kész":!available?"– még nincs START":""}
         </label>;
       })}</div>
-      <div style={{fontSize:12,color:"#bbf7d0",marginTop:10}}>Csak a kijelölt, folyamatban lévő rész zárul le. A másik rész ideje és állapota változatlan marad.</div>
+      <div style={{fontSize:12,color:"#bbf7d0",marginTop:10}}>{szerelesLegacyEndMode&&state.legacy_open?"A régi közös START lezárul. Csak a kijelölt részek lesznek készek; a másik később külön indítható. A korábbi készültség megmarad; az ismeretlen részidőt nem találjuk ki.":"Csak a kijelölt, folyamatban lévő rész zárul le. A másik rész ideje és állapota változatlan marad."}</div>
     </div>;
   }
   async function runSzerelesSession(action:WorkAction,parts:SzerelesPart[],options?:{order?:string;batch?:string|null;meta?:OrderProductionMeta;note?:string|null;expected?:Record<string,string>;newCycle?:boolean;rework?:boolean;logFields?:Record<string,unknown>}):Promise<{state:SzerelesOrderState;saved_rows:Array<{id:string|number;part:SzerelesPart;started_at:string;ended_at?:string}>}> {
@@ -32959,6 +32977,17 @@ body {
     return {...result,state:normalizeSzerelesOrderState(result.state)};
   }
 
+  async function runSzerelesLegacyClose(parts:SzerelesPart[],options:{order:string;expectedId:string;note?:string|null;meta?:OrderProductionMeta;logFields?:Record<string,unknown>}):Promise<{state:SzerelesOrderState;saved_rows:Array<{id:string|number;ended_at:string}>}> {
+    if(!supabase||!activeWorker)throw new Error("Nincs kiválasztott dolgozó.");
+    const {data,error}=await supabase.rpc("nivo_szereles_regi_lezaras",{
+      p_order_number:options.order,p_machine_id:getCurrentMachineIdForInsert(),p_expected_id:options.expectedId,
+      p_parts:parts,p_worker_id:Number(activeWorker.id),p_worker_name:activeWorker["Teljes nev"],p_note:options.note||null,
+      p_metadata:{...options.meta,log_fields:options.logFields||{},worker_role:activeWorker.Munkakor||null,worker_station:getWorkerStation(activeWorker)||null}
+    });
+    if(error)throw error;
+    const result=data as {state:unknown;saved_rows:Array<{id:string|number;ended_at:string}>};
+    return {...result,state:normalizeSzerelesOrderState(result.state)};
+  }
   async function fetchDoorCompletionStateForOrder(
     orderNumber: string,
     machineName = getCurrentMachineIdForInsert()
@@ -38078,14 +38107,15 @@ body {
     const state=szerelesOrderState;
     const newCycle=action==="START"&&szerelesNewCycle;
     const rework=action==="START"&&szerelesRework;
-    if(state.legacy_open){setMessage({type:"error",text:"Régi közös START található. A külön részidőket nem lehet biztonságosan visszakövetkeztetni."});return;}
+    const legacyClose=action==="END"&&szerelesLegacyEndMode&&state.legacy_open;
+    if(state.legacy_open&&!legacyClose){setMessage({type:"error",text:"Régi közös START található. Használd a Régi munkamenet lezárása gombot."});return;}
     if(action==="START"){
       if(state.is_complete&&!newCycle){setMessage({type:"error",text:"A rendelés kész. Új gyártási ciklus indítását külön jelöld be."});return;}
       if(newCycle&&!state.is_complete){setMessage({type:"error",text:"Új gyártási ciklus csak teljesen kész rendelésnél indítható."});return;}
       if(parts.some(part=>state.parts[part].state==="in_progress")){setMessage({type:"error",text:"A kiválasztott rész már folyamatban van."});return;}
       if(!newCycle&&parts.some(part=>state.parts[part].done)&&!rework){setMessage({type:"error",text:"A már kész rész újraindításához jelöld be az új munkamenetet."});return;}
       if((newCycle||rework)&&!window.confirm(newCycle?"Új gyártási ciklust indítasz. A korábbi munkamenetek és időmérések megmaradnak. Folytatod?":"A már kész részt új munkamenetként indítod. A korábbi idők megmaradnak. Folytatod?"))return;
-    }else if(parts.some(part=>state.parts[part].state!=="in_progress"||!state.parts[part].open_id)){
+    }else if(!legacyClose&&parts.some(part=>state.parts[part].state!=="in_progress"||!state.parts[part].open_id)){
       setMessage({type:"error",text:"Csak ténylegesen folyamatban lévő részt lehet befejezni. Frissítsd a rendelést."});return;
     }
     const note=(overrides?.note??endNote??"").trim();
@@ -38108,15 +38138,17 @@ body {
         if(groupCheck.conflicts.length){throw new Error(buildStartGroupConflictMessage(groupCheck,false));}
       }
       const expected:Record<string,string>={};
-      if(action==="END")parts.forEach(part=>{expected[part]=state.parts[part].open_id!;});
+      if(action==="END"&&!legacyClose)parts.forEach(part=>{expected[part]=state.parts[part].open_id!;});
       const logFields=action==="END"?{
         kulso_lap_selejt:outerSheetScrap,belso_lap_selejt:innerSheetScrap,toklec_selejt:toklecScrap,
         selejt_megjegyzes:hasScrap?note:null,selejt_forras_munkaallomas:hasScrap||hasRepair?machine:routed?.source_station||null,
         selejt_potlas:!!routed,scrap_qty:null,darab:null,szal:null
       }:{selejt_potlas:!!routed,selejt_forras_munkaallomas:routed?.source_station||null};
-      const result=await runSzerelesSession(action,parts,{order,meta,expected,newCycle,rework,note:action==="END"?note:null,logFields});
+      const result=legacyClose
+        ? await runSzerelesLegacyClose(parts,{order,expectedId:state.legacy_open_id!,note,meta,logFields})
+        : await runSzerelesSession(action,parts,{order,meta,expected,newCycle,rework,note:action==="END"?note:null,logFields});
       committed=true;
-      setSzerelesOrderState(result.state);setSzerelesEndParts([]);setPendingAction(null);setActionBarcode("");setEndBarcodeConfirmed(false);
+      setSzerelesOrderState(result.state);setSzerelesLegacyEndMode(false);setSzerelesEndParts([]);setPendingAction(null);setActionBarcode("");setEndBarcodeConfirmed(false);
       setFlowStage("szereles-choice");setStep(5);
       const saved=result.saved_rows[0];
       const savedId=saved?.id||`${order}-${Date.now()}`;
@@ -38125,10 +38157,10 @@ body {
       if(action==="END"){
         if(hasScrap&&scrapRoute)await createScrapReplacementFromSheetScrap({orderNumber:order,sourceStation:machine,workLogId:savedId,reportedAt:savedAt,outerScrap:outerSheetScrap,innerScrap:innerSheetScrap,toklecScrap:toklecScrap,note:note||null,preparedRoute:scrapRoute});
         if(hasRepair&&repairRoute)await createScrapReplacementFromSheetScrap({orderNumber:order,sourceStation:machine,workLogId:savedId,reportedAt:savedAt,outerScrap:false,innerScrap:false,toklecScrap:false,note:note||null,genericScrap:true,genericScrapKind:eventFiveRepairAction,preparedRoute:repairRoute});
-        if(routed)await updateSingleScrapReplacement(routed,"KESZ",savedAt);
+        if(routed&&(!legacyClose||result.state.is_complete))await updateSingleScrapReplacement(routed,"KESZ",savedAt);
       }
       resetAfterSave();
-      setMessage({type:"success",text:`${action} sikeresen rögzítve. ${order}: ${parts.map(szerelesPartLabel).join(" + ")}. ${szerelesStateLabel(result.state)}. Az eredeti részidők megmaradtak.`});
+      setMessage({type:"success",text:`${legacyClose?"Régi munkamenet END":""+action} sikeresen rögzítve. ${order}: ${parts.map(szerelesPartLabel).join(" + ")}. ${szerelesStateLabel(result.state)}. A korábbi adatok megmaradtak.`});
     }catch(error){
       setMessage({type:"error",text:committed?`A munkamenet mentése sikerült, de egy kapcsolódó művelet hibázott: ${normalizeError(error)}. Az END-et ne ismételd meg; ellenőrizd a selejtpótlást.`:normalizeError(error)});
     }finally{setBusy(false);window.setTimeout(()=>{batchFinalizeInFlightRef.current=false;},320);}
@@ -40879,8 +40911,9 @@ body {
                 <div style={{padding:16,background:"#0f172a",border:"1px solid #334155",borderRadius:12}}>
                   <h3 style={{marginTop:0}}>Rendelés: {orderNumber}</h3>
                   {renderSzerelesSessionStatus(szerelesOrderState)}
-                  {szerelesOrderState.legacy_open && <div style={{color:"#fca5a5",marginBottom:12}}>Régi közös START található. A régi munkamenet automatikus átalakítását a rendszer nem végzi el, mert nem találhat ki külön nyíló/tok kezdési időpontokat.</div>}
+                  {szerelesOrderState.legacy_open && <div style={{color:"#fca5a5",marginBottom:12}}>Régi közös START található. A régi munkamenet külön lezárható; a nyíló/tok ismeretlen részidejét nem találjuk ki. A régi teljes sor archiválva megmarad.</div>}
                   <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+                    {szerelesOrderState.legacy_open && <button type="button" style={buttonPrimary} disabled={busy||(szerelesOrderState.legacy_open_count||1)!==1} onClick={selectSzerelesLegacyEnd}>Régi munkamenet lezárása</button>}
                     <button type="button" style={buttonPrimary} disabled={busy||szerelesOrderState.legacy_open} onClick={()=>selectSzerelesAction("START")}>Új rész indítása</button>
                     <button type="button" style={buttonSecondary} disabled={busy||szerelesOrderState.legacy_open||!(["nyilo","tok"] as SzerelesPart[]).some(p=>szerelesOrderState.parts[p].state==="in_progress")} onClick={()=>selectSzerelesAction("END")}>Folyamatban lévő rész befejezése</button>
                     <button type="button" style={buttonSecondary} disabled={busy} onClick={()=>void openSzerelesOrderChoice(orderNumber)}>Állapot frissítése</button>
