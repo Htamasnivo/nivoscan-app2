@@ -8308,7 +8308,11 @@ export default function Page() {
   const [productionMonitorLastSavedAt, setProductionMonitorLastSavedAt] = useState("");
   const productionMonitorDraggedFieldIdRef = useRef<string | null>(null);
   const productionMonitorAutoSaveTimerRef = useRef<number | null>(null);
+  const productionMonitorVisibilityAutoSaveTimersRef = useRef<Map<string, number>>(new Map());
+  const productionMonitorSettingsWriteTailRef = useRef<Promise<void>>(Promise.resolve());
   const productionMonitorLastSavedPayloadRef = useRef("");
+  const productionMonitorProfilesLatestRef = useRef<ProductionMonitorProfile[]>(productionMonitorProfiles);
+  const productionMonitorActiveProfileIdLatestRef = useRef(activeProductionMonitorProfileId);
 
   // Átvétel monitor – kizárólag a szereles_terv.beepites_datuma alapján.
   const [atvetelDateFrom, setAtvetelDateFrom] = useState(getLocalDateKey(new Date()));
@@ -8356,7 +8360,9 @@ export default function Page() {
   const [, setProductionCardElapsedTick] = useState(0);
   const productionCardDraggedFieldIdRef = useRef<string | null>(null);
   const productionCardAutoSaveTimerRef = useRef<number | null>(null);
+  const productionCardVisibilityAutoSaveTimersRef = useRef<Map<string, number>>(new Map());
   const productionCardLastSavedPayloadRef = useRef("");
+  const productionCardProfileLatestRef = useRef<ProductionMonitorProfile>(productionCardProfile);
   const productionCardPriorityCleanupStartedRef = useRef(false);
 
   // Állomásváltási race-condition védelem.
@@ -8423,10 +8429,19 @@ export default function Page() {
   const [executiveReportSelectedFieldId, setExecutiveReportSelectedFieldId] = useState(PRODUCTION_CARD_ORDER_FIELD_ID);
   const [executiveReportLastSavedAt, setExecutiveReportLastSavedAt] = useState("");
   const [savingExecutiveReportSettings, setSavingExecutiveReportSettings] = useState(false);
+  const executiveReportProfileLatestRef = useRef<ProductionMonitorProfile>(executiveReportProfile);
+  const executiveReportVisibilityAutoSaveTimersRef = useRef<Map<string, number>>(new Map());
+  const executiveReportVisibilityDirtyRevisionRef = useRef<Map<string, number>>(new Map());
+  const executiveReportVisibilityMutationEpochRef = useRef(0);
+  const executiveReportSettingsWriteTailRef = useRef<Promise<void>>(Promise.resolve());
 
   // Renderenként frissülő "source of truth" a régi async callbackok ellen.
   productionCardAdminStationLatestRef.current = productionCardAdminStation;
   productionCardDateLatestRef.current = productionCardDate;
+  productionMonitorProfilesLatestRef.current = productionMonitorProfiles;
+  productionMonitorActiveProfileIdLatestRef.current = activeProductionMonitorProfileId;
+  productionCardProfileLatestRef.current = productionCardProfile;
+  executiveReportProfileLatestRef.current = executiveReportProfile;
   executiveReportStationLatestRef.current = executiveReportStation;
   executiveReportDateFromLatestRef.current = executiveReportDateFrom;
   executiveReportDateToLatestRef.current = executiveReportDateTo;
@@ -13005,44 +13020,90 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+  function enqueueProductionMonitorSettingsWrite(task: () => Promise<void>): Promise<void> {
+    const result = productionMonitorSettingsWriteTailRef.current.then(task);
+    productionMonitorSettingsWriteTailRef.current = result.catch(() => undefined);
+    return result;
+  }
+
+  async function persistProductionMonitorSettingsSnapshot(
+    ownerName: string,
+    storageValue: ProductionMonitorProfilesStorage,
+    showFeedback = false,
+    reportAutoSaveError = false
+  ): Promise<void> {
+    const cleanOwnerName = String(ownerName || "").trim();
+    if (!cleanOwnerName) return;
+
+    const serialized = JSON.stringify(storageValue);
+    const ownerStillCurrent = cleanOwnerName === productionMonitorSettingsOwner.trim();
+    if (!showFeedback && ownerStillCurrent && serialized === productionMonitorLastSavedPayloadRef.current) return;
+
+    await enqueueProductionMonitorSettingsWrite(async () => {
+      try {
+        setSavingProductionMonitorSettings(true);
+        if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+        const savedAt = new Date().toISOString();
+        const { error } = await supabase
+          .from(PRODUCTION_MONITOR_SETTINGS_TABLE)
+          .upsert({
+            worker_name: cleanOwnerName,
+            active_profile_id: storageValue.activeProfileId,
+            settings: storageValue,
+            updated_at: savedAt,
+          }, { onConflict: "worker_name" });
+        if (error) throw error;
+
+        if (cleanOwnerName === productionMonitorSettingsOwner.trim()) {
+          productionMonitorLastSavedPayloadRef.current = serialized;
+          setProductionMonitorLastSavedAt(savedAt);
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(PRODUCTION_MONITOR_PROFILES_STORAGE_KEY, serialized);
+          }
+        }
+        if (showFeedback) {
+          setMessage({ type: "success", text: `A monitorbeállítások elmentve: ${cleanOwnerName}.` });
+        }
+      } catch (error) {
+        console.error("A termelési monitor beállításainak mentése sikertelen:", error);
+        if (showFeedback || reportAutoSaveError) {
+          setMessage({
+            type: "error",
+            text: `A monitor láthatósági beállításainak automatikus mentése sikertelen: ${normalizeError(error)}. A helyi pipaállapot változatlan maradt.`,
+          });
+        }
+      } finally {
+        setSavingProductionMonitorSettings(false);
+      }
+    });
+  }
+
   async function saveProductionMonitorSettings(showFeedback = false): Promise<void> {
     const ownerName = productionMonitorSettingsOwner.trim();
     if (!ownerName || !productionMonitorLayoutLoaded) return;
+    await persistProductionMonitorSettingsSnapshot(
+      ownerName,
+      getProductionMonitorStorageValue(),
+      showFeedback,
+      false
+    );
+  }
 
-    const storageValue = getProductionMonitorStorageValue();
-    const serialized = JSON.stringify(storageValue);
-    if (!showFeedback && serialized === productionMonitorLastSavedPayloadRef.current) return;
+  function scheduleProductionMonitorVisibilityAutoSave(
+    storageValue: ProductionMonitorProfilesStorage
+  ): void {
+    const ownerName = productionMonitorSettingsOwner.trim();
+    if (!ownerName || !productionMonitorLayoutLoaded || typeof window === "undefined") return;
 
-    try {
-      setSavingProductionMonitorSettings(true);
-      if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
-      const savedAt = new Date().toISOString();
-      const { error } = await supabase
-        .from(PRODUCTION_MONITOR_SETTINGS_TABLE)
-        .upsert({
-          worker_name: ownerName,
-          active_profile_id: activeProductionMonitorProfile.id,
-          settings: storageValue,
-          updated_at: savedAt,
-        }, { onConflict: "worker_name" });
-      if (error) throw error;
+    const timers = productionMonitorVisibilityAutoSaveTimersRef.current;
+    const previousTimer = timers.get(ownerName);
+    if (previousTimer) window.clearTimeout(previousTimer);
 
-      productionMonitorLastSavedPayloadRef.current = serialized;
-      setProductionMonitorLastSavedAt(savedAt);
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(PRODUCTION_MONITOR_PROFILES_STORAGE_KEY, serialized);
-      }
-      if (showFeedback) {
-        setMessage({ type: "success", text: `A monitorbeállítások elmentve: ${ownerName}.` });
-      }
-    } catch (error) {
-      console.error("A termelési monitor beállításainak mentése sikertelen:", error);
-      if (showFeedback) {
-        setMessage({ type: "error", text: `A monitorbeállítások mentése sikertelen: ${normalizeError(error)}` });
-      }
-    } finally {
-      setSavingProductionMonitorSettings(false);
-    }
+    const timerId = window.setTimeout(() => {
+      timers.delete(ownerName);
+      void persistProductionMonitorSettingsSnapshot(ownerName, storageValue, false, true);
+    }, 350);
+    timers.set(ownerName, timerId);
   }
 
   function updateActiveProductionMonitorProfile(
@@ -13400,8 +13461,48 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
   }
 
+  function commitProductionMonitorVisibilityChange(
+    updater: (hiddenFieldIds: string[]) => string[]
+  ): void {
+    const currentProfiles = productionMonitorProfilesLatestRef.current;
+    const preferredActiveId = productionMonitorActiveProfileIdLatestRef.current;
+    const activeId = currentProfiles.some((profile) => profile.id === preferredActiveId)
+      ? preferredActiveId
+      : currentProfiles[0]?.id;
+    if (!activeId) return;
+
+    let changed = false;
+    const nextProfiles = currentProfiles.map((profile) => {
+      if (profile.id !== activeId) return profile;
+      const activeTableId = profile.tables.some((table) => table.id === profile.activeTableId)
+        ? profile.activeTableId
+        : profile.tables[0]?.id;
+      if (!activeTableId) return profile;
+
+      const nextTables = profile.tables.map((table) => {
+        if (table.id !== activeTableId) return table;
+        const nextHidden = Array.from(new Set(updater([...table.hiddenFieldIds])));
+        const same = nextHidden.length === table.hiddenFieldIds.length
+          && nextHidden.every((fieldId, index) => fieldId === table.hiddenFieldIds[index]);
+        if (same) return table;
+        changed = true;
+        return { ...table, hiddenFieldIds: nextHidden };
+      });
+
+      return changed ? { ...profile, themePresetId: "custom", tables: nextTables } : profile;
+    });
+    if (!changed) return;
+
+    productionMonitorProfilesLatestRef.current = nextProfiles;
+    setProductionMonitorProfiles(nextProfiles);
+    scheduleProductionMonitorVisibilityAutoSave({
+      activeProfileId: activeId,
+      profiles: nextProfiles,
+    });
+  }
+
   function toggleProductionMonitorFieldVisibility(fieldId: string): void {
-    setProductionMonitorHiddenFieldIds((currentHiddenFields) =>
+    commitProductionMonitorVisibilityChange((currentHiddenFields) =>
       currentHiddenFields.includes(fieldId)
         ? currentHiddenFields.filter((currentFieldId) => currentFieldId !== fieldId)
         : [...currentHiddenFields, fieldId]
@@ -13409,7 +13510,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function showAllProductionMonitorFields(): void {
-    setProductionMonitorHiddenFieldIds([]);
+    commitProductionMonitorVisibilityChange(() => []);
   }
 
   function resetProductionMonitorTableLayout(): void {
@@ -14255,57 +14356,104 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return result;
   }
 
-  async function saveProductionCardSettings(showFeedback = false): Promise<void> {
+  async function saveProductionCardSettings(
+    showFeedback = false,
+    profileOverride?: ProductionMonitorProfile,
+    stationOverride?: string,
+    reportAutoSaveError = false
+  ): Promise<void> {
     if (productionCardUniformityBusyRef.current) return;
-    const stationName = productionCardAdminStation.trim();
-    if (!stationName || !productionCardLayoutLoaded) return;
+    const stationName = String(stationOverride ?? productionCardAdminStation).trim();
+    if (!stationName || (!profileOverride && !productionCardLayoutLoaded)) return;
 
+    const sourceProfile = profileOverride ?? productionCardProfileLatestRef.current;
     // Mentés előtt ugyanazzal a munkaállomás-specifikus mezőlistával normalizáljuk
     // a profilt, amelyből a szerkesztő dolgozik. Így az Elrejtés/Megjelenítés,
     // sorrend és mezőformázás biztosan bekerül a Supabase settings JSON-ba.
     const safeProfile = normalizeProductionCardProfile(
-      sanitizeProductionCardProfile(productionCardProfile),
+      sanitizeProductionCardProfile(sourceProfile),
       stationName
     );
     const serialized = JSON.stringify(safeProfile);
-    if (!showFeedback && serialized === productionCardLastSavedPayloadRef.current) return;
+    const stationStillCurrent =
+      getStationPlanIdentityKey(stationName) === getStationPlanIdentityKey(productionCardAdminStationLatestRef.current);
+    if (!showFeedback && !profileOverride && stationStillCurrent && serialized === productionCardLastSavedPayloadRef.current) return;
 
     await enqueueProductionCardSettingsWrite(async () => {
       try {
-      setSavingProductionCardSettings(true);
-      if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
-      const savedAt = new Date().toISOString();
-      const { error } = await supabase
-        .from(PRODUCTION_CARD_SETTINGS_TABLE)
-        .upsert({
-          station_name: stationName,
-          settings: safeProfile,
-          updated_by: String(activeWorker?.["Teljes nev"] || "").trim() || null,
-          updated_at: savedAt,
-        }, { onConflict: "station_name" });
-      if (error) throw error;
-      productionCardLastSavedPayloadRef.current = serialized;
-      if (getStationPlanIdentityKey(stationName) === getStationPlanIdentityKey(productionCardAdminStationLatestRef.current)) {
-        setProductionCardProfile(safeProfile);
+        setSavingProductionCardSettings(true);
+        if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+        const savedAt = new Date().toISOString();
+        const { error } = await supabase
+          .from(PRODUCTION_CARD_SETTINGS_TABLE)
+          .upsert({
+            station_name: stationName,
+            settings: safeProfile,
+            updated_by: String(activeWorker?.["Teljes nev"] || "").trim() || null,
+            updated_at: savedAt,
+          }, { onConflict: "station_name" });
+        if (error) throw error;
+
+        const stillSameStation =
+          getStationPlanIdentityKey(stationName) === getStationPlanIdentityKey(productionCardAdminStationLatestRef.current);
+        if (stillSameStation) {
+          productionCardLastSavedPayloadRef.current = serialized;
+          const latestSafeProfile = normalizeProductionCardProfile(
+            sanitizeProductionCardProfile(productionCardProfileLatestRef.current),
+            stationName
+          );
+          // Egy korábban indított mentés soha nem írhatja felül az azóta
+          // módosított pipaállapotot. Csak akkor normalizáljuk vissza a state-et,
+          // ha pontosan ugyanaz a profil van még a képernyőn.
+          if (JSON.stringify(latestSafeProfile) === serialized) {
+            productionCardProfileLatestRef.current = safeProfile;
+            setProductionCardProfile(safeProfile);
+          }
+          setProductionCardLastSavedAt(savedAt);
+        }
+        if (showFeedback) {
+          const savedActiveTable = safeProfile.tables.find((table) => table.id === safeProfile.activeTableId) || safeProfile.tables[0];
+          const hiddenCount = savedActiveTable?.hiddenFieldIds.length || 0;
+          setMessage({
+            type: "success",
+            text: `A(z) „${stationName}” termelési kártyája elmentve. Elrejtett mezők az aktív táblában: ${hiddenCount}.`,
+          });
+        }
+      } catch (error) {
+        console.error("A termelési kártya mentése sikertelen:", error);
+        if (showFeedback || reportAutoSaveError) {
+          setMessage({
+            type: "error",
+            text: `A termelési kártya láthatósági beállításainak automatikus mentése sikertelen: ${normalizeError(error)}. A helyi pipaállapot változatlan maradt.`,
+          });
+        }
+      } finally {
+        setSavingProductionCardSettings(false);
       }
-      setProductionCardLastSavedAt(savedAt);
-      if (showFeedback) {
-        const savedActiveTable = safeProfile.tables.find((table) => table.id === safeProfile.activeTableId) || safeProfile.tables[0];
-        const hiddenCount = savedActiveTable?.hiddenFieldIds.length || 0;
-        setMessage({
-          type: "success",
-          text: `A(z) „${stationName}” termelési kártyája elmentve. Elrejtett mezők az aktív táblában: ${hiddenCount}.`,
-        });
-      }
-    } catch (error) {
-      console.error("A termelési kártya mentése sikertelen:", error);
-      if (showFeedback) {
-        setMessage({ type: "error", text: `A termelési kártya mentése sikertelen: ${normalizeError(error)}` });
-      }
-    } finally {
-      setSavingProductionCardSettings(false);
-    }
     });
+  }
+
+  function scheduleProductionCardVisibilityAutoSave(
+    stationName: string,
+    profile: ProductionMonitorProfile
+  ): void {
+    const cleanStation = String(stationName || "").trim();
+    if (!cleanStation || !productionCardLayoutLoaded || typeof window === "undefined") return;
+
+    const stationKey = getStationPlanIdentityKey(cleanStation);
+    const timers = productionCardVisibilityAutoSaveTimersRef.current;
+    const previousTimer = timers.get(stationKey);
+    if (previousTimer) window.clearTimeout(previousTimer);
+
+    const snapshot = normalizeProductionCardProfile(
+      sanitizeProductionCardProfile(profile),
+      cleanStation
+    );
+    const timerId = window.setTimeout(() => {
+      timers.delete(stationKey);
+      void saveProductionCardSettings(false, snapshot, cleanStation, true);
+    }, 350);
+    timers.set(stationKey, timerId);
   }
 
   function getNivoPlanRowId(data: Record<string, unknown> | null | undefined): string {
@@ -15416,7 +15564,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function updateProductionCardProfile(updater: (profile: ProductionMonitorProfile) => ProductionMonitorProfile): void {
-    setProductionCardProfile((profile) => sanitizeProductionCardProfile(updater(profile)));
+    setProductionCardProfile((profile) => {
+      const nextProfile = sanitizeProductionCardProfile(updater(profile));
+      productionCardProfileLatestRef.current = nextProfile;
+      return nextProfile;
+    });
   }
 
   function updateActiveProductionCardTable(updater: (table: ProductionMonitorTableConfig) => ProductionMonitorTableConfig): void {
@@ -15966,19 +16118,37 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function toggleProductionCardFieldVisibility(fieldId: string): void {
-    if (activeProductionCardTable.dataSource === "production-plan" && isRequiredProductionCardField(fieldId)) {
+    const stationName = productionCardAdminStation.trim();
+    const currentProfile = productionCardProfileLatestRef.current;
+    const activeTable = currentProfile.tables.find((table) => table.id === currentProfile.activeTableId)
+      || currentProfile.tables[0];
+    if (!activeTable) return;
+
+    if (activeTable.dataSource === "production-plan" && isRequiredProductionCardField(fieldId)) {
       setMessage({
         type: "info",
         text: `A „${getProductionCardFieldLabel(fieldId)}” kötelező mező minden termelési kártyán, ezért nem rejthető el.`,
       });
       return;
     }
-    updateActiveProductionCardTable((table) => ({
-      ...table,
-      hiddenFieldIds: table.hiddenFieldIds.includes(fieldId)
-        ? table.hiddenFieldIds.filter((candidate) => candidate !== fieldId)
-        : [...table.hiddenFieldIds, fieldId],
-    }));
+
+    const nextProfile = sanitizeProductionCardProfile({
+      ...currentProfile,
+      themePresetId: "custom",
+      tables: currentProfile.tables.map((table) => {
+        if (table.id !== activeTable.id) return table;
+        return {
+          ...table,
+          hiddenFieldIds: table.hiddenFieldIds.includes(fieldId)
+            ? table.hiddenFieldIds.filter((candidate) => candidate !== fieldId)
+            : [...table.hiddenFieldIds, fieldId],
+        };
+      }),
+    });
+
+    productionCardProfileLatestRef.current = nextProfile;
+    setProductionCardProfile(nextProfile);
+    scheduleProductionCardVisibilityAutoSave(stationName, nextProfile);
   }
 
   function resetProductionCardLayout(): void {
@@ -17277,40 +17447,103 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
   }
 
-  async function saveExecutiveReportProfile(showFeedback = true): Promise<void> {
-    const stationName = String(executiveReportStation || "").trim();
+  function enqueueExecutiveReportSettingsWrite(task: () => Promise<void>): Promise<void> {
+    const result = executiveReportSettingsWriteTailRef.current.then(task);
+    executiveReportSettingsWriteTailRef.current = result.catch(() => undefined);
+    return result;
+  }
+
+  async function saveExecutiveReportProfile(
+    showFeedback = true,
+    profileOverride?: ProductionMonitorProfile,
+    stationOverride?: string,
+    visibilityRevision?: number,
+    reportAutoSaveError = false
+  ): Promise<void> {
+    const stationName = String((stationOverride ?? executiveReportStation) || "").trim();
     if (!stationName || !supabase) return;
 
-    setSavingExecutiveReportSettings(true);
-    try {
-      const safeProfile = normalizeProductionCardProfile(
-        sanitizeProductionCardProfile(executiveReportProfile),
-        stationName
-      );
-      const savedAt = new Date().toISOString();
-      const { error } = await supabase
-        .from(EXECUTIVE_REPORT_SETTINGS_TABLE)
-        .upsert({
-          station_name: stationName,
-          settings: safeProfile,
-          updated_by: String(activeWorker?.["Teljes nev"] || "").trim() || null,
-          updated_at: savedAt,
-        }, { onConflict: "station_name" });
-      if (error) throw error;
-      executiveReportScrollGuard.begin();
-      setExecutiveReportProfile(safeProfile);
-      setExecutiveReportLastSavedAt(savedAt);
-      if (showFeedback) {
-        setMessage({ type: "success", text: `A(z) „${stationName}” Vezetői jelentés Profi beállítása elmentve.` });
+    const sourceProfile = profileOverride ?? executiveReportProfileLatestRef.current;
+    const safeProfile = normalizeProductionCardProfile(
+      sanitizeProductionCardProfile(sourceProfile),
+      stationName
+    );
+    const serialized = JSON.stringify(safeProfile);
+    const stationKey = getStationPlanIdentityKey(stationName);
+    const dirtyRevisionAtStart = executiveReportVisibilityDirtyRevisionRef.current.get(stationKey) || 0;
+
+    await enqueueExecutiveReportSettingsWrite(async () => {
+      setSavingExecutiveReportSettings(true);
+      try {
+        const savedAt = new Date().toISOString();
+        const { error } = await supabase
+          .from(EXECUTIVE_REPORT_SETTINGS_TABLE)
+          .upsert({
+            station_name: stationName,
+            settings: safeProfile,
+            updated_by: String(activeWorker?.["Teljes nev"] || "").trim() || null,
+            updated_at: savedAt,
+          }, { onConflict: "station_name" });
+        if (error) throw error;
+
+        const currentDirtyRevision = executiveReportVisibilityDirtyRevisionRef.current.get(stationKey) || 0;
+        const revisionToClear = visibilityRevision ?? dirtyRevisionAtStart;
+        if (currentDirtyRevision === revisionToClear) {
+          executiveReportVisibilityDirtyRevisionRef.current.delete(stationKey);
+        }
+
+        const stillSameStation =
+          getStationPlanIdentityKey(stationName) === getStationPlanIdentityKey(executiveReportStationLatestRef.current);
+        if (stillSameStation) {
+          const latestSafeProfile = normalizeProductionCardProfile(
+            sanitizeProductionCardProfile(executiveReportProfileLatestRef.current),
+            stationName
+          );
+          // A mentés befejezése nem állíthat vissza egy korábbi pipaállapotot.
+          // Ha közben újabb módosítás történt, a képernyőn lévő újabb állapot marad.
+          if (JSON.stringify(latestSafeProfile) === serialized) {
+            executiveReportProfileLatestRef.current = latestSafeProfile;
+          }
+          setExecutiveReportLastSavedAt(savedAt);
+        }
+        if (showFeedback) {
+          setMessage({ type: "success", text: `A(z) „${stationName}” Vezetői jelentés Profi beállítása elmentve.` });
+        }
+      } catch (error) {
+        console.error("A Vezetői jelentés Profi beállításainak mentése sikertelen:", error);
+        if (showFeedback || reportAutoSaveError) {
+          setMessage({
+            type: "error",
+            text: `A Vezetői jelentés láthatósági beállításainak automatikus mentése sikertelen: ${normalizeError(error)}. A helyi pipaállapot változatlan maradt.`,
+          });
+        }
+      } finally {
+        setSavingExecutiveReportSettings(false);
       }
-    } catch (error) {
-      console.error("A Vezetői jelentés Profi beállításainak mentése sikertelen:", error);
-      if (showFeedback) {
-        setMessage({ type: "error", text: `A Vezetői jelentés Profi beállításainak mentése sikertelen: ${normalizeError(error)}` });
-      }
-    } finally {
-      setSavingExecutiveReportSettings(false);
-    }
+    });
+  }
+
+  function scheduleExecutiveReportVisibilityAutoSave(
+    stationName: string,
+    profile: ProductionMonitorProfile,
+    visibilityRevision: number
+  ): void {
+    const cleanStation = String(stationName || "").trim();
+    if (!cleanStation || typeof window === "undefined") return;
+    const stationKey = getStationPlanIdentityKey(cleanStation);
+    const timers = executiveReportVisibilityAutoSaveTimersRef.current;
+    const previousTimer = timers.get(stationKey);
+    if (previousTimer) window.clearTimeout(previousTimer);
+
+    const snapshot = normalizeProductionCardProfile(
+      sanitizeProductionCardProfile(profile),
+      cleanStation
+    );
+    const timerId = window.setTimeout(() => {
+      timers.delete(stationKey);
+      void saveExecutiveReportProfile(false, snapshot, cleanStation, visibilityRevision, true);
+    }, 350);
+    timers.set(stationKey, timerId);
   }
 
   async function resetExecutiveReportProfileToProductionCard(): Promise<void> {
@@ -17341,12 +17574,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function updateExecutiveReportProfile(
     updater: (profile: ProductionMonitorProfile) => ProductionMonitorProfile
   ): void {
-    setExecutiveReportProfile((current) =>
-      normalizeProductionCardProfile(
+    setExecutiveReportProfile((current) => {
+      const nextProfile = normalizeProductionCardProfile(
         sanitizeProductionCardProfile(updater(current)),
         executiveReportStation || current.name || "Munkaállomás"
-      )
-    );
+      );
+      executiveReportProfileLatestRef.current = nextProfile;
+      return nextProfile;
+    });
   }
 
   function updateExecutiveReportActiveTable(
@@ -17395,14 +17630,40 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function toggleExecutiveReportField(fieldId: string): void {
-    updateExecutiveReportActiveTable((table) => {
-      const required = table.dataSource === "production-plan" && isRequiredProductionCardField(fieldId);
-      if (required) return table;
-      const hidden = new Set(table.hiddenFieldIds);
-      if (hidden.has(fieldId)) hidden.delete(fieldId);
-      else hidden.add(fieldId);
-      return { ...table, hiddenFieldIds: Array.from(hidden) };
-    });
+    const stationName = String(executiveReportStation || "").trim();
+    const currentProfile = executiveReportProfileLatestRef.current;
+    const activeTable = getExecutiveReportActiveTable(currentProfile);
+    const required = activeTable.dataSource === "production-plan" && isRequiredProductionCardField(fieldId);
+    if (required) return;
+
+    const hidden = new Set(activeTable.hiddenFieldIds);
+    if (hidden.has(fieldId)) hidden.delete(fieldId);
+    else hidden.add(fieldId);
+
+    const nextProfile = normalizeProductionCardProfile(
+      sanitizeProductionCardProfile({
+        ...currentProfile,
+        themePresetId: "custom",
+        activeTableId: activeTable.id,
+        tables: currentProfile.tables.map((table) =>
+          table.id === activeTable.id
+            ? { ...table, hiddenFieldIds: Array.from(hidden) }
+            : table
+        ),
+      }),
+      stationName || currentProfile.name || "Munkaállomás"
+    );
+
+    executiveReportProfileLatestRef.current = nextProfile;
+    executiveReportVisibilityMutationEpochRef.current += 1;
+    setExecutiveReportProfile(nextProfile);
+
+    if (stationName) {
+      const stationKey = getStationPlanIdentityKey(stationName);
+      const revision = (executiveReportVisibilityDirtyRevisionRef.current.get(stationKey) || 0) + 1;
+      executiveReportVisibilityDirtyRevisionRef.current.set(stationKey, revision);
+      scheduleExecutiveReportVisibilityAutoSave(stationName, nextProfile, revision);
+    }
   }
 
   function moveExecutiveReportField(fieldId: string, direction: -1 | 1): void {
@@ -17511,6 +17772,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!cleanStation || !dateFrom || !dateTo) return;
 
     const requestSequence = ++executiveReportLoadSequenceRef.current;
+    const visibilityMutationEpochAtStart = executiveReportVisibilityMutationEpochRef.current;
 
     if (dateFrom > dateTo) {
       setMessage({ type: "error", text: "A Vezetői jelentésnél a Dátumtól nem lehet későbbi, mint a Dátumig." });
@@ -17518,10 +17780,22 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
 
     const backgroundRefresh = isNivoBackgroundRefreshRunning();
+    const stationKey = getStationPlanIdentityKey(cleanStation);
+    const visibilityDirtyAtStart = (executiveReportVisibilityDirtyRevisionRef.current.get(stationKey) || 0) > 0;
     if (!backgroundRefresh) setLoadingExecutiveReport(true);
     try {
+      // A háttérfrissítés csak a termelési adatokat frissíti. A Profi szerkesztő
+      // profilját nem olvassa újra, így a még mentés alatt álló helyi pipaállapot
+      // nem ugorhat vissza egy korábbi Supabase-értékre.
+      const profilePromise: Promise<{
+        profile: ProductionMonitorProfile;
+        updatedAt: string;
+        inheritedFromProductionCard: boolean;
+      } | null> = backgroundRefresh || visibilityDirtyAtStart
+        ? Promise.resolve(null)
+        : fetchExecutiveReportProfileForStation(cleanStation);
       const [profileResult, dataResult] = await Promise.all([
-        fetchExecutiveReportProfileForStation(cleanStation),
+        profilePromise,
         fetchExecutiveReportProductionCardData(cleanStation, dateFrom, dateTo),
       ]);
       const stillCurrent =
@@ -17533,9 +17807,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       if (!stillCurrent) return;
 
-      executiveReportScrollGuard.begin();
-      setExecutiveReportProfile(profileResult.profile);
-      setExecutiveReportLastSavedAt(profileResult.updatedAt);
+      const visibilityStillDirty = (executiveReportVisibilityDirtyRevisionRef.current.get(stationKey) || 0) > 0;
+      const visibilityChangedWhileLoading =
+        executiveReportVisibilityMutationEpochRef.current !== visibilityMutationEpochAtStart;
+      if (profileResult && !visibilityStillDirty && !visibilityChangedWhileLoading) {
+        executiveReportScrollGuard.begin();
+        executiveReportProfileLatestRef.current = profileResult.profile;
+        setExecutiveReportProfile(profileResult.profile);
+        setExecutiveReportLastSavedAt(profileResult.updatedAt);
+      }
       setExecutiveReportData(dataResult);
     } catch (error) {
       const stillCurrent =
@@ -22839,7 +23119,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           ...table.fieldOrder.filter((fieldId) => validFieldIdSet.has(fieldId)),
           ...validFieldIds.filter((fieldId) => !table.fieldOrder.includes(fieldId)),
         ];
-        const nextHiddenFields = table.hiddenFieldIds.filter((fieldId) => validFieldIdSet.has(fieldId));
+        // A háttérfrissítés nem törölheti a felhasználó elrejtett mezőit.
+        // Ha egy dinamikus mező átmenetileg eltűnik, a láthatósági beállítása megmarad,
+        // és visszatéréskor ugyanúgy rejtett marad.
+        const nextHiddenFields = [...table.hiddenFieldIds];
         const nextFieldStyles = Object.fromEntries(
           Object.entries(table.fieldStyles).filter(([fieldId]) => validFieldIdSet.has(fieldId))
         );
