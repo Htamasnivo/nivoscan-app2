@@ -6482,6 +6482,8 @@ class NivoScrollController {
   private raf: number | null = null;
   private restoring = 0;
   private previousRestoration: ScrollRestoration | null = null;
+  private previousRootOverflowAnchor = "";
+  private previousBodyOverflowAnchor = "";
   private pointerScroll: { element: HTMLElement; x: boolean; y: boolean } | null = null;
   private now(): number { return performance.now(); }
   private scrollingElement(): HTMLElement { return (document.scrollingElement || document.documentElement) as HTMLElement; }
@@ -6681,6 +6683,8 @@ class NivoScrollController {
     const element = event.target === document || event.target === window ? this.scrollingElement() : event.target instanceof HTMLElement ? event.target : null;
     if (!element || !this.scrollable(element)) return;
     const position = this.track(element);
+    const previousLeft = position.left;
+    const previousTop = position.top;
     const now = this.now();
     const write = position.write;
     if (write && now < write.until && Math.abs(element.scrollTop - write.top) < .5 && Math.abs(element.scrollLeft - write.left) < .5) {
@@ -6696,7 +6700,9 @@ class NivoScrollController {
     if (clampedY) position.pendingY = true;
     else { position.top = element.scrollTop; position.pendingY = false; }
     position.maxX = maxX; position.maxY = maxY;
-    if (!clampedX || !clampedY) position.revision += 1;
+    const acceptedX = !clampedX && Math.abs(element.scrollLeft - previousLeft) > .5;
+    const acceptedY = !clampedY && Math.abs(element.scrollTop - previousTop) > .5;
+    if (acceptedX || acceptedY) position.revision += 1;
     // No snap-back: ordinary native, keyboard, touch and programmatic scrolling
     // are accepted immediately, even long after the last wheel event.
   };
@@ -6705,6 +6711,10 @@ class NivoScrollController {
     this.mounted = true;
     this.previousRestoration = window.history.scrollRestoration;
     window.history.scrollRestoration = "manual";
+    this.previousRootOverflowAnchor = document.documentElement.style.overflowAnchor;
+    this.previousBodyOverflowAnchor = document.body.style.overflowAnchor;
+    document.documentElement.style.overflowAnchor = "none";
+    document.body.style.overflowAnchor = "none";
     this.mutationObserver = new MutationObserver(() => this.schedule());
     this.mutationObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
     if (typeof ResizeObserver !== "undefined") this.resizeObserver = new ResizeObserver(() => this.schedule());
@@ -6736,6 +6746,9 @@ class NivoScrollController {
     window.removeEventListener("pointercancel", this.onPointerUp, true);
     window.removeEventListener("scroll", this.onScroll, true);
     if (this.previousRestoration !== null) window.history.scrollRestoration = this.previousRestoration;
+    document.documentElement.style.overflowAnchor = this.previousRootOverflowAnchor;
+    document.body.style.overflowAnchor = this.previousBodyOverflowAnchor;
+    this.previousRootOverflowAnchor = ""; this.previousBodyOverflowAnchor = "";
     this.observed.clear(); this.positions.clear(); this.elementKeys = new WeakMap();
     this.pointerScroll = null; this.scope = ""; this.epoch += 1;
   }
@@ -6776,7 +6789,9 @@ class NivoScrollController {
     this.reconcile();
     for (const [key, saved] of snapshot.positions) {
       const position = this.positions.get(key);
-      if (!position || !position.owner.isConnected || position.intent !== saved.intent) continue;
+      // Any scroll movement after the snapshot (wheel, scrollbar drag, touch,
+      // keyboard or browser-native movement) wins over the old snapshot.
+      if (!position || !position.owner.isConnected || position.intent !== saved.intent || position.revision !== saved.revision) continue;
       position.top = saved.top; position.left = saved.left;
       position.pendingX = true; position.pendingY = true;
       this.reconcileElement(position.owner);
@@ -30437,6 +30452,11 @@ START: ${formatDateTime(startAt)}`
       margin: 0,
       boxSizing: "border-box",
       overflow: "auto",
+      // A munkaállomási panelek tartalma folyamatosan frissül. A böngésző saját
+      // scroll-anchoringja ilyenkor fel-le mozdíthatná a panelt; ezt a központi
+      // NÍVÓ scroll-kezelő végzi stabil, panelenkénti pozícióval.
+      overflowAnchor: "none",
+      scrollBehavior: "auto",
       zIndex: terminalEntryLayoutEditorOpen ? 20 : 2,
       outline: terminalEntryLayoutEditorOpen ? "2px dashed #38bdf8" : undefined,
       outlineOffset: terminalEntryLayoutEditorOpen ? -2 : undefined,
