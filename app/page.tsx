@@ -19097,7 +19097,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         }}
       >
         <div style={{ width: "100%", maxWidth: standalone ? profileTheme.contentMaxWidth : "none", margin: standalone ? "0 auto" : 0 }}>
-          {!standalone && {ManagementNavigation()}}
+          {!standalone && ManagementNavigation()}
 
           <div
             data-office-window="production-monitor:header"
