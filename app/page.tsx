@@ -1572,11 +1572,13 @@ type ProductionMonitorTableConfig = {
 };
 
 type ProductionMonitorPlanStatusFilter = "ajto" | "kerites";
+type ProductionMonitorDateBasis = "elkeszules_datum" | "kiszallitasi_datum";
 
 type ProductionMonitorProfile = {
   id: string;
   name: string;
   planStatusFilter: ProductionMonitorPlanStatusFilter;
+  dateBasis: ProductionMonitorDateBasis;
   themePresetId: ProductionMonitorThemePresetId;
   zoomPercent: number;
   theme: ProductionMonitorTheme;
@@ -3599,6 +3601,7 @@ function createDefaultProductionMonitorProfile(
     id,
     name,
     planStatusFilter,
+    dateBasis: "elkeszules_datum",
     themePresetId: "industrial-night",
     zoomPercent: 100,
     theme,
@@ -4136,6 +4139,8 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
   return {
     id: `production-card-${cleanStationName}`,
     name: `${cleanStationName} termelési kártya`,
+    planStatusFilter: "ajto",
+    dateBasis: "elkeszules_datum",
     themePresetId: "industrial-night",
     zoomPercent: 90,
     theme,
@@ -4692,6 +4697,10 @@ function normalizeProductionMonitorProfile(value: unknown, index: number): Produ
     ? rawFilter
     : inferredFilter;
   const fallback = createDefaultProductionMonitorProfile(`Monitor ${index + 1}`, `monitor-${index + 1}`, planStatusFilter);
+  const rawDateBasis = String((raw as { dateBasis?: unknown }).dateBasis || "");
+  const dateBasis: ProductionMonitorDateBasis = rawDateBasis === "kiszallitasi_datum"
+    ? "kiszallitasi_datum"
+    : "elkeszules_datum";
   const profileTheme = normalizeProductionMonitorTheme(raw.theme);
   let tables: ProductionMonitorTableConfig[] = [];
 
@@ -4718,6 +4727,7 @@ function normalizeProductionMonitorProfile(value: unknown, index: number): Produ
     id: typeof raw.id === "string" && raw.id.trim() ? raw.id : fallback.id,
     name: typeof raw.name === "string" && raw.name.trim() ? raw.name.slice(0, 80) : fallback.name,
     planStatusFilter,
+    dateBasis,
     themePresetId: validPresetIds.includes(raw.themePresetId as ProductionMonitorThemePresetId)
       ? raw.themePresetId as ProductionMonitorThemePresetId
       : "custom",
@@ -6221,10 +6231,15 @@ function getMonitorCellFromLogs(
   }, 0);
   const stationHasReproduction = stationReproductionCount > 0 || logs.some((log) => log.ujragyartas === true);
   const completedCandidates = logs
-    .filter((log) =>
-      (Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END")
-      && isFullyCompletedEndLog(log)
-    )
+    .filter((log) => {
+      const hasEnd = Boolean(log.end_time || log.end_timestamp)
+        || String(log.action || "").toUpperCase() === "END";
+      if (!hasEnd) return false;
+      // A normál munkaállomásokon (Csőlézer, Összeállítás, Lakatos, Asztalos stb.)
+      // egy START-hoz tartozó END maga jelenti a kész állapotot. A részkészültségi
+      // szűrést csak a ténylegesen két-/többrészes munkafolyamatoknál tartjuk meg.
+      return panelSnapshot.isPanelWorkflow ? isFullyCompletedEndLog(log) : true;
+    })
     .map((log) => ({
       workerName: log.worker_name || "",
       eventAt: log.end_time || log.end_timestamp || log.created_at,
@@ -6235,21 +6250,72 @@ function getMonitorCellFromLogs(
     }))
     .filter((item): item is typeof item & { eventAt: string } => Boolean(item.eventAt));
 
-  const startedLogCandidates = logs
-    .filter((log) => Boolean(log.start_time || log.start_timestamp) || String(log.action || "").toUpperCase() === "START")
-    .map((log) => ({
-      workerName: log.worker_name || "",
-      eventAt: log.start_time || log.start_timestamp || log.created_at,
-      startedAt: log.start_time || log.start_timestamp || log.created_at || null,
-      isReproduction: log.ujragyartas === true,
-      reproductionNumber: Number(log.ujragyartas_sorszam) > 0 ? Number(log.ujragyartas_sorszam) : null,
-      statusLabel: "Folyamatban",
-      isBatchState: false,
-    }))
-    .filter((item): item is typeof item & { eventAt: string; startedAt: string } => Boolean(item.eventAt) && Boolean(item.startedAt));
+  type MonitorOpenStartCandidate = {
+    workerName: string;
+    eventAt: string;
+    startedAt: string;
+    isReproduction: boolean;
+    reproductionNumber: number | null;
+    statusLabel: string;
+    isBatchState: boolean;
+  };
+
+  // A nyitott munkameneteket nem pusztán a "legutolsó START vs. legutolsó END"
+  // alapján döntjük el, hanem ténylegesen párosítjuk a START/END eseményeket.
+  // Így ha több munkamenetből akár egyetlen START is lezáratlan, az állomás
+  // Folyamatban marad. Ez a normál és az újragyártási munkamenetekre is igaz.
+  const unmatchedLogStarts: MonitorOpenStartCandidate[] = [];
+  [...logs]
+    .sort((left, right) => getWorkLogEventTime(left) - getWorkLogEventTime(right))
+    .forEach((log) => {
+      const action = String(log.action || "").toUpperCase();
+      const startAt = log.start_time || log.start_timestamp || (action === "START" ? log.created_at : null);
+      const endAt = log.end_time || log.end_timestamp || (action === "END" ? log.created_at : null);
+      const operationCode = normalizeBatchOperationCode(log.operation_code);
+      const candidate: MonitorOpenStartCandidate | null = startAt
+        ? {
+            workerName: log.worker_name || "",
+            eventAt: String(startAt),
+            startedAt: String(startAt),
+            isReproduction: log.ujragyartas === true,
+            reproductionNumber: Number(log.ujragyartas_sorszam) > 0 ? Number(log.ujragyartas_sorszam) : null,
+            statusLabel: operationCode === "SZABAS"
+              ? "Szabás folyamatban"
+              : operationCode === "MARAS"
+                ? "Marás folyamatban"
+                : "Folyamatban",
+            isBatchState: false,
+          }
+        : null;
+
+      // Ha ugyanaz a sor START+END időt is tartalmaz, az eleve lezárt szegmens.
+      if (candidate && !endAt && action !== "END") {
+        unmatchedLogStarts.push(candidate);
+      }
+
+      // Külön END sor esetén a legutóbbi, még nyitott START-ot zárjuk le.
+      // Ha az END sor magával hozza a start_time mezőt is, az action=END alapján
+      // akkor is párosítjuk. Egyetlen frissített START+END sor esetén a lista üres,
+      // ezért nem tud tévesen másik munkamenetet lezárni.
+      if (endAt && (action === "END" || !startAt) && unmatchedLogStarts.length > 0) {
+        const endMs = new Date(String(endAt)).getTime();
+        for (let index = unmatchedLogStarts.length - 1; index >= 0; index -= 1) {
+          const startMs = new Date(unmatchedLogStarts[index].eventAt).getTime();
+          if (!Number.isFinite(endMs) || !Number.isFinite(startMs) || startMs <= endMs) {
+            unmatchedLogStarts.splice(index, 1);
+            break;
+          }
+        }
+      }
+    });
+
+  const startedLogCandidates = unmatchedLogStarts;
 
   const startedBatchCandidates = productionBatchStarts
-    .filter((batch) => Boolean(batch.start_time || batch.operation_status))
+    .filter((batch) => {
+      const operationStatus = normalizeBatchOperationStatus(batch.operation_status);
+      return Boolean(batch.start_time || batch.operation_status) && operationStatus !== "KESZ";
+    })
     .map((batch) => {
       const meta = getProductionMetaForOrder(batch.production_meta, orderNumber);
       const operationStatus = normalizeBatchOperationStatus(batch.operation_status);
@@ -8499,6 +8565,11 @@ export default function Page() {
   const executiveReportVisibilityDirtyRevisionRef = useRef<Map<string, number>>(new Map());
   const executiveReportVisibilityMutationEpochRef = useRef(0);
   const executiveReportSettingsWriteTailRef = useRef<Promise<void>>(Promise.resolve());
+  // Csak akkor engedjük az automatikus mentést, ha az adott munkaállomás
+  // személyes Profi profilja már ténylegesen betöltődött. Így belépéskor egy
+  // alapértelmezett/előző állomás profil nem írhatja felül a Supabase-ban
+  // eltárolt mező-láthatóságot.
+  const executiveReportHydratedStationKeyRef = useRef("");
 
   // Renderenként frissülő "source of truth" a régi async callbackok ellen.
   productionCardAdminStationLatestRef.current = productionCardAdminStation;
@@ -13346,6 +13417,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       profileId,
       activeProductionMonitorProfile.planStatusFilter
     );
+    profile.dateBasis = activeProductionMonitorProfile.dateBasis;
     profile.tables[0].fieldOrder = [
       PRODUCTION_MONITOR_ORDER_FIELD_ID,
       PRODUCTION_MONITOR_BACKLOG_FIELD_ID,
@@ -17573,6 +17645,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
+    // A dinamikusan felfedezett *_terv mezőket a profil normalizálása ELŐTT
+    // be kell tölteni. Enélkül a következő belépéskor a normalizáló olyan
+    // elrejtett oszlopokat is kidobhatna, amelyek a mentett profilban benne vannak.
+    await loadStationPlanSchemaForStation(cleanStation);
+
     const userKey = getProfiEditorUserSettingsKey("executive-report", cleanStation);
     if (userKey) {
       const personalResponse = await supabase
@@ -17982,6 +18059,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (profileResult && !visibilityStillDirty && !visibilityChangedWhileLoading) {
         executiveReportScrollGuard.begin();
         executiveReportProfileLatestRef.current = profileResult.profile;
+        executiveReportHydratedStationKeyRef.current = stationKey;
         setExecutiveReportProfile(profileResult.profile);
         setExecutiveReportLastSavedAt(profileResult.updatedAt);
       }
@@ -19495,7 +19573,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       void loadProductionMonitor(
         productionMonitorDate,
         selectedProfile.planStatusFilter,
-        productionMonitorDateTo
+        productionMonitorDateTo,
+        selectedProfile.dateBasis
       );
     };
 
@@ -19875,7 +19954,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     fontWeight: 900,
                   }}
                 >
-                  Szűrés alapja: Elkészülési dátum
+                  Szűrés alapja: {activeProductionMonitorProfile.dateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülési dátum"}
                 </div>
                 {profileTheme.showLastUpdated && (
                   <div style={{ color: profileTheme.subtitleText, opacity: 0.82, fontSize: standalone ? 10 : 12, marginTop: standalone ? 0 : 4 }}>
@@ -19939,7 +20018,30 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               ) : (
                 <>
                   <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
-                    <span>Dátumtól · Elkészülési dátum</span>
+                    <span>Dátum alapja</span>
+                    <select
+                      value={activeProductionMonitorProfile.dateBasis}
+                      onChange={(event) => {
+                        const nextBasis = event.target.value === "kiszallitasi_datum"
+                          ? "kiszallitasi_datum"
+                          : "elkeszules_datum";
+                        updateActiveProductionMonitorProfile((profile) => ({ ...profile, dateBasis: nextBasis }));
+                        void loadProductionMonitor(
+                          productionMonitorDate,
+                          activeProductionMonitorProfile.planStatusFilter,
+                          productionMonitorDateTo,
+                          nextBasis
+                        );
+                      }}
+                      style={{ ...fieldStyle, width: 190, background: "#ffffff", color: "#111827" }}
+                    >
+                      <option value="elkeszules_datum">Elkészülés dátuma</option>
+                      <option value="kiszallitasi_datum">Kiszállítási dátum</option>
+                    </select>
+                  </label>
+
+                  <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
+                    <span>Dátumtól · {activeProductionMonitorProfile.dateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülési dátum"}</span>
                     <input
                       type="date"
                       value={productionMonitorDate}
@@ -19958,7 +20060,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                         void loadProductionMonitor(
                           nextFrom,
                           activeProductionMonitorProfile.planStatusFilter,
-                          nextTo
+                          nextTo,
+                          activeProductionMonitorProfile.dateBasis
                         );
                       }}
                       style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
@@ -19966,7 +20069,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   </label>
 
                   <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
-                    <span>Dátumig · Elkészülési dátum</span>
+                    <span>Dátumig · {activeProductionMonitorProfile.dateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülési dátum"}</span>
                     <input
                       type="date"
                       value={productionMonitorDateTo}
@@ -19985,7 +20088,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                         void loadProductionMonitor(
                           nextFrom,
                           activeProductionMonitorProfile.planStatusFilter,
-                          nextTo
+                          nextTo,
+                          activeProductionMonitorProfile.dateBasis
                         );
                       }}
                       style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
@@ -20001,7 +20105,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   void loadProductionMonitor(
                     standalone ? todayKey : productionMonitorDate,
                     activeProductionMonitorProfile.planStatusFilter,
-                    standalone ? todayKey : productionMonitorDateTo
+                    standalone ? todayKey : productionMonitorDateTo,
+                    activeProductionMonitorProfile.dateBasis
                   );
                 }}
                 disabled={loadingProductionMonitor}
@@ -23454,7 +23559,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return loadProductionMonitor(
         dateFrom,
         activeProductionMonitorProfile.planStatusFilter,
-        dateTo
+        dateTo,
+        activeProductionMonitorProfile.dateBasis
       );
     };
 
@@ -23475,6 +23581,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     workers.length,
     machineOptions.length,
     activeProductionMonitorProfile.planStatusFilter,
+    activeProductionMonitorProfile.dateBasis,
   ]);
 
   useEffect(() => {
@@ -23488,33 +23595,37 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!monitorVisible) return;
 
     let channel = supabase
-      .channel(`production-monitor-${productionMonitorDate}-${productionMonitorDateTo}-${activeProductionMonitorProfile.planStatusFilter}`)
+      .channel(`production-monitor-${productionMonitorDate}-${productionMonitorDateTo}-${activeProductionMonitorProfile.planStatusFilter}-${activeProductionMonitorProfile.dateBasis}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, () => {
         void runNivoBackgroundRefresh(() => loadProductionMonitor(
           productionMonitorDate,
           activeProductionMonitorProfile.planStatusFilter,
-          productionMonitorDateTo
+          productionMonitorDateTo,
+          activeProductionMonitorProfile.dateBasis
         ));
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plans" }, () => {
         void runNivoBackgroundRefresh(() => loadProductionMonitor(
           productionMonitorDate,
           activeProductionMonitorProfile.planStatusFilter,
-          productionMonitorDateTo
+          productionMonitorDateTo,
+          activeProductionMonitorProfile.dateBasis
         ));
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, () => {
         void runNivoBackgroundRefresh(() => loadProductionMonitor(
           productionMonitorDate,
           activeProductionMonitorProfile.planStatusFilter,
-          productionMonitorDateTo
+          productionMonitorDateTo,
+          activeProductionMonitorProfile.dateBasis
         ));
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, () => {
         void runNivoBackgroundRefresh(() => loadProductionMonitor(
           productionMonitorDate,
           activeProductionMonitorProfile.planStatusFilter,
-          productionMonitorDateTo
+          productionMonitorDateTo,
+          activeProductionMonitorProfile.dateBasis
         ));
       })
       ;
@@ -23550,6 +23661,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     productionMonitorDate,
     productionMonitorDateTo,
     activeProductionMonitorProfile.planStatusFilter,
+    activeProductionMonitorProfile.dateBasis,
     machineIdRows.length,
     machineOptions.length,
   ]);
@@ -23575,6 +23687,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const stations = getOrderedDashboardStations();
     if (!executiveReportStation && stations.length > 0) setExecutiveReportStation(stations[0]);
   }, [machineIdRows, machineOptions, executiveReportStation]);
+
+  useEffect(() => {
+    if (managementSection !== "executive-report") return;
+    const stationKey = getStationPlanIdentityKey(executiveReportStation);
+    if (executiveReportHydratedStationKeyRef.current && executiveReportHydratedStationKeyRef.current !== stationKey) {
+      executiveReportHydratedStationKeyRef.current = "";
+    }
+  }, [managementSection, executiveReportStation, activeWorker?.id]);
+
+  // Munkaállomás-váltáskor, másik fülre lépéskor vagy kijelentkezéskor a
+  // legutolsó, már betöltött személyes Profi profilból még készítünk egy
+  // végső Supabase-mentést. Így a gyors kattintás + azonnali kilépés sem tudja
+  // elveszíteni az utolsó oszlop/pipa/sorrend/formázás módosítást.
+  useEffect(() => {
+    if (managementSection !== "executive-report" || !executiveReportStation || !supabase) return;
+    const stationSnapshot = executiveReportStation;
+    const stationKey = getStationPlanIdentityKey(stationSnapshot);
+    if (!stationKey || executiveReportHydratedStationKeyRef.current !== stationKey) return;
+    return () => {
+      const latestProfile = normalizeProductionCardProfile(
+        sanitizeProductionCardProfile(executiveReportProfileLatestRef.current),
+        stationSnapshot
+      );
+      void saveExecutiveReportProfile(false, latestProfile, stationSnapshot, undefined, true);
+    };
+  }, [managementSection, executiveReportStation, activeWorker?.id, supabase]);
 
   useEffect(() => {
     if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
@@ -23665,6 +23803,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   // A felhasználó-specifikus Supabase árnyékprofil miatt új belépéskor és másik gépen is megmarad.
   useEffect(() => {
     if (managementSection !== "executive-report" || !executiveReportStation || !supabase || typeof window === "undefined") return;
+    const stationKey = getStationPlanIdentityKey(executiveReportStation);
+    if (!stationKey || executiveReportHydratedStationKeyRef.current !== stationKey) return;
     if (executiveReportAutoSaveTimerRef.current !== null) {
       window.clearTimeout(executiveReportAutoSaveTimerRef.current);
     }
@@ -26603,7 +26743,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   async function fetchProductionMonitorData(
     dateKey: string,
     planStatusFilter: ProductionMonitorPlanStatusFilter = activeProductionMonitorProfile.planStatusFilter,
-    dateToKey: string = dateKey
+    dateToKey: string = dateKey,
+    dateBasis: ProductionMonitorDateBasis = activeProductionMonitorProfile.dateBasis
   ): Promise<ProductionMonitorData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
@@ -26714,15 +26855,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       readMonitorPlanValue(row, ["termek", "termék", "megnevezes", "megnevezés", "product_name"])
     );
 
-    const getPlanCompletionDate = (row: Record<string, unknown>): string => {
-      const rawValue = readMonitorPlanValue(row, [
-        "elkeszules_datum",
-        "elkészülés_dátum",
-        "elkeszules datum",
-        "elkészülés dátum",
-        "elkeszulesdatum",
-      ]);
-
+    const getPlanMonitorDate = (row: Record<string, unknown>): string => {
+      const aliases = dateBasis === "kiszallitasi_datum"
+        ? [
+            "kiszallitasi_datum",
+            "kiszállítási_dátum",
+            "kiszallitasi datum",
+            "kiszállítási dátum",
+            "kiszallitas_datum",
+          ]
+        : [
+            "elkeszules_datum",
+            "elkészülés_dátum",
+            "elkeszules datum",
+            "elkészülés dátum",
+            "elkeszulesdatum",
+          ];
+      const rawValue = readMonitorPlanValue(row, aliases);
       return parseSpreadsheetDate(rawValue) || valueAsText(rawValue).slice(0, 10);
     };
 
@@ -26731,7 +26880,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       // A kiválasztott időszak sorai mellett a mai vagy korábbi, még nem teljesen
       // lezárt szerelési rendelések is bekerülnek lemaradásként. A tényleges
       // lezártságot a work_logs feldolgozása után ellenőrizzük.
-      const completionDate = getPlanCompletionDate(row);
+      const completionDate = getPlanMonitorDate(row);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(completionDate)) return;
 
       const isInsideSelectedRange = completionDate >= startDateKey && completionDate <= endDateKey;
@@ -26991,9 +27140,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       .filter((row): row is ProductionMonitorRow => row !== null);
 
     const syntheticPlan: ProductionPlanRow = {
-      id: `monitor-${planStatusFilter}-${startDateKey}-${endDateKey}`,
+      id: `monitor-${planStatusFilter}-${dateBasis}-${startDateKey}-${endDateKey}`,
       plan_date: monitorDateRangeLabel,
-      name: `Szerelés napi terv · ${statusLabel}`,
+      name: `Szerelés napi terv · ${statusLabel} · ${dateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülési dátum"}`,
       is_active: true,
       uploaded_by: null,
       created_at: new Date().toISOString(),
@@ -27011,13 +27160,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   async function loadProductionMonitor(
     dateKey = productionMonitorDate,
     planStatusFilter: ProductionMonitorPlanStatusFilter = activeProductionMonitorProfile.planStatusFilter,
-    dateToKey = productionMonitorDateTo
+    dateToKey = productionMonitorDateTo,
+    dateBasis: ProductionMonitorDateBasis = activeProductionMonitorProfile.dateBasis
   ): Promise<void> {
     if (!supabase || !dateKey || !dateToKey) return;
     const backgroundRefresh = isNivoBackgroundRefreshRunning();
     if (!backgroundRefresh) setLoadingProductionMonitor(true);
     try {
-      const data = await fetchProductionMonitorData(dateKey, planStatusFilter, dateToKey);
+      const data = await fetchProductionMonitorData(dateKey, planStatusFilter, dateToKey, dateBasis);
       setProductionMonitorData(data);
     } catch (error) {
       console.error("SUPABASE HIBA loadProductionMonitor:", error);
