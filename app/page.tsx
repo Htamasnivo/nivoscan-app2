@@ -9150,23 +9150,12 @@ export default function Page() {
   const orderInputRef = useRef<HTMLInputElement | null>(null);
   const batchInputRef = useRef<HTMLInputElement | null>(null);
   const actionBarcodeInputRef = useRef<HTMLInputElement | null>(null);
-  // 10-es eseményköteg: ha a kártyaválasztó képernyőn közvetlenül START-ot
-  // csippantanak, a következő render után ugyanazzal a kóddal véglegesítjük a köteget.
+  // 10-es eseményköteg: a Köteg indítása gomb után a következő renderben
+  // közvetlenül véglegesítjük a köteget. START-vonalkód ennél a módnál nem kell.
+  // Refet használunk, hogy a frissen beállított batchOrders / production_meta state
+  // már biztosan elérhető legyen a véglegesítő függvény számára.
   const bundleTenAutoStartRequestedRef = useRef(false);
 
-  // Közvetlen hardveres START a 10-es köteg kártyaválasztójáról.
-  // FONTOS: ez az effect csak azután szerepelhet, hogy a pendingAction,
-  // actionBarcode és bundleTenAutoStartRequestedRef már inicializálva van.
-  // Ellenkező esetben a production buildben TDZ / "before initialization"
-  // kliensoldali hiba keletkezik.
-  useEffect(() => {
-    if (!bundleTenAutoStartRequestedRef.current) return;
-    if (!isEventTenVisualWorker()) return;
-    if (workflowMode !== "batch" || pendingAction !== "START" || flowStage !== "start-scan" || step !== 6) return;
-    if (batchOrders.length === 0 || !isStartBarcode(actionBarcode)) return;
-    bundleTenAutoStartRequestedRef.current = false;
-    void handleActionBarcodeSubmit(false, actionBarcode);
-  }, [step, flowStage, workflowMode, pendingAction, batchOrders.length, actionBarcode, activeWorker]);
   const eventBarcodeInputRef = useRef<HTMLInputElement | null>(null);
   const orderTypeInputRef = useRef<HTMLInputElement | null>(null);
   const batchOperationInputRef = useRef<HTMLInputElement | null>(null);
@@ -9207,6 +9196,18 @@ export default function Page() {
   const [loadingStats, setLoadingStats] = useState(false);
   const [message, setMessage] = useState<UiMessage | null>(null);
   const [connectionOk, setConnectionOk] = useState<boolean | null>(null);
+
+  // A 10-es köteg gombos indítása csak akkor véglegesít, amikor a frissen
+  // beállított köteg-state már renderelődött és az előkészítés busy állapota lezárult.
+  // Így Szerelésnél is biztosan a friss Nyíló/Tok meta kerül a kötegbe.
+  useEffect(() => {
+    if (!bundleTenAutoStartRequestedRef.current) return;
+    if (!isEventTenVisualWorker()) return;
+    if (workflowMode !== "batch" || pendingAction !== "START" || flowStage !== "start-scan" || step !== 6) return;
+    if (batchOrders.length === 0 || busy) return;
+    bundleTenAutoStartRequestedRef.current = false;
+    void finalizeBatchCreation();
+  }, [step, flowStage, workflowMode, pendingAction, batchOrders.length, busy, activeWorker]);
 
   const workerCountText = useMemo(() => {
     if (loadingWorkers) return "Dolgozói lista betöltése...";
@@ -33454,8 +33455,8 @@ body {
     setMessage({
       type: "info",
       text: mode === "single"
-        ? "Egyedi rendelés: kattints a Prioritási, Lemaradási vagy Termelési kártya egyik sorára. Várakozó rendelésnél START kódot kérünk; folyamatban lévő rendelésnél közvetlenül az END felület nyílik meg."
-        : "Köteg létrehozása: kattintással jelöld ki a kívánt rendeléseket a kártyákból, majd menj tovább a START kód beolvasásához.",
+        ? "Egyedi rendelés: kattints a Prioritási, Lemaradási vagy Termelési kártya egyik sorára. Várakozó rendelésnél a Rendelés indítása gomb azonnal rögzíti a START-ot; folyamatban lévő rendelésnél közvetlenül az END felület nyílik meg."
+        : "Köteg létrehozása: kattintással jelöld ki a kívánt rendeléseket a kártyákból, majd a Köteg indítása gomb azonnal létrehozza és elindítja a köteget.",
     });
     await refreshBundleTenVisualCards();
   }
@@ -33551,7 +33552,7 @@ body {
       }
 
       // Várakozó egyedi rendelésnél a kattintás csak kijelöl.
-      // A felhasználó külön „Rendelés indítása” gombbal lép tovább a START kódhoz.
+      // A „Rendelés indítása” gomb START-vonalkód nélkül azonnal elindítja a konkrét sort.
       // Folyamatban lévő rendelésnél a fenti ág továbbra is azonnal az END felületet nyitja meg.
       setOrderNumber(row.orderNumber);
       setPendingAction("START");
@@ -33559,7 +33560,7 @@ body {
       setEndBarcodeConfirmed(false);
       setMessage({
         type: "info",
-        text: `${row.orderNumber} kijelölve a(z) ${row.sourceLabel} kártyáról. Kattints a Rendelés indítása gombra a START kód beolvasásához.`,
+        text: `${row.orderNumber} kijelölve a(z) ${row.sourceLabel} kártyáról. Kattints a Rendelés indítása gombra; a START azonnal mentődik.`,
       });
       return;
     }
@@ -33629,9 +33630,6 @@ body {
       });
       return [...withoutSameOrder, row.key];
     });
-    // A hardveres scanner következő beolvasását a START mező fogadja anélkül,
-    // hogy külön rá kellene kattintani.
-    window.setTimeout(() => focusAndSelectInput(actionBarcodeInputRef, { preventScroll: true }), 0);
   }
 
   async function prepareBundleTenSingleStart(): Promise<void> {
@@ -33667,7 +33665,8 @@ body {
     setActionBarcode("");
     setEndBarcodeConfirmed(false);
 
-    // Szerelésen a Nyíló/Tok választás a START kód előtt kötelező.
+    // Szerelésen a Nyíló/Tok választás továbbra is kötelező, de a 10-es módban
+    // START-vonalkód nélkül: a rész(ek) kiválasztása után a Rendelés indítása gomb ment.
     if (requiresSzerelesStartParts()) {
       try {
         const state = await fetchSzerelesOrderState(row.orderNumber);
@@ -33677,11 +33676,14 @@ body {
         setSzerelesEndParts([]);
         setSzerelesNewCycle(false);
         setSzerelesRework(false);
-        setFlowStage("szereles-choice");
-        setStep(5);
+        setPendingAction("START");
+        setActionBarcode("");
+        setEndBarcodeConfirmed(false);
+        setFlowStage("start-scan");
+        setStep(6);
         setMessage({
           type: "info",
-          text: `${row.orderNumber}: ${szerelesStateLabel(state)}. Válaszd ki, hogy Nyíló, Tok vagy mindkettő induljon.`,
+          text: `${row.orderNumber}: ${szerelesStateLabel(state)}. Válaszd ki, hogy Nyíló, Tok vagy mindkettő induljon, majd kattints a Rendelés indítása gombra.`,
         });
         return;
       } catch (error) {
@@ -33690,13 +33692,12 @@ body {
       }
     }
 
-    setFlowStage("start-scan");
-    setStep(6);
+    // Minden más 10-es egyedi állomáson a gomb maga a START művelet.
     setMessage({
       type: "info",
-      text: `${row.orderNumber} kiválasztva a(z) ${row.sourceLabel} kártyáról. Olvasd be a START kódot az indításhoz.`,
+      text: `${row.orderNumber} indítása folyamatban a(z) ${row.sourceLabel} kártyáról...`,
     });
-    window.setTimeout(() => focusAndSelectInput(actionBarcodeInputRef, { preventScroll: true }), 0);
+    await finalizeSingleOrderCreation(row.orderNumber);
   }
 
   async function confirmBundleTenSzerelesBatchRow(): Promise<void> {
@@ -33781,7 +33782,6 @@ body {
         type: "success",
         text: `${row.orderNumber}: ${parts.map(szerelesPartLabel).join(" + ")} hozzáadva a köteghez.`,
       });
-      window.setTimeout(() => focusAndSelectInput(actionBarcodeInputRef, { preventScroll: true }), 0);
     } catch (error) {
       setMessage({ type: "error", text: normalizeError(error) });
       playSharpErrorBeep();
@@ -33790,15 +33790,8 @@ body {
     }
   }
 
-  async function prepareBundleTenBatchStart(startBarcode?: string): Promise<void> {
+  async function prepareBundleTenBatchStart(): Promise<void> {
     if (!isEventTenVisualWorker() || workflowMode !== "batch") return;
-    const directStartCode = String(startBarcode || "").trim();
-    if (directStartCode && !isStartBarcode(directStartCode)) {
-      setActionBarcode("");
-      setMessage({ type: "error", text: "A beolvasott kód nem START típusú." });
-      window.setTimeout(() => focusAndSelectInput(actionBarcodeInputRef, { force: true, preventScroll: true }), 0);
-      return;
-    }
     if (!activeWorker) {
       setMessage({ type: "error", text: "Nincs kiválasztott dolgozó." });
       return;
@@ -33907,20 +33900,15 @@ body {
       setBatchOrders(selectedRows.map((row) => row.orderNumber));
       setBatchOrderProductionMeta(nextMeta);
       setPendingAction("START");
-      setActionBarcode(directStartCode);
+      setActionBarcode("");
       setEndBarcodeConfirmed(false);
-      bundleTenAutoStartRequestedRef.current = Boolean(directStartCode);
+      bundleTenAutoStartRequestedRef.current = true;
       setFlowStage("start-scan");
       setStep(6);
       setMessage({
         type: "info",
-        text: directStartCode
-          ? `${selectedRows.length} kártyasor kijelölve. A START kód beolvasva; a köteg indítása folyamatban.`
-          : `${selectedRows.length} kártyasor kijelölve. Olvasd be a START kódot a köteg létrehozásához és indításához.`,
+        text: `${selectedRows.length} kártyasor kijelölve. A köteg létrehozása és START mentése folyamatban...`,
       });
-      if (!directStartCode) {
-        window.setTimeout(() => focusAndSelectInput(actionBarcodeInputRef, { preventScroll: true }), 0);
-      }
     } catch (error) {
       playSharpErrorBeep();
       setMessage({ type: "error", text: normalizeError(error) });
@@ -33957,7 +33945,7 @@ body {
           <div style={{ marginTop: 6, color: "#94a3b8", fontSize: 13 }}>
             {mode === "batch"
               ? "Több várakozó sort jelölhetsz ki. Azonos rendelésszám esetén is a konkrétan kattintott kártyasor kerül eltárolásra."
-              : "Várakozó sorra kattintva kijelölöd a rendelést, majd a Rendelés indítása gombbal lépsz a START kódhoz. A nem kötegben futó, folyamatban lévő sorra kattintva közvetlenül az END felület nyílik meg."}
+              : "Várakozó sorra kattintva kijelölöd a rendelést, majd a Rendelés indítása gomb azonnal elindítja. A nem kötegben futó, folyamatban lévő sorra kattintva közvetlenül az END felület nyílik meg."}
           </div>
         </div>
 
@@ -34079,7 +34067,7 @@ body {
                         </div>
                         <div style={{ textAlign: "right", fontWeight: 900, color: selected ? "#7dd3fc" : "#cbd5e1" }}>
                           {mode === "single"
-                            ? inProgress ? "END megnyitása" : "START kiválasztás"
+                            ? inProgress ? "END megnyitása" : "Kiválasztás"
                             : selected ? "✓ Kijelölve" : "Kijelölés"}
                         </div>
                       </button>
@@ -34088,29 +34076,6 @@ body {
                 </div>
               </section>
             ))}
-          </div>
-        )}
-
-        {mode === "batch" && (
-          <div style={{ marginTop: 16, padding: 12, border: "1px solid #334155", borderRadius: 12, background: "#0f172a" }}>
-            <label style={{ display: "block", marginBottom: 7, color: "#cbd5e1", fontWeight: 800 }}>START kód – közvetlen kötegindítás</label>
-            <input
-              ref={actionBarcodeInputRef}
-              value={actionBarcode}
-              onChange={(event) => setActionBarcode(event.target.value.replace(/[\r\n]+/g, "").trim())}
-              placeholder="Jelöld ki a sorokat, majd csippantsd le a START kódot"
-              style={fieldStyle}
-              autoComplete="off"
-              disabled={busy || Boolean(bundleTenSzerelesDraftRowKey)}
-              onKeyDown={(event) => {
-                if (!isScannerSubmitKey(event)) return;
-                event.preventDefault();
-                void prepareBundleTenBatchStart(event.currentTarget.value);
-              }}
-            />
-            <div style={{ marginTop: 7, color: "#94a3b8", fontSize: 12 }}>
-              A START vonalkód közvetlen beolvasása elindítja a kijelölt köteget. A gombbal külön START-kód képernyőre is továbbléphetsz.
-            </div>
           </div>
         )}
 
@@ -34132,7 +34097,7 @@ body {
               disabled={busy || bundleTenSelectedRowKeys.length === 0 || Boolean(bundleTenSzerelesDraftRowKey)}
               style={buttonPrimary}
             >
-              Tovább a START kódhoz ({bundleTenSelectedRowKeys.length})
+              Köteg indítása ({bundleTenSelectedRowKeys.length})
             </button>
           )}
           <button
@@ -40061,7 +40026,7 @@ body {
   function getMissingRouteParts(finalOrderNumber?: string): string[] {
     const missing: string[] = [];
     if (workerEventKoteg === 3 && !selectedEventCard) missing.push("Esemény");
-    if (!isGroupTwoCodeFreeStart() && (!actionBarcode.trim() || !isStartBarcode(actionBarcode))) missing.push("START kód");
+    if (!isGroupTwoCodeFreeStart() && !isEventTenVisualWorker() && (!actionBarcode.trim() || !isStartBarcode(actionBarcode))) missing.push("START kód");
     if (!(finalOrderNumber ?? orderNumber).trim()) missing.push("Rendelésszám");
     return missing;
   }
@@ -40071,7 +40036,7 @@ body {
     const order=(overrides?.orderNumber||orderNumber).trim();
     const parts=(action==="START"?normalizeSzerelesStartParts(szerelesStartParts):szerelesEndParts) as SzerelesPart[];
     if(parts.length===0){setMessage({type:"error",text:action==="START"?"START előtt válaszd ki a Nyílót, a Tokot vagy mindkettőt.":"END előtt kötelező legalább egy folyamatban lévő rész kiválasztása."});return;}
-    if(action==="START"&&!isStartBarcode(confirmedCode||actionBarcode)){setMessage({type:"error",text:"Előbb olvasd be és erősítsd meg a START kódot."});return;}
+    if(action==="START"&&!isEventTenVisualWorker()&&!isStartBarcode(confirmedCode||actionBarcode)){setMessage({type:"error",text:"Előbb olvasd be és erősítsd meg a START kódot."});return;}
     // Az 5-ös szerelő selejtjelentés is END művelet: az END kód mindig kötelező.
     if(action==="END"&&(!endBarcodeConfirmed||!isEndBarcode(confirmedCode||actionBarcode))){setMessage({type:"error",text:"Előbb erősítsd meg az END kódot Enterrel."});return;}
     const state=szerelesOrderState;
@@ -43672,7 +43637,39 @@ body {
             <div>
               {pendingAction === "START" ? (
                 <>
-                  {isGroupTwoCodeFreeStart() ? (
+                  {isEventTenVisualWorker() ? (
+                    <>
+                      {workflowMode === "single" && requiresSzerelesStartParts() && szerelesOrderState ? (
+                        <>
+                          <div style={{marginBottom:16}}>
+                            {renderSzerelesSessionStatus(szerelesOrderState)}
+                            {renderSzerelesStartPartPicker()}
+                            {szerelesOrderState.is_complete && <label style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}><input type="checkbox" checked={szerelesNewCycle} onChange={e=>{setSzerelesNewCycle(e.target.checked);setSzerelesStartParts([]);}}/> Új gyártási ciklus indítása (a korábbi idők megmaradnak)</label>}
+                            {!szerelesNewCycle && (["nyilo","tok"] as SzerelesPart[]).some(part=>szerelesOrderState.parts[part].done) && <label style={{display:"flex",gap:8,alignItems:"center"}}><input type="checkbox" checked={szerelesRework} onChange={e=>{setSzerelesRework(e.target.checked);setSzerelesStartParts([]);}}/> Már kész rész új munkamenetként történő újraindítása</label>}
+                          </div>
+                          <div style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 12, padding: 14, marginBottom: 18 }}>
+                            <div style={{ fontSize: 13, color: "#94a3b8" }}>10-es kattintásos mód: START-vonalkód nem szükséges.</div>
+                          </div>
+                          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                            <button
+                              type="button"
+                              onClick={() => void saveSzerelesSession("START")}
+                              disabled={busy || szerelesStartParts.length === 0}
+                              style={buttonPrimary}
+                            >
+                              Rendelés indítása
+                            </button>
+                            <button onClick={handleBackFromAction} style={buttonSecondary}>Vissza</button>
+                            <button onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ padding: 14, border: "1px solid #334155", borderRadius: 12, background: "#0f172a", color: "#cbd5e1" }}>
+                          Köteg indítása folyamatban. START-vonalkód nem szükséges.
+                        </div>
+                      )}
+                    </>
+                  ) : isGroupTwoCodeFreeStart() ? (
                     <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
                       <button type="button" onClick={() => void handleActionBarcodeSubmit(false)} disabled={busy} style={buttonPrimary}>Mentés és indítás</button>
                       <button type="button" onClick={handleBackFromAction} style={buttonSecondary}>Vissza</button>
