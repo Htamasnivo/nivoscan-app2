@@ -14794,7 +14794,95 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   function getNivoPlanLogRowId(log: WorkLogRow): string {
     const metadata = getStructuredNoteMetadata(log.note);
+    const visualSource = String(metadata.visual_source ?? "").trim() as BundleTenCardSource;
+    const visualRowId = String(metadata.visual_source_row_id ?? "").trim();
+    if (
+      Number(metadata.event_bundle) === 10
+      && visualRowId
+      && (visualSource === "production-plan" || visualSource === "backlog")
+    ) {
+      return visualRowId;
+    }
     return String(metadata.terv_sor_id ?? metadata.reszjelentes_terv_sor_id ?? "").trim();
+  }
+
+  function getBundleTenVisualIdentityFromLog(log: WorkLogRow): {
+    source: BundleTenCardSource;
+    sourceRowId: string;
+    itemKey: string;
+  } | null {
+    const metadata = getStructuredNoteMetadata(log.note);
+    const source = String(metadata.visual_source ?? "").trim() as BundleTenCardSource;
+    const sourceRowId = String(metadata.visual_source_row_id ?? "").trim();
+    const itemKey = String(metadata.visual_source_item_key ?? "").trim();
+    const isBundleTen = Number(metadata.event_bundle) === 10 || Boolean(itemKey);
+    if (!isBundleTen || !source || !sourceRowId) return null;
+    if (source !== "priority" && source !== "backlog" && source !== "production-plan") return null;
+    return { source, sourceRowId, itemKey };
+  }
+
+  function getBundleTenVisualIdentityFromBatch(
+    batch: ProductionBatchRow,
+    orderNumber: string
+  ): {
+    source: BundleTenCardSource;
+    sourceRowId: string;
+    itemKey: string;
+  } | null {
+    const meta = getProductionMetaForOrder(batch.production_meta, orderNumber);
+    const source = String(meta.visual_source ?? "").trim() as BundleTenCardSource;
+    const sourceRowId = String(meta.visual_source_row_id ?? "").trim();
+    const itemKey = String(meta.visual_source_item_key ?? "").trim();
+    if (!source || !sourceRowId) return null;
+    if (source !== "priority" && source !== "backlog" && source !== "production-plan") return null;
+    return { source, sourceRowId, itemKey };
+  }
+
+  function bundleTenVisualIdentityMatches(
+    identity: { source: BundleTenCardSource; sourceRowId: string; itemKey: string } | null,
+    source: BundleTenCardSource,
+    sourceRowId: string,
+    itemKey?: string
+  ): boolean {
+    if (!identity) return false;
+    if (itemKey && identity.itemKey) return identity.itemKey === itemKey;
+    return identity.source === source && identity.sourceRowId === sourceRowId;
+  }
+
+  function filterBundleTenVisualLogsForCardRow(
+    sourceLogs: WorkLogRow[],
+    source: BundleTenCardSource,
+    sourceRowId: string,
+    itemKey?: string
+  ): WorkLogRow[] {
+    return sourceLogs.filter((log) => {
+      const identity = getBundleTenVisualIdentityFromLog(log);
+      if (!identity) return true;
+      return bundleTenVisualIdentityMatches(identity, source, sourceRowId, itemKey);
+    });
+  }
+
+  function filterBundleTenVisualBatchesForCardRow(
+    sourceBatches: ProductionBatchRow[],
+    orderNumber: string,
+    source: BundleTenCardSource,
+    sourceRowId: string,
+    itemKey?: string
+  ): ProductionBatchRow[] {
+    return sourceBatches.filter((batch) => {
+      const identity = getBundleTenVisualIdentityFromBatch(batch, orderNumber);
+      if (!identity) return true;
+      return bundleTenVisualIdentityMatches(identity, source, sourceRowId, itemKey);
+    });
+  }
+
+  function isExactBundleTenWorkLogForRow(log: WorkLogRow, row: BundleTenSelectableRow): boolean {
+    return bundleTenVisualIdentityMatches(
+      getBundleTenVisualIdentityFromLog(log),
+      row.source,
+      row.sourceRowId,
+      row.key
+    );
   }
 
   function filterNivoPlanRowLogs(
@@ -15402,6 +15490,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(orderNumber));
         });
         const workerStatus = resolveProductionCardWorkers(rowLogs, rowBatchStarts, orderNumber);
+        const hasBundleTenScopedGroupActivity =
+          rowLogs.some((log) => Boolean(getBundleTenVisualIdentityFromLog(log)))
+          || rowBatchStarts.some((batch) => Boolean(getBundleTenVisualIdentityFromBatch(batch, orderNumber)));
         const totalPlannedQuantity = groupRows.reduce((sum, row) => sum + row.plannedQuantity, 0);
         let unallocatedCompletedQuantity = calculateCompletedPlanQuantity(
           rowLogs,
@@ -15425,17 +15516,31 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           // automatikusan késznek az új 150 db-os maradék sort.
           const isExactSzinterBacklog = getStationPlanIdentityKey(cleanStationName) === "szinter";
           const sameOrderRowCount = szinterPlanRowCounts.get(normalizeLooseText(orderNumber)) || groupRows.length;
+          const bundleTenScopedRowLogs = filterBundleTenVisualLogsForCardRow(
+            rowLogs,
+            "backlog",
+            String(planRow.id),
+            `backlog:${String(planRow.id)}`
+          );
+          const bundleTenScopedRowBatchStarts = filterBundleTenVisualBatchesForCardRow(
+            rowBatchStarts,
+            orderNumber,
+            "backlog",
+            String(planRow.id),
+            `backlog:${String(planRow.id)}`
+          );
           const effectiveRowLogs = isExactSzinterBacklog
-            ? filterNivoPlanRowLogs(rowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
+            ? filterNivoPlanRowLogs(bundleTenScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
             : isOpenQuantityRemainder
-              ? filterWorkLogsForQuantityPlanLifecycle(rowLogs, planRow.planData)
-              : rowLogs;
+              ? filterWorkLogsForQuantityPlanLifecycle(bundleTenScopedRowLogs, planRow.planData)
+              : bundleTenScopedRowLogs;
           const effectiveRowBatchStarts = isExactSzinterBacklog
-            ? filterNivoPlanRowBatches(rowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
+            ? filterNivoPlanRowBatches(bundleTenScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
             : isOpenQuantityRemainder
-              ? filterProductionBatchesForQuantityPlanLifecycle(rowBatchStarts, planRow.planData)
-              : rowBatchStarts;
-          const rowWorkerStatus = (isOpenQuantityRemainder || isExactSzinterBacklog)
+              ? filterProductionBatchesForQuantityPlanLifecycle(bundleTenScopedRowBatchStarts, planRow.planData)
+              : bundleTenScopedRowBatchStarts;
+          const exactRowStatusRequired = isOpenQuantityRemainder || isExactSzinterBacklog || hasBundleTenScopedGroupActivity;
+          const rowWorkerStatus = exactRowStatusRequired
             ? resolveProductionCardWorkers(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
             : workerStatus;
 
@@ -15449,7 +15554,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           const effectiveRowStatus = szinterBacklogMonitorCell?.status ?? rowWorkerStatus.status;
           const effectiveRowStatusLabel = szinterBacklogMonitorCell?.label ?? rowWorkerStatus.statusLabel;
 
-          const completedQuantity = (isOpenQuantityRemainder || isExactSzinterBacklog)
+          const completedQuantity = exactRowStatusRequired
             ? Math.min(
                 planRow.plannedQuantity,
                 calculateCompletedPlanQuantity(
@@ -15461,11 +15566,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               )
             : Math.min(planRow.plannedQuantity, Math.max(0, unallocatedCompletedQuantity));
 
-          if (!isOpenQuantityRemainder && !isExactSzinterBacklog) {
+          if (!exactRowStatusRequired) {
             unallocatedCompletedQuantity = Math.max(0, unallocatedCompletedQuantity - completedQuantity);
           }
 
-          const rowCompletionLogs = (isOpenQuantityRemainder || isExactSzinterBacklog)
+          const rowCompletionLogs = exactRowStatusRequired
             ? getRelevantCompletionLogsForQuantity(effectiveRowLogs, cleanStationName)
             : completionLogs;
           const rowCompletionTimes = rowCompletionLogs
@@ -15782,14 +15887,25 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const base=resolveProductionCardWorkers([],[],planRow.orderNumber);
         return {...planRow,...base,...recurring,crossStationStatuses:{},crossStationScrapFlags:crossStationScrapFlagsByOrder.get(normalizeLooseText(planRow.orderNumber))||{}};
       }
-      const rowLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(planRow.orderNumber) && !isExecutiveCompletionLog(log));
-      const rowBatchStarts = batchStarts.filter((batch) =>
-        Array.isArray(batch.order_ids) &&
-        batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(planRow.orderNumber))
+      const rowLogs = filterBundleTenVisualLogsForCardRow(
+        logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(planRow.orderNumber) && !isExecutiveCompletionLog(log)),
+        "production-plan",
+        planRow.sourceRowId,
+        `production-plan:${planRow.sourceRowId}`
+      );
+      const rowBatchStarts = filterBundleTenVisualBatchesForCardRow(
+        batchStarts.filter((batch) =>
+          Array.isArray(batch.order_ids) &&
+          batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(planRow.orderNumber))
+        ),
+        planRow.orderNumber,
+        "production-plan",
+        planRow.sourceRowId,
+        `production-plan:${planRow.sourceRowId}`
       );
 
-      // Az azonos rendelésszámmal létrejövő részjelentési sorokat időben is
-      // szétválasztjuk. Az új maradék sor nem örökölheti az előző rész END-jét.
+      // Azonos rendelésszámú 10-es kártyasorok nem örökölhetik egymás
+      // START/END állapotát. Ezután a meglévő részjelentési életciklus-szűrés fut.
       const lifecycleLogs = filterWorkLogsForQuantityPlanLifecycle(rowLogs, planRow.planData);
       const lifecycleBatchStarts = filterProductionBatchesForQuantityPlanLifecycle(rowBatchStarts, planRow.planData);
       const resolvedStatus = resolveProductionCardWorkers(lifecycleLogs, lifecycleBatchStarts, planRow.orderNumber);
@@ -33105,7 +33221,7 @@ body {
       visual_source: row.source,
       visual_source_row_id: row.sourceRowId || null,
       visual_source_item_key: row.key,
-      ...(row.source === "production-plan" && row.sourceRowId
+      ...((row.source === "production-plan" || row.source === "backlog") && row.sourceRowId
         ? { terv_sor_id: row.sourceRowId, terv_megnevezes: row.productName || null }
         : {}),
     };
@@ -33144,6 +33260,91 @@ body {
     if (error) throw error;
   }
 
+  async function syncBundleTenPrioritySourceStatus(
+    source: BundleTenCardSource | null | undefined,
+    sourceRowId: string | null | undefined,
+    status: "FOLYAMATBAN" | "KESZ",
+    workerName: string,
+    eventTime: string,
+    stationName = getCurrentMachineIdForInsert()
+  ): Promise<void> {
+    if (!supabase || source !== "priority") return;
+    const cleanSourceRowId = String(sourceRowId || "").trim();
+    const cleanStationName = String(stationName || "").trim();
+    if (!cleanSourceRowId || !cleanStationName) return;
+
+    const payload = status === "FOLYAMATBAN"
+      ? {
+          status,
+          started_at: eventTime,
+          start_worker_name: workerName || null,
+          ended_at: null,
+          end_worker_name: null,
+          updated_at: eventTime,
+        }
+      : {
+          status,
+          ended_at: eventTime,
+          end_worker_name: workerName || null,
+          updated_at: eventTime,
+        };
+
+    // A 10-es kártyaválasztóban a prioritási sourceRowId a konkrét priority_order_id.
+    // Biztonsági visszaesésként az id mezőre is próbálunk, ha egy régebbi adat már
+    // állomássor-id-t tárolt.
+    let response = await supabase
+      .from(PRIORITY_ORDER_STATIONS_TABLE)
+      .update(payload)
+      .eq("priority_order_id", cleanSourceRowId)
+      .eq("station_name", cleanStationName)
+      .select("id,priority_order_id,status");
+
+    if (response.error) throw response.error;
+
+    if (!response.data?.length) {
+      response = await supabase
+        .from(PRIORITY_ORDER_STATIONS_TABLE)
+        .update(payload)
+        .eq("id", cleanSourceRowId)
+        .eq("station_name", cleanStationName)
+        .select("id,priority_order_id,status");
+      if (response.error) throw response.error;
+    }
+
+    if (!response.data?.length) {
+      throw new Error(`A prioritási kártyasor nem található: ${cleanSourceRowId}`);
+    }
+
+    if (status !== "KESZ") return;
+
+    const priorityOrderId = String(response.data[0]?.priority_order_id || cleanSourceRowId).trim();
+    const { data: stationRows, error: stationRowsError } = await supabase
+      .from(PRIORITY_ORDER_STATIONS_TABLE)
+      .select("id,status")
+      .eq("priority_order_id", priorityOrderId)
+      .limit(1000);
+    if (stationRowsError) throw stationRowsError;
+
+    if ((stationRows || []).length > 0 && (stationRows || []).every((item) => String(item.status || "").toUpperCase() === "KESZ")) {
+      const { error: orderError } = await supabase
+        .from(PRIORITY_ORDERS_TABLE)
+        .update({ is_active: false, completed_at: eventTime, updated_at: eventTime })
+        .eq("id", priorityOrderId);
+      if (orderError) throw orderError;
+    }
+  }
+
+  async function syncBundleTenPriorityRowStatus(
+    row: BundleTenSelectableRow | null | undefined,
+    status: "FOLYAMATBAN" | "KESZ",
+    workerName: string,
+    eventTime: string,
+    stationName = getCurrentMachineIdForInsert()
+  ): Promise<void> {
+    if (!row) return;
+    await syncBundleTenPrioritySourceStatus(row.source, row.sourceRowId, status, workerName, eventTime, stationName);
+  }
+
   async function fetchBundleTenActiveBatchOrderKeys(): Promise<string[]> {
     if (!supabase) return [];
     const currentMachineId = getCurrentMachineIdForInsert();
@@ -33151,43 +33352,60 @@ body {
 
     const { data, error } = await supabase
       .from("production_batches")
-      .select("batch_code,order_ids,machine_id,created_at")
+      .select("batch_code,order_ids,machine_id,created_at,production_meta")
       .order("created_at", { ascending: false });
     if (error) throw error;
 
     const currentMachineKey = normalizeLooseText(currentMachineId);
-    const orderKeys = new Set<string>();
+    const rowKeys = new Set<string>();
     for (const rawRow of Array.isArray(data) ? data : []) {
       const rowMachineKey = normalizeLooseText(String(rawRow?.machine_id || ""));
       if (rowMachineKey && rowMachineKey !== currentMachineKey) continue;
-      for (const order of normalizeProductionBatchOrders(rawRow?.order_ids)) {
+      const batch = rawRow as ProductionBatchRow;
+      for (const order of normalizeProductionBatchOrders(batch.order_ids)) {
+        const identity = getBundleTenVisualIdentityFromBatch(batch, order);
+        if (identity?.itemKey) {
+          rowKeys.add(identity.itemKey);
+          continue;
+        }
+        // Régi, forrássor nélküli kötegeknél megmarad a rendelésszám-alapú védelem.
         const key = normalizeLooseText(order);
-        if (key) orderKeys.add(key);
+        if (key) rowKeys.add(`order:${key}`);
       }
     }
-    return Array.from(orderKeys);
+    return Array.from(rowKeys);
   }
 
-  async function findBundleTenActiveBatchCodeForOrder(orderNumber: string): Promise<string | null> {
+  async function findBundleTenActiveBatchCodeForRow(row: BundleTenSelectableRow): Promise<string | null> {
     if (!supabase) return null;
-    const cleanOrder = String(orderNumber || "").trim();
+    const cleanOrder = String(row.orderNumber || "").trim();
     const orderKey = normalizeLooseText(cleanOrder);
     const currentMachineId = getCurrentMachineIdForInsert();
     if (!orderKey || !currentMachineId) return null;
 
     const { data, error } = await supabase
       .from("production_batches")
-      .select("batch_code,order_ids,machine_id,created_at")
+      .select("id,batch_code,order_ids,machine_id,created_at,start_time,worker_name,production_meta")
       .order("created_at", { ascending: false });
     if (error) throw error;
 
     const currentMachineKey = normalizeLooseText(currentMachineId);
     for (const rawRow of Array.isArray(data) ? data : []) {
-      const rowMachineKey = normalizeLooseText(String(rawRow?.machine_id || ""));
+      const batch = rawRow as ProductionBatchRow;
+      const rowMachineKey = normalizeLooseText(String(batch.machine_id || ""));
       if (rowMachineKey && rowMachineKey !== currentMachineKey) continue;
-      const containsOrder = normalizeProductionBatchOrders(rawRow?.order_ids)
+      const containsOrder = normalizeProductionBatchOrders(batch.order_ids)
         .some((value) => normalizeLooseText(value) === orderKey);
-      if (containsOrder) return String(rawRow?.batch_code || "").trim() || null;
+      if (!containsOrder) continue;
+
+      const identity = getBundleTenVisualIdentityFromBatch(batch, cleanOrder);
+      if (identity) {
+        if (!bundleTenVisualIdentityMatches(identity, row.source, row.sourceRowId, row.key)) continue;
+      } else {
+        // Régi köteg: nincs konkrét sorazonosító, ezért csak itt használunk
+        // rendelésszám-alapú visszaesést.
+      }
+      return String(batch.batch_code || "").trim() || null;
     }
     return null;
   }
@@ -33253,10 +33471,10 @@ body {
       // ezért kattintáskor a tényleges nyitott START-ot is ellenőrizzük.
       const hasOpenStart = row.status === "in-progress"
         ? true
-        : await hasOpenStartForOrderAtActiveStation(row.orderNumber);
+        : await hasOpenStartForOrderAtActiveStation(row.orderNumber, row);
 
       if (hasOpenStart) {
-        const activeBatchCode = await findBundleTenActiveBatchCodeForOrder(row.orderNumber);
+        const activeBatchCode = await findBundleTenActiveBatchCodeForRow(row);
         if (activeBatchCode) {
           await handleEndModuleSelection();
           setMessage({
@@ -33428,18 +33646,18 @@ body {
       return;
     }
 
-    // START előtt élőben ellenőrizzük, nem indult-e el időközben.
-    const hasOpenStart = await hasOpenStartForOrderAtActiveStation(row.orderNumber);
+    // START előtt élőben, KONKRÉT kártyasorra ellenőrizzük, nem indult-e el időközben.
+    const activeBatchCode = await findBundleTenActiveBatchCodeForRow(row);
+    if (activeBatchCode) {
+      await handleEndModuleSelection();
+      setMessage({
+        type: "info",
+        text: `${row.orderNumber} konkrét kiválasztott sora időközben a(z) ${activeBatchCode} aktív köteg része lett. A Folyamatban lévő kötegek listáját nyitottam meg.`,
+      });
+      return;
+    }
+    const hasOpenStart = await hasOpenStartForOrderAtActiveStation(row.orderNumber, row);
     if (hasOpenStart) {
-      const activeBatchCode = await findBundleTenActiveBatchCodeForOrder(row.orderNumber);
-      if (activeBatchCode) {
-        await handleEndModuleSelection();
-        setMessage({
-          type: "info",
-          text: `${row.orderNumber} időközben a(z) ${activeBatchCode} aktív köteg része lett. A Folyamatban lévő kötegek listáját nyitottam meg.`,
-        });
-        return;
-      }
       await routeSingleOrderToEndReporting(row.orderNumber);
       return;
     }
@@ -33608,7 +33826,7 @@ body {
       const refreshedSzerelesStates: Record<string, SzerelesOrderState> = {};
 
       for (const row of selectedRows) {
-        if (await hasOpenStartForOrderAtActiveStation(row.orderNumber)) {
+        if (await hasOpenStartForOrderAtActiveStation(row.orderNumber, row) || await findBundleTenActiveBatchCodeForRow(row)) {
           throw new Error(`${row.orderNumber}: időközben START-ot kapott. Frissítsd a kártyákat; folyamatban lévő rendelés új kötegbe nem indítható.`);
         }
 
@@ -33721,7 +33939,8 @@ body {
       if (row.status !== "in-progress") return false;
       // Aktív köteg részeként futó rendelés nem zárható az Egyedi rendelés
       // listából; azt kizárólag a Folyamatban lévő kötegek alatt jelentjük le.
-      return !activeBatchOrderKeySet.has(normalizeLooseText(row.orderNumber));
+      return !activeBatchOrderKeySet.has(row.key)
+        && !activeBatchOrderKeySet.has(`order:${normalizeLooseText(row.orderNumber)}`);
     });
     const sections: Array<{ source: BundleTenCardSource; title: string; border: string; rows: BundleTenSelectableRow[] }> = [
       { source: "priority", title: "Prioritási kártya", border: "#7c3aed", rows: eligibleRows.filter((row) => row.source === "priority") },
@@ -36888,7 +37107,8 @@ body {
     const quantityPreparation = await prepareBatchReportedQuantities(
       readyOrders,
       currentMachineIdForQuantity,
-      finalDarab
+      finalDarab,
+      selectedEndBatch.production_meta || null
     );
     if (!quantityPreparation) return;
     const quantityContexts = quantityPreparation.contexts;
@@ -37476,8 +37696,15 @@ body {
             szal: finalSzal,
             ...getQuantityPlanAuditMetadata(quantityContexts[order], reportedDarab),
             ...getNivoSzinterPlanAuditMetadata(currentMachineId, quantityContexts[order]),
-            ...(getStationPlanIdentityKey(currentMachineId) === "szinter" && orderProductionMeta.terv_sor_id
-              ? { terv_sor_id: orderProductionMeta.terv_sor_id, terv_megnevezes: orderProductionMeta.terv_megnevezes } : {}),
+            ...(orderProductionMeta.terv_sor_id
+              ? { terv_sor_id: orderProductionMeta.terv_sor_id, terv_megnevezes: orderProductionMeta.terv_megnevezes || null }
+              : {}),
+            ...(orderProductionMeta.visual_source ? {
+              event_bundle: 10,
+              visual_source: orderProductionMeta.visual_source,
+              visual_source_row_id: orderProductionMeta.visual_source_row_id || null,
+              visual_source_item_key: orderProductionMeta.visual_source_item_key || null,
+            } : {}),
             action: "END" as WorkAction,
             operation_code: operationCode,
             operation_status: operationCode === "SZABAS" ? "MARASRA_VAR" : operationCode === "MARAS" ? "KESZ" : null,
@@ -37609,6 +37836,18 @@ body {
           && reportedDarab !== undefined
         ) {
           await applyQuantityPlanCompletion(quantityContext, reportedDarab, nowIso);
+        }
+
+        const orderProductionMeta = getProductionMetaForOrder(selectedEndBatch.production_meta, order);
+        if (orderProductionMeta.visual_source === "priority") {
+          await syncBundleTenPrioritySourceStatus(
+            orderProductionMeta.visual_source,
+            orderProductionMeta.visual_source_row_id,
+            "KESZ",
+            workerNameForSave,
+            nowIso,
+            currentMachineId
+          );
         }
       }
 
@@ -38133,7 +38372,10 @@ body {
     ]);
     if (error) throw error;
   }
-  async function findOpenWorkLogForOrderAtCurrentMachine(orderId: string): Promise<{
+  async function findOpenWorkLogForOrderAtCurrentMachine(
+    orderId: string,
+    exactBundleTenRow?: BundleTenSelectableRow | null
+  ): Promise<{
     id: string | number;
     start_time?: string | null;
     start_timestamp?: string | null;
@@ -38158,11 +38400,17 @@ body {
       .is("end_time", null)
       .order("start_time", { ascending: false })
       .is("recurring_instance_id",null)
-      .limit(1);
+      .limit(exactBundleTenRow ? 100 : 1);
 
     if (response.error) throw response.error;
 
-    let row = Array.isArray(response.data) && response.data.length > 0 ? response.data[0] : null;
+    const pickOpenRow = (rows: unknown[]): unknown | null => {
+      if (!Array.isArray(rows) || rows.length === 0) return null;
+      if (!exactBundleTenRow) return rows[0] || null;
+      return (rows as WorkLogRow[]).find((candidate) => isExactBundleTenWorkLogForRow(candidate, exactBundleTenRow)) || null;
+    };
+
+    let row = pickOpenRow(response.data || []);
 
     if (!row) {
       response = await supabase
@@ -38174,9 +38422,9 @@ body {
         .is("end_time", null)
         .order("created_at", { ascending: false })
         .is("recurring_instance_id",null)
-      .limit(1);
+      .limit(exactBundleTenRow ? 100 : 1);
       if (response.error) throw response.error;
-      row = Array.isArray(response.data) && response.data.length > 0 ? response.data[0] : null;
+      row = pickOpenRow(response.data || []);
     }
 
     if (!row || row.id === null || row.id === undefined) return null;
@@ -38193,8 +38441,11 @@ body {
     };
   }
 
-  async function hasOpenStartForOrderAtActiveStation(orderId: string): Promise<boolean> {
-    return !!(await findOpenWorkLogForOrderAtCurrentMachine(orderId));
+  async function hasOpenStartForOrderAtActiveStation(
+    orderId: string,
+    exactBundleTenRow?: BundleTenSelectableRow | null
+  ): Promise<boolean> {
+    return !!(await findOpenWorkLogForOrderAtCurrentMachine(orderId, exactBundleTenRow));
   }
   async function routeSingleOrderToEndReporting(orderId: string): Promise<void> {
     let doorCompletionState = { ...EMPTY_DOOR_COMPLETION_SNAPSHOT };
@@ -38467,11 +38718,25 @@ body {
       routedScrapReplacementForStart = await fetchOpenSingleScrapReplacement(finalOrder, currentMachineIdForScrap);
       if (routedScrapReplacementForStart) await assertScrapReplacementRouteReady(routedScrapReplacementForStart);
 
-      const hasOpenStartOnSameStation = await hasOpenStartForOrderAtActiveStation(finalOrder);
+      const hasOpenStartOnSameStation = await hasOpenStartForOrderAtActiveStation(
+        finalOrder,
+        bundleTenSelectionForStart
+      );
       if (hasOpenStartOnSameStation) {
         setOrderNumber(finalOrder);
         await routeSingleOrderToEndReporting(finalOrder);
         return;
+      }
+      if (bundleTenSelectionForStart) {
+        const activeBatchCode = await findBundleTenActiveBatchCodeForRow(bundleTenSelectionForStart);
+        if (activeBatchCode) {
+          await handleEndModuleSelection();
+          setMessage({
+            type: "info",
+            text: `${finalOrder} konkrét kiválasztott sora már a(z) ${activeBatchCode} aktív köteg része. A Folyamatban lévő kötegek listáját nyitottam meg.`,
+          });
+          return;
+        }
       }
 
       if (requiresSzerelesStartParts() && selectedStartPartsForSave.length === 0) {
@@ -38582,7 +38847,9 @@ body {
       }
 
       if (getStationPlanIdentityKey(currentMachineId) === "szinter") {
-        nivoStartPlanContextForSave = await fetchNivoSzinterStartContext(finalOrder);
+        nivoStartPlanContextForSave = bundleTenSelectionForStart
+          ? await fetchBundleTenExactQuantityPlanContext(currentMachineId, bundleTenSelectionForStart)
+          : await fetchNivoSzinterStartContext(finalOrder);
       }
       const activeScrapReplacement = routedScrapReplacementForStart
         || await fetchOpenSingleScrapReplacement(finalOrder, currentMachineId);
@@ -38623,7 +38890,11 @@ body {
             start_time: nowIso,
             single_order_saved_at: nowIso,
             ...(requiresSzerelesStartParts() ? { szereles_start_reszek: selectedStartPartsForSave } : {}),
-            ...(nivoStartPlanContextForSave ? { terv_sor_id: nivoStartPlanContextForSave.rowId, terv_megnevezes: String(nivoStartPlanContextForSave.rawRow.megnevezes ?? "") } : {}),
+            ...(nivoStartPlanContextForSave
+              ? { terv_sor_id: nivoStartPlanContextForSave.rowId, terv_megnevezes: String(nivoStartPlanContextForSave.rawRow.megnevezes ?? "") }
+              : orderProductionMeta.terv_sor_id
+                ? { terv_sor_id: orderProductionMeta.terv_sor_id, terv_megnevezes: orderProductionMeta.terv_megnevezes || null }
+                : {}),
             ujragyartas: orderProductionMeta.ujragyartas,
             ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
             gyartas_tipus: orderProductionMeta.gyartas_tipus,
@@ -38687,9 +38958,16 @@ body {
           await persistBundleTenSelectionAudit("single", [bundleTenSelectionForStart], {
             workLogId: insertedSingleStartLog?.id ?? null,
           });
+          await syncBundleTenPriorityRowStatus(
+            bundleTenSelectionForStart,
+            "FOLYAMATBAN",
+            workerNameForSave,
+            nowIso,
+            currentMachineId
+          );
         } catch (auditError) {
-          console.error("10-es kártyasor audit mentési hiba:", auditError);
-          throw new Error(`A START elmentődött, de a kiválasztott kártyasor audit mentése sikertelen: ${normalizeError(auditError)}. Ne indítsd újra a rendelést.`);
+          console.error("10-es kártyasor audit/státusz mentési hiba:", auditError);
+          throw new Error(`A START elmentődött, de a kiválasztott kártyasor pontos státuszmentése sikertelen: ${normalizeError(auditError)}. Ne indítsd újra a rendelést.`);
         }
       }
 
@@ -38790,6 +39068,9 @@ body {
           batchCode: saved.batch_code,
           productionBatchId: raw.id == null ? null : String(raw.id),
         });
+        for (const row of bundleTenRowsForSave) {
+          await syncBundleTenPriorityRowStatus(row, "FOLYAMATBAN", activeWorker["Teljes nev"], new Date().toISOString(), machine);
+        }
       }
       setCreatedBatch(hydrateProductionBatch({...raw,batch_code:saved.batch_code,order_ids:orders,worker_name:activeWorker["Teljes nev"],production_meta:meta,machine_id:machine,created_at:raw.created_at||new Date().toISOString(),start_time:raw.start_time||new Date().toISOString()}));
       if(routed.size)await updateScrapReplacementOrders(orders,"SZABAS_FOLYAMATBAN",{started_at:new Date().toISOString()});
@@ -38897,9 +39178,13 @@ body {
         for (const order of ordersForSave) contexts[order] = await fetchNivoSzinterStartContext(order);
         ordersForSave.forEach((order) => {
           const context = contexts[order];
-          if (context) productionMetaForSave[order] = {
-            ...productionMetaForSave[order], terv_sor_id: String(context.rowId), terv_megnevezes: String(context.rawRow.megnevezes ?? ""),
-          };
+          // A 10-es kattintásos mód már a konkrét Lemaradás/Termelési tervsort
+          // eltárolta. Ezt nem írhatja felül egy rendelésszám-alapú automatikus találat.
+          if (context && !String(productionMetaForSave[order]?.terv_sor_id || "").trim()) {
+            productionMetaForSave[order] = {
+              ...productionMetaForSave[order], terv_sor_id: String(context.rowId), terv_megnevezes: String(context.rawRow.megnevezes ?? ""),
+            };
+          }
         });
       }
       const generatedBatchCode = `BATCH-${Date.now()}`;
@@ -38928,9 +39213,12 @@ body {
             batchCode: data?.batch_code ?? generatedBatchCode,
             productionBatchId: data?.id ?? null,
           });
+          for (const row of bundleTenRowsForSave) {
+            await syncBundleTenPriorityRowStatus(row, "FOLYAMATBAN", workerNameForSave, nowIso, currentMachineId);
+          }
         } catch (auditError) {
-          console.error("10-es köteg kártyasor audit mentési hiba:", auditError);
-          throw new Error(`A köteg START elmentődött, de a kiválasztott kártyasorok audit mentése sikertelen: ${normalizeError(auditError)}. Ne indítsd újra a köteget.`);
+          console.error("10-es köteg kártyasor audit/státusz mentési hiba:", auditError);
+          throw new Error(`A köteg START elmentődött, de a kiválasztott kártyasorok pontos státuszmentése sikertelen: ${normalizeError(auditError)}. Ne indítsd újra a köteget.`);
         }
       }
 
@@ -39405,6 +39693,40 @@ body {
     return result;
   }
 
+  async function fetchExactQuantityPlanContextById(
+    stationName: string,
+    sourceRowId: string,
+    expectedOrderNumber: string
+  ): Promise<QuantityPlanContext | null> {
+    if (!supabase) return null;
+    const cleanRowId = String(sourceRowId || "").trim();
+    if (!cleanRowId) return null;
+    const tableName = getExactProductionCardPlanTableName(stationName);
+    const { data, error } = await supabase
+      .from(tableName)
+      .select("*")
+      .eq("id", cleanRowId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+
+    const context = buildQuantityPlanContext(tableName, data as Record<string, unknown>);
+    if (!context) return null;
+    if (normalizeLooseText(context.orderNumber) !== normalizeLooseText(expectedOrderNumber)) {
+      throw new Error(`${expectedOrderNumber}: a kiválasztott kártyasor és a tervsor azonosítója nem egyezik.`);
+    }
+    return context;
+  }
+
+  async function fetchBundleTenExactQuantityPlanContext(
+    stationName: string,
+    row: BundleTenSelectableRow | null | undefined
+  ): Promise<QuantityPlanContext | null> {
+    if (!row) return null;
+    if (row.source !== "production-plan" && row.source !== "backlog") return null;
+    return fetchExactQuantityPlanContextById(stationName, row.sourceRowId, row.orderNumber);
+  }
+
   async function loadSingleEndQuantityPlanContext(orderNumberForLoad: string): Promise<QuantityPlanContext | null> {
     const cleanOrder = String(orderNumberForLoad || "").trim();
     if (!cleanOrder || !activeWorker) {
@@ -39413,7 +39735,16 @@ body {
     }
     try {
       const currentMachineId = getCurrentMachineIdForInsert();
-      const contexts = await fetchActiveQuantityPlanContexts(currentMachineId, [cleanOrder]);
+      const bundleTenRow = isEventTenVisualWorker()
+        ? getBundleTenRowByKey(bundleTenSingleSelectionKey)
+        : null;
+      const exactContext = bundleTenRow
+        && normalizeLooseText(bundleTenRow.orderNumber) === normalizeLooseText(cleanOrder)
+        ? await fetchBundleTenExactQuantityPlanContext(currentMachineId, bundleTenRow)
+        : null;
+      const contexts = exactContext
+        ? { [cleanOrder]: exactContext }
+        : await fetchActiveQuantityPlanContexts(currentMachineId, [cleanOrder]);
       const context = contexts[cleanOrder] || null;
       setSingleEndPlanQuantityContext(context);
       return context;
@@ -39456,7 +39787,8 @@ body {
   async function prepareBatchReportedQuantities(
     orderNumbers: string[],
     stationName: string,
-    fallbackDarab: number | null
+    fallbackDarab: number | null,
+    exactProductionMeta?: Record<string, OrderProductionMeta> | null
   ): Promise<{
     contexts: Record<string, QuantityPlanContext | null>;
     quantities: Record<string, number | null>;
@@ -39467,6 +39799,16 @@ body {
     } catch (error) {
       setMessage({ type: "error", text: `A tervmennyiség ellenőrzése sikertelen, ezért az END nem menthető: ${normalizeError(error)}` });
       return null;
+    }
+
+    if (exactProductionMeta) {
+      for (const order of orderNumbers) {
+        const meta = getProductionMetaForOrder(exactProductionMeta, order);
+        const exactRowId = String(meta.terv_sor_id || "").trim();
+        if (!exactRowId || !meta.visual_source) continue;
+        const exactContext = await fetchExactQuantityPlanContextById(stationName, exactRowId, order);
+        if (exactContext) contexts[order] = exactContext;
+      }
     }
 
     setEndPlanQuantityByOrder((current) => ({ ...current, ...contexts }));
@@ -39736,6 +40078,9 @@ body {
     const bundleTenSelectionForSzerelesStart = action === "START" && isEventTenVisualWorker()
       ? getBundleTenRowByKey(bundleTenSingleSelectionKey)
       : null;
+    const bundleTenSelectionForSzerelesEnd = action === "END" && isEventTenVisualWorker()
+      ? getBundleTenRowByKey(bundleTenSingleSelectionKey)
+      : null;
     if (action === "START" && isEventTenVisualWorker() && (!bundleTenSelectionForSzerelesStart || normalizeLooseText(bundleTenSelectionForSzerelesStart.orderNumber) !== normalizeLooseText(order))) {
       setMessage({ type: "error", text: "A 10-es eseménykötegnél előbb kattintással válaszd ki a konkrét kártyasort." });
       return;
@@ -39796,7 +40141,11 @@ body {
         szereles_start_reszek:parts,
         szereles_scrap_hold_parts:scrapHoldParts,
         szereles_scrap_tok_meret:toklecScrap?cleanTokSize:null,
-        ...(bundleTenSelectionForSzerelesStart ? getBundleTenSourceMeta(bundleTenSelectionForSzerelesStart) : {}),
+        ...(bundleTenSelectionForSzerelesStart
+          ? getBundleTenSourceMeta(bundleTenSelectionForSzerelesStart)
+          : bundleTenSelectionForSzerelesEnd
+            ? getBundleTenSourceMeta(bundleTenSelectionForSzerelesEnd)
+            : {}),
       };
       if(action==="START"){
         const groupCheck=await findStartGroupConflicts([order],{currentMachineId:machine});
@@ -39820,6 +40169,10 @@ body {
       const savedAt=saved?.ended_at||saved?.started_at||new Date().toISOString();
       if(action==="START"&&bundleTenSelectionForSzerelesStart){
         await persistBundleTenSelectionAudit("single",[bundleTenSelectionForSzerelesStart],{workLogId:savedId});
+        await syncBundleTenPriorityRowStatus(bundleTenSelectionForSzerelesStart,"FOLYAMATBAN",activeWorker["Teljes nev"],savedAt,machine);
+      }
+      if(action==="END"&&bundleTenSelectionForSzerelesEnd&&result.state.is_complete){
+        await syncBundleTenPriorityRowStatus(bundleTenSelectionForSzerelesEnd,"KESZ",activeWorker["Teljes nev"],savedAt,machine);
       }
       if(action==="START"&&routed)await updateSingleScrapReplacement(routed,getScrapReplacementStartStatus(routed,machine),savedAt);
       if(action==="END"){
@@ -39975,7 +40328,16 @@ body {
     if (action === "END" && !isDoorTwoPartEnd) {
       try {
         const quantityMachineId = getCurrentMachineIdForInsert();
-        const quantityContexts = await fetchActiveQuantityPlanContexts(quantityMachineId, [finalOrderNumber]);
+        const bundleTenEndRow = isEventTenVisualWorker()
+          ? getBundleTenRowByKey(bundleTenSingleSelectionKey)
+          : null;
+        const exactQuantityContext = bundleTenEndRow
+          && normalizeLooseText(bundleTenEndRow.orderNumber) === normalizeLooseText(finalOrderNumber)
+          ? await fetchBundleTenExactQuantityPlanContext(quantityMachineId, bundleTenEndRow)
+          : null;
+        const quantityContexts = exactQuantityContext
+          ? { [finalOrderNumber]: exactQuantityContext }
+          : await fetchActiveQuantityPlanContexts(quantityMachineId, [finalOrderNumber]);
         quantityPlanContext = quantityContexts[finalOrderNumber] || null;
         setSingleEndPlanQuantityContext(quantityPlanContext);
         const quantityValidation = validateRequiredReportedQuantity(
@@ -40191,7 +40553,14 @@ body {
       };
 
       if (action === "END") {
-        const openLog = await findOpenWorkLogForOrderAtCurrentMachine(finalOrderNumber);
+        const bundleTenEndRow = isEventTenVisualWorker()
+          ? getBundleTenRowByKey(bundleTenSingleSelectionKey)
+          : null;
+        const exactBundleTenEndRow = bundleTenEndRow
+          && normalizeLooseText(bundleTenEndRow.orderNumber) === normalizeLooseText(finalOrderNumber)
+          ? bundleTenEndRow
+          : null;
+        const openLog = await findOpenWorkLogForOrderAtCurrentMachine(finalOrderNumber, exactBundleTenEndRow);
         if (!openLog) {
           throw new Error(`Nincs nyitott START sor ehhez a rendeléshez ezen a gépen: ${finalOrderNumber} | Gép: ${currentMachineId}`);
         }
@@ -40243,11 +40612,24 @@ body {
           note: buildStructuredNote(finalNote, {
             ...auditMetadata,
             ...(isDoorTwoPartEnd && linkedStartParts.length ? { szereles_start_reszek: linkedStartParts } : {}),
-            ...(getStationPlanIdentityKey(currentMachineId) === "szinter" ? {
-              ...getNivoSzinterPlanAuditMetadata(currentMachineId, quantityPlanContext),
-              ...(linkedStartMetadata.terv_sor_id ? { terv_sor_id: linkedStartMetadata.terv_sor_id } : {}),
+            ...(getStationPlanIdentityKey(currentMachineId) === "szinter"
+              ? getNivoSzinterPlanAuditMetadata(currentMachineId, quantityPlanContext)
+              : {}),
+            ...(linkedStartMetadata.terv_sor_id
+              ? {
+                  terv_sor_id: linkedStartMetadata.terv_sor_id,
+                  terv_megnevezes: linkedStartMetadata.terv_megnevezes || null,
+                }
+              : {}),
+            ...(linkedStartMetadata.visual_source ? {
+              visual_source: linkedStartMetadata.visual_source,
+              visual_source_label: linkedStartMetadata.visual_source_label || null,
+              visual_source_row_id: linkedStartMetadata.visual_source_row_id || null,
+              visual_source_item_key: linkedStartMetadata.visual_source_item_key || null,
             } : {}),
-            event_bundle: isThreePartEnd ? 7 : isPanelTwoPartEnd ? 6 : isDoorTwoPartEnd ? 5 : workerEventKoteg,
+            event_bundle: Number(linkedStartMetadata.event_bundle) === 10
+              ? 10
+              : isThreePartEnd ? 7 : isPanelTwoPartEnd ? 6 : isDoorTwoPartEnd ? 5 : workerEventKoteg,
             action: "END" as WorkAction,
             start_time: linkedStartTime,
             end_timestamp: nowForSave,
@@ -40338,6 +40720,16 @@ body {
             .eq("id", openLog.id);
 
           if (updateError) throw updateError;
+        }
+
+        if (!partialTwoPartSave && exactBundleTenEndRow) {
+          await syncBundleTenPriorityRowStatus(
+            exactBundleTenEndRow,
+            "KESZ",
+            activeWorker["Teljes nev"],
+            nowForSave,
+            currentMachineId
+          );
         }
 
         if (finalOuterSheetScrap || finalInnerSheetScrap || finalToklecScrap) {
