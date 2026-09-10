@@ -15301,6 +15301,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             ? resolveProductionCardWorkers(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
             : workerStatus;
 
+          // Szinter lemaradás: ugyanazt a valódi START/END párosítást használjuk,
+          // mint a Termelési monitor. Így egy friss START nem tud "Kész" állapotot
+          // örökölni egy régebbi END-ből, és több START esetén is addig marad
+          // Folyamatban, amíg akár egyetlen nyitott START is létezik.
+          const szinterBacklogMonitorCell = isExactSzinterBacklog
+            ? getMonitorCellFromLogs(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
+            : null;
+          const effectiveRowStatus = szinterBacklogMonitorCell?.status ?? rowWorkerStatus.status;
+          const effectiveRowStatusLabel = szinterBacklogMonitorCell?.label ?? rowWorkerStatus.statusLabel;
+
           const completedQuantity = (isOpenQuantityRemainder || isExactSzinterBacklog)
             ? Math.min(
                 planRow.plannedQuantity,
@@ -15330,12 +15340,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
           // A kártyáról csak valódi teljes END után tűnhet el.
           // A darab/mennyiség önmagában nem jelent lezárt munkát.
-          const completed = rowWorkerStatus.status === "done";
+          const completed = effectiveRowStatus === "done";
           const completedOnSelectedDate = completed && rowLatestCompletionTime !== undefined &&
             rowLatestCompletionTime >= selectedDayStartTime && rowLatestCompletionTime < selectedDayEndTime;
           if (completed && !completedOnSelectedDate) return;
 
-          const hasProgress = completedQuantity > 0 || rowWorkerStatus.status === "in-progress";
+          // A Szinter lemaradási sor státuszát kizárólag a tényleges munkamenet
+          // vezérli: START -> Folyamatban, az utolsó nyitott START END-je -> Kész.
+          // A darabszám önmagában nem rejtheti el és nem mozgathatja át a sort.
+          const hasProgress = isExactSzinterBacklog
+            ? effectiveRowStatus === "in-progress"
+            : completedQuantity > 0 || effectiveRowStatus === "in-progress";
           const status: ProductionMonitorStatus = completed ? "done" : hasProgress ? "in-progress" : "waiting";
           const delayDays = Math.max(1, Math.floor((selectedDayStartTime - new Date(`${planRow.completionDate}T00:00:00`).getTime()) / 86400000));
           backlogRows.push({
@@ -15350,18 +15365,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             status,
             statusLabel: completed
               ? "Lemaradás elkészült"
-              : rowWorkerStatus.doorWorkflow
-                ? buildDoorCompletionStatusLabel({
-                    ...EMPTY_DOOR_COMPLETION_SNAPSHOT,
-                     ...rowWorkerStatus,
-                    isDoorWorkflow: true,
-                    tokKesz: rowWorkerStatus.tokKesz,
-                    nyiloKesz: rowWorkerStatus.nyiloKesz,
-                    completionPercent: (rowWorkerStatus.completionPercent || 0) as 0 | 50 | 100,
-                  }, rowWorkerStatus.status === "in-progress")
-                : hasProgress ? "Folyamatban" : "Lemaradás – elvégzendő",
-            startWorkerName: rowWorkerStatus.startWorkerName,
-            lastWorkerName: rowWorkerStatus.endedAt ? rowWorkerStatus.endWorkerName : "",
+              : isExactSzinterBacklog && hasProgress
+                ? effectiveRowStatusLabel || "Folyamatban"
+                : rowWorkerStatus.doorWorkflow
+                  ? buildDoorCompletionStatusLabel({
+                      ...EMPTY_DOOR_COMPLETION_SNAPSHOT,
+                       ...rowWorkerStatus,
+                      isDoorWorkflow: true,
+                      tokKesz: rowWorkerStatus.tokKesz,
+                      nyiloKesz: rowWorkerStatus.nyiloKesz,
+                      completionPercent: (rowWorkerStatus.completionPercent || 0) as 0 | 50 | 100,
+                    }, effectiveRowStatus === "in-progress")
+                  : hasProgress ? "Folyamatban" : "Lemaradás – elvégzendő",
+            startWorkerName: rowWorkerStatus.startWorkerName
+              || (effectiveRowStatus === "in-progress" ? szinterBacklogMonitorCell?.workerName || "" : ""),
+            lastWorkerName: completed
+              ? rowWorkerStatus.endWorkerName || szinterBacklogMonitorCell?.workerName || ""
+              : "",
             startedAt: rowWorkerStatus.startedAt,
             endedAt: rowWorkerStatus.endedAt,
             doorWorkflow: rowWorkerStatus.doorWorkflow,
@@ -15394,9 +15414,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       });
 
       backlogRows.sort((left, right) => {
-        const priority: Record<ProductionMonitorStatus, number> = { waiting: 0, "in-progress": 1, done: 2, "not-required": 3 };
-        const statusDifference = priority[left.status] - priority[right.status];
-        if (statusDifference !== 0) return statusDifference;
+        // Szinteren START után a lemaradási sor maradjon ugyanabban a dátum/rendelés
+        // szerinti helyen; csak az Állapot váltson Folyamatban-ra. Más állomások
+        // meglévő státusz szerinti rendezéséhez nem nyúlunk.
+        if (getStationPlanIdentityKey(cleanStationName) !== "szinter") {
+          const priority: Record<ProductionMonitorStatus, number> = { waiting: 0, "in-progress": 1, done: 2, "not-required": 3 };
+          const statusDifference = priority[left.status] - priority[right.status];
+          if (statusDifference !== 0) return statusDifference;
+        }
         const dateDifference = left.completionDate.localeCompare(right.completionDate);
         return dateDifference !== 0 ? dateDifference : left.orderNumber.localeCompare(right.orderNumber, "hu", { numeric: true });
       });
