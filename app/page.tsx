@@ -8646,18 +8646,6 @@ export default function Page() {
     return [...priorityRows, ...backlogRows, ...productionRows];
   }, [terminalProductionCardData]);
 
-  // Közvetlen hardveres START a 10-es köteg kártyaválasztójáról.
-  // A mentést csak a következő renderben indítjuk, amikor a kiválasztott
-  // rendeléslista és production_meta már biztosan bekerült React state-be.
-  useEffect(() => {
-    if (!bundleTenAutoStartRequestedRef.current) return;
-    if (!isEventTenVisualWorker()) return;
-    if (workflowMode !== "batch" || pendingAction !== "START" || flowStage !== "start-scan" || step !== 6) return;
-    if (batchOrders.length === 0 || !isStartBarcode(actionBarcode)) return;
-    bundleTenAutoStartRequestedRef.current = false;
-    void handleActionBarcodeSubmit(false, actionBarcode);
-  }, [step, flowStage, workflowMode, pendingAction, batchOrders.length, actionBarcode, activeWorker]);
-
   const [executiveReportStation, setExecutiveReportStation] = useState("");
   const [executiveReportDateFrom, setExecutiveReportDateFrom] = useState(getLocalDateKey(new Date()));
   const [executiveReportDateTo, setExecutiveReportDateTo] = useState(getLocalDateKey(new Date()));
@@ -9165,6 +9153,20 @@ export default function Page() {
   // 10-es eseményköteg: ha a kártyaválasztó képernyőn közvetlenül START-ot
   // csippantanak, a következő render után ugyanazzal a kóddal véglegesítjük a köteget.
   const bundleTenAutoStartRequestedRef = useRef(false);
+
+  // Közvetlen hardveres START a 10-es köteg kártyaválasztójáról.
+  // FONTOS: ez az effect csak azután szerepelhet, hogy a pendingAction,
+  // actionBarcode és bundleTenAutoStartRequestedRef már inicializálva van.
+  // Ellenkező esetben a production buildben TDZ / "before initialization"
+  // kliensoldali hiba keletkezik.
+  useEffect(() => {
+    if (!bundleTenAutoStartRequestedRef.current) return;
+    if (!isEventTenVisualWorker()) return;
+    if (workflowMode !== "batch" || pendingAction !== "START" || flowStage !== "start-scan" || step !== 6) return;
+    if (batchOrders.length === 0 || !isStartBarcode(actionBarcode)) return;
+    bundleTenAutoStartRequestedRef.current = false;
+    void handleActionBarcodeSubmit(false, actionBarcode);
+  }, [step, flowStage, workflowMode, pendingAction, batchOrders.length, actionBarcode, activeWorker]);
   const eventBarcodeInputRef = useRef<HTMLInputElement | null>(null);
   const orderTypeInputRef = useRef<HTMLInputElement | null>(null);
   const batchOperationInputRef = useRef<HTMLInputElement | null>(null);
