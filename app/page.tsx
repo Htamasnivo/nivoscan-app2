@@ -243,7 +243,7 @@ type WorkflowMode = "single" | "batch" | "end";
 type BatchOperationCode = "SZABAS" | "MARAS";
 type BatchOperationStatus = "SZABAS_FOLYAMATBAN" | "MARASRA_VAR" | "MARAS_FOLYAMATBAN" | "KESZ";
 type BatchListMode = "end" | "start-milling";
-type FlowStage = "idle" | "dashboard" | "batch-selection" | "batch-operation-selection" | "event-scan" | "batch-scan" | "start-scan" | "szereles-choice" | "order-scan" | "active-batch-list" | "end-batch-detail" | "carpenter-printer-settings" | "carpenter-reprint-requests";
+type FlowStage = "idle" | "dashboard" | "batch-selection" | "batch-operation-selection" | "event-scan" | "batch-scan" | "start-scan" | "szereles-choice" | "order-scan" | "visual-order-selection" | "active-batch-list" | "end-batch-detail" | "carpenter-printer-settings" | "carpenter-reprint-requests";
 
 type EventCard = {
   id: string;
@@ -286,6 +286,10 @@ type OrderProductionMeta = {
   ujragyartas_sorszam: number | null;
   gyartas_tipus: "egyedi" | "keszlet";
   gyartasi_kor: number | null;
+  // 10-es kattintásos köteg: a ténylegesen kiválasztott kártyasor forrása.
+  visual_source?: BundleTenCardSource;
+  visual_source_row_id?: string | null;
+  visual_source_item_key?: string | null;
 };
 
 type ProductionBatchRow = {
@@ -1450,6 +1454,26 @@ type ProductionCardData = {
   backlogRows?: ProductionCardBacklogRow[];
   lastUpdatedAt: string;
   errorMessage: string;
+};
+
+type BundleTenCardSource = "priority" | "backlog" | "production-plan";
+
+type BundleTenSelectableRow = {
+  key: string;
+  source: BundleTenCardSource;
+  sourceLabel: string;
+  sourceRowId: string;
+  orderNumber: string;
+  productName: string;
+  quantity: number | null;
+  completionDate: string;
+  status: ProductionMonitorStatus;
+  statusLabel: string;
+  startWorkerName: string;
+  endWorkerName: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  planData: Record<string, unknown>;
 };
 
 type ExecutiveReportMode = "vezetoi" | "dolgozoi" | "egyeb";
@@ -6157,6 +6181,11 @@ function normalizeOrderProductionMeta(value: unknown): OrderProductionMeta {
   const candidate = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const reproductionNumber = Number(candidate.ujragyartas_sorszam);
   const productionType = normalizeLooseText(String(candidate.gyartas_tipus || "")) === "keszlet" ? "keszlet" : "egyedi";
+  const visualSourceRaw = String(candidate.visual_source || "").trim();
+  const visualSource: BundleTenCardSource | undefined =
+    visualSourceRaw === "priority" || visualSourceRaw === "backlog" || visualSourceRaw === "production-plan"
+      ? visualSourceRaw
+      : undefined;
   return {
     ujragyartas: candidate.ujragyartas === true,
     ujragyartas_sorszam: Number.isFinite(reproductionNumber) && reproductionNumber > 0 ? Math.trunc(reproductionNumber) : null,
@@ -6165,8 +6194,13 @@ function normalizeOrderProductionMeta(value: unknown): OrderProductionMeta {
     szereles_start_reszek: normalizeSzerelesStartParts(candidate.szereles_start_reszek),
     szereles_new_cycle: candidate.szereles_new_cycle === true,
     szereles_rework: candidate.szereles_rework === true,
+    szereles_scrap_hold_parts: normalizeSzerelesStartParts(candidate.szereles_scrap_hold_parts),
+    szereles_scrap_tok_meret: candidate.szereles_scrap_tok_meret == null ? null : String(candidate.szereles_scrap_tok_meret),
     terv_sor_id: candidate.terv_sor_id == null ? null : String(candidate.terv_sor_id),
     terv_megnevezes: candidate.terv_megnevezes == null ? null : String(candidate.terv_megnevezes),
+    visual_source: visualSource,
+    visual_source_row_id: candidate.visual_source_row_id == null ? null : String(candidate.visual_source_row_id),
+    visual_source_item_key: candidate.visual_source_item_key == null ? null : String(candidate.visual_source_item_key),
   };
 }
 
@@ -8336,7 +8370,7 @@ export default function Page() {
   const recurringOpeningRef = useRef(false);
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode | null>(null);
   const [flowStage, setFlowStage] = useState<FlowStage>("idle");
-  const [workerEventKoteg, setWorkerEventKoteg] = useState<0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8>(1);
+  const [workerEventKoteg, setWorkerEventKoteg] = useState<0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10>(1);
   const [selectedBatchOperation, setSelectedBatchOperation] = useState<BatchOperationCode | null>(null);
   const [batchOperationInput, setBatchOperationInput] = useState("");
   const [batchOperationError, setBatchOperationError] = useState("");
@@ -8524,6 +8558,105 @@ export default function Page() {
   });
   const [terminalProductionCardProfile, setTerminalProductionCardProfile] = useState<ProductionMonitorProfile>(() => createDefaultProductionCardProfile());
   const [loadingTerminalProductionCard, setLoadingTerminalProductionCard] = useState(false);
+
+  // 10-es eseményköteg: kattintással kiválasztott, konkrét kártyasorok.
+  // A kulcs a kártyaforrást + forrássor-azonosítót tartalmazza, ezért ugyanaz a
+  // rendelésszám több kártyán / több forrássorban is egyértelműen azonosítható.
+  const [bundleTenSelectedRowKeys, setBundleTenSelectedRowKeys] = useState<string[]>([]);
+  const [bundleTenSingleSelectionKey, setBundleTenSingleSelectionKey] = useState("");
+  const [bundleTenActiveBatchOrderKeys, setBundleTenActiveBatchOrderKeys] = useState<string[]>([]);
+  // Szerelésen a 10-es köteg is megtartja az 5-ös Nyíló/Tok START-logikát.
+  // Kötegépítéskor a kiválasztott kártyasorhoz előbb külön megadjuk, melyik rész indul.
+  const [bundleTenSzerelesDraftRowKey, setBundleTenSzerelesDraftRowKey] = useState("");
+
+  const bundleTenSelectableRows = useMemo<BundleTenSelectableRow[]>(() => {
+    const priorityRows = (terminalProductionCardData.priorityRows || [])
+      .filter((row) => String(row.orderNumber || "").trim())
+      .map((row, index): BundleTenSelectableRow => {
+        const sourceRowId = String(row.priorityOrderId || row.id || index);
+        const planData = row.data && typeof row.data === "object" ? row.data : {};
+        const productName = String(getProductionCardPlanValue(planData, "megnevezes") ?? "").trim();
+        const quantityValue = Number(getProductionCardPlanValue(planData, "mennyiseg"));
+        const completionDate = String(getProductionCardPlanValue(planData, "elkeszules_datum") ?? "").trim();
+        return {
+          key: `priority:${sourceRowId}`,
+          source: "priority",
+          sourceLabel: "Prioritási kártya",
+          sourceRowId,
+          orderNumber: String(row.orderNumber || "").trim(),
+          productName,
+          quantity: Number.isFinite(quantityValue) ? quantityValue : null,
+          completionDate,
+          status: row.status,
+          statusLabel: row.statusLabel,
+          startWorkerName: row.startWorkerName || "",
+          endWorkerName: row.endWorkerName || "",
+          startedAt: row.startedAt || null,
+          endedAt: row.endedAt || null,
+          planData,
+        };
+      });
+
+    const backlogRows = (terminalProductionCardData.backlogRows || [])
+      .filter((row) => String(row.orderNumber || "").trim())
+      .map((row, index): BundleTenSelectableRow => {
+        const sourceRowId = String(row.id ?? index);
+        return {
+          key: `backlog:${sourceRowId}`,
+          source: "backlog",
+          sourceLabel: "Lemaradási kártya",
+          sourceRowId,
+          orderNumber: String(row.orderNumber || "").trim(),
+          productName: String(row.productName || "").trim(),
+          quantity: Number.isFinite(Number(row.remainingQuantity)) ? Number(row.remainingQuantity) : null,
+          completionDate: String(row.completionDate || "").trim(),
+          status: row.status,
+          statusLabel: row.statusLabel,
+          startWorkerName: row.startWorkerName || "",
+          endWorkerName: row.lastWorkerName || "",
+          startedAt: row.startedAt || null,
+          endedAt: row.endedAt || null,
+          planData: row.planData && typeof row.planData === "object" ? row.planData : {},
+        };
+      });
+
+    const productionRows = (terminalProductionCardData.rows || [])
+      .filter((row) => String(row.orderNumber || "").trim())
+      .map((row, index): BundleTenSelectableRow => {
+        const sourceRowId = String(row.sourceRowId || index);
+        return {
+          key: `production-plan:${sourceRowId}`,
+          source: "production-plan",
+          sourceLabel: "Termelési kártya",
+          sourceRowId,
+          orderNumber: String(row.orderNumber || "").trim(),
+          productName: String(row.productName || "").trim(),
+          quantity: row.quantity === null || row.quantity === undefined ? null : Number(row.quantity),
+          completionDate: String(row.completionDate || "").trim(),
+          status: row.status,
+          statusLabel: row.statusLabel,
+          startWorkerName: row.startWorkerName || "",
+          endWorkerName: row.endWorkerName || "",
+          startedAt: row.startedAt || null,
+          endedAt: row.endedAt || null,
+          planData: row.planData && typeof row.planData === "object" ? row.planData : {},
+        };
+      });
+
+    return [...priorityRows, ...backlogRows, ...productionRows];
+  }, [terminalProductionCardData]);
+
+  // Közvetlen hardveres START a 10-es köteg kártyaválasztójáról.
+  // A mentést csak a következő renderben indítjuk, amikor a kiválasztott
+  // rendeléslista és production_meta már biztosan bekerült React state-be.
+  useEffect(() => {
+    if (!bundleTenAutoStartRequestedRef.current) return;
+    if (!isEventTenVisualWorker()) return;
+    if (workflowMode !== "batch" || pendingAction !== "START" || flowStage !== "start-scan" || step !== 6) return;
+    if (batchOrders.length === 0 || !isStartBarcode(actionBarcode)) return;
+    bundleTenAutoStartRequestedRef.current = false;
+    void handleActionBarcodeSubmit(false, actionBarcode);
+  }, [step, flowStage, workflowMode, pendingAction, batchOrders.length, actionBarcode, activeWorker]);
 
   const [executiveReportStation, setExecutiveReportStation] = useState("");
   const [executiveReportDateFrom, setExecutiveReportDateFrom] = useState(getLocalDateKey(new Date()));
@@ -9029,6 +9162,9 @@ export default function Page() {
   const orderInputRef = useRef<HTMLInputElement | null>(null);
   const batchInputRef = useRef<HTMLInputElement | null>(null);
   const actionBarcodeInputRef = useRef<HTMLInputElement | null>(null);
+  // 10-es eseményköteg: ha a kártyaválasztó képernyőn közvetlenül START-ot
+  // csippantanak, a következő render után ugyanazzal a kóddal véglegesítjük a köteget.
+  const bundleTenAutoStartRequestedRef = useRef(false);
   const eventBarcodeInputRef = useRef<HTMLInputElement | null>(null);
   const orderTypeInputRef = useRef<HTMLInputElement | null>(null);
   const batchOperationInputRef = useRef<HTMLInputElement | null>(null);
@@ -23262,6 +23398,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     setBatchCode("");
     setBatchOrders([]);
     setBatchOrderProductionMeta({});
+    setBundleTenSelectedRowKeys([]);
+    setBundleTenSingleSelectionKey("");
+    setBundleTenActiveBatchOrderKeys([]);
+    setBundleTenSzerelesDraftRowKey("");
     setCreatedBatch(null);
     setSelectedEvent(null);
     setSelectedEventCard(null);
@@ -31219,6 +31359,10 @@ START: ${formatDateTime(startAt)}`
     setBatchCode("");
     setBatchOrders([]);
     setBatchOrderProductionMeta({});
+    setBundleTenSelectedRowKeys([]);
+    setBundleTenSingleSelectionKey("");
+    setBundleTenActiveBatchOrderKeys([]);
+    setBundleTenSzerelesDraftRowKey("");
     setCreatedBatch(null);
     setOrderTypeInput("");
     orderTypeLatestValueRef.current = "";
@@ -31415,6 +31559,49 @@ START: ${formatDateTime(startAt)}`
   }
 
   function handleBackFromAction(): void {
+    // 10-es / Szerelés START-nál a START-kód képernyőről először a Nyíló/Tok
+    // műveletválasztóhoz lépünk vissza, nem közvetlenül a kártyalistához.
+    if (
+      isEventTenVisualWorker()
+      && requiresSzerelesStartParts()
+      && stepRef.current === 6
+      && workflowMode === "single"
+      && pendingAction === "START"
+      && szerelesOrderState
+    ) {
+      setActionBarcode("");
+      setEndBarcodeConfirmed(false);
+      setPendingAction(null);
+      setFlowStage("szereles-choice");
+      setStepHistory((previous) => previous.slice(0, -1));
+      setStepFromHistory(5);
+      setMessage({ type: "info", text: `${orderNumber}: visszaléptél a Szerelés műveletválasztóhoz.` });
+      return;
+    }
+
+    // 10-es kattintásos módnál a START/END kód képernyőről a kártyaválasztóhoz
+    // kell visszatérni. A normál handleSmartBack csak a lépésszámot állítaná
+    // vissza, de a flowStage "start-scan" maradna, ezért eltűnne a kártyaválasztó.
+    if (
+      isEventTenVisualWorker()
+      && stepRef.current === 6
+      && (workflowMode === "single" || workflowMode === "batch")
+    ) {
+      setActionBarcode("");
+      setEndBarcodeConfirmed(false);
+      setPendingAction("START");
+      setOrderNumber("");
+      setFlowStage("visual-order-selection");
+      setStepHistory((previous) => previous.slice(0, -1));
+      setStepFromHistory(5);
+      setMessage({
+        type: "info",
+        text: workflowMode === "batch"
+          ? "Visszaléptél a köteg kártyáinak kijelöléséhez."
+          : "Visszaléptél az egyedi rendelés kártyás kiválasztásához.",
+      });
+      return;
+    }
     handleSmartBack();
   }
 
@@ -32392,17 +32579,29 @@ body {
     }
   }
 
-  function normalizeEsemenyKotegValue(value: unknown): 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 {
+  function normalizeEsemenyKotegValue(value: unknown): 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 {
     const numeric = Number(value);
     if (
       numeric === 0 || numeric === 1 || numeric === 2 || numeric === 3 || numeric === 4
-      || numeric === 5 || numeric === 6 || numeric === 7 || numeric === 8 || numeric === 9
+      || numeric === 5 || numeric === 6 || numeric === 7 || numeric === 8 || numeric === 9 || numeric === 10
     ) return numeric;
     return 1;
   }
 
   function getWorkerEsemenyKotegValue(worker: Worker | null | undefined): unknown {
     return worker?.Esemeny_Koteg ?? worker?.esemeny_koteg ?? null;
+  }
+
+  function isEventTenVisualWorker(worker: Worker | null = activeWorker): boolean {
+    return !!worker && Number(getWorkerEsemenyKotegValue(worker)) === 10;
+  }
+
+  function isEventTenVisualWorkerAtStation(
+    stationIdentityKey: string,
+    worker: Worker | null = activeWorker
+  ): boolean {
+    return isEventTenVisualWorker(worker)
+      && getStationPlanIdentityKey(getCurrentMachineIdForInsert()) === stationIdentityKey;
   }
 
   // Only event bundle 2 skips the additional START / card-confirmation barcode.
@@ -32431,7 +32630,7 @@ body {
     // 5-ös módban a dolgozó minden alkalommal választhat:
     // Egyedi rendelés VAGY Köteg.
     // 6-os módban kizárólag egyedi rendelés engedélyezett.
-    return mode === 2 || mode === 3 || mode === 5;
+    return mode === 2 || mode === 3 || mode === 5 || mode === 10;
   }
 
   function buildStructuredNote(baseNote: string | null | undefined, metadata: Record<string, unknown>): string | null {
@@ -32498,6 +32697,10 @@ body {
     setBatchCode("");
     setBatchOrders([]);
     setBatchOrderProductionMeta({});
+    setBundleTenSelectedRowKeys([]);
+    setBundleTenSingleSelectionKey("");
+    setBundleTenActiveBatchOrderKeys([]);
+    setBundleTenSzerelesDraftRowKey("");
     setCreatedBatch(null);
     setSelectedEvent(null);
     setSelectedEventCard(null);
@@ -32539,8 +32742,8 @@ body {
     setOrderTypeScanError("");
     orderTypeLatestValueRef.current = selectedCode;
     setOrderTypeInput(selectedCode);
-    setWorkflowMode(koteg === 5 ? null : useBatchMode ? "batch" : "single");
-    if (koteg === 5) {
+    setWorkflowMode(koteg === 5 || koteg === 10 ? null : useBatchMode ? "batch" : "single");
+    if (koteg === 5 || koteg === 10) {
       setOrderTypeInput("");
       orderTypeLatestValueRef.current = "";
     }
@@ -32597,11 +32800,13 @@ body {
     setStep(4);
     setMessage({
       type: "success",
-      text: koteg === 5
-        ? `Sikeres azonosítás: ${worker["Teljes nev"]}. 5-ös Tok + Nyíló mód: válaszd ki, hogy egyedi rendelést vagy köteg rendelést szeretnél rögzíteni.`
-        : useBatchMode
-          ? `Sikeres azonosítás: ${worker["Teljes nev"]}. Válaszd ki, hogy köteg rendelést vagy egyedi rendelést szeretnél rögzíteni.`
-          : `Sikeres azonosítás: ${worker["Teljes nev"]}. Automatikus mód: Egyedi rendelés. Olvasd be a rendelésszámot; START nélkül azonnal mentésre kerül.`,
+      text: koteg === 10
+        ? `Sikeres azonosítás: ${worker["Teljes nev"]}. 10-es kattintásos kötegmód: válaszd a Köteg létrehozása, Egyedi rendelés vagy Folyamatban lévő kötegek lehetőséget.`
+        : koteg === 5
+          ? `Sikeres azonosítás: ${worker["Teljes nev"]}. 5-ös Tok + Nyíló mód: válaszd ki, hogy egyedi rendelést vagy köteg rendelést szeretnél rögzíteni.`
+          : useBatchMode
+            ? `Sikeres azonosítás: ${worker["Teljes nev"]}. Válaszd ki, hogy köteg rendelést vagy egyedi rendelést szeretnél rögzíteni.`
+            : `Sikeres azonosítás: ${worker["Teljes nev"]}. Automatikus mód: Egyedi rendelés. Olvasd be a rendelésszámot; START nélkül azonnal mentésre kerül.`,
     });
     window.setTimeout(() => {
       focusAndSelectInput(orderTypeInputRef);
@@ -32646,6 +32851,10 @@ body {
     setBatchCode("");
     setBatchOrders([]);
     setBatchOrderProductionMeta({});
+    setBundleTenSelectedRowKeys([]);
+    setBundleTenSingleSelectionKey("");
+    setBundleTenActiveBatchOrderKeys([]);
+    setBundleTenSzerelesDraftRowKey("");
     setCreatedBatch(null);
     clearWorkerScanTimer();
     clearWorkerSubmitDebounceTimer();
@@ -32696,6 +32905,10 @@ body {
     setBatchCode("");
     setBatchOrders([]);
     setBatchOrderProductionMeta({});
+    setBundleTenSelectedRowKeys([]);
+    setBundleTenSingleSelectionKey("");
+    setBundleTenActiveBatchOrderKeys([]);
+    setBundleTenSzerelesDraftRowKey("");
     setCreatedBatch(null);
     setSelectedEvent(null);
     setSelectedEventCard(null);
@@ -32784,6 +32997,10 @@ body {
     setWorkflowMode(null);
     setBatchOrders([]);
     setBatchOrderProductionMeta({});
+    setBundleTenSelectedRowKeys([]);
+    setBundleTenSingleSelectionKey("");
+    setBundleTenActiveBatchOrderKeys([]);
+    setBundleTenSzerelesDraftRowKey("");
     setCreatedBatch(null);
     setOrderNumber("");
     setPendingAction(null);
@@ -32877,6 +33094,856 @@ body {
     setEventScanError("");
   }
 
+  function getBundleTenRowByKey(key: string): BundleTenSelectableRow | null {
+    return bundleTenSelectableRows.find((row) => row.key === key) || null;
+  }
+
+  function getBundleTenSourceMeta(row: BundleTenSelectableRow): Partial<OrderProductionMeta> {
+    return {
+      visual_source: row.source,
+      visual_source_row_id: row.sourceRowId || null,
+      visual_source_item_key: row.key,
+      ...(row.source === "production-plan" && row.sourceRowId
+        ? { terv_sor_id: row.sourceRowId, terv_megnevezes: row.productName || null }
+        : {}),
+    };
+  }
+
+  async function persistBundleTenSelectionAudit(
+    mode: "single" | "batch",
+    rows: BundleTenSelectableRow[],
+    options?: { batchCode?: string | null; productionBatchId?: string | number | null; workLogId?: string | number | null }
+  ): Promise<void> {
+    if (!supabase || !activeWorker || rows.length === 0) return;
+    const nowIso = new Date().toISOString();
+    const payload = rows.map((row) => ({
+      mode,
+      batch_code: options?.batchCode || null,
+      production_batch_id: options?.productionBatchId === null || options?.productionBatchId === undefined
+        ? null
+        : String(options.productionBatchId),
+      work_log_id: options?.workLogId === null || options?.workLogId === undefined
+        ? null
+        : String(options.workLogId),
+      order_number: row.orderNumber,
+      machine_id: getCurrentMachineIdForInsert(),
+      worker_id: activeWorker.id,
+      worker_name: activeWorker["Teljes nev"] || null,
+      source_card: row.source,
+      source_label: row.sourceLabel,
+      source_row_id: row.sourceRowId,
+      source_item_key: row.key,
+      product_name: row.productName || null,
+      completion_date: row.completionDate || null,
+      selected_at: nowIso,
+      started_at: nowIso,
+    }));
+    const { error } = await supabase.from("event_bundle_10_selections").insert(payload);
+    if (error) throw error;
+  }
+
+  async function fetchBundleTenActiveBatchOrderKeys(): Promise<string[]> {
+    if (!supabase) return [];
+    const currentMachineId = getCurrentMachineIdForInsert();
+    if (!currentMachineId) return [];
+
+    const { data, error } = await supabase
+      .from("production_batches")
+      .select("batch_code,order_ids,machine_id,created_at")
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+
+    const currentMachineKey = normalizeLooseText(currentMachineId);
+    const orderKeys = new Set<string>();
+    for (const rawRow of Array.isArray(data) ? data : []) {
+      const rowMachineKey = normalizeLooseText(String(rawRow?.machine_id || ""));
+      if (rowMachineKey && rowMachineKey !== currentMachineKey) continue;
+      for (const order of normalizeProductionBatchOrders(rawRow?.order_ids)) {
+        const key = normalizeLooseText(order);
+        if (key) orderKeys.add(key);
+      }
+    }
+    return Array.from(orderKeys);
+  }
+
+  async function findBundleTenActiveBatchCodeForOrder(orderNumber: string): Promise<string | null> {
+    if (!supabase) return null;
+    const cleanOrder = String(orderNumber || "").trim();
+    const orderKey = normalizeLooseText(cleanOrder);
+    const currentMachineId = getCurrentMachineIdForInsert();
+    if (!orderKey || !currentMachineId) return null;
+
+    const { data, error } = await supabase
+      .from("production_batches")
+      .select("batch_code,order_ids,machine_id,created_at")
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+
+    const currentMachineKey = normalizeLooseText(currentMachineId);
+    for (const rawRow of Array.isArray(data) ? data : []) {
+      const rowMachineKey = normalizeLooseText(String(rawRow?.machine_id || ""));
+      if (rowMachineKey && rowMachineKey !== currentMachineKey) continue;
+      const containsOrder = normalizeProductionBatchOrders(rawRow?.order_ids)
+        .some((value) => normalizeLooseText(value) === orderKey);
+      if (containsOrder) return String(rawRow?.batch_code || "").trim() || null;
+    }
+    return null;
+  }
+
+  async function refreshBundleTenVisualCards(): Promise<void> {
+    try {
+      const [, activeBatchOrderKeys] = await Promise.all([
+        loadTerminalProductionCard(machineId),
+        fetchBundleTenActiveBatchOrderKeys(),
+      ]);
+      setBundleTenActiveBatchOrderKeys(activeBatchOrderKeys);
+    } catch (error) {
+      console.error("10-es köteg kártyafrissítési hiba:", error);
+      setMessage({
+        type: "error",
+        text: `A kártyák vagy az aktív kötegek frissítése nem sikerült: ${normalizeError(error)}`,
+      });
+    }
+  }
+
+  async function openBundleTenVisualSelection(mode: "single" | "batch"): Promise<void> {
+    if (!isEventTenVisualWorker()) return;
+    setWorkflowMode(mode);
+    setPendingAction("START");
+    setOrderNumber("");
+    setActionBarcode("");
+    setEndBarcodeConfirmed(false);
+    setBundleTenSelectedRowKeys([]);
+    setBundleTenSingleSelectionKey("");
+    setBundleTenActiveBatchOrderKeys([]);
+    setBundleTenSzerelesDraftRowKey("");
+    setBatchOrders([]);
+    setBatchOrderProductionMeta({});
+    setSzerelesBatchStates({});
+    setSzerelesOrderState(null);
+    setSzerelesStartParts([]);
+    setSzerelesEndParts([]);
+    setSzerelesNewCycle(false);
+    setSzerelesRework(false);
+    // Asztaloson az új köteg továbbra is a meglévő kétlépcsős folyamat
+    // első, Szabás szakaszaként indul. A Marás a Folyamatban lévő kötegekből
+    // kezelhető ugyanúgy, mint a 3-as kötegnél.
+    setSelectedBatchOperation(mode === "batch" && isEventTenVisualWorkerAtStation("asztalos") ? "SZABAS" : null);
+    setFlowStage("visual-order-selection");
+    setStep(5);
+    setMessage({
+      type: "info",
+      text: mode === "single"
+        ? "Egyedi rendelés: kattints a Prioritási, Lemaradási vagy Termelési kártya egyik sorára. Várakozó rendelésnél START kódot kérünk; folyamatban lévő rendelésnél közvetlenül az END felület nyílik meg."
+        : "Köteg létrehozása: kattintással jelöld ki a kívánt rendeléseket a kártyákból, majd menj tovább a START kód beolvasásához.",
+    });
+    await refreshBundleTenVisualCards();
+  }
+
+  async function handleBundleTenVisualRowClick(row: BundleTenSelectableRow): Promise<void> {
+    if (!isEventTenVisualWorker() || busy) return;
+
+    if (workflowMode === "single") {
+      setBundleTenSingleSelectionKey(row.key);
+      setBundleTenSelectedRowKeys([row.key]);
+
+      // A képernyő állapota lehet néhány másodperccel régebbi az adatbázisnál,
+      // ezért kattintáskor a tényleges nyitott START-ot is ellenőrizzük.
+      const hasOpenStart = row.status === "in-progress"
+        ? true
+        : await hasOpenStartForOrderAtActiveStation(row.orderNumber);
+
+      if (hasOpenStart) {
+        const activeBatchCode = await findBundleTenActiveBatchCodeForOrder(row.orderNumber);
+        if (activeBatchCode) {
+          await handleEndModuleSelection();
+          setMessage({
+            type: "info",
+            text: `${row.orderNumber} a(z) ${activeBatchCode} aktív köteg része. Egyedi END helyett megnyitottam a Folyamatban lévő kötegek listáját; innen válaszd ki a köteget a lejelentéshez.`,
+          });
+          return;
+        }
+      }
+
+      // Szerelésen a 10-es mód csak a rendelés kiválasztását változtatja meg:
+      // a Nyíló/Tok saját munkamenetei és a régi START lezárása ugyanúgy működik,
+      // mint az 5-ös szerelői folyamatban.
+      if (requiresSzerelesStartParts() && hasOpenStart) {
+        try {
+          const state = await fetchSzerelesOrderState(row.orderNumber);
+          setSzerelesOrderState(state);
+          setSzerelesLegacyEndMode(false);
+          setSzerelesStartParts([]);
+          setSzerelesEndParts([]);
+          setSzerelesNewCycle(false);
+          setSzerelesRework(false);
+          setOrderNumber(row.orderNumber);
+          setWorkflowMode("single");
+
+          const hasRunningPart = (["nyilo", "tok"] as SzerelesPart[])
+            .some((part) => state.parts[part].state === "in_progress");
+
+          if (hasOpenStart && hasRunningPart && !state.legacy_open) {
+            setPendingAction("END");
+            setActionBarcode("");
+            setEndBarcodeConfirmed(false);
+            setEndNote("");
+            setOuterSheetScrap(false);
+            setInnerSheetScrap(false);
+            setToklecScrap(false);
+            setToklecScrapSize("");
+            setEventFiveRepairStationKeys([]);
+            setEventFiveRepairAction("");
+            setFlowStage("start-scan");
+            setStep(6);
+            setMessage({
+              type: "info",
+              text: `${row.orderNumber} folyamatban. Olvasd be az END kódot, majd válaszd ki a befejezendő Nyíló/Tok részt.`,
+            });
+            window.setTimeout(() => focusAndSelectInput(actionBarcodeInputRef, { preventScroll: true }), 0);
+            return;
+          }
+
+          setPendingAction(null);
+          setActionBarcode("");
+          setEndBarcodeConfirmed(false);
+          setFlowStage("szereles-choice");
+          setStep(5);
+          setMessage({
+            type: "info",
+            text: `${row.orderNumber}: ${szerelesStateLabel(state)}. Válaszd ki a következő műveletet.`,
+          });
+          return;
+        } catch (error) {
+          setMessage({ type: "error", text: normalizeError(error) });
+          return;
+        }
+      }
+
+      if (hasOpenStart) {
+        await routeSingleOrderToEndReporting(row.orderNumber);
+        return;
+      }
+
+      if (row.status !== "waiting") {
+        setMessage({ type: "error", text: `${row.orderNumber}: ez a kártyasor már kész, ezért innen nem indítható új normál START.` });
+        return;
+      }
+
+      // Várakozó egyedi rendelésnél a kattintás csak kijelöl.
+      // A felhasználó külön „Rendelés indítása” gombbal lép tovább a START kódhoz.
+      // Folyamatban lévő rendelésnél a fenti ág továbbra is azonnal az END felületet nyitja meg.
+      setOrderNumber(row.orderNumber);
+      setPendingAction("START");
+      setActionBarcode("");
+      setEndBarcodeConfirmed(false);
+      setMessage({
+        type: "info",
+        text: `${row.orderNumber} kijelölve a(z) ${row.sourceLabel} kártyáról. Kattints a Rendelés indítása gombra a START kód beolvasásához.`,
+      });
+      return;
+    }
+
+    if (workflowMode !== "batch") return;
+
+    if (row.status !== "waiting") {
+      setMessage({
+        type: "info",
+        text: `${row.orderNumber}: ez a rendelés már folyamatban van. Egyedi rendelés módban kattints rá az END megnyitásához, vagy nyisd meg a folyamatban lévő kötegét.`,
+      });
+      return;
+    }
+
+    const alreadySelected = bundleTenSelectedRowKeys.includes(row.key);
+    if (alreadySelected) {
+      setBundleTenSelectedRowKeys((current) => current.filter((key) => key !== row.key));
+      if (requiresSzerelesStartParts()) {
+        setBatchOrderProductionMeta((previous) => {
+          const next = { ...previous };
+          Object.keys(next).forEach((key) => {
+            if (normalizeLooseText(key) === normalizeLooseText(row.orderNumber)) delete next[key];
+          });
+          return next;
+        });
+        setSzerelesBatchStates((previous) => {
+          const next = { ...previous };
+          delete next[row.orderNumber];
+          return next;
+        });
+      }
+      return;
+    }
+
+    if (requiresSzerelesStartParts()) {
+      setBusy(true);
+      try {
+        const state = await fetchSzerelesOrderState(row.orderNumber);
+        if (state.legacy_open) throw new Error(`${row.orderNumber}: régi közös START található. Ezt előbb az Egyedi rendelés módban zárd le.`);
+        setBundleTenSzerelesDraftRowKey(row.key);
+        setSzerelesOrderState(state);
+        setOrderNumber(row.orderNumber);
+        setSzerelesStartParts([]);
+        setSzerelesNewCycle(false);
+        setSzerelesRework(false);
+        setMessage({
+          type: "info",
+          text: `${row.orderNumber} kiválasztva. Jelöld ki, hogy a Nyíló, a Tok vagy mindkettő induljon, majd add hozzá a köteghez.`,
+        });
+      } catch (error) {
+        setMessage({ type: "error", text: normalizeError(error) });
+        playSharpErrorBeep();
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
+    setBundleTenSelectedRowKeys((current) => {
+      // Ugyanaz a rendelésszám több kártyán / több forrássorban is szerepelhet.
+      // Egy üzleti rendelést a kötegben egyszer indítunk, de mindig a ténylegesen
+      // kattintott forrássort őrizzük meg. Másik példányra kattintva az váltja az előzőt.
+      const rowOrderKey = normalizeLooseText(row.orderNumber);
+      const withoutSameOrder = current.filter((key) => {
+        const selectedRow = getBundleTenRowByKey(key);
+        return !selectedRow || normalizeLooseText(selectedRow.orderNumber) !== rowOrderKey;
+      });
+      return [...withoutSameOrder, row.key];
+    });
+    // A hardveres scanner következő beolvasását a START mező fogadja anélkül,
+    // hogy külön rá kellene kattintani.
+    window.setTimeout(() => focusAndSelectInput(actionBarcodeInputRef, { preventScroll: true }), 0);
+  }
+
+  async function prepareBundleTenSingleStart(): Promise<void> {
+    if (!isEventTenVisualWorker() || workflowMode !== "single" || busy) return;
+    const row = getBundleTenRowByKey(bundleTenSingleSelectionKey);
+    if (!row) {
+      setMessage({ type: "error", text: "Előbb kattintással válassz ki egy rendelést a kártyák közül." });
+      return;
+    }
+    if (row.status !== "waiting") {
+      setMessage({ type: "error", text: `${row.orderNumber}: ez a rendelés nem várakozó állapotú. Frissítsd a kártyákat.` });
+      return;
+    }
+
+    // START előtt élőben ellenőrizzük, nem indult-e el időközben.
+    const hasOpenStart = await hasOpenStartForOrderAtActiveStation(row.orderNumber);
+    if (hasOpenStart) {
+      const activeBatchCode = await findBundleTenActiveBatchCodeForOrder(row.orderNumber);
+      if (activeBatchCode) {
+        await handleEndModuleSelection();
+        setMessage({
+          type: "info",
+          text: `${row.orderNumber} időközben a(z) ${activeBatchCode} aktív köteg része lett. A Folyamatban lévő kötegek listáját nyitottam meg.`,
+        });
+        return;
+      }
+      await routeSingleOrderToEndReporting(row.orderNumber);
+      return;
+    }
+
+    setOrderNumber(row.orderNumber);
+    setPendingAction("START");
+    setActionBarcode("");
+    setEndBarcodeConfirmed(false);
+
+    // Szerelésen a Nyíló/Tok választás a START kód előtt kötelező.
+    if (requiresSzerelesStartParts()) {
+      try {
+        const state = await fetchSzerelesOrderState(row.orderNumber);
+        setSzerelesOrderState(state);
+        setSzerelesLegacyEndMode(false);
+        setSzerelesStartParts([]);
+        setSzerelesEndParts([]);
+        setSzerelesNewCycle(false);
+        setSzerelesRework(false);
+        setFlowStage("szereles-choice");
+        setStep(5);
+        setMessage({
+          type: "info",
+          text: `${row.orderNumber}: ${szerelesStateLabel(state)}. Válaszd ki, hogy Nyíló, Tok vagy mindkettő induljon.`,
+        });
+        return;
+      } catch (error) {
+        setMessage({ type: "error", text: normalizeError(error) });
+        return;
+      }
+    }
+
+    setFlowStage("start-scan");
+    setStep(6);
+    setMessage({
+      type: "info",
+      text: `${row.orderNumber} kiválasztva a(z) ${row.sourceLabel} kártyáról. Olvasd be a START kódot az indításhoz.`,
+    });
+    window.setTimeout(() => focusAndSelectInput(actionBarcodeInputRef, { preventScroll: true }), 0);
+  }
+
+  async function confirmBundleTenSzerelesBatchRow(): Promise<void> {
+    if (!requiresSzerelesStartParts() || workflowMode !== "batch" || !bundleTenSzerelesDraftRowKey) return;
+    const row = getBundleTenRowByKey(bundleTenSzerelesDraftRowKey);
+    const state = szerelesOrderState;
+    if (!row || !state) {
+      setMessage({ type: "error", text: "A kiválasztott szerelői kártyasor állapota nem érhető el. Frissítsd a kártyákat." });
+      return;
+    }
+
+    const parts = normalizeSzerelesStartParts(szerelesStartParts) as SzerelesPart[];
+    if (!parts.length) {
+      setMessage({ type: "error", text: "Válaszd ki a Nyílót, a Tokot vagy mindkettőt." });
+      return;
+    }
+    if (state.legacy_open) {
+      setMessage({ type: "error", text: "Régi közös START található. Ezt előbb egyedi lejelentésben zárd le." });
+      return;
+    }
+    if (state.is_complete && !szerelesNewCycle) {
+      setMessage({ type: "error", text: "A rendelés kész. Jelöld be az Új gyártási ciklus lehetőséget." });
+      return;
+    }
+    if (szerelesNewCycle && !state.is_complete) {
+      setMessage({ type: "error", text: "Új gyártási ciklus csak teljesen kész rendelésnél indítható." });
+      return;
+    }
+    if (!szerelesNewCycle && parts.some((part) => state.parts[part].state === "in_progress")) {
+      setMessage({ type: "error", text: "A kiválasztott rész már folyamatban van." });
+      return;
+    }
+    if (!szerelesNewCycle && !szerelesRework && parts.some((part) => state.parts[part].done)) {
+      setMessage({ type: "error", text: "A már kész részhez jelöld be a Már kész rész új munkamenete lehetőséget." });
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const machine = getCurrentMachineIdForInsert();
+      const groupCheck = await findStartGroupConflicts([row.orderNumber], { currentMachineId: machine });
+      if (groupCheck.conflicts.length) throw new Error(buildStartGroupConflictMessage(groupCheck, true));
+      const routed = await fetchOpenSingleScrapReplacement(row.orderNumber, machine);
+      if (routed) await assertScrapReplacementRouteReady(routed);
+
+      const meta: OrderProductionMeta = {
+        ujragyartas: state.reproduction_number > 0,
+        ujragyartas_sorszam: state.reproduction_number || null,
+        gyartas_tipus: "egyedi",
+        gyartasi_kor: null,
+        szereles_start_reszek: parts,
+        szereles_new_cycle: szerelesNewCycle,
+        szereles_rework: szerelesRework,
+        ...getBundleTenSourceMeta(row),
+      };
+
+      setBatchOrderProductionMeta((previous) => {
+        const next = { ...previous };
+        Object.keys(next).forEach((key) => {
+          if (normalizeLooseText(key) === normalizeLooseText(row.orderNumber)) delete next[key];
+        });
+        next[row.orderNumber] = meta;
+        return next;
+      });
+      setSzerelesBatchStates((previous) => ({ ...previous, [row.orderNumber]: state }));
+      setBundleTenSelectedRowKeys((current) => {
+        const orderKey = normalizeLooseText(row.orderNumber);
+        const withoutSameOrder = current.filter((key) => {
+          const currentRow = getBundleTenRowByKey(key);
+          return !currentRow || normalizeLooseText(currentRow.orderNumber) !== orderKey;
+        });
+        return [...withoutSameOrder, row.key];
+      });
+
+      setBundleTenSzerelesDraftRowKey("");
+      setSzerelesOrderState(null);
+      setSzerelesStartParts([]);
+      setSzerelesNewCycle(false);
+      setSzerelesRework(false);
+      setOrderNumber("");
+      setMessage({
+        type: "success",
+        text: `${row.orderNumber}: ${parts.map(szerelesPartLabel).join(" + ")} hozzáadva a köteghez.`,
+      });
+      window.setTimeout(() => focusAndSelectInput(actionBarcodeInputRef, { preventScroll: true }), 0);
+    } catch (error) {
+      setMessage({ type: "error", text: normalizeError(error) });
+      playSharpErrorBeep();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function prepareBundleTenBatchStart(startBarcode?: string): Promise<void> {
+    if (!isEventTenVisualWorker() || workflowMode !== "batch") return;
+    const directStartCode = String(startBarcode || "").trim();
+    if (directStartCode && !isStartBarcode(directStartCode)) {
+      setActionBarcode("");
+      setMessage({ type: "error", text: "A beolvasott kód nem START típusú." });
+      window.setTimeout(() => focusAndSelectInput(actionBarcodeInputRef, { force: true, preventScroll: true }), 0);
+      return;
+    }
+    if (!activeWorker) {
+      setMessage({ type: "error", text: "Nincs kiválasztott dolgozó." });
+      return;
+    }
+    if (requiresSzerelesStartParts() && bundleTenSzerelesDraftRowKey) {
+      setMessage({ type: "error", text: "Előbb add hozzá a jelenleg kiválasztott szerelői rendelést a köteghez, vagy nyomd meg a Mégse gombot ennél a sornál." });
+      return;
+    }
+
+    const selectedRows = bundleTenSelectedRowKeys
+      .map((key) => getBundleTenRowByKey(key))
+      .filter((row): row is BundleTenSelectableRow => !!row && row.status === "waiting");
+
+    if (selectedRows.length === 0) {
+      setMessage({ type: "error", text: "Jelölj ki legalább egy várakozó rendelést a köteghez." });
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const machine = getCurrentMachineIdForInsert();
+      const isSzerelesVisualBatch = requiresSzerelesStartParts();
+      const baseMetaByOrder = new Map<string, OrderProductionMeta>();
+      const nextMeta: Record<string, OrderProductionMeta> = {};
+      const refreshedSzerelesStates: Record<string, SzerelesOrderState> = {};
+
+      for (const row of selectedRows) {
+        if (await hasOpenStartForOrderAtActiveStation(row.orderNumber)) {
+          throw new Error(`${row.orderNumber}: időközben START-ot kapott. Frissítsd a kártyákat; folyamatban lévő rendelés új kötegbe nem indítható.`);
+        }
+
+        if (isSzerelesVisualBatch) {
+          // A Szerelésnél a sor kiválasztásakor már megadtuk, hogy Nyíló / Tok
+          // induljon. START előtt élőben még egyszer ellenőrizzük az állapotot,
+          // nehogy egy időközben megváltozott rendelést hibásan indítsunk el.
+          const configuredMeta = getProductionMetaForOrder(batchOrderProductionMeta, row.orderNumber);
+          const parts = normalizeSzerelesStartParts(configuredMeta.szereles_start_reszek) as SzerelesPart[];
+          if (!parts.length) {
+            throw new Error(`${row.orderNumber}: nincs megadva, hogy Nyíló, Tok vagy mindkettő induljon. Kattints újra a sorra és add hozzá a köteghez.`);
+          }
+
+          const state = await fetchSzerelesOrderState(row.orderNumber, machine);
+          refreshedSzerelesStates[row.orderNumber] = state;
+          if (state.legacy_open) {
+            throw new Error(`${row.orderNumber}: régi közös START található. Ezt előbb az Egyedi rendelés módban zárd le.`);
+          }
+          const newCycle = configuredMeta.szereles_new_cycle === true;
+          const rework = configuredMeta.szereles_rework === true;
+          if (state.is_complete && !newCycle) {
+            throw new Error(`${row.orderNumber}: a rendelés már kész; új gyártási ciklus nélkül nem indítható.`);
+          }
+          if (newCycle && !state.is_complete) {
+            throw new Error(`${row.orderNumber}: új gyártási ciklus csak teljesen kész rendelésnél indítható.`);
+          }
+          if (!newCycle && parts.some((part) => state.parts[part].state === "in_progress")) {
+            throw new Error(`${row.orderNumber}: a kiválasztott Nyíló/Tok rész időközben folyamatban lett.`);
+          }
+          if (!newCycle && !rework && parts.some((part) => state.parts[part].done)) {
+            throw new Error(`${row.orderNumber}: már kész rész újraindításához engedélyezni kell a Már kész rész új munkamenete lehetőséget.`);
+          }
+
+          const routed = await fetchOpenSingleScrapReplacement(row.orderNumber, machine);
+          if (routed) await assertScrapReplacementRouteReady(routed);
+          nextMeta[row.orderNumber] = {
+            ...configuredMeta,
+            ...getBundleTenSourceMeta(row),
+          };
+          continue;
+        }
+
+        const normalizedOrder = normalizeLooseText(row.orderNumber);
+        let baseMeta = baseMetaByOrder.get(normalizedOrder);
+        if (!baseMeta) {
+          const routedScrapReplacement = await fetchOpenSingleScrapReplacement(row.orderNumber, machine);
+          if (routedScrapReplacement) {
+            await assertScrapReplacementRouteReady(routedScrapReplacement);
+            baseMeta = {
+              ujragyartas: false,
+              ujragyartas_sorszam: null,
+              gyartas_tipus: "egyedi",
+              gyartasi_kor: null,
+            };
+          } else {
+            const decision = await prepareOrderProductionMeta(row.orderNumber, true);
+            if (!decision.proceed) {
+              throw new Error(`${row.orderNumber}: az indítás megszakítva, ezért a köteg sem indítható.`);
+            }
+            baseMeta = decision.meta;
+          }
+          baseMetaByOrder.set(normalizedOrder, baseMeta);
+        }
+
+        nextMeta[row.orderNumber] = {
+          ...baseMeta,
+          ...getBundleTenSourceMeta(row),
+        };
+      }
+
+      if (isSzerelesVisualBatch) {
+        setSzerelesBatchStates(refreshedSzerelesStates);
+      }
+
+      // A sorrend pontosan a felhasználó kattintási sorrendje. Ha ugyanaz a
+      // rendelésszám több kártyán szerepel, a legutóbb kattintott konkrét sor
+      // marad kijelölve; a forrássor teljes azonosítása külön audit táblába kerül.
+      setBatchOrders(selectedRows.map((row) => row.orderNumber));
+      setBatchOrderProductionMeta(nextMeta);
+      setPendingAction("START");
+      setActionBarcode(directStartCode);
+      setEndBarcodeConfirmed(false);
+      bundleTenAutoStartRequestedRef.current = Boolean(directStartCode);
+      setFlowStage("start-scan");
+      setStep(6);
+      setMessage({
+        type: "info",
+        text: directStartCode
+          ? `${selectedRows.length} kártyasor kijelölve. A START kód beolvasva; a köteg indítása folyamatban.`
+          : `${selectedRows.length} kártyasor kijelölve. Olvasd be a START kódot a köteg létrehozásához és indításához.`,
+      });
+      if (!directStartCode) {
+        window.setTimeout(() => focusAndSelectInput(actionBarcodeInputRef, { preventScroll: true }), 0);
+      }
+    } catch (error) {
+      playSharpErrorBeep();
+      setMessage({ type: "error", text: normalizeError(error) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function renderBundleTenVisualSelection(): React.JSX.Element {
+    const mode = workflowMode === "batch" ? "batch" : "single";
+    const activeBatchOrderKeySet = new Set(bundleTenActiveBatchOrderKeys);
+    const szerelesDraftRow = bundleTenSzerelesDraftRowKey ? getBundleTenRowByKey(bundleTenSzerelesDraftRowKey) : null;
+    const eligibleRows = bundleTenSelectableRows.filter((row) => {
+      if (mode === "batch") return row.status === "waiting";
+      if (row.status === "waiting") return true;
+      if (row.status !== "in-progress") return false;
+      // Aktív köteg részeként futó rendelés nem zárható az Egyedi rendelés
+      // listából; azt kizárólag a Folyamatban lévő kötegek alatt jelentjük le.
+      return !activeBatchOrderKeySet.has(normalizeLooseText(row.orderNumber));
+    });
+    const sections: Array<{ source: BundleTenCardSource; title: string; border: string; rows: BundleTenSelectableRow[] }> = [
+      { source: "priority", title: "Prioritási kártya", border: "#7c3aed", rows: eligibleRows.filter((row) => row.source === "priority") },
+      { source: "backlog", title: "Lemaradási kártya", border: "#f59e0b", rows: eligibleRows.filter((row) => row.source === "backlog") },
+      { source: "production-plan", title: "Termelési kártya", border: "#2563eb", rows: eligibleRows.filter((row) => row.source === "production-plan") },
+    ].filter((section) => section.rows.length > 0);
+
+    return (
+      <div>
+        <div style={{ marginBottom: 14, padding: 14, border: "1px solid #334155", borderRadius: 12, background: "#0f172a" }}>
+          <div style={{ fontSize: 18, fontWeight: 900, color: "#f8fafc" }}>
+            {mode === "batch" ? "Köteg összeállítása kártyákról" : "Egyedi rendelés kiválasztása kártyáról"}
+          </div>
+          <div style={{ marginTop: 6, color: "#94a3b8", fontSize: 13 }}>
+            {mode === "batch"
+              ? "Több várakozó sort jelölhetsz ki. Azonos rendelésszám esetén is a konkrétan kattintott kártyasor kerül eltárolásra."
+              : "Várakozó sorra kattintva kijelölöd a rendelést, majd a Rendelés indítása gombbal lépsz a START kódhoz. A nem kötegben futó, folyamatban lévő sorra kattintva közvetlenül az END felület nyílik meg."}
+          </div>
+        </div>
+
+        {mode === "batch" && requiresSzerelesStartParts() && szerelesDraftRow && szerelesOrderState && (
+          <div style={{ marginBottom: 14, padding: 14, border: "2px solid #14b8a6", borderRadius: 12, background: "#0f172a" }}>
+            <div style={{ fontWeight: 900, fontSize: 17, marginBottom: 8 }}>
+              Szerelés köteg – {szerelesDraftRow.orderNumber}
+            </div>
+            <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 12 }}>
+              Forrás: {szerelesDraftRow.sourceLabel} • konkrét sor: {szerelesDraftRow.sourceRowId}
+            </div>
+            {renderSzerelesSessionStatus(szerelesOrderState)}
+            {renderSzerelesStartPartPicker()}
+            {szerelesOrderState.is_complete && (
+              <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, color: "#f8fafc" }}>
+                <input
+                  type="checkbox"
+                  checked={szerelesNewCycle}
+                  onChange={(event) => {
+                    setSzerelesNewCycle(event.target.checked);
+                    setSzerelesRework(false);
+                    setSzerelesStartParts([]);
+                  }}
+                />
+                Új gyártási ciklus indítása (a korábbi idők megmaradnak)
+              </label>
+            )}
+            {!szerelesNewCycle && (["nyilo", "tok"] as SzerelesPart[]).some((part) => szerelesOrderState.parts[part].done) && (
+              <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, color: "#f8fafc" }}>
+                <input
+                  type="checkbox"
+                  checked={szerelesRework}
+                  onChange={(event) => {
+                    setSzerelesRework(event.target.checked);
+                    setSzerelesNewCycle(false);
+                    setSzerelesStartParts([]);
+                  }}
+                />
+                Már kész rész új munkamenetként történő újraindítása
+              </label>
+            )}
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
+              <button type="button" style={buttonPrimary} disabled={busy || szerelesStartParts.length === 0} onClick={() => void confirmBundleTenSzerelesBatchRow()}>
+                Hozzáadás a köteghez
+              </button>
+              <button
+                type="button"
+                style={buttonSecondary}
+                disabled={busy}
+                onClick={() => {
+                  setBundleTenSzerelesDraftRowKey("");
+                  setSzerelesOrderState(null);
+                  setSzerelesStartParts([]);
+                  setSzerelesNewCycle(false);
+                  setSzerelesRework(false);
+                  setOrderNumber("");
+                }}
+              >
+                Mégse ennél a sornál
+              </button>
+            </div>
+          </div>
+        )}
+
+        {loadingTerminalProductionCard ? (
+          <div style={{ padding: 18, color: "#cbd5e1" }}>Kártyák betöltése...</div>
+        ) : sections.length === 0 ? (
+          <div style={{ padding: 18, border: "1px solid #334155", borderRadius: 12, background: "#0f172a", color: "#94a3b8" }}>
+            Nincs választható rendelés a Prioritási, Lemaradási vagy Termelési kártyán.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gap: 14 }}>
+            {sections.map((section) => (
+              <section key={section.source} style={{ border: `2px solid ${section.border}`, borderRadius: 14, padding: 12, background: "#0b1220" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", marginBottom: 10 }}>
+                  <strong style={{ fontSize: 17 }}>{section.title}</strong>
+                  <span style={{ color: "#94a3b8", fontSize: 12 }}>{section.rows.length} sor</span>
+                </div>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {section.rows.map((row) => {
+                    const selected = bundleTenSelectedRowKeys.includes(row.key);
+                    const inProgress = row.status === "in-progress";
+                    return (
+                      <button
+                        key={row.key}
+                        type="button"
+                        onClick={() => void handleBundleTenVisualRowClick(row)}
+                        disabled={busy}
+                        style={{
+                          width: "100%",
+                          display: "grid",
+                          gridTemplateColumns: "minmax(130px, 1.15fr) minmax(130px, 1.4fr) minmax(90px, .8fr) minmax(120px, 1fr)",
+                          gap: 10,
+                          alignItems: "center",
+                          textAlign: "left",
+                          borderRadius: 10,
+                          border: selected ? "2px solid #38bdf8" : "1px solid #334155",
+                          background: selected
+                            ? "rgba(14,165,233,0.18)"
+                            : inProgress
+                              ? "rgba(245,158,11,0.14)"
+                              : "#0f172a",
+                          color: "#f8fafc",
+                          padding: "11px 12px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 900, fontSize: 16 }}>{row.orderNumber}</div>
+                          <div style={{ color: "#64748b", fontSize: 10, marginTop: 3 }}>forrássor: {row.sourceRowId}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontWeight: 800 }}>{row.productName || "–"}</div>
+                          <div style={{ color: "#94a3b8", fontSize: 11, marginTop: 3 }}>{row.completionDate || "–"}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontWeight: 900, color: inProgress ? "#fbbf24" : "#93c5fd" }}>{row.statusLabel || (inProgress ? "Folyamatban" : "Várakozik")}</div>
+                          {row.quantity !== null && <div style={{ color: "#cbd5e1", fontSize: 11, marginTop: 3 }}>Mennyiség: {row.quantity}</div>}
+                        </div>
+                        <div style={{ textAlign: "right", fontWeight: 900, color: selected ? "#7dd3fc" : "#cbd5e1" }}>
+                          {mode === "single"
+                            ? inProgress ? "END megnyitása" : "START kiválasztás"
+                            : selected ? "✓ Kijelölve" : "Kijelölés"}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
+
+        {mode === "batch" && (
+          <div style={{ marginTop: 16, padding: 12, border: "1px solid #334155", borderRadius: 12, background: "#0f172a" }}>
+            <label style={{ display: "block", marginBottom: 7, color: "#cbd5e1", fontWeight: 800 }}>START kód – közvetlen kötegindítás</label>
+            <input
+              ref={actionBarcodeInputRef}
+              value={actionBarcode}
+              onChange={(event) => setActionBarcode(event.target.value.replace(/[\r\n]+/g, "").trim())}
+              placeholder="Jelöld ki a sorokat, majd csippantsd le a START kódot"
+              style={fieldStyle}
+              autoComplete="off"
+              disabled={busy || Boolean(bundleTenSzerelesDraftRowKey)}
+              onKeyDown={(event) => {
+                if (!isScannerSubmitKey(event)) return;
+                event.preventDefault();
+                void prepareBundleTenBatchStart(event.currentTarget.value);
+              }}
+            />
+            <div style={{ marginTop: 7, color: "#94a3b8", fontSize: 12 }}>
+              A START vonalkód közvetlen beolvasása elindítja a kijelölt köteget. A gombbal külön START-kód képernyőre is továbbléphetsz.
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 16 }}>
+          {mode === "single" && (
+            <button
+              type="button"
+              onClick={() => void prepareBundleTenSingleStart()}
+              disabled={busy || !bundleTenSingleSelectionKey || getBundleTenRowByKey(bundleTenSingleSelectionKey)?.status !== "waiting"}
+              style={buttonPrimary}
+            >
+              Rendelés indítása
+            </button>
+          )}
+          {mode === "batch" && (
+            <button
+              type="button"
+              onClick={() => void prepareBundleTenBatchStart()}
+              disabled={busy || bundleTenSelectedRowKeys.length === 0 || Boolean(bundleTenSzerelesDraftRowKey)}
+              style={buttonPrimary}
+            >
+              Tovább a START kódhoz ({bundleTenSelectedRowKeys.length})
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void refreshBundleTenVisualCards()}
+            disabled={busy || loadingTerminalProductionCard}
+            style={buttonSecondary}
+          >
+            {loadingTerminalProductionCard ? "Frissítés..." : "Kártyák frissítése"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setBundleTenSelectedRowKeys([]);
+              setBundleTenSingleSelectionKey("");
+              setBundleTenSzerelesDraftRowKey("");
+              setBatchOrders([]);
+              setBatchOrderProductionMeta({});
+              setWorkflowMode(null);
+              setFlowStage("batch-selection");
+              setStep(4);
+            }}
+            style={buttonSecondary}
+          >
+            Vissza
+          </button>
+          <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
+        </div>
+      </div>
+    );
+  }
+
   function handleOrderTypeSelection(mode: WorkflowMode): void {
     if (activeWorker && Number(getWorkerEsemenyKotegValue(activeWorker)) === 6 && mode !== "single") {
       setOrderTypeScanError("A 6-os esemény csak egyedi rendelésként jelenthető.");
@@ -32891,6 +33958,19 @@ body {
       setFlowStage("dashboard");
       setStep(7);
       void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo);
+      return;
+    }
+
+    if (activeWorker && isEventTenVisualWorker(activeWorker)) {
+      const selectedCode = mode === "single" ? "TYPE-RENDELES" : mode === "batch" ? "TYPE-KOTEG" : "TYPE-LIST";
+      setOrderTypeScanError("");
+      setOrderTypeInput(selectedCode);
+      orderTypeLatestValueRef.current = selectedCode;
+      if (mode === "end") {
+        void handleEndModuleSelection();
+      } else {
+        void openBundleTenVisualSelection(mode);
+      }
       return;
     }
 
@@ -33298,11 +34378,20 @@ body {
   }
   function isFoilSheetScrapWorker(worker: Worker | null = activeWorker): boolean {
     const mode = Number(getWorkerEsemenyKotegValue(worker));
-    return !!worker && (mode === 4 || mode === 5 || mode === 6 || mode === 7);
+    const eventTenStation = isEventTenVisualWorker(worker)
+      ? getStationPlanIdentityKey(getCurrentMachineIdForInsert())
+      : "";
+    return !!worker && (
+      mode === 4 || mode === 5 || mode === 6 || mode === 7
+      || (mode === 10 && (eventTenStation === "foliazo" || eventTenStation === "szereles"))
+    );
   }
 
   function isEventFiveBatchWorker(worker: Worker | null = activeWorker): boolean {
-    return !!worker && Number(getWorkerEsemenyKotegValue(worker)) === 5;
+    return !!worker && (
+      Number(getWorkerEsemenyKotegValue(worker)) === 5
+      || isEventTenVisualWorkerAtStation("szereles", worker)
+    );
   }
 
   function isEventSixBatchWorker(worker: Worker | null = activeWorker): boolean {
@@ -33325,7 +34414,10 @@ body {
   }
 
   function isDoorTwoPartWorker(worker: Worker | null = activeWorker): boolean {
-    return !!worker && Number(getWorkerEsemenyKotegValue(worker)) === 5;
+    return !!worker && (
+      Number(getWorkerEsemenyKotegValue(worker)) === 5
+      || isEventTenVisualWorkerAtStation("szereles", worker)
+    );
   }
 
   async function fetchSzerelesOrderState(order: string, machine=getCurrentMachineIdForInsert()): Promise<SzerelesOrderState> {
@@ -35420,7 +36512,10 @@ body {
   }
 
   function isTwoStageAsztalosWorker(worker: Worker | null = activeWorker): boolean {
-    return !!worker && Number(getWorkerEsemenyKotegValue(worker)) === 3;
+    return !!worker && (
+      Number(getWorkerEsemenyKotegValue(worker)) === 3
+      || isEventTenVisualWorkerAtStation("asztalos", worker)
+    );
   }
 
   function resolveTwoStageBatchStatus(batch: ProductionBatchRow): BatchOperationStatus {
@@ -37296,7 +38391,8 @@ body {
 
 
   function requiresSzerelesStartParts(worker: Worker | null = activeWorker): boolean {
-    return Number(worker?.Esemeny_Koteg ?? worker?.esemeny_koteg ?? -1) === 5
+    const mode = Number(worker?.Esemeny_Koteg ?? worker?.esemeny_koteg ?? -1);
+    return (mode === 5 || mode === 10)
       && getStationPlanIdentityKey(getCurrentMachineIdForInsert()) === "szereles";
   }
 
@@ -37336,6 +38432,14 @@ body {
       setOrderNumber("");
       setMessage({ type: "info", text: "Egyedi rendelés módban nincs szükség START kódra. Olvasd be közvetlenül a rendelésszámot." });
       focusAndSelectInput(orderInputRef);
+      return;
+    }
+
+    const bundleTenSelectionForStart = isEventTenVisualWorker()
+      ? getBundleTenRowByKey(bundleTenSingleSelectionKey)
+      : null;
+    if (isEventTenVisualWorker() && (!bundleTenSelectionForStart || normalizeLooseText(bundleTenSelectionForStart.orderNumber) !== normalizeLooseText(finalOrder))) {
+      setMessage({ type: "error", text: "A 10-es eseménykötegnél előbb kattintással válaszd ki a konkrét kártyasort." });
       return;
     }
 
@@ -37451,6 +38555,13 @@ body {
       setBusy(false);
     }
 
+    if (bundleTenSelectionForStart) {
+      orderProductionMeta = {
+        ...orderProductionMeta,
+        ...getBundleTenSourceMeta(bundleTenSelectionForStart),
+      };
+    }
+
     batchFinalizeInFlightRef.current = true;
     setBusy(true);
     try {
@@ -37514,6 +38625,13 @@ body {
             ujragyartas: orderProductionMeta.ujragyartas,
             ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
             gyartas_tipus: orderProductionMeta.gyartas_tipus,
+            event_bundle: workerEventKoteg,
+            ...(bundleTenSelectionForStart ? {
+              visual_source: bundleTenSelectionForStart.source,
+              visual_source_label: bundleTenSelectionForStart.sourceLabel,
+              visual_source_row_id: bundleTenSelectionForStart.sourceRowId,
+              visual_source_item_key: bundleTenSelectionForStart.key,
+            } : {}),
           }),
           scrap_qty: null,
           kulso_lap_selejt: false,
@@ -37561,6 +38679,18 @@ body {
         .single();
 
       if (error) throw error;
+
+      if (bundleTenSelectionForStart) {
+        try {
+          await persistBundleTenSelectionAudit("single", [bundleTenSelectionForStart], {
+            workLogId: insertedSingleStartLog?.id ?? null,
+          });
+        } catch (auditError) {
+          console.error("10-es kártyasor audit mentési hiba:", auditError);
+          throw new Error(`A START elmentődött, de a kiválasztott kártyasor audit mentése sikertelen: ${normalizeError(auditError)}. Ne indítsd újra a rendelést.`);
+        }
+      }
+
       if (activeScrapReplacement) {
         await updateSingleScrapReplacement(activeScrapReplacement, getScrapReplacementStartStatus(activeScrapReplacement, currentMachineId), nowIso);
       }
@@ -37634,6 +38764,11 @@ body {
   async function finalizeSzerelesBatchCreation():Promise<void>{
     if(batchFinalizeInFlightRef.current||!supabase||!activeWorker)return;
     const orders=[...batchOrders].map(value=>String(value).trim()).filter(Boolean);
+    const bundleTenRowsForSave = isEventTenVisualWorker()
+      ? bundleTenSelectedRowKeys
+          .map((key) => getBundleTenRowByKey(key))
+          .filter((row): row is BundleTenSelectableRow => !!row && orders.some((order) => normalizeLooseText(order) === normalizeLooseText(row.orderNumber)))
+      : [];
     if(!orders.length){setMessage({type:"error",text:"Nincs beolvasott rendelés."});return;}
     const machine=getCurrentMachineIdForInsert();const code=`BATCH-${Date.now()}`;
     const meta=Object.fromEntries(orders.map(order=>[order,getProductionMetaForOrder(batchOrderProductionMeta,order)])) as Record<string,OrderProductionMeta>;
@@ -37648,6 +38783,12 @@ body {
       const {data,error}=await supabase.rpc("nivo_szereles_koteg",{p_action:"START",p_items:items,p_machine_id:machine,p_worker_id:Number(activeWorker.id),p_worker_name:activeWorker["Teljes nev"],p_batch_code:code,p_note:null});
       if(error)throw error;committed=true;
       const saved=data as {batch_code:string;batch?:Record<string,unknown>};const raw=saved.batch||{};
+      if (bundleTenRowsForSave.length) {
+        await persistBundleTenSelectionAudit("batch", bundleTenRowsForSave, {
+          batchCode: saved.batch_code,
+          productionBatchId: raw.id == null ? null : String(raw.id),
+        });
+      }
       setCreatedBatch(hydrateProductionBatch({...raw,batch_code:saved.batch_code,order_ids:orders,worker_name:activeWorker["Teljes nev"],production_meta:meta,machine_id:machine,created_at:raw.created_at||new Date().toISOString(),start_time:raw.start_time||new Date().toISOString()}));
       if(routed.size)await updateScrapReplacementOrders(orders,"SZABAS_FOLYAMATBAN",{started_at:new Date().toISOString()});
       await stopScannerAsync();setScanModalOpen(false);
@@ -37679,6 +38820,11 @@ body {
     }
 
     const ordersForSave = [...batchOrders].map((order) => String(order).trim()).filter(Boolean);
+    const bundleTenRowsForSave = isEventTenVisualWorker()
+      ? bundleTenSelectedRowKeys
+          .map((key) => getBundleTenRowByKey(key))
+          .filter((row): row is BundleTenSelectableRow => !!row)
+      : [];
     const isTwoStageAsztalos = isTwoStageAsztalosWorker(activeWorker);
     if (isTwoStageAsztalos && selectedBatchOperation !== "SZABAS") {
       setMessage({ type: "error", text: "Asztalos köteg létrehozásakor először a Szabás műveletet kell kiválasztani." });
@@ -37773,6 +38919,18 @@ body {
         .single();
 
       if (error) throw error;
+
+      if (isEventTenVisualWorker() && bundleTenRowsForSave.length > 0) {
+        try {
+          await persistBundleTenSelectionAudit("batch", bundleTenRowsForSave, {
+            batchCode: data?.batch_code ?? generatedBatchCode,
+            productionBatchId: data?.id ?? null,
+          });
+        } catch (auditError) {
+          console.error("10-es köteg kártyasor audit mentési hiba:", auditError);
+          throw new Error(`A köteg START elmentődött, de a kiválasztott kártyasorok audit mentése sikertelen: ${normalizeError(auditError)}. Ne indítsd újra a köteget.`);
+        }
+      }
 
       if (routedScrapMapForBatchStart.size > 0) {
         await updateScrapReplacementOrders(
@@ -38573,6 +39731,13 @@ body {
     // Az 5-ös szerelő selejtjelentés is END művelet: az END kód mindig kötelező.
     if(action==="END"&&(!endBarcodeConfirmed||!isEndBarcode(confirmedCode||actionBarcode))){setMessage({type:"error",text:"Előbb erősítsd meg az END kódot Enterrel."});return;}
     const state=szerelesOrderState;
+    const bundleTenSelectionForSzerelesStart = action === "START" && isEventTenVisualWorker()
+      ? getBundleTenRowByKey(bundleTenSingleSelectionKey)
+      : null;
+    if (action === "START" && isEventTenVisualWorker() && (!bundleTenSelectionForSzerelesStart || normalizeLooseText(bundleTenSelectionForSzerelesStart.orderNumber) !== normalizeLooseText(order))) {
+      setMessage({ type: "error", text: "A 10-es eseménykötegnél előbb kattintással válaszd ki a konkrét kártyasort." });
+      return;
+    }
     const newCycle=action==="START"&&szerelesNewCycle;
     const rework=action==="START"&&szerelesRework;
     const legacyClose=action==="END"&&szerelesLegacyEndMode&&state.legacy_open;
@@ -38629,6 +39794,7 @@ body {
         szereles_start_reszek:parts,
         szereles_scrap_hold_parts:scrapHoldParts,
         szereles_scrap_tok_meret:toklecScrap?cleanTokSize:null,
+        ...(bundleTenSelectionForSzerelesStart ? getBundleTenSourceMeta(bundleTenSelectionForSzerelesStart) : {}),
       };
       if(action==="START"){
         const groupCheck=await findStartGroupConflicts([order],{currentMachineId:machine});
@@ -38649,7 +39815,10 @@ body {
       setFlowStage("szereles-choice");setStep(5);
       const saved=result.saved_rows[0];
       const savedId=saved?.id||`${order}-${Date.now()}`;
-      const savedAt=saved?.ended_at||new Date().toISOString();
+      const savedAt=saved?.ended_at||saved?.started_at||new Date().toISOString();
+      if(action==="START"&&bundleTenSelectionForSzerelesStart){
+        await persistBundleTenSelectionAudit("single",[bundleTenSelectionForSzerelesStart],{workLogId:savedId});
+      }
       if(action==="START"&&routed)await updateSingleScrapReplacement(routed,getScrapReplacementStartStatus(routed,machine),savedAt);
       if(action==="END"){
         if(hasScrap&&scrapRoute)await createScrapReplacementFromSheetScrap({
@@ -38664,7 +39833,12 @@ body {
       const holdText=scrapHoldParts.length?` ${scrapHoldParts.map(szerelesPartLabel).join(" + ")} folyamatban maradt, az időmérés tovább fut.`:"";
       setMessage({type:"success",text:`${legacyClose?"Régi munkamenet END":""+action} sikeresen rögzítve. ${order}: ${parts.map(szerelesPartLabel).join(" + ")}.${holdText} ${szerelesStateLabel(result.state)}. A korábbi adatok megmaradtak.`});
     }catch(error){
-      setMessage({type:"error",text:committed?`A munkamenet mentése sikerült, de egy kapcsolódó művelet hibázott: ${normalizeError(error)}. Az END-et ne ismételd meg; ellenőrizd a selejtpótlást.`:normalizeError(error)});
+      setMessage({
+        type:"error",
+        text:committed
+          ? `A munkamenet mentése sikerült, de egy kapcsolódó művelet hibázott: ${normalizeError(error)}. ${action === "START" ? "A START-ot ne ismételd meg; ellenőrizd a folyamatban lévő rendelést." : "Az END-et ne ismételd meg; ellenőrizd a selejtpótlást."}`
+          : normalizeError(error)
+      });
     }finally{setBusy(false);window.setTimeout(()=>{batchFinalizeInFlightRef.current=false;},320);}
   }
 
@@ -39472,6 +40646,29 @@ body {
 
     setActionBarcode(raw);
 
+    if (
+      effectiveAction === "START"
+      && requiresSzerelesStartParts()
+      && workflowMode === "single"
+      && szerelesOrderState
+    ) {
+      setEndBarcodeConfirmed(true);
+      await saveSzerelesSession("START", undefined, raw);
+      return;
+    }
+
+    if (
+      effectiveAction === "START"
+      && isEventTenVisualWorker()
+      && workflowMode === "single"
+      && orderNumber.trim()
+    ) {
+      // A 10-es módban a konkrét rendelést már kattintással kiválasztottuk,
+      // ezért a helyes START kód azonnal ezt a sort indítja el.
+      await finalizeSingleOrderCreation(orderNumber.trim());
+      return;
+    }
+
     if (effectiveAction === "START" && workflowMode === "batch") {
       setOrderNumber("");
       await finalizeBatchCreation();
@@ -39500,10 +40697,6 @@ body {
       return;
     }
 
-    if(requiresSzerelesStartParts() && workflowMode==="single" && szerelesOrderState){
-      setActionBarcode(raw);setEndBarcodeConfirmed(true);
-      await saveSzerelesSession("START",undefined,raw);return;
-    }
     setEndBarcodeConfirmed(true);
     setFlowStage("order-scan");
     setStep(5);
@@ -41193,7 +42386,9 @@ body {
               ) : flowStage === "batch-selection" ? (
                 <>
                   <div style={{ marginBottom: 18, color: "#cbd5e1" }}>
-                    {workerEventKoteg === 3 ? (
+                    {workerEventKoteg === 10 ? (
+                      <>10-es kattintásos mód: válaszd a <strong>Köteg létrehozása</strong>, <strong>Egyedi rendelés</strong> vagy <strong>Folyamatban lévő kötegek</strong> lehetőséget.</>
+                    ) : workerEventKoteg === 3 ? (
                       <>Az asztalos folyamatban választhatsz <strong>Szabás köteget</strong>, egyedi rendelést vagy a folyamatban lévő Szabás/Marás kötegek kezelését.</>
                     ) : (
                       <>A dolgozóhoz tartozó folyamat szerint most el kell dönteni, hogy <strong>köteg rendelést</strong> vagy <strong>egyedi rendelést</strong> szeretnél rögzíteni.</>
@@ -41252,7 +42447,7 @@ body {
                       marginBottom: 18,
                     }}
                   >
-                    {orderTypeCards.filter((card) => card.id !== "batch" || [2, 3, 5].includes(Number(getWorkerEsemenyKotegValue(activeWorker)))).map((card) => {
+                    {orderTypeCards.filter((card) => card.id !== "batch" || [2, 3, 5, 10].includes(Number(getWorkerEsemenyKotegValue(activeWorker)))).map((card) => {
                       const isSelected = workflowMode === card.id;
                       const displayedTitle = workerEventKoteg === 3 && card.id === "batch" ? "Szabás köteg" : card.title;
                       const displayedDescription = workerEventKoteg === 3 && card.id === "batch"
@@ -41410,7 +42605,9 @@ body {
 
           {step === 5 && activeWorker && !isManagementDashboardWorker(activeWorker) && (
             <div>
-              {requiresSzerelesStartParts() && flowStage==="szereles-choice" && szerelesOrderState ? (
+              {isEventTenVisualWorker() && flowStage === "visual-order-selection" ? (
+                renderBundleTenVisualSelection()
+              ) : requiresSzerelesStartParts() && flowStage==="szereles-choice" && szerelesOrderState ? (
                 <div style={{padding:16,background:"#0f172a",border:"1px solid #334155",borderRadius:12}}>
                   <h3 style={{marginTop:0}}>Rendelés: {orderNumber}</h3>
                   {renderSzerelesSessionStatus(szerelesOrderState)}
@@ -41420,7 +42617,21 @@ body {
                     <button type="button" style={buttonPrimary} disabled={busy||szerelesOrderState.legacy_open} onClick={()=>selectSzerelesAction("START")}>Új rész indítása</button>
                     <button type="button" style={buttonSecondary} disabled={busy||szerelesOrderState.legacy_open||!(["nyilo","tok"] as SzerelesPart[]).some(p=>szerelesOrderState.parts[p].state==="in_progress")} onClick={()=>selectSzerelesAction("END")}>Folyamatban lévő rész befejezése</button>
                     <button type="button" style={buttonSecondary} disabled={busy} onClick={()=>void openSzerelesOrderChoice(orderNumber)}>Állapot frissítése</button>
-                    <button type="button" style={buttonSecondary} onClick={()=>{setSzerelesOrderState(null);setFlowStage("order-scan");setOrderNumber("");}}>Másik rendelés</button>
+                    <button
+                      type="button"
+                      style={buttonSecondary}
+                      onClick={() => {
+                        if (isEventTenVisualWorker()) {
+                          void openBundleTenVisualSelection("single");
+                          return;
+                        }
+                        setSzerelesOrderState(null);
+                        setFlowStage("order-scan");
+                        setOrderNumber("");
+                      }}
+                    >
+                      Másik rendelés
+                    </button>
                   </div>
                 </div>
               ) : workflowMode === "end" ? (
