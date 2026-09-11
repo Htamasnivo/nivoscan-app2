@@ -11781,6 +11781,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   function DataUploadAdmin(): React.JSX.Element {
     const theme = getOfficeTheme("data-upload");
+    const pageShellStyle: React.CSSProperties = {
+      background: theme.pageBackground,
+      border: `1px solid ${theme.borderColor}`,
+      borderRadius: 18,
+      padding: 18,
+      color: theme.textColor,
+    };
     const panel: React.CSSProperties = {
       border: `${theme.borderWidth}px solid ${theme.borderColor}`,
       borderRadius: theme.borderRadius,
