@@ -8597,8 +8597,25 @@ export default function Page() {
         };
       });
 
-    const backlogRows = (terminalProductionCardData.backlogRows || [])
-      .filter((row) => String(row.orderNumber || "").trim())
+    // UGYANAZ a látható Lemaradási lista, mint a jobb oldali monitoron:
+    // 1) csak valódi, nem Kész sorok;
+    // 2) ugyanaz az SOS-rendezés;
+    // 3) azonos SOS értéknél megmarad a backlogRows eredeti sorrendje.
+    //
+    // A normál Termelési kártyához NEM nyúlunk: ott az END-es sor továbbra is
+    // Kész/zöld marad. Csak a Lemaradási kártyáról tűnik el.
+    const visibleMonitorBacklogRows = (terminalProductionCardData.backlogRows || [])
+      .filter((row) => String(row.orderNumber || "").trim() && row.status !== "done")
+      .map((row, index) => ({ row, index }))
+      .sort((left, right) => {
+        const sosDifference =
+          Number(getProductionCardRowSos(right.row, "backlog"))
+          - Number(getProductionCardRowSos(left.row, "backlog"));
+        return sosDifference !== 0 ? sosDifference : left.index - right.index;
+      })
+      .map(({ row }) => row);
+
+    const backlogRows = visibleMonitorBacklogRows
       .map((row, index): BundleTenSelectableRow => {
         const sourceRowId = String(row.id ?? index);
         return {
@@ -15409,12 +15426,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           && !getExecutiveCompletionMarker(row.planData)
         );
 
-      const recurringOverdueRows=isEventTenVisualWorker()
-        ? []
-        : overdueSourceRows.filter(row=>recurringSnapshot.names.has(recurringNameKey(row.productName)));
-      const legacyOverdueRows=isEventTenVisualWorker()
-        ? overdueSourceRows
-        : overdueSourceRows.filter(row=>!recurringSnapshot.names.has(recurringNameKey(row.productName)));
+      // A lemaradási sorforrás minden nézetben ugyanaz.
+      // A 10-es kattintásos kiválasztó sem építhet külön lemaradási listát:
+      // pontosan ugyanabból a backlogRows eredményből dolgozik, mint a monitor.
+      const recurringOverdueRows=overdueSourceRows.filter(row=>recurringSnapshot.names.has(recurringNameKey(row.productName)));
+      const legacyOverdueRows=overdueSourceRows.filter(row=>!recurringSnapshot.names.has(recurringNameKey(row.productName)));
       const overdueOrderNumbers = Array.from(new Set(legacyOverdueRows.map((row) => row.orderNumber)));
       const szinterPlanRowCounts = new Map<string, number>();
       if (getStationPlanIdentityKey(cleanStationName) === "szinter") {
@@ -33940,8 +33956,8 @@ body {
           </div>
           <div style={{ marginTop: 6, color: "#94a3b8", fontSize: 13 }}>
             {mode === "batch"
-              ? "Több Várakozó vagy Kész sort jelölhetsz ki. A Kész sor automatikusan újragyártásként indul; nincs külön újragyártási választó. Azonos rendelésszám esetén is a konkrétan kattintott kártyasor kerül eltárolásra."
-              : "Várakozó sor normál START-tal indul. Kész sor automatikusan újragyártásként indul, külön kérdés nélkül. A nem kötegben futó, folyamatban lévő sorra kattintva közvetlenül az END felület nyílik meg."}
+              ? "A megjelenő kártyákból jelölhetsz ki sorokat. A Lemaradási kártya pontosan a monitor nem Kész sorait mutatja; a Termelési/Prioritási kártyán megjelenő Kész sor automatikusan újragyártásként indul. Azonos rendelésszám esetén is a konkrétan kattintott kártyasor kerül eltárolásra."
+              : "A Lemaradási kártya pontosan a monitor nem Kész sorait mutatja. Várakozó sor normál START-tal indul; folyamatban lévő sorra kattintva közvetlenül az END felület nyílik meg. A Termelési/Prioritási kártyán megjelenő Kész sor automatikusan újragyártásként indul."}
           </div>
         </div>
 
