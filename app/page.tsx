@@ -14777,17 +14777,57 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   };
 
   function getSzerelesScrapReportCounts(sourceLogs: WorkLogRow[]): SzerelesScrapReportCounts {
-    return sourceLogs.reduce<SzerelesScrapReportCounts>((counts, log) => {
-      // Csak ténylegesen mentett END/lezárt audit sor számít jelentésnek.
-      // Így egy START soron esetleg örökölt jelző nem növeli tévesen a számlálót.
+    // Egy selejtjelentés a Szerelés RPC-ben akár több részhez is létrehozhat END audit sort
+    // (pl. Nyíló + Tok egyszerre). A # számláló jelentésenként nőjön, ne audit-soronként.
+    const outerReports = new Set<string>();
+    const innerReports = new Set<string>();
+    const toklecReports = new Set<string>();
+
+    sourceLogs.forEach((log) => {
       const savedEnd = String(log.action || "").toUpperCase() === "END"
         || Boolean(log.end_time || log.end_timestamp);
-      if (!savedEnd) return counts;
-      if (log.kulso_lap_selejt === true) counts.kulsoLap += 1;
-      if (log.belso_lap_selejt === true) counts.belsoLap += 1;
-      if (log.toklec_selejt === true) counts.toklec += 1;
-      return counts;
-    }, { kulsoLap: 0, belsoLap: 0, toklec: 0 });
+      if (!savedEnd) return;
+
+      const metadata = getStructuredNoteMetadata(log.note);
+      const reportTimestamp = String(
+        metadata.scrap_reported_at
+        || metadata.repair_reported_at
+        || log.end_time
+        || log.end_timestamp
+        || log.created_at
+        || ""
+      ).trim();
+      const sourceStartId = String(metadata.source_start_id || "").trim();
+      const cycleId = String(log.szereles_ciklus_id || "").trim();
+      const reportKey = String(metadata.scrap_report_id || "").trim()
+        || (reportTimestamp ? `${normalizeLooseText(log.order_number)}|${cycleId}|${reportTimestamp}` : "")
+        || (sourceStartId ? `${normalizeLooseText(log.order_number)}|${sourceStartId}` : "")
+        || `log:${String(log.id ?? `${log.created_at}-${log.szereles_resz || ""}`)}`;
+
+      if (log.kulso_lap_selejt === true) outerReports.add(reportKey);
+      if (log.belso_lap_selejt === true) innerReports.add(reportKey);
+      if (log.toklec_selejt === true) toklecReports.add(reportKey);
+    });
+
+    return {
+      kulsoLap: outerReports.size,
+      belsoLap: innerReports.size,
+      toklec: toklecReports.size,
+    };
+  }
+
+  function mergeSzerelesScrapReportCounts(
+    workLogCounts: SzerelesScrapReportCounts,
+    persistedRouteCounts?: SzerelesScrapReportCounts
+  ): SzerelesScrapReportCounts {
+    if (!persistedRouteCounts) return workLogCounts;
+    // Ugyanaz a selejt szerepelhet work_logs auditként és selejtpótlási útvonalként is.
+    // A maximum biztosítja a tartós visszajelzést, de ugyanazt az eseményt nem duplázza.
+    return {
+      kulsoLap: Math.max(workLogCounts.kulsoLap, persistedRouteCounts.kulsoLap),
+      belsoLap: Math.max(workLogCounts.belsoLap, persistedRouteCounts.belsoLap),
+      toklec: Math.max(workLogCounts.toklec, persistedRouteCounts.toklec),
+    };
   }
 
   function getSzerelesNyiloScrapLabel(row: {
@@ -15997,6 +16037,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     // ==========================================================
 
     const scrapReplacementRows: ScrapReplacementRow[] = [];
+    // Tartós fallback a Szerelés kártyás selejt-visszajelzéshez.
+    // A selejtpótlási tábla riportálható, adatbázisban tárolt eseményeit használjuk,
+    // ha a work_logs audit sor még nem/eltérően jelenik meg. Egy event_id csak egyszer számít.
+    const persistedSzerelesScrapCountsByOrder = new Map<string, SzerelesScrapReportCounts>();
     {
       const { data: replacementData, error: replacementError } = await supabase
         .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
@@ -16016,6 +16060,31 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         };
         const allNormalizedRows = ((replacementData || []) as ScrapReplacementRow[]).map(normalizeScrapReplacementRow);
         const normalizedStationKey = normalizeLooseText(cleanStationName);
+
+        if (getStationPlanIdentityKey(cleanStationName) === "szereles") {
+          const reportSetsByOrder = new Map<string, { outer: Set<string>; inner: Set<string>; toklec: Set<string> }>();
+          allNormalizedRows
+            .filter((row) => normalizeLooseText(row.source_station) === normalizedStationKey)
+            .forEach((row) => {
+              const orderKey = normalizeLooseText(row.order_number);
+              if (!orderKey) return;
+              const current = reportSetsByOrder.get(orderKey) || { outer: new Set<string>(), inner: new Set<string>(), toklec: new Set<string>() };
+              const reportKey = String(row.event_id || row.source_work_log_id || "").trim()
+                || `${orderKey}|${String(row.reported_at || "").trim()}|${String(row.megjegyzes || "").trim()}`;
+              if (row.kulso_lap_selejt) current.outer.add(reportKey);
+              if (row.belso_lap_selejt) current.inner.add(reportKey);
+              if (row.toklec_selejt) current.toklec.add(reportKey);
+              reportSetsByOrder.set(orderKey, current);
+            });
+          reportSetsByOrder.forEach((sets, orderKey) => {
+            persistedSzerelesScrapCountsByOrder.set(orderKey, {
+              kulsoLap: sets.outer.size,
+              belsoLap: sets.inner.size,
+              toklec: sets.toklec.size,
+            });
+          });
+        }
+
         const normalizedReplacementRows = allNormalizedRows
           .filter((row) => {
             const targetMatches = row.target_station
@@ -16274,7 +16343,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             && batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(priorityRow.orderNumber))
         );
         const doorState = resolveProductionCardWorkers(priorityLogs, priorityBatches, priorityRow.orderNumber);
-        const scrapCounts = getSzerelesScrapReportCounts(priorityLogs);
+        const scrapCounts = mergeSzerelesScrapReportCounts(
+          getSzerelesScrapReportCounts(priorityLogs),
+          persistedSzerelesScrapCountsByOrder.get(normalizeLooseText(priorityRow.orderNumber))
+        );
         priorityRow.doorWorkflow = doorState.doorWorkflow;
         priorityRow.tokKesz = doorState.tokKesz;
         priorityRow.nyiloKesz = doorState.nyiloKesz;
@@ -16473,7 +16545,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(orderNumber));
         });
         const workerStatus = resolveProductionCardWorkers(rowLogs, rowBatchStarts, orderNumber);
-        const rowScrapCounts = getSzerelesScrapReportCounts(rowLogs);
+        const rowScrapCounts = mergeSzerelesScrapReportCounts(
+          getSzerelesScrapReportCounts(rowLogs),
+          persistedSzerelesScrapCountsByOrder.get(normalizeLooseText(orderNumber))
+        );
         const hasBundleTenScopedGroupActivity =
           rowLogs.some((log) => Boolean(getBundleTenVisualIdentityFromLog(log)))
           || rowBatchStarts.some((batch) => getBundleTenVisualIdentitiesFromBatch(batch, orderNumber).length > 0);
@@ -16875,7 +16950,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const allOrderLogs = logs.filter(
         (log) => normalizeLooseText(log.order_number) === normalizeLooseText(planRow.orderNumber) && !isExecutiveCompletionLog(log)
       );
-      const rowScrapCounts = getSzerelesScrapReportCounts(allOrderLogs);
+      const rowScrapCounts = mergeSzerelesScrapReportCounts(
+        getSzerelesScrapReportCounts(allOrderLogs),
+        persistedSzerelesScrapCountsByOrder.get(normalizeLooseText(planRow.orderNumber))
+      );
       const rowLogs = filterBundleTenVisualLogsForCardRow(
         allOrderLogs,
         "production-plan",
@@ -41142,6 +41220,7 @@ body {
     const hasScrap=action==="END"&&(outerSheetScrap||innerSheetScrap||toklecScrap);
     const hasRepair=action==="END"&&eventFiveRepairStationKeys.length>0;
     const legacyClose=action==="END"&&szerelesLegacyEndMode&&state.legacy_open;
+    const shouldReturnToMainAfterReport=action==="END"&&!legacyClose&&(hasScrap||hasRepair);
     const runningParts=(["nyilo","tok"] as SzerelesPart[]).filter(part=>state.parts[part].state==="in_progress"&&!!state.parts[part].open_id);
 
     // 5-ös eseményköteg: selejt / Javítás / Újragyártás END csak jelentés.
@@ -41325,7 +41404,7 @@ body {
 
       committed=true;
       setSzerelesOrderState(result.state);setSzerelesLegacyEndMode(false);setSzerelesEndParts([]);setPendingAction(null);setActionBarcode("");setEndBarcodeConfirmed(false);
-      setFlowStage("szereles-choice");setStep(5);
+      if(!shouldReturnToMainAfterReport){setFlowStage("szereles-choice");setStep(5);}
       const saved=result.saved_rows[0];
       const savedId=saved?.id||`${order}-${Date.now()}`;
       const savedAt=saved?.ended_at||saved?.started_at||new Date().toISOString();
@@ -41347,11 +41426,59 @@ body {
         if(routed&&(!legacyClose||result.state.is_complete))await updateSingleScrapReplacement(routed,"KESZ",savedAt);
       }
 
+      // Sikeres selejt/javítás END után előbb újraolvassuk a teljes Szerelés kártyaadatot.
+      // Egy betöltés frissíti a Termelési, Lemaradási és Prioritási kártyát is.
+      // Csak sikeres adatbázis- és kapcsolódó mentések után lépünk vissza a főképernyőre.
+      if(shouldReturnToMainAfterReport){
+        const previousRowsForOrder = [
+          ...(terminalProductionCardData.rows || []),
+          ...(terminalProductionCardData.backlogRows || []),
+          ...(terminalProductionCardData.priorityRows || []),
+        ].filter((row) => normalizeLooseText(row.orderNumber) === normalizeLooseText(order));
+        const previousCounts = previousRowsForOrder.reduce<SzerelesScrapReportCounts>((counts, row) => ({
+          kulsoLap: Math.max(counts.kulsoLap, Number(row.kulsoLapSelejtCount || 0)),
+          belsoLap: Math.max(counts.belsoLap, Number(row.belsoLapSelejtCount || 0)),
+          toklec: Math.max(counts.toklec, Number(row.toklecSelejtCount || 0)),
+        }), { kulsoLap: 0, belsoLap: 0, toklec: 0 });
+
+        // Közvetlen fetch-et használunk, mert a háttérfrissítő wrapper a saját hibáit
+        // UI-szinten kezeli. Itt viszont csak akkor szabad főképernyőre lépni, ha
+        // ténylegesen vissza is olvasható a most elmentett selejt.
+        const refreshedCard = await fetchProductionCardData(machine, getLocalDateKey(new Date()));
+        if(hasScrap){
+          const refreshedRowsForOrder = [
+            ...(refreshedCard.rows || []),
+            ...(refreshedCard.backlogRows || []),
+            ...(refreshedCard.priorityRows || []),
+          ].filter((row) => normalizeLooseText(row.orderNumber) === normalizeLooseText(order));
+          const refreshedCounts = refreshedRowsForOrder.reduce<SzerelesScrapReportCounts>((counts, row) => ({
+            kulsoLap: Math.max(counts.kulsoLap, Number(row.kulsoLapSelejtCount || 0)),
+            belsoLap: Math.max(counts.belsoLap, Number(row.belsoLapSelejtCount || 0)),
+            toklec: Math.max(counts.toklec, Number(row.toklecSelejtCount || 0)),
+          }), { kulsoLap: 0, belsoLap: 0, toklec: 0 });
+          const outerOk = !outerSheetScrap || refreshedCounts.kulsoLap >= previousCounts.kulsoLap + 1;
+          const innerOk = !innerSheetScrap || refreshedCounts.belsoLap >= previousCounts.belsoLap + 1;
+          const toklecOk = !toklecScrap || refreshedCounts.toklec >= previousCounts.toklec + 1;
+          if(!outerOk || !innerOk || !toklecOk){
+            throw new Error("A selejt mentése megtörtént, de a Szerelés kártya friss visszaolvasásában még nem jelent meg a selejt számláló. A főképernyőre lépés leállt, hogy ne vesszen el a visszaellenőrzés.");
+          }
+        }
+        setTerminalProductionCardData(refreshedCard);
+      }
+
       // Sikeres END után minden selejt/javítás választás ürül. Így ugyanarra a
       // folyamatban maradó rendelésre később új, külön selejtjelentés készíthető.
       resetAfterSave();
+      if(shouldReturnToMainAfterReport){
+        // A resetAfterSave eleve ezt teszi, de itt explicit is rögzítjük a selejtes END
+        // navigációját, hogy semmilyen korábbi 5. lépés state ne tarthassa nyitva az END nézetet.
+        setStepHistory([]);
+        setStepFromHistory(1);
+        setFlowStage("idle");
+        setTerminalView("scanner");
+      }
 
-      const nonClosingReport=action==="END"&&!legacyClose&&(hasScrap||hasRepair);
+      const nonClosingReport=shouldReturnToMainAfterReport;
       const reportLabels=[
         outerSheetScrap?"Külső lap selejt":"",
         innerSheetScrap?"Belső lap selejt":"",
