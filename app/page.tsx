@@ -3018,6 +3018,60 @@ const PRINTER_SETTINGS_TABLE = "printer_settings";
 const LABEL_TEMPLATES_TABLE = "label_templates";
 const LABEL_PRINT_LOG_TABLE = "label_print_log";
 const DYNAMIC_PRODUCTION_PLAN_TABLE = "termelesi_terv";
+// A központi termelesi_terv tábla tényleges, állomási adatként közvetlenül
+// írható oszlopai. Minden más munkaállomás-specifikus Excel-mező kizárólag
+// az `adat` JSONB-ben marad, így egy új/extra mező nem tud PostgREST
+// schema-cache hibát okozni. A kulcs/meta mezőket (machine_name, sorszam,
+// elkeszules_datum, adat, source_file, imported_at, updated_at) a szinkron
+// külön kezeli, ezért itt nem szükségesek.
+const DYNAMIC_PRODUCTION_PLAN_DIRECT_COLUMN_KEYS = new Set<string>([
+  "gyartasi_szam",
+  "gyartasi_szam_projekt_neve",
+  "megnevezes",
+  "mennyiseg",
+  "tipus",
+  "megjegyzes",
+  "rsz",
+  "ajto_tipus",
+  "szogvas",
+  "tok_szelesseg",
+  "tok_magassag",
+  "szarny",
+  "bevilagitok_szama",
+  "bevilagito_szama",
+  "normaido",
+  "szin",
+  "osszef",
+  "hegesztett_pant",
+  "hegesztett_pant2",
+  "nyitas",
+  "uveg",
+  "takaro_kivul",
+  "takaro_belul",
+  "takaro_kivul2",
+  "takaro_belul2",
+  "takaroval",
+  "tokozat_szine",
+  "takaro",
+  "osszefogo_lemez",
+  "beszereles_datuma",
+  "uveges",
+  "kulso_lap",
+  "fa_szine_kivul",
+  "belso_lap",
+  "fa_szine_belul",
+  "beepites_datuma",
+  "elszallitos",
+  "szinter",
+  "foliazo",
+  "raktar",
+  "elszallitos_telephely",
+  "statusz",
+  "kiszallitasi_datum",
+  "termek",
+  "uzletag",
+  "sos",
+]);
 const WINDOWS_PRINTERS_API = "/api/windows-printers";
 const LABEL_PRINT_API = "/api/label-print";
 const LOCAL_PRINTER_AGENT_BASE = "http://127.0.0.1:17861";
@@ -26454,6 +26508,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         if (definition.key === "sorszam" || definition.key === "elkeszules_datum") return;
         if (isPrimaPowerPlanStation(stationName)
             && PRIMAPOWER_NEW_FIELD_KEYS.some((key) => key === definition.key)) return;
+
+        // A termelesi_terv-be csak ténylegesen létező közvetlen oszlopot küldünk.
+        // Pl. Szerelésnél az atvetel / telephely / nyilo_normaido / tok_normaido / ell
+        // továbbra is teljes egészében megmarad a sourceData -> adat JSONB-ben,
+        // viszont nem kerül hibásan külön PostgREST-oszlopként a payloadba.
+        if (!DYNAMIC_PRODUCTION_PLAN_DIRECT_COLUMN_KEYS.has(definition.key)) return;
+
         const value = rawRow[definition.key] !== undefined ? rawRow[definition.key] : sourceData[definition.key];
         directFields[definition.key] = value === undefined ? null : value;
       });
@@ -34404,6 +34465,19 @@ body {
       return;
     }
 
+    // 10-es KÖTEG mód: a normál állomásokon a többes kijelölést kizárólag
+    // funkcionális state-frissítéssel kezeljük. Így gyors egymás utáni kattintásoknál
+    // sem tud egy korábbi render állapota felülírni már kijelölt sorokat.
+    // Nincs darabszámkorlát: minden konkrét kártyasor külön hozzáadható / kivehető.
+    if (!requiresSzerelesStartParts()) {
+      setBundleTenSelectedRowKeys((current) =>
+        current.includes(row.key)
+          ? current.filter((key) => key !== row.key)
+          : [...current, row.key]
+      );
+      return;
+    }
+
     const alreadySelected = bundleTenSelectedRowKeys.includes(row.key);
     if (alreadySelected) {
       setBundleTenSelectedRowKeys((current) => current.filter((key) => key !== row.key));
@@ -34466,12 +34540,6 @@ body {
       return;
     }
 
-    setBundleTenSelectedRowKeys((current) => {
-      // Köteg módban minden konkrét kártyasor önálló kijelölés.
-      // Azonos rendelésszámú, de más forrássorok is egyszerre kijelölhetők.
-      if (current.includes(row.key)) return current;
-      return [...current, row.key];
-    });
   }
 
   async function prepareBundleTenSingleStart(): Promise<void> {
