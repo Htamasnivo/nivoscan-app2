@@ -40981,12 +40981,31 @@ body {
     if(batchFinalizeInFlightRef.current||busy)return;
     if(!supabase||!activeWorker||!szerelesOrderState){setMessage({type:"error",text:"Előbb olvasd be a rendelést és válassz műveletet."});return;}
     const order=(overrides?.orderNumber||orderNumber).trim();
-    const parts=(action==="START"?normalizeSzerelesStartParts(szerelesStartParts):szerelesEndParts) as SzerelesPart[];
-    if(parts.length===0){setMessage({type:"error",text:action==="START"?"START előtt válaszd ki a Nyílót, a Tokot vagy mindkettőt.":"END előtt kötelező legalább egy folyamatban lévő rész kiválasztása."});return;}
-    if(action==="START"&&!isEventTenVisualWorker()&&!isStartBarcode(confirmedCode||actionBarcode)){setMessage({type:"error",text:"Előbb olvasd be és erősítsd meg a START kódot."});return;}
-    // Az 5-ös szerelő selejtjelentés is END művelet: az END kód mindig kötelező.
-    if(action==="END"&&(!endBarcodeConfirmed||!isEndBarcode(confirmedCode||actionBarcode))){setMessage({type:"error",text:"Előbb erősítsd meg az END kódot Enterrel."});return;}
     const state=szerelesOrderState;
+    const requestedParts=(action==="START"?normalizeSzerelesStartParts(szerelesStartParts):szerelesEndParts) as SzerelesPart[];
+    const hasScrap=action==="END"&&(outerSheetScrap||innerSheetScrap||toklecScrap);
+    const hasRepair=action==="END"&&eventFiveRepairStationKeys.length>0;
+    const legacyClose=action==="END"&&szerelesLegacyEndMode&&state.legacy_open;
+    const runningParts=(["nyilo","tok"] as SzerelesPart[]).filter(part=>state.parts[part].state==="in_progress"&&!!state.parts[part].open_id);
+
+    // 5-ös eseményköteg: selejt / Javítás / Újragyártás END csak jelentés.
+    // Ilyenkor a folyamatban lévő Nyíló/Tok munkamenetet NEM zárjuk le.
+    // Selejtnél a releváns részt automatikusan azonosítjuk a pipa alapján, így
+    // a dolgozónak nem kell külön a "Nyíló/Tok befejezés" pipát is megjelölnie.
+    const automaticScrapParts:SzerelesPart[]=!legacyClose&&hasScrap
+      ? (["nyilo","tok"] as SzerelesPart[]).filter(part=>
+          part==="nyilo"
+            ? (outerSheetScrap||innerSheetScrap)&&state.parts.nyilo.state==="in_progress"&&!!state.parts.nyilo.open_id
+            : toklecScrap&&state.parts.tok.state==="in_progress"&&!!state.parts.tok.open_id)
+      : [];
+    const parts:SzerelesPart[]=!legacyClose&&hasScrap ? automaticScrapParts : requestedParts;
+
+    if(action==="START"&&parts.length===0){setMessage({type:"error",text:"START előtt válaszd ki a Nyílót, a Tokot vagy mindkettőt."});return;}
+    if(action==="END"&&!legacyClose&&!hasScrap&&!hasRepair&&parts.length===0){setMessage({type:"error",text:"END előtt kötelező legalább egy folyamatban lévő rész kiválasztása."});return;}
+    if(action==="START"&&!isEventTenVisualWorker()&&!isStartBarcode(confirmedCode||actionBarcode)){setMessage({type:"error",text:"Előbb olvasd be és erősítsd meg a START kódot."});return;}
+    // Az 5-ös szerelő selejt / javítás jelentés is END művelet: az END kód mindig kötelező.
+    if(action==="END"&&(!endBarcodeConfirmed||!isEndBarcode(confirmedCode||actionBarcode))){setMessage({type:"error",text:"Előbb erősítsd meg az END kódot Enterrel."});return;}
+
     const bundleTenSelectionForSzerelesStart = action === "START" && isEventTenVisualWorker()
       ? getBundleTenRowByKey(bundleTenSingleSelectionKey)
       : null;
@@ -40997,9 +41016,9 @@ body {
       setMessage({ type: "error", text: "A 10-es eseménykötegnél előbb kattintással válaszd ki a konkrét kártyasort." });
       return;
     }
+
     const newCycle=action==="START"&&szerelesNewCycle;
     const rework=action==="START"&&szerelesRework;
-    const legacyClose=action==="END"&&szerelesLegacyEndMode&&state.legacy_open;
     if(state.legacy_open&&!legacyClose){setMessage({type:"error",text:"Régi közös START található. Használd a Régi munkamenet lezárása gombot."});return;}
     if(action==="START"){
       if(state.is_complete&&!newCycle){setMessage({type:"error",text:"A rendelés kész. Új gyártási ciklus indítását külön jelöld be."});return;}
@@ -41007,35 +41026,35 @@ body {
       if(parts.some(part=>state.parts[part].state==="in_progress")){setMessage({type:"error",text:"A kiválasztott rész már folyamatban van."});return;}
       if(!newCycle&&parts.some(part=>state.parts[part].done)&&!rework){setMessage({type:"error",text:"A már kész rész újraindításához jelöld be az új munkamenetet."});return;}
       if((newCycle||rework)&&!isEventTenVisualWorker()&&!window.confirm(newCycle?"Új gyártási ciklust indítasz. A korábbi munkamenetek és időmérések megmaradnak. Folytatod?":"A már kész részt új munkamenetként indítod. A korábbi idők megmaradnak. Folytatod?"))return;
-    }else if(!legacyClose&&parts.some(part=>state.parts[part].state!=="in_progress"||!state.parts[part].open_id)){
+    }else if(!legacyClose&&!hasScrap&&!hasRepair&&parts.some(part=>state.parts[part].state!=="in_progress"||!state.parts[part].open_id)){
       setMessage({type:"error",text:"Csak ténylegesen folyamatban lévő részt lehet befejezni. Frissítsd a rendelést."});return;
     }
 
     const note=(overrides?.note??endNote??"").trim();
-    const hasScrap=action==="END"&&(outerSheetScrap||innerSheetScrap||toklecScrap);
-    const hasRepair=action==="END"&&eventFiveRepairStationKeys.length>0;
-    // A selejt típusa dönti el, melyik időmérés marad nyitva:
-    // Külső/Belső lap -> Nyíló; Tokléc -> Tok.
-    const scrapHoldParts:SzerelesPart[]=!legacyClose&&action==="END"
+    if((hasScrap||hasRepair)&&!note){setMessage({type:"error",text:"Selejt vagy javítás/újragyártás esetén a Megjegyzés kötelező."});return;}
+    if(hasRepair&&!eventFiveRepairAction){setMessage({type:"error",text:"Válaszd ki: Javítás vagy Újragyártás."});return;}
+
+    if(!legacyClose&&action==="END"&&(outerSheetScrap||innerSheetScrap)&&!automaticScrapParts.includes("nyilo")){
+      setMessage({type:"error",text:"Külső vagy belső lap selejt csak akkor jelenthető, ha a Nyíló ténylegesen folyamatban van. A selejtjelentés nem zárja le a Nyíló munkamenetet."});return;
+    }
+    if(!legacyClose&&action==="END"&&toklecScrap&&!automaticScrapParts.includes("tok")){
+      setMessage({type:"error",text:"Tokléc selejt csak akkor jelenthető, ha a Tok ténylegesen folyamatban van. A selejtjelentés nem zárja le a Tok munkamenetet."});return;
+    }
+    if(!legacyClose&&action==="END"&&hasRepair&&!hasScrap&&runningParts.length===0){
+      setMessage({type:"error",text:"Javítás / Újragyártás csak folyamatban lévő Szerelés rendeléshez jelenthető."});return;
+    }
+
+    const scrapHoldParts:SzerelesPart[]=action==="END"&&hasScrap
       ? (["nyilo","tok"] as SzerelesPart[]).filter(part=>
           part==="nyilo"
             ? parts.includes("nyilo")&&(outerSheetScrap||innerSheetScrap)
             : parts.includes("tok")&&toklecScrap)
       : [];
-
-    if((hasScrap||hasRepair)&&!note){setMessage({type:"error",text:"Selejt vagy javítás/újragyártás esetén a Megjegyzés kötelező."});return;}
-    if(hasRepair&&!eventFiveRepairAction){setMessage({type:"error",text:"Válaszd ki: Javítás vagy Újragyártás."});return;}
-    if(!legacyClose&&action==="END"&&(outerSheetScrap||innerSheetScrap)&&!parts.includes("nyilo")){
-      setMessage({type:"error",text:"Külső vagy belső lap selejt jelentéséhez jelöld ki a Nyíló befejezést. A Nyíló az END rögzítése után is folyamatban marad."});return;
-    }
-    if(!legacyClose&&action==="END"&&toklecScrap&&!parts.includes("tok")){
-      setMessage({type:"error",text:"Tokléc selejt jelentéséhez jelöld ki a Tok befejezést. A Tok az END rögzítése után is folyamatban marad."});return;
-    }
     const cleanTokSize=toklecScrapSize.trim();
     if(action==="END"&&toklecScrap&&!/^\d+$/.test(cleanTokSize)){
       setMessage({type:"error",text:"Tokléc selejtnél a Tok mérete kötelező és csak számot tartalmazhat."});return;
     }
-    if(hasScrap&&!window.confirm(`Selejtjelölés kerül rögzítésre: ${[outerSheetScrap?"Külső lap":"",innerSheetScrap?"Belső lap":"",toklecScrap?"Tokléc":""].filter(Boolean).join(" + ")}. A szükséges selejtpótlási kártyák létrejönnek, az érintett ${scrapHoldParts.map(szerelesPartLabel).join(" + ")||"rész"} időmérése pedig tovább fut. Folytatod?`))return;
+    if(hasScrap&&!window.confirm(`Selejtjelölés kerül rögzítésre: ${[outerSheetScrap?"Külső lap":"",innerSheetScrap?"Belső lap":"",toklecScrap?"Tokléc":""].filter(Boolean).join(" + ")}. A szükséges selejtpótlási kártyák létrejönnek, az érintett ${scrapHoldParts.map(szerelesPartLabel).join(" + ")||"rész"} időmérése pedig tovább fut. A rendelés nem zárul le. Folytatod?`))return;
 
     batchFinalizeInFlightRef.current=true;setBusy(true);
     let committed=false;
@@ -41069,15 +41088,85 @@ body {
         if(groupCheck.conflicts.length){throw new Error(buildStartGroupConflictMessage(groupCheck,false));}
       }
       const expected:Record<string,string>={};
-      if(action==="END"&&!legacyClose)parts.forEach(part=>{expected[part]=state.parts[part].open_id!;});
+      if(action==="END"&&!legacyClose&&hasScrap)parts.forEach(part=>{expected[part]=state.parts[part].open_id!;});
+      if(action==="END"&&!legacyClose&&!hasScrap&&!hasRepair)parts.forEach(part=>{expected[part]=state.parts[part].open_id!;});
       const logFields=action==="END"?{
         kulso_lap_selejt:outerSheetScrap,belso_lap_selejt:innerSheetScrap,toklec_selejt:toklecScrap,
-        selejt_megjegyzes:hasScrap?note:null,selejt_forras_munkaallomas:hasScrap||hasRepair?machine:routed?.source_station||null,
+        selejt_megjegyzes:(hasScrap||hasRepair)?note:null,selejt_forras_munkaallomas:hasScrap||hasRepair?machine:routed?.source_station||null,
         selejt_potlas:!!routed,scrap_qty:null,darab:null,szal:null
       }:{selejt_potlas:!!routed,selejt_forras_munkaallomas:routed?.source_station||null};
-      const result=legacyClose
-        ? await runSzerelesLegacyClose(parts,{order,expectedId:state.legacy_open_id!,note,meta,logFields})
-        : await runSzerelesSession(action,parts,{order,meta,expected,newCycle,rework,note:action==="END"?note:null,logFields});
+
+      let result:{state:SzerelesOrderState;saved_rows:Array<{id:string|number;part:SzerelesPart;started_at:string;ended_at?:string}>};
+      if(action==="END"&&!legacyClose&&hasRepair&&!hasScrap){
+        // Javítás / Újragyártás jelentés: külön END audit sor készül, az eredeti START-ok
+        // érintetlenek maradnak, így az időmérés és a rendelés állapota folyamatosan fut tovább.
+        const auditAt=new Date().toISOString();
+        const auditMetadata:Record<string,unknown>={
+          event_bundle:5,
+          szereles_scrap_only:true,
+          szereles_repair_only:true,
+          szereles_part_held_open:true,
+          repair_action:eventFiveRepairAction,
+          repair_station_keys:[...eventFiveRepairStationKeys],
+          active_parts:[...runningParts],
+          source_start_ids:Object.fromEntries(runningParts.map(part=>[part,state.parts[part].open_id])),
+          closed_by_worker_id:Number(activeWorker.id),
+          closed_by_worker_name:activeWorker["Teljes nev"],
+          repair_reported_at:auditAt,
+        };
+        const {data:auditRow,error:auditError}=await supabase.from("work_logs").insert([{
+          worker_id:Number(activeWorker.id),
+          worker_name:activeWorker["Teljes nev"],
+          machine_id:machine,
+          order_number:order,
+          action:"END",
+          created_at:auditAt,
+          batch_code:null,
+          event_name:`${eventFiveRepairAction} jelentés – folyamatban marad`,
+          event_code:"END",
+          start_time:auditAt,
+          start_timestamp:auditAt,
+          end_time:auditAt,
+          end_timestamp:auditAt,
+          ujragyartas:state.reproduction_number>0,
+          ujragyartas_sorszam:state.reproduction_number||null,
+          gyartas_tipus:"egyedi",
+          gyartasi_kor:null,
+          szereles_resz:null,
+          szereles_ciklus_id:state.cycle_id,
+          szereles_start_reszek:runningParts,
+          tok_kesz:state.parts.tok.done,
+          nyilo_kesz:state.parts.nyilo.done,
+          reszleges_keszultseg:state.done_count*50,
+          note:buildStructuredNote(note,auditMetadata),
+          kulso_lap_selejt:false,
+          belso_lap_selejt:false,
+          toklec_selejt:false,
+          selejt_potlas:false,
+          selejt_forras_munkaallomas:machine,
+          selejt_megjegyzes:note,
+          darab:null,
+          szal:null,
+          scrap_qty:null,
+        }]).select("id, created_at, start_time, end_time").single();
+        if(auditError)throw auditError;
+        committed=true;
+        const freshState=await fetchSzerelesOrderState(order,machine);
+        result={
+          state:freshState,
+          saved_rows:[{
+            id:auditRow?.id||`${order}-${Date.now()}`,
+            part:runningParts[0] || "nyilo",
+            started_at:String(auditRow?.start_time||auditRow?.created_at||auditAt),
+            ended_at:String(auditRow?.end_time||auditRow?.created_at||auditAt),
+          }],
+        };
+      }else{
+        result=legacyClose
+          ? await runSzerelesLegacyClose(parts,{order,expectedId:state.legacy_open_id!,note,meta,logFields})
+          : await runSzerelesSession(action,parts,{order,meta,expected,newCycle,rework,note:action==="END"?note:null,logFields});
+      }
+
       committed=true;
       setSzerelesOrderState(result.state);setSzerelesLegacyEndMode(false);setSzerelesEndParts([]);setPendingAction(null);setActionBarcode("");setEndBarcodeConfirmed(false);
       setFlowStage("szereles-choice");setStep(5);
@@ -41101,9 +41190,27 @@ body {
         if(hasRepair&&repairRoute)await createScrapReplacementFromSheetScrap({orderNumber:order,sourceStation:machine,workLogId:savedId,reportedAt:savedAt,outerScrap:false,innerScrap:false,toklecScrap:false,note:note||null,genericScrap:true,genericScrapKind:eventFiveRepairAction,preparedRoute:repairRoute});
         if(routed&&(!legacyClose||result.state.is_complete))await updateSingleScrapReplacement(routed,"KESZ",savedAt);
       }
+
+      // Sikeres END után minden selejt/javítás választás ürül. Így ugyanarra a
+      // folyamatban maradó rendelésre később új, külön selejtjelentés készíthető.
       resetAfterSave();
-      const holdText=scrapHoldParts.length?` ${scrapHoldParts.map(szerelesPartLabel).join(" + ")} folyamatban maradt, az időmérés tovább fut.`:"";
-      setMessage({type:"success",text:`${legacyClose?"Régi munkamenet END":""+action} sikeresen rögzítve. ${order}: ${parts.map(szerelesPartLabel).join(" + ")}.${holdText} ${szerelesStateLabel(result.state)}. A korábbi adatok megmaradtak.`});
+
+      const nonClosingReport=action==="END"&&!legacyClose&&(hasScrap||hasRepair);
+      const reportLabels=[
+        outerSheetScrap?"Külső lap selejt":"",
+        innerSheetScrap?"Belső lap selejt":"",
+        toklecScrap?"Tokléc selejt":"",
+        hasRepair?eventFiveRepairAction:"",
+      ].filter(Boolean).join(" + ");
+      const holdText=nonClosingReport
+        ? ` A jelentés rögzítve${reportLabels?`: ${reportLabels}`:""}. A Szerelés rendelés folyamatban maradt, az eredeti START időmérése tovább fut.`
+        : scrapHoldParts.length
+          ? ` ${scrapHoldParts.map(szerelesPartLabel).join(" + ")} folyamatban maradt, az időmérés tovább fut.`
+          : "";
+      const partText=nonClosingReport
+        ? ""
+        : ` ${order}: ${parts.map(szerelesPartLabel).join(" + ")}.`;
+      setMessage({type:"success",text:`${legacyClose?"Régi munkamenet END":""+action} sikeresen rögzítve.${partText}${holdText} ${szerelesStateLabel(result.state)}. A korábbi adatok megmaradtak.`});
     }catch(error){
       setMessage({
         type:"error",
