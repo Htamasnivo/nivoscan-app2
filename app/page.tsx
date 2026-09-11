@@ -571,8 +571,66 @@ type DashboardData = {
 };
 
 type DashboardFilterMode = "daily" | "weekly" | "monthly" | "custom";
-type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "reproduction-report" | "atvetel" | "label-printer" | "executive-report" | "report-delivery";
+type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "reproduction-report" | "atvetel" | "label-printer" | "executive-report" | "report-delivery" | "data-upload";
 type OfficePageKey = ManagementSection;
+
+type DataUploadRecurrenceMode = "daily" | "weekly" | "monthly_date" | "monthly_weekday";
+type DataUploadMonthWeek = "first" | "second" | "third" | "fourth" | "last";
+type DataUploadStatus = "waiting" | "queued" | "running" | "success" | "error" | "disabled";
+
+type DataUploadBlockRow = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  file_path: string;
+  sheet_name: string;
+  target_table: string;
+  schedule_times: string[];
+  recurrence_mode: DataUploadRecurrenceMode;
+  weekdays: number[];
+  month_day: number;
+  month_week: DataUploadMonthWeek;
+  month_weekday: number;
+  last_status: DataUploadStatus;
+  last_message: string;
+  last_rows_read: number;
+  last_rows_uploaded: number;
+  last_started_at: string | null;
+  last_finished_at: string | null;
+  last_run_id: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type DataUploadRunRow = {
+  id: string;
+  block_id: string;
+  trigger_type: "manual" | "scheduled";
+  schedule_key: string | null;
+  status: "queued" | "running" | "success" | "error" | "cancelled";
+  requested_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  agent_id: string | null;
+  agent_name: string | null;
+  source_file_path: string | null;
+  sheet_name: string | null;
+  target_table: string | null;
+  rows_read: number;
+  rows_uploaded: number;
+  message: string;
+};
+
+type DataUploadAgentRow = {
+  agent_id: string;
+  agent_name: string;
+  app_version: string;
+  status: string;
+  last_seen_at: string;
+  current_run_id: string | null;
+  last_error: string;
+};
 type OfficeThemePresetGroup = "base" | "neon" | "matte";
 type OfficeThemePresetId =
   | "industrial-night" | "graphite" | "steel-blue" | "light-office" | "contrast-monitor"
@@ -751,11 +809,11 @@ function createDefaultOfficeThemeMap(): Record<OfficePageKey, OfficeThemeConfig>
   const base = OFFICE_THEME_PRESETS["industrial-night"].theme;
   return {
     dashboard: cloneOfficeTheme(base), "production-plan": cloneOfficeTheme(base), "production-monitor": cloneOfficeTheme(base),
-    "production-card": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "atvetel": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "executive-report": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base),
+    "production-card": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "atvetel": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "executive-report": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base), "data-upload": cloneOfficeTheme(base),
   };
 }
 function createDefaultOfficeThemePresetMap(): Record<OfficePageKey, OfficeThemePresetId> {
-  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "reproduction-report":"industrial-night", "atvetel":"industrial-night", "label-printer":"industrial-night", "executive-report":"industrial-night", "report-delivery":"industrial-night" };
+  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "reproduction-report":"industrial-night", "atvetel":"industrial-night", "label-printer":"industrial-night", "executive-report":"industrial-night", "report-delivery":"industrial-night", "data-upload":"industrial-night" };
 }
 
 const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]> = {
@@ -796,6 +854,10 @@ const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]>
   ],
   "report-delivery": [
     { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Riportküldési fejléc" }, { id:"active-profiles", label:"Aktív automatikus riportok" }, { id:"footer-info", label:"Alsó információs panel" },
+  ],
+  "data-upload": [
+    { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Adatfeltöltési fejléc" }, { id:"agent", label:"Windows feltöltő agent állapot" },
+    { id:"blocks", label:"Adatfeltöltési blokkok" }, { id:"footer-info", label:"Alsó információs panel" },
   ],
 };
 
@@ -4906,6 +4968,97 @@ const DEFAULT_REPORT_SETTINGS: ReportSettings = {
 const NIVO_LOGO_PLACEHOLDER = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jq1cAAAAASUVORK5CYII=";
 const APP_TIME_ZONE = "Europe/Budapest";
 
+const DATA_UPLOAD_BLOCKS_TABLE = "data_upload_blocks";
+const DATA_UPLOAD_RUNS_TABLE = "data_upload_runs";
+const DATA_UPLOAD_AGENTS_TABLE = "data_upload_agents";
+const DATA_UPLOAD_DAY_LABELS = ["H", "K", "Sze", "Cs", "P", "Szo", "V"] as const;
+const DATA_UPLOAD_MONTH_WEEK_LABELS: Record<DataUploadMonthWeek, string> = {
+  first: "Első",
+  second: "Második",
+  third: "Harmadik",
+  fourth: "Negyedik",
+  last: "Utolsó",
+};
+
+function normalizeDataUploadTime(value: string): string | null {
+  const raw = String(value || "").trim().replace(".", ":");
+  if (!raw) return null;
+  const parts = raw.includes(":") ? raw.split(":") : [raw, "0"];
+  if (parts.length !== 2 || !/^\d{1,2}$/.test(parts[0]) || !/^\d{1,2}$/.test(parts[1])) return null;
+  const hour = Number(parts[0]);
+  const minute = Number(parts[1]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function normalizeDataUploadIdentifier(value: string, fallback = "excel_adat"): string {
+  const ascii = String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_");
+  let result = ascii || fallback;
+  if (/^\d/.test(result)) result = `excel_${result}`;
+  return result.slice(0, 63);
+}
+
+function dataUploadTargetTableFromPath(filePath: string): string {
+  const fileName = String(filePath || "").trim().split(/[\\/]/).pop() || "";
+  const dot = fileName.lastIndexOf(".");
+  const stem = dot > 0 ? fileName.slice(0, dot) : fileName;
+  return stem ? normalizeDataUploadIdentifier(stem) : "";
+}
+
+function normalizeDataUploadBlockRow(raw: Record<string, unknown>): DataUploadBlockRow {
+  const scheduleTimes = Array.isArray(raw.schedule_times)
+    ? raw.schedule_times.map((value) => normalizeDataUploadTime(String(value || ""))).filter((value): value is string => Boolean(value))
+    : [];
+  const weekdays = Array.isArray(raw.weekdays)
+    ? raw.weekdays.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value >= 0 && value <= 6)
+    : [];
+  return {
+    id: String(raw.id || ""),
+    name: String(raw.name || "Adat feltöltés"),
+    enabled: Boolean(raw.enabled),
+    file_path: String(raw.file_path || ""),
+    sheet_name: String(raw.sheet_name || ""),
+    target_table: String(raw.target_table || dataUploadTargetTableFromPath(String(raw.file_path || ""))),
+    schedule_times: scheduleTimes.length ? Array.from(new Set(scheduleTimes)).slice(0, 10) : ["08:00"],
+    recurrence_mode: (["daily", "weekly", "monthly_date", "monthly_weekday"].includes(String(raw.recurrence_mode || "")) ? String(raw.recurrence_mode) : "weekly") as DataUploadRecurrenceMode,
+    weekdays: Array.from(new Set(weekdays)).sort((a, b) => a - b),
+    month_day: Math.max(1, Math.min(31, Number(raw.month_day || 1))),
+    month_week: (["first", "second", "third", "fourth", "last"].includes(String(raw.month_week || "")) ? String(raw.month_week) : "first") as DataUploadMonthWeek,
+    month_weekday: Math.max(0, Math.min(6, Number(raw.month_weekday || 0))),
+    last_status: (["waiting", "queued", "running", "success", "error", "disabled"].includes(String(raw.last_status || "")) ? String(raw.last_status) : "waiting") as DataUploadStatus,
+    last_message: String(raw.last_message || ""),
+    last_rows_read: Number(raw.last_rows_read || 0),
+    last_rows_uploaded: Number(raw.last_rows_uploaded || 0),
+    last_started_at: raw.last_started_at ? String(raw.last_started_at) : null,
+    last_finished_at: raw.last_finished_at ? String(raw.last_finished_at) : null,
+    last_run_id: raw.last_run_id ? String(raw.last_run_id) : null,
+    created_by: raw.created_by ? String(raw.created_by) : null,
+    created_at: String(raw.created_at || ""),
+    updated_at: String(raw.updated_at || ""),
+  };
+}
+
+function dataUploadStatusMeta(status: string): { label: string; background: string; color: string } {
+  const normalized = String(status || "waiting").toLowerCase();
+  if (normalized === "running") return { label: "Feltöltés folyamatban", background: "#78350f", color: "#fde68a" };
+  if (normalized === "queued") return { label: "Sorban áll", background: "#1e3a8a", color: "#bfdbfe" };
+  if (normalized === "success") return { label: "Sikeres", background: "#064e3b", color: "#a7f3d0" };
+  if (normalized === "error") return { label: "Hiba", background: "#7f1d1d", color: "#fecaca" };
+  if (normalized === "disabled") return { label: "Kikapcsolva", background: "#374151", color: "#d1d5db" };
+  return { label: "Várakozik", background: "#334155", color: "#e2e8f0" };
+}
+
+function isDataUploadAgentOnline(agent: DataUploadAgentRow): boolean {
+  const seen = new Date(agent.last_seen_at || "").getTime();
+  return Number.isFinite(seen) && Date.now() - seen <= 45_000;
+}
+
 const PDF_FONT_FAMILY = "DejaVuSans";
 const PDF_FONT_REGULAR_FILE = "DejaVuSans.ttf";
 const PDF_FONT_BOLD_FILE = "DejaVuSans-Bold.ttf";
@@ -8408,6 +8561,20 @@ export default function Page() {
   const [terminalView, setTerminalView] = useState<"scanner" | "management">("scanner");
   const [managementSelection, setManagementSelection] = useState<EventCard | null>(null);
   const [managementSection, setManagementSection] = useState<ManagementSection>("dashboard");
+
+  // Adat feltöltés – irodai webes konfiguráció.
+  // A tényleges Windows/local hálózati Excel fájlt a külön Windows agent olvassa,
+  // ezért a böngészőben csak a Supabase-ban tárolt blokkokat kezeljük.
+  const [dataUploadBlocks, setDataUploadBlocks] = useState<DataUploadBlockRow[]>([]);
+  const [dataUploadAgents, setDataUploadAgents] = useState<DataUploadAgentRow[]>([]);
+  const [dataUploadLoading, setDataUploadLoading] = useState(false);
+  const [dataUploadSavingIds, setDataUploadSavingIds] = useState<Set<string>>(new Set());
+  const [dataUploadDeletingId, setDataUploadDeletingId] = useState("");
+  const [dataUploadManualRunId, setDataUploadManualRunId] = useState("");
+  const [dataUploadScheduleDraft, setDataUploadScheduleDraft] = useState<DataUploadBlockRow | null>(null);
+  const [dataUploadRuns, setDataUploadRuns] = useState<DataUploadRunRow[]>([]);
+  const [dataUploadRunsBlockId, setDataUploadRunsBlockId] = useState("");
+  const [dataUploadRunsLoading, setDataUploadRunsLoading] = useState(false);
   const [standaloneProductionMonitor, setStandaloneProductionMonitor] = useState(false);
   const [standaloneProductionMonitorWorkerName, setStandaloneProductionMonitorWorkerName] = useState("");
   const [standaloneProductionMonitorWindowEditMode, setStandaloneProductionMonitorWindowEditMode] = useState(false);
@@ -11402,6 +11569,527 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
   }
 
+  function patchDataUploadBlockLocal(id: string, patch: Partial<DataUploadBlockRow>): void {
+    setDataUploadBlocks((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row));
+  }
+
+  function setDataUploadSaving(id: string, saving: boolean): void {
+    setDataUploadSavingIds((current) => {
+      const next = new Set(current);
+      if (saving) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  async function loadDataUploadView(options?: { quiet?: boolean }): Promise<void> {
+    if (!supabase) return;
+    if (!options?.quiet) setDataUploadLoading(true);
+    try {
+      const [blocksResponse, agentsResponse] = await Promise.all([
+        supabase.from(DATA_UPLOAD_BLOCKS_TABLE).select("*").order("created_at", { ascending: true }),
+        supabase.from(DATA_UPLOAD_AGENTS_TABLE).select("*").order("last_seen_at", { ascending: false }),
+      ]);
+      if (blocksResponse.error) throw blocksResponse.error;
+      if (agentsResponse.error) throw agentsResponse.error;
+      setDataUploadBlocks(((blocksResponse.data || []) as Array<Record<string, unknown>>).map(normalizeDataUploadBlockRow));
+      setDataUploadAgents((agentsResponse.data || []) as DataUploadAgentRow[]);
+    } catch (error) {
+      console.error("Adat feltöltés betöltési hiba:", error);
+      if (!options?.quiet) setMessage({ type: "error", text: `Adat feltöltés betöltése sikertelen: ${normalizeError(error)}` });
+    } finally {
+      if (!options?.quiet) setDataUploadLoading(false);
+    }
+  }
+
+  async function createDataUploadBlock(): Promise<void> {
+    if (!supabase) return;
+    const createdBy = activeWorker?.["Teljes nev"] || activeWorker?.Munkakor || "Irodai felhasználó";
+    const payload = {
+      name: `Adat feltöltés ${dataUploadBlocks.length + 1}`,
+      enabled: false,
+      file_path: "",
+      sheet_name: "",
+      target_table: "",
+      schedule_times: ["08:00"],
+      recurrence_mode: "weekly",
+      weekdays: [0, 1, 2, 3, 4],
+      month_day: 1,
+      month_week: "first",
+      month_weekday: 0,
+      last_status: "waiting",
+      created_by: createdBy,
+      updated_at: new Date().toISOString(),
+    };
+    try {
+      const response = await supabase.from(DATA_UPLOAD_BLOCKS_TABLE).insert(payload).select("*").single();
+      if (response.error) throw response.error;
+      setDataUploadBlocks((current) => [...current, normalizeDataUploadBlockRow((response.data || {}) as Record<string, unknown>)]);
+      setMessage({ type: "success", text: "Új adatfeltöltési blokk létrehozva." });
+    } catch (error) {
+      setMessage({ type: "error", text: `Blokk létrehozási hiba: ${normalizeError(error)}` });
+    }
+  }
+
+  async function persistDataUploadBlock(block: DataUploadBlockRow, options?: { quiet?: boolean }): Promise<boolean> {
+    if (!supabase || !block.id) return false;
+    const normalizedTimes = Array.from(new Set(
+      (block.schedule_times || [])
+        .map((value) => normalizeDataUploadTime(value))
+        .filter((value): value is string => Boolean(value))
+    )).slice(0, 10);
+    if (!normalizedTimes.length) {
+      if (!options?.quiet) setMessage({ type: "error", text: "Legalább egy érvényes futási időpont szükséges." });
+      return false;
+    }
+    if (block.recurrence_mode === "weekly" && !(block.weekdays || []).length) {
+      if (!options?.quiet) setMessage({ type: "error", text: "Heti ismétléshez legalább egy futtatási nap szükséges." });
+      return false;
+    }
+    const targetTable = dataUploadTargetTableFromPath(block.file_path);
+    const payload = {
+      name: String(block.name || "").trim() || "Adat feltöltés",
+      enabled: Boolean(block.enabled),
+      file_path: String(block.file_path || "").trim(),
+      sheet_name: String(block.sheet_name || "").trim(),
+      target_table: targetTable,
+      schedule_times: normalizedTimes,
+      recurrence_mode: block.recurrence_mode,
+      weekdays: Array.from(new Set(block.weekdays || [])).sort((a, b) => a - b),
+      month_day: Math.max(1, Math.min(31, Number(block.month_day || 1))),
+      month_week: block.month_week,
+      month_weekday: Math.max(0, Math.min(6, Number(block.month_weekday || 0))),
+      updated_at: new Date().toISOString(),
+    };
+    setDataUploadSaving(block.id, true);
+    try {
+      const response = await supabase.from(DATA_UPLOAD_BLOCKS_TABLE).update(payload).eq("id", block.id).select("*").single();
+      if (response.error) throw response.error;
+      const saved = normalizeDataUploadBlockRow((response.data || {}) as Record<string, unknown>);
+      setDataUploadBlocks((current) => current.map((row) => row.id === block.id ? saved : row));
+      if (!options?.quiet) setMessage({ type: "success", text: `${saved.name}: beállítások elmentve.` });
+      return true;
+    } catch (error) {
+      if (!options?.quiet) setMessage({ type: "error", text: `Adatfeltöltési blokk mentési hiba: ${normalizeError(error)}` });
+      return false;
+    } finally {
+      setDataUploadSaving(block.id, false);
+    }
+  }
+
+  async function toggleDataUploadBlock(block: DataUploadBlockRow): Promise<void> {
+    const next = { ...block, enabled: !block.enabled, last_status: (!block.enabled ? block.last_status : "disabled") as DataUploadStatus };
+    patchDataUploadBlockLocal(block.id, { enabled: next.enabled });
+    await persistDataUploadBlock(next, { quiet: true });
+  }
+
+  async function deleteDataUploadBlock(block: DataUploadBlockRow): Promise<void> {
+    if (!supabase) return;
+    if (typeof window !== "undefined" && !window.confirm(`Biztosan törlöd ezt az adatfeltöltési blokkot?\n\n${block.name}`)) return;
+    setDataUploadDeletingId(block.id);
+    try {
+      const response = await supabase.from(DATA_UPLOAD_BLOCKS_TABLE).delete().eq("id", block.id);
+      if (response.error) throw response.error;
+      setDataUploadBlocks((current) => current.filter((row) => row.id !== block.id));
+      setMessage({ type: "success", text: `${block.name}: blokk törölve. A korábban feltöltött céltábla nem lett törölve.` });
+    } catch (error) {
+      setMessage({ type: "error", text: `Blokk törlési hiba: ${normalizeError(error)}` });
+    } finally {
+      setDataUploadDeletingId("");
+    }
+  }
+
+  async function queueDataUploadNow(block: DataUploadBlockRow): Promise<void> {
+    if (!supabase) return;
+    if (!String(block.file_path || "").trim()) {
+      setMessage({ type: "error", text: `${block.name}: add meg az Excel elérési útját.` });
+      return;
+    }
+    const targetTable = dataUploadTargetTableFromPath(block.file_path);
+    if (!targetTable) {
+      setMessage({ type: "error", text: `${block.name}: az Excel fájlnévből nem képezhető Supabase tábla.` });
+      return;
+    }
+    setDataUploadManualRunId(block.id);
+    try {
+      const saved = await persistDataUploadBlock(block, { quiet: true });
+      if (!saved) throw new Error("A blokk aktuális beállításait nem sikerült elmenteni.");
+      const scheduleKey = `MANUAL|${block.id}|${Date.now()}|${Math.random().toString(36).slice(2, 8)}`;
+      const runResponse = await supabase.from(DATA_UPLOAD_RUNS_TABLE).insert({
+        block_id: block.id,
+        trigger_type: "manual",
+        schedule_key: scheduleKey,
+        status: "queued",
+        source_file_path: block.file_path,
+        sheet_name: block.sheet_name,
+        target_table: targetTable,
+        message: "Kézi feltöltés sorba állítva.",
+      }).select("id").single();
+      if (runResponse.error) throw runResponse.error;
+      await supabase.from(DATA_UPLOAD_BLOCKS_TABLE).update({
+        target_table: targetTable,
+        last_status: "queued",
+        last_message: "Kézi feltöltés sorba állítva. A Windows agent végrehajtására vár.",
+        last_run_id: runResponse.data?.id || null,
+      }).eq("id", block.id);
+      patchDataUploadBlockLocal(block.id, {
+        target_table: targetTable,
+        last_status: "queued",
+        last_message: "Kézi feltöltés sorba állítva. A Windows agent végrehajtására vár.",
+        last_run_id: runResponse.data?.id || null,
+      });
+      setMessage({ type: "success", text: `${block.name}: feltöltés sorba állítva.` });
+      window.setTimeout(() => void loadDataUploadView({ quiet: true }), 1200);
+    } catch (error) {
+      setMessage({ type: "error", text: `Feltöltés indítási hiba: ${normalizeError(error)}` });
+    } finally {
+      setDataUploadManualRunId("");
+    }
+  }
+
+  async function loadDataUploadRuns(blockId: string): Promise<void> {
+    if (!supabase) return;
+    setDataUploadRunsBlockId(blockId);
+    setDataUploadRunsLoading(true);
+    try {
+      const response = await supabase
+        .from(DATA_UPLOAD_RUNS_TABLE)
+        .select("*")
+        .eq("block_id", blockId)
+        .order("requested_at", { ascending: false })
+        .limit(50);
+      if (response.error) throw response.error;
+      setDataUploadRuns((response.data || []) as DataUploadRunRow[]);
+    } catch (error) {
+      setMessage({ type: "error", text: `Adatfeltöltési napló betöltési hiba: ${normalizeError(error)}` });
+      setDataUploadRuns([]);
+    } finally {
+      setDataUploadRunsLoading(false);
+    }
+  }
+
+  function dataUploadScheduleSummary(block: DataUploadBlockRow): string {
+    const times = (block.schedule_times || []).join(", ") || "–";
+    if (block.recurrence_mode === "daily") return `Naponta · ${times}`;
+    if (block.recurrence_mode === "weekly") {
+      const days = (block.weekdays || []).map((day) => DATA_UPLOAD_DAY_LABELS[day] || "?").join(", ") || "nincs nap";
+      return `Hetente · ${days} · ${times}`;
+    }
+    if (block.recurrence_mode === "monthly_date") return `Havonta · ${block.month_day}. nap · ${times}`;
+    return `Havonta · ${DATA_UPLOAD_MONTH_WEEK_LABELS[block.month_week]} ${DATA_UPLOAD_DAY_LABELS[block.month_weekday]} · ${times}`;
+  }
+
+  function DataUploadAdmin(): React.JSX.Element {
+    const theme = getOfficeTheme("data-upload");
+    const panel: React.CSSProperties = {
+      border: `${theme.borderWidth}px solid ${theme.borderColor}`,
+      borderRadius: theme.borderRadius,
+      background: theme.panelBackground,
+      color: theme.textColor,
+      boxShadow: `0 10px ${theme.shadowBlur}px rgba(0,0,0,${theme.shadowOpacity})`,
+    };
+    const input: React.CSSProperties = {
+      width: "100%",
+      minHeight: theme.fieldHeight,
+      borderRadius: Math.max(7, theme.borderRadius - 5),
+      border: `1px solid ${theme.borderColor}`,
+      background: theme.inputBackground,
+      color: theme.inputText,
+      padding: "9px 11px",
+      font: "inherit",
+      boxSizing: "border-box",
+    };
+    const onlineAgents = dataUploadAgents.filter(isDataUploadAgentOnline);
+    const selectedRunBlock = dataUploadBlocks.find((row) => row.id === dataUploadRunsBlockId) || null;
+
+    return (
+      <div style={{ ...pageShellStyle, background: theme.pageBackground, color: theme.textColor, fontFamily: theme.fontFamily, fontSize: theme.baseFontSize }}>
+        <div data-office-window="data-upload:header" style={{ ...panel, display: "flex", justifyContent: "space-between", gap: 14, alignItems: "end", flexWrap: "wrap", padding: theme.padding, marginBottom: theme.gap }}>
+          <div>
+            <div style={{ color: theme.accentColor, fontWeight: 900, fontSize: 12, letterSpacing: 0.5 }}>EXCEL → SUPABASE</div>
+            <h2 style={{ margin: "4px 0", fontSize: theme.titleFontSize, color: theme.textColor }}>Adat feltöltés</h2>
+            <div style={{ color: theme.mutedText, maxWidth: 900 }}>
+              Minden Excel külön blokk. A cél Supabase tábla neve automatikusan az Excel fájlnevéből készül. A Windows agent olvassa a helyi vagy hálózati elérési utat, ezért a weboldalnak nem kell hozzáférnie a P:\\ / UNC fájlhoz.
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button type="button" onClick={() => void loadDataUploadView()} style={{ ...buttonSecondary, background: theme.secondaryButtonBackground, color: theme.buttonText, borderColor: theme.borderColor }} disabled={dataUploadLoading}>
+              {dataUploadLoading ? "Frissítés..." : "↻ Frissítés"}
+            </button>
+            <button type="button" onClick={() => void createDataUploadBlock()} style={{ ...buttonPrimary, background: theme.primaryButtonBackground, color: theme.buttonText }}>
+              ＋ Blokk hozzáadása
+            </button>
+          </div>
+        </div>
+
+        <div data-office-window="data-upload:agent" style={{ ...panel, padding: theme.padding, marginBottom: theme.gap }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+            <div>
+              <div style={{ fontWeight: 900, fontSize: 16 }}>Windows feltöltő agent</div>
+              <div style={{ color: theme.mutedText, marginTop: 3 }}>
+                {onlineAgents.length
+                  ? `${onlineAgents.length} online agent – az automatikus és kézi feltöltések végrehajthatók.`
+                  : "Nincs online agent. A blokkok és kézi kérések mentődnek, de a helyi Excel fájlt csak a futó Windows automatizáló tudja feltölteni."}
+              </div>
+            </div>
+            <span style={{ display: "inline-flex", padding: "7px 12px", borderRadius: 999, fontWeight: 900, background: onlineAgents.length ? "#064e3b" : "#7f1d1d", color: onlineAgents.length ? "#a7f3d0" : "#fecaca" }}>
+              {onlineAgents.length ? "● Agent online" : "● Agent offline"}
+            </span>
+          </div>
+          {dataUploadAgents.length > 0 && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+              {dataUploadAgents.slice(0, 6).map((agent) => {
+                const online = isDataUploadAgentOnline(agent);
+                return (
+                  <div key={agent.agent_id} style={{ border: `1px solid ${theme.borderColor}`, borderRadius: 10, padding: "7px 10px", background: theme.panelAltBackground, color: theme.textColor, fontSize: 12 }}>
+                    <strong>{agent.agent_name}</strong> · v{agent.app_version || "?"} · <span style={{ color: online ? theme.activeColor : theme.errorColor }}>{online ? "online" : "offline"}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div data-office-window="data-upload:blocks" style={{ display: "grid", gap: 14 }}>
+          {dataUploadLoading && dataUploadBlocks.length === 0 && <div style={{ ...panel, padding: 18, color: theme.mutedText }}>Adatfeltöltési blokkok betöltése...</div>}
+          {!dataUploadLoading && dataUploadBlocks.length === 0 && (
+            <div style={{ ...panel, padding: 22, textAlign: "center", color: theme.mutedText }}>
+              Még nincs adatfeltöltési blokk. Kattints a „＋ Blokk hozzáadása” gombra.
+            </div>
+          )}
+
+          {dataUploadBlocks.map((block, index) => {
+            const statusMeta = dataUploadStatusMeta(block.enabled ? block.last_status : "disabled");
+            const saving = dataUploadSavingIds.has(block.id);
+            const targetPreview = dataUploadTargetTableFromPath(block.file_path);
+            return (
+              <section key={block.id} style={{ ...panel, padding: 14, borderWidth: 2, borderColor: block.enabled ? theme.accentColor : theme.borderColor }}>
+                <div style={{ display: "grid", gridTemplateColumns: "64px minmax(220px,1fr) auto auto auto", gap: 10, alignItems: "center" }}>
+                  <div style={{ display: "grid", placeItems: "center", width: 50, height: 42, borderRadius: 10, background: theme.navActiveBackground, color: theme.textColor, fontWeight: 900 }}>
+                    {String(index + 1).padStart(2, "0")}
+                  </div>
+                  <input
+                    value={block.name}
+                    onChange={(event) => patchDataUploadBlockLocal(block.id, { name: event.target.value })}
+                    onBlur={() => void persistDataUploadBlock(dataUploadBlocks.find((row) => row.id === block.id) || block, { quiet: true })}
+                    style={{ ...input, fontWeight: 900 }}
+                    placeholder={`Adat feltöltés ${index + 1}`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void toggleDataUploadBlock(block)}
+                    style={{ ...buttonSecondary, minWidth: 128, background: block.enabled ? "#065f46" : theme.secondaryButtonBackground, color: block.enabled ? "#d1fae5" : theme.buttonText, borderColor: block.enabled ? "#10b981" : theme.borderColor }}
+                  >
+                    {block.enabled ? "● Bekapcsolva" : "○ Kikapcsolva"}
+                  </button>
+                  <span style={{ display: "inline-flex", justifyContent: "center", minWidth: 150, padding: "8px 10px", borderRadius: 10, fontWeight: 900, background: statusMeta.background, color: statusMeta.color }}>
+                    {statusMeta.label}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void deleteDataUploadBlock(block)}
+                    disabled={dataUploadDeletingId === block.id}
+                    style={{ ...buttonSecondary, width: 44, padding: 8, background: "#7f1d1d", color: "#fecaca", borderColor: "#991b1b" }}
+                    title="Blokk törlése"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "150px minmax(260px,1fr)", gap: 10, alignItems: "center", marginTop: 14 }}>
+                  <strong style={{ color: theme.mutedText }}>Excel elérési út</strong>
+                  <input
+                    value={block.file_path}
+                    onChange={(event) => {
+                      const filePath = event.target.value;
+                      patchDataUploadBlockLocal(block.id, { file_path: filePath, target_table: dataUploadTargetTableFromPath(filePath) });
+                    }}
+                    onBlur={() => void persistDataUploadBlock(dataUploadBlocks.find((row) => row.id === block.id) || block, { quiet: true })}
+                    style={input}
+                    placeholder={String.raw`P:\Adatok\Termeles.xlsx vagy \\szerver\megosztas\Termeles.xlsx`}
+                  />
+                  <strong style={{ color: theme.mutedText }}>Excel munkalap</strong>
+                  <input
+                    value={block.sheet_name}
+                    onChange={(event) => patchDataUploadBlockLocal(block.id, { sheet_name: event.target.value })}
+                    onBlur={() => void persistDataUploadBlock(dataUploadBlocks.find((row) => row.id === block.id) || block, { quiet: true })}
+                    style={input}
+                    placeholder="Üresen hagyva: első munkalap"
+                  />
+                  <strong style={{ color: theme.mutedText }}>Supabase cél tábla</strong>
+                  <div style={{ ...input, display: "flex", alignItems: "center", fontFamily: "Consolas, monospace", color: targetPreview ? theme.inputText : theme.mutedText }}>
+                    {targetPreview || "Az Excel fájlnévből automatikusan készül"}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center", marginTop: 14, paddingTop: 12, borderTop: `1px solid ${theme.borderColor}` }}>
+                  <div>
+                    <div style={{ fontWeight: 900 }}>Automata időzítő</div>
+                    <div style={{ color: theme.mutedText, fontSize: 12, marginTop: 2 }}>{dataUploadScheduleSummary(block)}</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button type="button" onClick={() => setDataUploadScheduleDraft({ ...block, schedule_times: [...block.schedule_times], weekdays: [...block.weekdays] })} style={{ ...buttonSecondary, background: theme.secondaryButtonBackground, color: theme.buttonText, borderColor: theme.borderColor }}>
+                      ⚙ Automata időzítő
+                    </button>
+                    <button type="button" onClick={() => void loadDataUploadRuns(block.id)} style={{ ...buttonSecondary, background: theme.secondaryButtonBackground, color: theme.buttonText, borderColor: theme.borderColor }}>
+                      Napló
+                    </button>
+                    <button type="button" onClick={() => void queueDataUploadNow(block)} disabled={dataUploadManualRunId === block.id || saving || !block.file_path.trim()} style={{ ...buttonPrimary, background: theme.primaryButtonBackground, color: theme.buttonText, minWidth: 150 }}>
+                      {dataUploadManualRunId === block.id ? "Sorba állítás..." : "⬆ Feltöltés most"}
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(150px,1fr))", gap: 8, marginTop: 12 }}>
+                  <div style={{ background: theme.panelAltBackground, borderRadius: 10, padding: 10 }}><div style={{ color: theme.mutedText, fontSize: 11 }}>Utolsó futás</div><strong>{block.last_finished_at ? formatDateTime(block.last_finished_at) : "–"}</strong></div>
+                  <div style={{ background: theme.panelAltBackground, borderRadius: 10, padding: 10 }}><div style={{ color: theme.mutedText, fontSize: 11 }}>Excel sorok</div><strong>{block.last_rows_read || 0}</strong></div>
+                  <div style={{ background: theme.panelAltBackground, borderRadius: 10, padding: 10 }}><div style={{ color: theme.mutedText, fontSize: 11 }}>Feltöltött sorok</div><strong>{block.last_rows_uploaded || 0}</strong></div>
+                  <div style={{ background: theme.panelAltBackground, borderRadius: 10, padding: 10, minWidth: 0 }}><div style={{ color: theme.mutedText, fontSize: 11 }}>Állapot / hiba</div><strong style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={block.last_message}>{block.last_message || "–"}</strong></div>
+                </div>
+              </section>
+            );
+          })}
+        </div>
+
+        <div data-office-window="data-upload:footer-info" style={{ ...panel, padding: 14, marginTop: theme.gap, color: theme.mutedText, fontSize: 12, lineHeight: 1.6 }}>
+          <strong style={{ color: theme.textColor }}>Működés:</strong> a Windows agent az Excel első nem üres sorát fejlécnek veszi. Üres munkalapnévnél az első munkalapot használja. Minden futás teljes újratöltés: a modul által létrehozott céltábla sémája az Excelhez igazodik, a korábban már létező Supabase táblánál pedig a tábla sémáját nem dobja el.
+        </div>
+
+        {dataUploadScheduleDraft && (() => {
+          const draft = dataUploadScheduleDraft;
+          const recurrenceLabels: Record<DataUploadRecurrenceMode, string> = {
+            daily: "Naponta",
+            weekly: "Hetente",
+            monthly_date: "Havonta – adott napon",
+            monthly_weekday: "Havonta – hét / nap alapján",
+          };
+          const saveSchedule = async () => {
+            const normalizedTimes = Array.from(new Set(
+              draft.schedule_times.map((value) => normalizeDataUploadTime(value)).filter((value): value is string => Boolean(value))
+            ));
+            if (!normalizedTimes.length) {
+              setMessage({ type: "error", text: "Az automata időzítőhöz legalább egy érvényes időpont szükséges." });
+              return;
+            }
+            if (normalizedTimes.length > 10) {
+              setMessage({ type: "error", text: "Legfeljebb 10 időpont adható meg." });
+              return;
+            }
+            if (draft.recurrence_mode === "weekly" && !draft.weekdays.length) {
+              setMessage({ type: "error", text: "Heti időzítéshez legalább egy napot jelölj ki." });
+              return;
+            }
+            const next = { ...draft, schedule_times: normalizedTimes };
+            const ok = await persistDataUploadBlock(next);
+            if (ok) setDataUploadScheduleDraft(null);
+          };
+          return (
+            <div style={{ position: "fixed", inset: 0, zIndex: 5000, background: "rgba(2,6,23,0.78)", display: "grid", placeItems: "center", padding: 18 }} onMouseDown={(event) => { if (event.target === event.currentTarget) setDataUploadScheduleDraft(null); }}>
+              <div style={{ ...panel, width: "min(900px,96vw)", maxHeight: "90vh", overflow: "auto", padding: 20 }}>
+                <h3 style={{ margin: 0, fontSize: 24 }}>Automata időzítő</h3>
+                <div style={{ color: theme.mutedText, margin: "5px 0 18px" }}>{draft.name} · maximum 10 futási időpont</div>
+
+                <div style={{ fontWeight: 900, marginBottom: 8 }}>Futtatási időpontok</div>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {draft.schedule_times.map((value, index) => (
+                    <div key={index} style={{ display: "grid", gridTemplateColumns: "44px 180px 44px", gap: 8, alignItems: "center" }}>
+                      <strong>{index + 1}.</strong>
+                      <input value={value} onChange={(event) => {
+                        const nextTimes = [...draft.schedule_times];
+                        nextTimes[index] = event.target.value;
+                        setDataUploadScheduleDraft({ ...draft, schedule_times: nextTimes });
+                      }} style={input} placeholder="08:00" />
+                      <button type="button" disabled={draft.schedule_times.length <= 1} onClick={() => setDataUploadScheduleDraft({ ...draft, schedule_times: draft.schedule_times.filter((_, position) => position !== index) })} style={{ ...buttonSecondary, padding: 8, background: "#7f1d1d", color: "#fecaca", borderColor: "#991b1b" }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+                <button type="button" disabled={draft.schedule_times.length >= 10} onClick={() => setDataUploadScheduleDraft({ ...draft, schedule_times: [...draft.schedule_times, "08:00"] })} style={{ ...buttonSecondary, marginTop: 10, background: theme.secondaryButtonBackground, color: theme.buttonText, borderColor: theme.borderColor }}>
+                  ＋ Időpont hozzáadása
+                </button>
+
+                <div style={{ fontWeight: 900, margin: "20px 0 8px" }}>Ismétlődés</div>
+                <select value={draft.recurrence_mode} onChange={(event) => setDataUploadScheduleDraft({ ...draft, recurrence_mode: event.target.value as DataUploadRecurrenceMode })} style={{ ...input, maxWidth: 360 }}>
+                  {Object.entries(recurrenceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                </select>
+
+                {draft.recurrence_mode === "weekly" && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
+                    {DATA_UPLOAD_DAY_LABELS.map((label, day) => {
+                      const active = draft.weekdays.includes(day);
+                      return <button key={label} type="button" onClick={() => {
+                        const weekdays = active ? draft.weekdays.filter((value) => value !== day) : [...draft.weekdays, day].sort((a, b) => a - b);
+                        setDataUploadScheduleDraft({ ...draft, weekdays });
+                      }} style={{ ...buttonSecondary, minWidth: 54, background: active ? theme.primaryButtonBackground : theme.secondaryButtonBackground, color: theme.buttonText, borderColor: active ? theme.accentColor : theme.borderColor }}>{label}</button>;
+                    })}
+                  </div>
+                )}
+                {draft.recurrence_mode === "monthly_date" && (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 14 }}>
+                    <span>A hónap</span>
+                    <input type="number" min={1} max={31} value={draft.month_day} onChange={(event) => setDataUploadScheduleDraft({ ...draft, month_day: Math.max(1, Math.min(31, Number(event.target.value || 1))) })} style={{ ...input, width: 100 }} />
+                    <span>napján</span>
+                  </div>
+                )}
+                {draft.recurrence_mode === "monthly_weekday" && (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 14 }}>
+                    <select value={draft.month_week} onChange={(event) => setDataUploadScheduleDraft({ ...draft, month_week: event.target.value as DataUploadMonthWeek })} style={{ ...input, width: 180 }}>
+                      {(Object.keys(DATA_UPLOAD_MONTH_WEEK_LABELS) as DataUploadMonthWeek[]).map((value) => <option key={value} value={value}>{DATA_UPLOAD_MONTH_WEEK_LABELS[value]}</option>)}
+                    </select>
+                    <select value={draft.month_weekday} onChange={(event) => setDataUploadScheduleDraft({ ...draft, month_weekday: Number(event.target.value) })} style={{ ...input, width: 160 }}>
+                      {DATA_UPLOAD_DAY_LABELS.map((label, index) => <option key={label} value={index}>{label}</option>)}
+                    </select>
+                    <span>napján</span>
+                  </div>
+                )}
+
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 22 }}>
+                  <button type="button" onClick={() => setDataUploadScheduleDraft(null)} style={{ ...buttonSecondary, background: theme.secondaryButtonBackground, color: theme.buttonText, borderColor: theme.borderColor }}>Mégse</button>
+                  <button type="button" onClick={() => void saveSchedule()} style={{ ...buttonPrimary, background: theme.primaryButtonBackground, color: theme.buttonText }}>Beállítások mentése</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {dataUploadRunsBlockId && (
+          <div style={{ position: "fixed", inset: 0, zIndex: 5000, background: "rgba(2,6,23,0.78)", display: "grid", placeItems: "center", padding: 18 }} onMouseDown={(event) => { if (event.target === event.currentTarget) setDataUploadRunsBlockId(""); }}>
+            <div style={{ ...panel, width: "min(1100px,96vw)", maxHeight: "90vh", overflow: "auto", padding: 18 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+                <div><h3 style={{ margin: 0 }}>Adatfeltöltési napló</h3><div style={{ color: theme.mutedText, marginTop: 3 }}>{selectedRunBlock?.name || ""}</div></div>
+                <button type="button" onClick={() => setDataUploadRunsBlockId("")} style={{ ...buttonSecondary, background: theme.secondaryButtonBackground, color: theme.buttonText, borderColor: theme.borderColor }}>Bezárás</button>
+              </div>
+              {dataUploadRunsLoading ? <div style={{ padding: 20, color: theme.mutedText }}>Napló betöltése...</div> : (
+                <div style={{ overflowX: "auto", marginTop: 14 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+                    <thead><tr>{["Kérés","Indítás","Befejezés","Típus","Állapot","Agent","Tábla","Beolvasva","Feltöltve","Üzenet"].map((label) => <th key={label} style={{ textAlign: "left", padding: 9, borderBottom: `1px solid ${theme.borderColor}`, color: theme.mutedText }}>{label}</th>)}</tr></thead>
+                    <tbody>
+                      {dataUploadRuns.map((run) => {
+                        const meta = dataUploadStatusMeta(run.status);
+                        return <tr key={run.id}>
+                          <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}`, whiteSpace: "nowrap" }}>{formatDateTime(run.requested_at)}</td>
+                          <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}`, whiteSpace: "nowrap" }}>{run.started_at ? formatDateTime(run.started_at) : "–"}</td>
+                          <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}`, whiteSpace: "nowrap" }}>{run.finished_at ? formatDateTime(run.finished_at) : "–"}</td>
+                          <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{run.trigger_type === "manual" ? "Kézi" : "Automata"}</td>
+                          <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}><span style={{ padding: "4px 7px", borderRadius: 8, background: meta.background, color: meta.color, fontWeight: 900 }}>{meta.label}</span></td>
+                          <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{run.agent_name || "–"}</td>
+                          <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}`, fontFamily: "Consolas,monospace" }}>{run.target_table || "–"}</td>
+                          <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{run.rows_read || 0}</td>
+                          <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{run.rows_uploaded || 0}</td>
+                          <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}`, minWidth: 260 }}>{run.message || "–"}</td>
+                        </tr>;
+                      })}
+                      {!dataUploadRuns.length && <tr><td colSpan={10} style={{ padding: 20, color: theme.mutedText, textAlign: "center" }}>Még nincs futás.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function ReportDeliveryAdmin(): React.JSX.Element {
     const theme = getOfficeTheme("report-delivery");
     const stationOptions = Array.from(new Set(getOrderedDashboardStations()));
@@ -11943,7 +12631,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function ManagementNavigation(): React.JSX.Element {
     const allItems: Array<{ id: ManagementSection; label: string }> = [
       { id:"dashboard", label:"Vezetői műszerfal" }, { id:"production-plan", label:"Termelés tervezése" }, { id:"production-monitor", label:"Termelési monitor" },
-      { id:"production-card", label:"Termelési kártya" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" },
+      { id:"production-card", label:"Termelési kártya" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" }, { id:"data-upload", label:"Adat feltöltés" },
     ];
 
     // Esemeny_Koteg = 9: csak ez a két irodai menüpont látható.
@@ -12023,6 +12711,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 if (nextStation) void loadExecutiveReportView(nextStation, executiveReportDateFrom, executiveReportDateTo);
               }
               else if (item.id === "report-delivery") void loadReportDeliveryProfiles();
+              else if (item.id === "data-upload") void loadDataUploadView();
             }} style={{ border:active ? `1px solid ${currentTheme.accentColor}` : "1px solid transparent", background:active ? currentTheme.navActiveBackground : "transparent", color:active ? currentTheme.textColor : currentTheme.navText, borderRadius:Math.max(4,currentTheme.borderRadius-5), padding:"10px 14px", fontWeight:800, cursor:"pointer", fontFamily:currentTheme.fontFamily }}>{item.label}</button>;
           })}
           <button
@@ -22215,6 +22904,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (managementSection === "label-printer") return OfficeLabelPrinterAdmin();
     if (managementSection === "executive-report") return ExecutiveReportAdmin();
     if (managementSection === "report-delivery") return ReportDeliveryAdmin();
+    if (managementSection === "data-upload") return DataUploadAdmin();
 
     const dashboardRange = getDashboardDateRange("custom", dashboardDate, dashboardDateTo);
     const hasDashboardOrderSearch = dashboardOrderFilters.some(
@@ -23784,6 +24474,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     flowStage,
     reportDeliveryProfilesLoaded,
   ]);
+
+  useEffect(() => {
+    if (!supabase || !activeWorker || !isManagementDashboardWorker(activeWorker)) return;
+    if (terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "data-upload") return;
+
+    void loadDataUploadView({ quiet: true });
+    const intervalId = window.setInterval(() => {
+      void loadDataUploadView({ quiet: true });
+      if (dataUploadRunsBlockId) void loadDataUploadRuns(dataUploadRunsBlockId);
+    }, 10_000);
+
+    return () => window.clearInterval(intervalId);
+  }, [supabase, activeWorker?.id, terminalView, flowStage, managementSection, dataUploadRunsBlockId]);
 
   useEffect(() => {
     if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
