@@ -15429,9 +15429,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       // A lemaradási sorforrás minden nézetben ugyanaz.
       // A 10-es kattintásos kiválasztó sem építhet külön lemaradási listát:
       // pontosan ugyanabból a backlogRows eredményből dolgozik, mint a monitor.
-      const recurringOverdueRows=overdueSourceRows.filter(row=>recurringSnapshot.names.has(recurringNameKey(row.productName)));
-      const legacyOverdueRows=overdueSourceRows.filter(row=>!recurringSnapshot.names.has(recurringNameKey(row.productName)));
-      const overdueOrderNumbers = Array.from(new Set(legacyOverdueRows.map((row) => row.orderNumber)));
+      const overdueOrderNumbers = Array.from(new Set(overdueSourceRows.map((row) => row.orderNumber)));
       const szinterPlanRowCounts = new Map<string, number>();
       if (getStationPlanIdentityKey(cleanStationName) === "szinter") {
         for (let index = 0; index < overdueOrderNumbers.length; index += 100) {
@@ -15490,8 +15488,57 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const selectedDayStartTime = new Date(`${dateKey}T00:00:00`).getTime();
       const timestampOfLog = (log: WorkLogRow): number => new Date(log.end_time || log.end_timestamp || log.start_time || log.start_timestamp || log.created_at || "").getTime();
 
+      // Esemeny_Koteg = 10: a konkrét Lemaradási kártyasor START/END naplója
+      // felülírja a régi "visszatérő munka" kategorizálást.
+      // Így START után Folyamatban/sárga, teljes END után pedig eltűnik.
+      const hasExactBundleTenBacklogActivity = (planRow: (typeof overdueSourceRows)[number]): boolean => {
+        const rowId = String(planRow.id);
+        const itemKey = `backlog:${rowId}`;
+        const orderKey = normalizeLooseText(planRow.orderNumber);
+
+        const exactLog = overdueLogs.some((log) => {
+          if (normalizeLooseText(log.order_number) !== orderKey) return false;
+          const timestamp = timestampOfLog(log);
+          if (!Number.isFinite(timestamp) || timestamp >= selectedDayEndTime) return false;
+          return bundleTenVisualIdentityMatches(
+            getBundleTenVisualIdentityFromLog(log),
+            "backlog",
+            rowId,
+            itemKey
+          );
+        });
+        if (exactLog) return true;
+
+        return overdueBatchStarts.some((batch) => {
+          const startTime = new Date(batch.start_time || batch.created_at || "").getTime();
+          if (!Number.isFinite(startTime) || startTime >= selectedDayEndTime) return false;
+          if (!Array.isArray(batch.order_ids) || !batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === orderKey)) return false;
+          return bundleTenVisualIdentityMatches(
+            getBundleTenVisualIdentityFromBatch(batch, planRow.orderNumber),
+            "backlog",
+            rowId,
+            itemKey
+          );
+        });
+      };
+
+      const exactBundleTenBacklogRowKeys = new Set(
+        overdueSourceRows
+          .filter(hasExactBundleTenBacklogActivity)
+          .map((row) => `backlog:${String(row.id)}`)
+      );
+
+      const normalBacklogSourceRows = overdueSourceRows.filter((row) =>
+        !recurringSnapshot.names.has(recurringNameKey(row.productName))
+        || exactBundleTenBacklogRowKeys.has(`backlog:${String(row.id)}`)
+      );
+      const recurringBacklogSourceRows = overdueSourceRows.filter((row) =>
+        recurringSnapshot.names.has(recurringNameKey(row.productName))
+        && !exactBundleTenBacklogRowKeys.has(`backlog:${String(row.id)}`)
+      );
+
       const overdueGroups = new Map<string, typeof overdueSourceRows>();
-      legacyOverdueRows.filter((row) => !getExecutiveCompletionMarker(row.planData)).forEach((row) => {
+      normalBacklogSourceRows.filter((row) => !getExecutiveCompletionMarker(row.planData)).forEach((row) => {
         const key = normalizeLooseText(row.orderNumber);
         const group = overdueGroups.get(key) || [];
         group.push(row);
@@ -15649,9 +15696,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   : hasProgress ? "Folyamatban" : "Lemaradás – elvégzendő",
             startWorkerName: rowWorkerStatus.startWorkerName
               || (effectiveRowStatus === "in-progress" ? szinterBacklogMonitorCell?.workerName || "" : ""),
-            lastWorkerName: completed
-              ? rowWorkerStatus.endWorkerName || szinterBacklogMonitorCell?.workerName || ""
-              : "",
+            lastWorkerName: "",
             startedAt: rowWorkerStatus.startedAt,
             endedAt: rowWorkerStatus.endedAt,
             doorWorkflow: rowWorkerStatus.doorWorkflow,
@@ -15665,7 +15710,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         });
       });
 
-      recurringOverdueRows.forEach((planRow)=>{
+      recurringBacklogSourceRows.forEach((planRow)=>{
         const recurring=recurringCardValues(recurringSnapshot,"backlog",String(planRow.id),planRow.productName);
         if(!recurring||recurring.status==="done")return;
         const delayDays=Math.max(1,Math.floor((new Date(`${dateKey}T00:00:00`).getTime()-new Date(`${planRow.completionDate}T00:00:00`).getTime())/86400000));
@@ -39026,6 +39071,10 @@ body {
         }
       }
 
+      if (bundleTenSelectionForStart?.source === "backlog") {
+        await loadTerminalProductionCard(currentMachineId);
+      }
+
       const singleStartSuccessText = activeScrapReplacement
         ? `${getSingleScrapReplacementPartLabel(activeScrapReplacement)} selejtpótlás egyedi rendelésként sikeresen elindítva.`
         : orderProductionMeta.ujragyartas
@@ -39079,6 +39128,9 @@ body {
         });
         for (const row of bundleTenRowsForSave) {
           await syncBundleTenPriorityRowStatus(row, "FOLYAMATBAN", activeWorker["Teljes nev"], new Date().toISOString(), machine);
+        }
+        if (bundleTenRowsForSave.some((row) => row.source === "backlog")) {
+          await loadTerminalProductionCard(machine);
         }
       }
       setCreatedBatch(hydrateProductionBatch({...raw,batch_code:saved.batch_code,order_ids:orders,worker_name:activeWorker["Teljes nev"],production_meta:meta,machine_id:machine,created_at:raw.created_at||new Date().toISOString(),start_time:raw.start_time||new Date().toISOString()}));
@@ -39251,6 +39303,10 @@ body {
           console.error("Vágási címkenyomtatás hiba:", printError);
           cuttingLabelPrintSuffix = ` A köteg mentve, de a címkenyomtatás sikertelen: ${normalizeError(printError)}`;
         }
+      }
+
+      if (bundleTenRowsForSave.some((row) => row.source === "backlog")) {
+        await loadTerminalProductionCard(currentMachineId);
       }
 
       const savedBatch: ProductionBatchRow = {
@@ -40250,6 +40306,7 @@ body {
     let routedScrapReplacementForStart: ScrapReplacementRow | null = null;
     let preparedScrapRouteForEnd: ScrapReplacementRoute | null = null;
     let preparedEventFiveRepairRouteForEnd: ScrapReplacementRoute | null = null;
+    let bundleTenBacklogEndSaved = false;
     const finalSzal = action === "END" && !isDoorTwoPartEnd ? parseSzalValue(endSzal) : null;
     const finalOuterSheetScrap = action === "END" && isFoilSheetScrapWorker(activeWorker) ? outerSheetScrap : false;
     const finalInnerSheetScrap = action === "END" && isFoilSheetScrapWorker(activeWorker) ? innerSheetScrap : false;
@@ -40595,6 +40652,10 @@ body {
           || (isThreePartEnd && threePartCompletionPercent < 100);
 
         const linkedStartMetadata = getStructuredNoteMetadata(openLog.note);
+        bundleTenBacklogEndSaved =
+          Number(linkedStartMetadata.event_bundle) === 10
+          && String(linkedStartMetadata.visual_source || "").trim() === "backlog"
+          && Boolean(String(linkedStartMetadata.visual_source_row_id || "").trim());
         const linkedStartParts = normalizeSzerelesStartParts(openLog.szereles_start_reszek || linkedStartMetadata.szereles_start_reszek);
         const endPayload = {
           worker_id: activeWorker.id,
@@ -40908,6 +40969,10 @@ body {
       const savedEventFiveRepairText = eventFiveManualRepairSelected && preparedEventFiveRepairRouteForEnd
         ? ` | ${eventFiveRepairAction}: ${preparedEventFiveRepairRouteForEnd.targets.map((target) => target.stationName).join(", ")}`
         : "";
+      if (action === "END" && bundleTenBacklogEndSaved) {
+        await loadTerminalProductionCard(currentMachineId);
+      }
+
       resetAfterSave();
       setEndBarcodeConfirmed(false);
       setMessage({
