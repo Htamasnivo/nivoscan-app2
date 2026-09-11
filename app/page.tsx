@@ -1398,6 +1398,16 @@ type ProductionCardPriorityRow = {
   endWorkerName: string;
   startedAt: string | null;
   endedAt: string | null;
+  // 5-ös esemény / Szerelés: csak a kártyás vizuális visszajelzéshez.
+  doorWorkflow?: boolean;
+  tokKesz?: boolean;
+  nyiloKesz?: boolean;
+  doorSessionTracked?: boolean;
+  tokRunning?: boolean;
+  nyiloRunning?: boolean;
+  kulsoLapSelejtCount?: number;
+  belsoLapSelejtCount?: number;
+  toklecSelejtCount?: number;
   crossStationStatuses?: Record<string, ProductionMonitorStatus>;
   crossStationScrapFlags?: Record<string, boolean>;
 };
@@ -1432,6 +1442,10 @@ type ProductionCardBacklogRow = {
   doorSessionTracked?: boolean;
   tokRunning?: boolean;
   nyiloRunning?: boolean;
+  // 5-ös esemény / Szerelés: sikeresen mentett selejtjelentések darabszáma.
+  kulsoLapSelejtCount?: number;
+  belsoLapSelejtCount?: number;
+  toklecSelejtCount?: number;
 
   // Az eredeti, késésbe került *_terv sor teljes adattartalma.
   // Így a Lemaradások kártyán ugyanazok az Excel/Supabase mezők
@@ -1477,6 +1491,10 @@ type ProductionCardRow = {
   totalStartedAt?: string | null;
   totalEndedAt?: string | null;
   totalMinutes?: number | null;
+  // 5-ös esemény / Szerelés: sikeresen mentett selejtjelentések darabszáma.
+  kulsoLapSelejtCount?: number;
+  belsoLapSelejtCount?: number;
+  toklecSelejtCount?: number;
 
   panelWorkflow: boolean;
   ajtolapokKesz: boolean;
@@ -3846,9 +3864,13 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
     const priorityPlanFieldIds = stationPlanDefinitions.map((field) =>
       `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${field.key}`
     );
+    const prioritySzerelesPartFieldIds = getStationPlanIdentityKey(stationName) === "szereles"
+      ? [PRODUCTION_CARD_NYILO_FIELD_ID, PRODUCTION_CARD_TOK_FIELD_ID]
+      : [];
     return Array.from(new Set([
       PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID,
       ...priorityPlanFieldIds,
+      ...prioritySzerelesPartFieldIds,
       PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID,
       PRODUCTION_CARD_PRIORITY_START_WORKER_FIELD_ID,
       PRODUCTION_CARD_PRIORITY_END_WORKER_FIELD_ID,
@@ -14748,6 +14770,42 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
 
+  type SzerelesScrapReportCounts = {
+    kulsoLap: number;
+    belsoLap: number;
+    toklec: number;
+  };
+
+  function getSzerelesScrapReportCounts(sourceLogs: WorkLogRow[]): SzerelesScrapReportCounts {
+    return sourceLogs.reduce<SzerelesScrapReportCounts>((counts, log) => {
+      // Csak ténylegesen mentett END/lezárt audit sor számít jelentésnek.
+      // Így egy START soron esetleg örökölt jelző nem növeli tévesen a számlálót.
+      const savedEnd = String(log.action || "").toUpperCase() === "END"
+        || Boolean(log.end_time || log.end_timestamp);
+      if (!savedEnd) return counts;
+      if (log.kulso_lap_selejt === true) counts.kulsoLap += 1;
+      if (log.belso_lap_selejt === true) counts.belsoLap += 1;
+      if (log.toklec_selejt === true) counts.toklec += 1;
+      return counts;
+    }, { kulsoLap: 0, belsoLap: 0, toklec: 0 });
+  }
+
+  function getSzerelesNyiloScrapLabel(row: {
+    kulsoLapSelejtCount?: number;
+    belsoLapSelejtCount?: number;
+  }): string {
+    const labels = [
+      Number(row.kulsoLapSelejtCount || 0) > 0 ? `Külső lap #${Number(row.kulsoLapSelejtCount || 0)}` : "",
+      Number(row.belsoLapSelejtCount || 0) > 0 ? `Belső lap #${Number(row.belsoLapSelejtCount || 0)}` : "",
+    ].filter(Boolean);
+    return labels.join(" | ");
+  }
+
+  function getSzerelesTokScrapLabel(row: { toklecSelejtCount?: number }): string {
+    const count = Number(row.toklecSelejtCount || 0);
+    return count > 0 ? `Tokléc #${count}` : "";
+  }
+
   function getProductionCardFieldValue(row: ProductionCardRow, fieldId: string): string | number {
     if (isProductionCardCrossStationStatusField(fieldId)) {
       const stationName = getProductionCardCrossStationNameFromFieldId(fieldId);
@@ -14790,8 +14848,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const minutes = getProductionCardDoorActualMinutes(row, "tok");
       return minutes === null ? "–" : formatDuration(minutes);
     }
-    if (fieldId === PRODUCTION_CARD_TOK_FIELD_ID) return row.doorWorkflow ? (row.tokKesz ? "Kész" : row.doorSessionTracked && !row.tokRunning ? "Hátravan" : "Folyamatban") : "";
-    if (fieldId === PRODUCTION_CARD_NYILO_FIELD_ID) return row.doorWorkflow ? (row.nyiloKesz ? "Kész" : row.doorSessionTracked && !row.nyiloRunning ? "Hátravan" : "Folyamatban") : "";
+    if (fieldId === PRODUCTION_CARD_TOK_FIELD_ID) {
+      if (!row.doorWorkflow) return "";
+      if (row.tokKesz) return "Kész";
+      const scrapLabel = getSzerelesTokScrapLabel(row);
+      return scrapLabel || (row.doorSessionTracked && !row.tokRunning ? "Hátravan" : "Folyamatban");
+    }
+    if (fieldId === PRODUCTION_CARD_NYILO_FIELD_ID) {
+      if (!row.doorWorkflow) return "";
+      if (row.nyiloKesz) return "Kész";
+      const scrapLabel = getSzerelesNyiloScrapLabel(row);
+      return scrapLabel || (row.doorSessionTracked && !row.nyiloRunning ? "Hátravan" : "Folyamatban");
+    }
     if (fieldId === PRODUCTION_CARD_AJTOLAPOK_FIELD_ID) return row.panelWorkflow ? (row.ajtolapokKesz ? "Kész" : "Folyamatban") : "";
     if (fieldId === PRODUCTION_CARD_TOKLEC_KESZ_FIELD_ID) return row.panelWorkflow ? (row.toklecKesz ? "Kész" : "Folyamatban") : "";
     if (fieldId === PRODUCTION_CARD_KULSO_LAP_KESZ_FIELD_ID) return row.threePartWorkflow ? (row.kulsoLapKesz ? "Kész" : "Folyamatban") : "";
@@ -14869,6 +14937,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return String(value);
     }
     if (fieldId === PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID) return row.orderNumber;
+    if (fieldId === PRODUCTION_CARD_NYILO_FIELD_ID) {
+      if (!row.doorWorkflow) return "";
+      if (row.nyiloKesz) return "Kész";
+      const scrapLabel = getSzerelesNyiloScrapLabel(row);
+      return scrapLabel || (row.doorSessionTracked && !row.nyiloRunning ? "Hátravan" : "Folyamatban");
+    }
+    if (fieldId === PRODUCTION_CARD_TOK_FIELD_ID) {
+      if (!row.doorWorkflow) return "";
+      if (row.tokKesz) return "Kész";
+      const scrapLabel = getSzerelesTokScrapLabel(row);
+      return scrapLabel || (row.doorSessionTracked && !row.tokRunning ? "Hátravan" : "Folyamatban");
+    }
     if (fieldId === PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID) return row.statusLabel;
     if (fieldId === PRODUCTION_CARD_PRIORITY_START_WORKER_FIELD_ID) return row.startWorkerName;
     if (fieldId === PRODUCTION_CARD_PRIORITY_END_WORKER_FIELD_ID) return row.endWorkerName;
@@ -14901,8 +14981,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (fieldId === PRODUCTION_CARD_BACKLOG_STATUS_FIELD_ID) return row.statusLabel;
     if (fieldId === PRODUCTION_CARD_BACKLOG_START_WORKER_FIELD_ID) return row.startWorkerName;
     if (fieldId === PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID) return row.lastWorkerName;
-    if (fieldId === PRODUCTION_CARD_BACKLOG_TOK_FIELD_ID) return row.doorWorkflow ? (row.tokKesz ? "Kész" : "Folyamatban") : "";
-    if (fieldId === PRODUCTION_CARD_BACKLOG_NYILO_FIELD_ID) return row.doorWorkflow ? (row.nyiloKesz ? "Kész" : "Folyamatban") : "";
+    if (fieldId === PRODUCTION_CARD_BACKLOG_TOK_FIELD_ID) {
+      if (!row.doorWorkflow) return "";
+      if (row.tokKesz) return "Kész";
+      return getSzerelesTokScrapLabel(row) || "Folyamatban";
+    }
+    if (fieldId === PRODUCTION_CARD_BACKLOG_NYILO_FIELD_ID) {
+      if (!row.doorWorkflow) return "";
+      if (row.nyiloKesz) return "Kész";
+      return getSzerelesNyiloScrapLabel(row) || "Folyamatban";
+    }
     if (fieldId === PRODUCTION_CARD_BACKLOG_ELAPSED_FIELD_ID) {
       return getProductionCardElapsedValue(row.startedAt, row.endedAt);
     }
@@ -16133,7 +16221,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return left.sourceRowId.localeCompare(right.sourceRowId, "hu", { numeric: true });
     });
 
-    const orderNumbers = Array.from(new Set(planRows.map((row) => row.orderNumber)));
+    const prioritySzerelesOrderNumbers = getStationPlanIdentityKey(cleanStationName) === "szereles"
+      ? priorityRows.map((row) => row.orderNumber)
+      : [];
+    const orderNumbers = Array.from(new Set([
+      ...planRows.map((row) => row.orderNumber),
+      ...prioritySzerelesOrderNumbers,
+    ]));
     const logs: WorkLogRow[] = [];
     const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, tok_tenyleges_perc, nyilo_tenyleges_perc, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
     for (let index = 0; index < orderNumbers.length; index += 100) {
@@ -16165,6 +16259,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       batchStarts.push(...(((batchData || []) as ProductionBatchRow[]).filter((batch) =>
         Array.isArray(batch.order_ids) && batch.order_ids.some((orderId) => plannedOrderSet.has(normalizeLooseText(String(orderId))))
       )));
+    }
+
+    // 5-ös esemény / Szerelés: a Prioritási kártya Nyíló/Tok cellái ugyanabból
+    // a work_logs állapotból és selejtjelentésekből kapják a vizuális visszajelzést,
+    // mint a normál Termelési kártya. A prioritási rendelés üzleti státuszát nem írjuk át.
+    if (getStationPlanIdentityKey(cleanStationName) === "szereles") {
+      priorityRows.forEach((priorityRow) => {
+        const priorityLogs = logs.filter(
+          (log) => normalizeLooseText(log.order_number) === normalizeLooseText(priorityRow.orderNumber)
+        );
+        const priorityBatches = batchStarts.filter(
+          (batch) => Array.isArray(batch.order_ids)
+            && batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(priorityRow.orderNumber))
+        );
+        const doorState = resolveProductionCardWorkers(priorityLogs, priorityBatches, priorityRow.orderNumber);
+        const scrapCounts = getSzerelesScrapReportCounts(priorityLogs);
+        priorityRow.doorWorkflow = doorState.doorWorkflow;
+        priorityRow.tokKesz = doorState.tokKesz;
+        priorityRow.nyiloKesz = doorState.nyiloKesz;
+        priorityRow.doorSessionTracked = doorState.doorSessionTracked;
+        priorityRow.tokRunning = doorState.tokRunning;
+        priorityRow.nyiloRunning = doorState.nyiloRunning;
+        priorityRow.kulsoLapSelejtCount = scrapCounts.kulsoLap;
+        priorityRow.belsoLapSelejtCount = scrapCounts.belsoLap;
+        priorityRow.toklecSelejtCount = scrapCounts.toklec;
+      });
     }
 
     const backlogRows: ProductionCardBacklogRow[] = [];
@@ -16353,6 +16473,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(orderNumber));
         });
         const workerStatus = resolveProductionCardWorkers(rowLogs, rowBatchStarts, orderNumber);
+        const rowScrapCounts = getSzerelesScrapReportCounts(rowLogs);
         const hasBundleTenScopedGroupActivity =
           rowLogs.some((log) => Boolean(getBundleTenVisualIdentityFromLog(log)))
           || rowBatchStarts.some((batch) => getBundleTenVisualIdentitiesFromBatch(batch, orderNumber).length > 0);
@@ -16494,6 +16615,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             tokKesz: rowWorkerStatus.tokKesz,
             nyiloKesz: rowWorkerStatus.nyiloKesz,
             completionPercent: rowWorkerStatus.completionPercent,
+            kulsoLapSelejtCount: rowScrapCounts.kulsoLap,
+            belsoLapSelejtCount: rowScrapCounts.belsoLap,
+            toklecSelejtCount: rowScrapCounts.toklec,
             planData: planRow.planData,
           });
         });
@@ -16748,8 +16872,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const base=resolveProductionCardWorkers([],[],planRow.orderNumber);
         return {...planRow,...base,...recurring,crossStationStatuses:{},crossStationScrapFlags:crossStationScrapFlagsByOrder.get(normalizeLooseText(planRow.orderNumber))||{}};
       }
+      const allOrderLogs = logs.filter(
+        (log) => normalizeLooseText(log.order_number) === normalizeLooseText(planRow.orderNumber) && !isExecutiveCompletionLog(log)
+      );
+      const rowScrapCounts = getSzerelesScrapReportCounts(allOrderLogs);
       const rowLogs = filterBundleTenVisualLogsForCardRow(
-        logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(planRow.orderNumber) && !isExecutiveCompletionLog(log)),
+        allOrderLogs,
         "production-plan",
         planRow.sourceRowId,
         `production-plan:${planRow.sourceRowId}`
@@ -16800,6 +16928,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return {
         ...planRow,
         ...status,
+        kulsoLapSelejtCount: rowScrapCounts.kulsoLap,
+        belsoLapSelejtCount: rowScrapCounts.belsoLap,
+        toklecSelejtCount: rowScrapCounts.toklec,
         crossStationStatuses:
           crossStationStatusesByPlanKey.get(productionCardPlanRowKey(planRow)) || {},
         crossStationScrapFlags:
@@ -18575,15 +18706,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                           const completionPercent = productionRow?.completionPercent ?? backlogRow?.completionPercent ?? null;
                           const isTokField = fieldId === PRODUCTION_CARD_TOK_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_TOK_FIELD_ID;
                           const isNyiloField = fieldId === PRODUCTION_CARD_NYILO_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_NYILO_FIELD_ID;
+                          const szerelesDoorRow = productionRow || backlogRow || priorityRow;
+                          const szerelesDoorWorkflow = Boolean(szerelesDoorRow?.doorWorkflow);
+                          const szerelesDoorPartDone = isTokField
+                            ? Boolean(szerelesDoorRow?.tokKesz)
+                            : isNyiloField
+                              ? Boolean(szerelesDoorRow?.nyiloKesz)
+                              : false;
+                          const szerelesDoorPartHasScrap = isTokField
+                            ? Number(szerelesDoorRow?.toklecSelejtCount || 0) > 0
+                            : isNyiloField
+                              ? Number(szerelesDoorRow?.kulsoLapSelejtCount || 0) > 0
+                                || Number(szerelesDoorRow?.belsoLapSelejtCount || 0) > 0
+                              : false;
+                          const szerelesDoorScrapCellActive = szerelesDoorWorkflow
+                            && !szerelesDoorPartDone
+                            && szerelesDoorPartHasScrap;
                           if (completionPercent === 50 && isStatus) {
                             background = "#2563eb";
                             color = "#eff6ff";
                           }
-                          if ((isTokField || isNyiloField) && (productionRow?.doorWorkflow || backlogRow?.doorWorkflow)) {
-                            const isDonePart = isTokField
-                              ? Boolean(productionRow?.tokKesz ?? backlogRow?.tokKesz)
-                              : Boolean(productionRow?.nyiloKesz ?? backlogRow?.nyiloKesz);
-                            background = isDonePart ? "#22c55e" : "#2563eb";
+                          if ((isTokField || isNyiloField) && szerelesDoorWorkflow) {
+                            background = szerelesDoorPartDone
+                              ? "#22c55e"
+                              : szerelesDoorScrapCellActive
+                                ? "#dc2626"
+                                : "#2563eb";
                             color = "#ffffff";
                           }
                           const value = priorityRow
@@ -18662,7 +18810,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               title={canOpenSzerelesDetailPdf ? `${String(value || "Rendelés")} · A teljes sor kattintható a szerelési _terv részletező PDF megnyitásához` : title}
                               style={{
                                 padding: `${Math.max(2, Math.round(theme.cellPadding * zoomRatio))}px 5px`,
-                                background: crossStationScrapFlag ? "#dc2626" : rowSos ? PRODUCTION_CARD_SOS_ROW_BACKGROUND : quantityPartialRow
+                                background: crossStationScrapFlag
+                                  ? "#dc2626"
+                                  : szerelesDoorScrapCellActive
+                                    ? "#dc2626"
+                                    : ((isTokField || isNyiloField) && szerelesDoorWorkflow && szerelesDoorPartDone)
+                                      ? "#22c55e"
+                                      : rowSos ? PRODUCTION_CARD_SOS_ROW_BACKGROUND : quantityPartialRow
                                   ? "#2563eb"
                                   : isCrossStationStatusField
                                     ? (style.cellBackground || background)
@@ -18672,7 +18826,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                         || style.cellBackground
                                         || background
                                       ),
-                                color: crossStationScrapFlag ? "#ffffff" : rowSos ? PRODUCTION_CARD_SOS_ROW_TEXT : quantityPartialRow
+                                color: crossStationScrapFlag || szerelesDoorScrapCellActive || ((isTokField || isNyiloField) && szerelesDoorWorkflow && szerelesDoorPartDone)
+                                  ? "#ffffff"
+                                  : rowSos ? PRODUCTION_CARD_SOS_ROW_TEXT : quantityPartialRow
                                   ? "#eff6ff"
                                   : isCrossStationStatusField
                                     ? (style.cellTextColor || color)
