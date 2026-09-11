@@ -6380,6 +6380,21 @@ function getProductionMetaForOrder(
     : { ujragyartas: false, ujragyartas_sorszam: null, gyartas_tipus: "egyedi", gyartasi_kor: null };
 }
 
+const BUNDLE_TEN_BATCH_ROW_META_PREFIX = "__bundle10_row__:";
+
+function getBundleTenBatchRowMetaKey(orderNumber: string, itemKey: string): string {
+  return `${BUNDLE_TEN_BATCH_ROW_META_PREFIX}${encodeURIComponent(String(orderNumber || "").trim())}::${String(itemKey || "").trim()}`;
+}
+
+function getBundleTenExactBatchRowMeta(
+  productionMeta: Record<string, OrderProductionMeta> | null | undefined,
+  row: BundleTenSelectableRow
+): OrderProductionMeta | null {
+  const exactKey = getBundleTenBatchRowMetaKey(row.orderNumber, row.key);
+  const exactMeta = productionMeta?.[exactKey];
+  return exactMeta ? normalizeOrderProductionMeta(exactMeta) : null;
+}
+
 function resolveLogStation(log: WorkLogRow, workerRows: Worker[]): string {
   const machine = String(log.machine_id || "").trim();
   if (machine && normalizeLooseText(machine) !== normalizeLooseText(DEFAULT_MACHINE_ID)) return machine;
@@ -15541,6 +15556,40 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return { source, sourceRowId, itemKey };
   }
 
+  function getBundleTenVisualIdentitiesFromBatch(
+    batch: ProductionBatchRow,
+    orderNumber: string
+  ): Array<{
+    source: BundleTenCardSource;
+    sourceRowId: string;
+    itemKey: string;
+  }> {
+    const exactPrefix = `${BUNDLE_TEN_BATCH_ROW_META_PREFIX}${encodeURIComponent(String(orderNumber || "").trim())}::`;
+    const exactIdentities = Object.entries(batch.production_meta || {})
+      .filter(([key]) => key.startsWith(exactPrefix))
+      .map(([, rawMeta]) => {
+        const meta = normalizeOrderProductionMeta(rawMeta);
+        const source = String(meta.visual_source ?? "").trim() as BundleTenCardSource;
+        const sourceRowId = String(meta.visual_source_row_id ?? "").trim();
+        const itemKey = String(meta.visual_source_item_key ?? "").trim();
+        if (!source || !sourceRowId) return null;
+        if (source !== "priority" && source !== "backlog" && source !== "production-plan") return null;
+        return { source, sourceRowId, itemKey };
+      })
+      .filter((identity): identity is { source: BundleTenCardSource; sourceRowId: string; itemKey: string } => identity !== null);
+
+    if (exactIdentities.length > 0) return exactIdentities;
+
+    // Régi kötegek kompatibilitása: ott rendelésszámonként csak egy meta volt.
+    const meta = getProductionMetaForOrder(batch.production_meta, orderNumber);
+    const source = String(meta.visual_source ?? "").trim() as BundleTenCardSource;
+    const sourceRowId = String(meta.visual_source_row_id ?? "").trim();
+    const itemKey = String(meta.visual_source_item_key ?? "").trim();
+    if (!source || !sourceRowId) return [];
+    if (source !== "priority" && source !== "backlog" && source !== "production-plan") return [];
+    return [{ source, sourceRowId, itemKey }];
+  }
+
   function getBundleTenVisualIdentityFromBatch(
     batch: ProductionBatchRow,
     orderNumber: string
@@ -15549,13 +15598,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     sourceRowId: string;
     itemKey: string;
   } | null {
-    const meta = getProductionMetaForOrder(batch.production_meta, orderNumber);
-    const source = String(meta.visual_source ?? "").trim() as BundleTenCardSource;
-    const sourceRowId = String(meta.visual_source_row_id ?? "").trim();
-    const itemKey = String(meta.visual_source_item_key ?? "").trim();
-    if (!source || !sourceRowId) return null;
-    if (source !== "priority" && source !== "backlog" && source !== "production-plan") return null;
-    return { source, sourceRowId, itemKey };
+    return getBundleTenVisualIdentitiesFromBatch(batch, orderNumber)[0] || null;
   }
 
   function bundleTenVisualIdentityMatches(
@@ -15590,9 +15633,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     itemKey?: string
   ): ProductionBatchRow[] {
     return sourceBatches.filter((batch) => {
-      const identity = getBundleTenVisualIdentityFromBatch(batch, orderNumber);
-      if (!identity) return true;
-      return bundleTenVisualIdentityMatches(identity, source, sourceRowId, itemKey);
+      const identities = getBundleTenVisualIdentitiesFromBatch(batch, orderNumber);
+      if (!identities.length) return true;
+      return identities.some((identity) => bundleTenVisualIdentityMatches(identity, source, sourceRowId, itemKey));
     });
   }
 
@@ -16209,12 +16252,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           const startTime = new Date(batch.start_time || batch.created_at || "").getTime();
           if (!Number.isFinite(startTime) || startTime >= selectedDayEndTime) return false;
           if (!Array.isArray(batch.order_ids) || !batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === orderKey)) return false;
-          return bundleTenVisualIdentityMatches(
-            getBundleTenVisualIdentityFromBatch(batch, planRow.orderNumber),
-            "backlog",
-            rowId,
-            itemKey
-          );
+          return getBundleTenVisualIdentitiesFromBatch(batch, planRow.orderNumber)
+            .some((identity) => bundleTenVisualIdentityMatches(identity, "backlog", rowId, itemKey));
         });
       };
 
@@ -16262,7 +16301,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const workerStatus = resolveProductionCardWorkers(rowLogs, rowBatchStarts, orderNumber);
         const hasBundleTenScopedGroupActivity =
           rowLogs.some((log) => Boolean(getBundleTenVisualIdentityFromLog(log)))
-          || rowBatchStarts.some((batch) => Boolean(getBundleTenVisualIdentityFromBatch(batch, orderNumber)));
+          || rowBatchStarts.some((batch) => getBundleTenVisualIdentitiesFromBatch(batch, orderNumber).length > 0);
         const totalPlannedQuantity = groupRows.reduce((sum, row) => sum + row.plannedQuantity, 0);
         let unallocatedCompletedQuantity = calculateCompletedPlanQuantity(
           rowLogs,
@@ -34145,9 +34184,11 @@ body {
       if (rowMachineKey && rowMachineKey !== currentMachineKey) continue;
       const batch = rawRow as ProductionBatchRow;
       for (const order of normalizeProductionBatchOrders(batch.order_ids)) {
-        const identity = getBundleTenVisualIdentityFromBatch(batch, order);
-        if (identity?.itemKey) {
-          rowKeys.add(identity.itemKey);
+        const identities = getBundleTenVisualIdentitiesFromBatch(batch, order);
+        if (identities.length > 0) {
+          identities.forEach((identity) => {
+            if (identity.itemKey) rowKeys.add(identity.itemKey);
+          });
           continue;
         }
         // Régi, forrássor nélküli kötegeknél megmarad a rendelésszám-alapú védelem.
@@ -34180,9 +34221,9 @@ body {
         .some((value) => normalizeLooseText(value) === orderKey);
       if (!containsOrder) continue;
 
-      const identity = getBundleTenVisualIdentityFromBatch(batch, cleanOrder);
-      if (identity) {
-        if (!bundleTenVisualIdentityMatches(identity, row.source, row.sourceRowId, row.key)) continue;
+      const identities = getBundleTenVisualIdentitiesFromBatch(batch, cleanOrder);
+      if (identities.length > 0) {
+        if (!identities.some((identity) => bundleTenVisualIdentityMatches(identity, row.source, row.sourceRowId, row.key))) continue;
       } else {
         // Régi köteg: nincs konkrét sorazonosító, ezért csak itt használunk
         // rendelésszám-alapú visszaesést.
@@ -34367,18 +34408,36 @@ body {
     if (alreadySelected) {
       setBundleTenSelectedRowKeys((current) => current.filter((key) => key !== row.key));
       if (requiresSzerelesStartParts()) {
+        const remainingSameOrderRows = bundleTenSelectedRowKeys
+          .filter((key) => key !== row.key)
+          .map((key) => getBundleTenRowByKey(key))
+          .filter((candidate): candidate is BundleTenSelectableRow =>
+            !!candidate && normalizeLooseText(candidate.orderNumber) === normalizeLooseText(row.orderNumber)
+          );
+
         setBatchOrderProductionMeta((previous) => {
           const next = { ...previous };
-          Object.keys(next).forEach((key) => {
-            if (normalizeLooseText(key) === normalizeLooseText(row.orderNumber)) delete next[key];
+          delete next[getBundleTenBatchRowMetaKey(row.orderNumber, row.key)];
+
+          if (remainingSameOrderRows.length === 0) {
+            Object.keys(next).forEach((key) => {
+              if (normalizeLooseText(key) === normalizeLooseText(row.orderNumber)) delete next[key];
+            });
+          } else {
+            const fallbackRow = remainingSameOrderRows[remainingSameOrderRows.length - 1];
+            const fallbackMeta = getBundleTenExactBatchRowMeta(next, fallbackRow);
+            if (fallbackMeta) next[row.orderNumber] = fallbackMeta;
+          }
+          return next;
+        });
+
+        if (remainingSameOrderRows.length === 0) {
+          setSzerelesBatchStates((previous) => {
+            const next = { ...previous };
+            delete next[row.orderNumber];
+            return next;
           });
-          return next;
-        });
-        setSzerelesBatchStates((previous) => {
-          const next = { ...previous };
-          delete next[row.orderNumber];
-          return next;
-        });
+        }
       }
       return;
     }
@@ -34408,15 +34467,10 @@ body {
     }
 
     setBundleTenSelectedRowKeys((current) => {
-      // Ugyanaz a rendelésszám több kártyán / több forrássorban is szerepelhet.
-      // Egy üzleti rendelést a kötegben egyszer indítunk, de mindig a ténylegesen
-      // kattintott forrássort őrizzük meg. Másik példányra kattintva az váltja az előzőt.
-      const rowOrderKey = normalizeLooseText(row.orderNumber);
-      const withoutSameOrder = current.filter((key) => {
-        const selectedRow = getBundleTenRowByKey(key);
-        return !selectedRow || normalizeLooseText(selectedRow.orderNumber) !== rowOrderKey;
-      });
-      return [...withoutSameOrder, row.key];
+      // Köteg módban minden konkrét kártyasor önálló kijelölés.
+      // Azonos rendelésszámú, de más forrássorok is egyszerre kijelölhetők.
+      if (current.includes(row.key)) return current;
+      return [...current, row.key];
     });
   }
 
@@ -34540,23 +34594,13 @@ body {
         ...getBundleTenSourceMeta(row),
       };
 
-      setBatchOrderProductionMeta((previous) => {
-        const next = { ...previous };
-        Object.keys(next).forEach((key) => {
-          if (normalizeLooseText(key) === normalizeLooseText(row.orderNumber)) delete next[key];
-        });
-        next[row.orderNumber] = meta;
-        return next;
-      });
+      setBatchOrderProductionMeta((previous) => ({
+        ...previous,
+        [row.orderNumber]: meta,
+        [getBundleTenBatchRowMetaKey(row.orderNumber, row.key)]: meta,
+      }));
       setSzerelesBatchStates((previous) => ({ ...previous, [row.orderNumber]: state }));
-      setBundleTenSelectedRowKeys((current) => {
-        const orderKey = normalizeLooseText(row.orderNumber);
-        const withoutSameOrder = current.filter((key) => {
-          const currentRow = getBundleTenRowByKey(key);
-          return !currentRow || normalizeLooseText(currentRow.orderNumber) !== orderKey;
-        });
-        return [...withoutSameOrder, row.key];
-      });
+      setBundleTenSelectedRowKeys((current) => current.includes(row.key) ? current : [...current, row.key]);
 
       setBundleTenSzerelesDraftRowKey("");
       setSzerelesOrderState(null);
@@ -34612,7 +34656,9 @@ body {
           // A Szerelésnél a sor kiválasztásakor már megadtuk, hogy Nyíló / Tok
           // induljon. START előtt élőben még egyszer ellenőrizzük az állapotot,
           // nehogy egy időközben megváltozott rendelést hibásan indítsunk el.
-          const configuredMeta = getProductionMetaForOrder(batchOrderProductionMeta, row.orderNumber);
+          const configuredMeta =
+            getBundleTenExactBatchRowMeta(batchOrderProductionMeta, row)
+            || getProductionMetaForOrder(batchOrderProductionMeta, row.orderNumber);
           const parts = normalizeSzerelesStartParts(configuredMeta.szereles_start_reszek) as SzerelesPart[];
           if (!parts.length) {
             throw new Error(`${row.orderNumber}: nincs megadva, hogy Nyíló, Tok vagy mindkettő induljon. Kattints újra a sorra és add hozzá a köteghez.`);
@@ -34640,10 +34686,12 @@ body {
 
           const routed = await fetchOpenSingleScrapReplacement(row.orderNumber, machine);
           if (routed) await assertScrapReplacementRouteReady(routed);
-          nextMeta[row.orderNumber] = {
+          const rowMeta: OrderProductionMeta = {
             ...configuredMeta,
             ...getBundleTenSourceMeta(row),
           };
+          nextMeta[row.orderNumber] = rowMeta;
+          nextMeta[getBundleTenBatchRowMetaKey(row.orderNumber, row.key)] = rowMeta;
           continue;
         }
 
@@ -34651,19 +34699,20 @@ body {
         if (routedScrapReplacement) await assertScrapReplacementRouteReady(routedScrapReplacement);
 
         const automaticMeta = await prepareBundleTenAutomaticProductionMeta(row);
-        nextMeta[row.orderNumber] = {
+        const rowMeta: OrderProductionMeta = {
           ...automaticMeta,
           ...getBundleTenSourceMeta(row),
         };
+        nextMeta[row.orderNumber] = rowMeta;
+        nextMeta[getBundleTenBatchRowMetaKey(row.orderNumber, row.key)] = rowMeta;
       }
 
       if (isSzerelesVisualBatch) {
         setSzerelesBatchStates(refreshedSzerelesStates);
       }
 
-      // A sorrend pontosan a felhasználó kattintási sorrendje. Ha ugyanaz a
-      // rendelésszám több kártyán szerepel, a legutóbb kattintott konkrét sor
-      // marad kijelölve; a forrássor teljes azonosítása külön audit táblába kerül.
+      // A sorrend pontosan a felhasználó kattintási sorrendje.
+      // Azonos rendelésszámú, de külön konkrét kártyasorok is mind bekerülnek.
       setBatchOrders(selectedRows.map((row) => row.orderNumber));
       setBatchOrderProductionMeta(nextMeta);
       setPendingAction("START");
@@ -39820,7 +39869,18 @@ body {
     if(!orders.length){setMessage({type:"error",text:"Nincs beolvasott rendelés."});return;}
     const machine=getCurrentMachineIdForInsert();const code=`BATCH-${Date.now()}`;
     const meta=Object.fromEntries(orders.map(order=>[order,getProductionMetaForOrder(batchOrderProductionMeta,order)])) as Record<string,OrderProductionMeta>;
-    const items=orders.map(order=>({order,parts:normalizeSzerelesStartParts(meta[order].szereles_start_reszek),meta:meta[order],new_cycle:meta[order].szereles_new_cycle===true,rework:meta[order].szereles_rework===true}));
+    if (isEventTenVisualWorker()) {
+      bundleTenRowsForSave.forEach((row) => {
+        const exactMeta = getBundleTenExactBatchRowMeta(batchOrderProductionMeta, row);
+        if (exactMeta) meta[getBundleTenBatchRowMetaKey(row.orderNumber, row.key)] = exactMeta;
+      });
+    }
+    const items=isEventTenVisualWorker() && bundleTenRowsForSave.length === orders.length
+      ? bundleTenRowsForSave.map((row)=>{
+          const rowMeta=getBundleTenExactBatchRowMeta(meta,row)||getProductionMetaForOrder(meta,row.orderNumber);
+          return {order:row.orderNumber,parts:normalizeSzerelesStartParts(rowMeta.szereles_start_reszek),meta:rowMeta,new_cycle:rowMeta.szereles_new_cycle===true,rework:rowMeta.szereles_rework===true};
+        })
+      : orders.map(order=>({order,parts:normalizeSzerelesStartParts(meta[order].szereles_start_reszek),meta:meta[order],new_cycle:meta[order].szereles_new_cycle===true,rework:meta[order].szereles_rework===true}));
     if(items.some(item=>item.parts.length===0)){setMessage({type:"error",text:"Minden rendeléshez kötelező Nyíló/Tok választás."});return;}
     batchFinalizeInFlightRef.current=true;setBusy(true);let committed=false;
     try{
@@ -39894,6 +39954,15 @@ body {
         getProductionMetaForOrder(batchOrderProductionMeta, order),
       ])
     ) as Record<string, OrderProductionMeta>;
+
+    if (isEventTenVisualWorker()) {
+      bundleTenRowsForSave.forEach((row) => {
+        const exactMeta = getBundleTenExactBatchRowMeta(batchOrderProductionMeta, row);
+        if (exactMeta) {
+          productionMetaForSave[getBundleTenBatchRowMetaKey(row.orderNumber, row.key)] = exactMeta;
+        }
+      });
+    }
 
     if (requiresSzerelesStartParts() && ordersForSave.some((order) =>
       normalizeSzerelesStartParts(productionMetaForSave[order]?.szereles_start_reszek).length === 0
