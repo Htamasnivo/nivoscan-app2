@@ -35731,6 +35731,14 @@ body {
     );
   }
 
+  // Kizárólag a valódi 5-ös eseményköteg Szerelés END gyorsmentéséhez.
+  // A 10-es Szerelés mód szándékosan NEM tartozik ide.
+  function isExactEventFiveSzerelesWorker(worker: Worker | null = activeWorker): boolean {
+    return !!worker
+      && Number(getWorkerEsemenyKotegValue(worker)) === 5
+      && getStationPlanIdentityKey(getCurrentMachineIdForInsert()) === "szereles";
+  }
+
   function isEventSixBatchWorker(worker: Worker | null = activeWorker): boolean {
     // A 6-os mód mostantól kizárólag egyedi rendelés.
     // A régi batch feldolgozó kód kompatibilitásként bent marad, de új 6-os
@@ -40760,6 +40768,32 @@ body {
 
     actionLastInputAtRef.current = now;
     setActionBarcode(normalized);
+
+    // CSAK az 5-ös Szerelés END mezőnél: a fizikai scanner gyors karakterfolyamát
+    // felismerjük, és érvényes END kódnál Enter nélkül is azonnal mentünk.
+    // Kézi gépelésnél továbbra is Enter szükséges.
+    if (
+      isExactEventFiveSzerelesWorker(activeWorker)
+      && pendingAction === "END"
+      && step === 6
+      && normalized.length >= 3
+      && isEndBarcode(normalized)
+    ) {
+      const startedAt = actionScanStartedAtRef.current ?? now;
+      const elapsed = Math.max(0, now - startedAt);
+      const lastGap = previousInputAt === null ? Number.POSITIVE_INFINITY : Math.max(0, now - previousInputAt);
+      const averageGap = normalized.length > 1 ? elapsed / (normalized.length - 1) : Number.POSITIVE_INFINITY;
+      const looksLikePhysicalScanner = previousInputAt !== null && lastGap <= 50 && averageGap <= 45;
+
+      if (looksLikePhysicalScanner) {
+        actionScanTimerRef.current = setTimeout(() => {
+          actionScanTimerRef.current = null;
+          if (batchFinalizeInFlightRef.current || busy) return;
+          setEndBarcodeConfirmed(true);
+          void saveSzerelesSession("END", undefined, normalized);
+        }, 55);
+      }
+    }
   }
 
   function getLocalTimestampWithOffset(date = new Date()): string {
@@ -41296,8 +41330,15 @@ body {
     if(action==="START"&&parts.length===0){setMessage({type:"error",text:"START előtt válaszd ki a Nyílót, a Tokot vagy mindkettőt."});return;}
     if(action==="END"&&!legacyClose&&!hasScrap&&!hasRepair&&parts.length===0){setMessage({type:"error",text:"END előtt kötelező legalább egy folyamatban lévő rész kiválasztása."});return;}
     if(action==="START"&&!isEventTenVisualWorker()&&!isStartBarcode(confirmedCode||actionBarcode)){setMessage({type:"error",text:"Előbb olvasd be és erősítsd meg a START kódot."});return;}
-    // Az 5-ös szerelő selejt / javítás jelentés is END művelet: az END kód mindig kötelező.
-    if(action==="END"&&(!endBarcodeConfirmed||!isEndBarcode(confirmedCode||actionBarcode))){setMessage({type:"error",text:"Előbb erősítsd meg az END kódot Enterrel."});return;}
+    // 5-ös Szerelésnél három egyenértékű END indítás van:
+    // 1) END mentése gomb (nem kér vonalkódot), 2) scanner automata mentés,
+    // 3) kézi END + Enter. Más eseménykötegek END ellenőrzése változatlan.
+    const suppliedEndCode=(confirmedCode||actionBarcode).trim();
+    const eventFiveDirectEndConfirmed=action==="END"
+      && isExactEventFiveSzerelesWorker(activeWorker)
+      && !!confirmedCode
+      && isEndBarcode(confirmedCode);
+    if(action==="END"&&((!endBarcodeConfirmed&&!eventFiveDirectEndConfirmed)||!isEndBarcode(suppliedEndCode))){setMessage({type:"error",text:"Előbb erősítsd meg az END kódot Enterrel."});return;}
 
     const bundleTenSelectionForSzerelesStart = action === "START" && isEventTenVisualWorker()
       ? getBundleTenRowByKey(bundleTenSingleSelectionKey)
@@ -42584,6 +42625,8 @@ body {
     if (!isScannerSubmitKey(event)) return;
 
     event.preventDefault();
+    // Ha a scanner Enter suffixet is küld, az automata timer ne tudjon másodszor menteni.
+    clearActionScanTimer();
     const raw = event.currentTarget.value.trim();
 
     if (!raw) {
@@ -42601,6 +42644,13 @@ body {
 
     setActionBarcode(raw);
     setEndBarcodeConfirmed(true);
+
+    // CSAK 5-ös Szerelés: kézi END + Enter (vagy Enter suffixes scanner)
+    // azonnal ugyanazt a mentést indítja el, mint az END mentése gomb.
+    if (isExactEventFiveSzerelesWorker(activeWorker)) {
+      await saveSzerelesSession("END", undefined, raw);
+      return;
+    }
 
     if (isFoilSheetScrapWorker(activeWorker)) {
       setMessage({
@@ -42645,6 +42695,17 @@ body {
 
     await saveWorkLog("END", { note: finalNote, scrapQty: finalScrapQty });
     setActionBarcode("");
+  }
+
+  async function handleEventFiveAwareEndSaveButton(): Promise<void> {
+    // CSAK az 5-ös Szerelésnél a gomb önmagában END megerősítésnek számít.
+    // Minden meglévő mező-/selejt-/javítás-ellenőrzés a saveSzerelesSession-ben marad.
+    if (isExactEventFiveSzerelesWorker(activeWorker)) {
+      clearActionScanTimer();
+      await saveSzerelesSession("END", undefined, "END");
+      return;
+    }
+    await saveWorkLog("END");
   }
 
   async function handleActionSave(): Promise<void> {
@@ -45704,13 +45765,15 @@ body {
                         }}
                       />
                       <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 8 }}>
-                        A fizikai szkenner Enterrel megerősíti az END kódot. Ezután jelöld a Tok és/vagy Nyíló elkészültét, ellenőrizd a selejtjelöléseket, majd mentsd az END-et.
+                        {isExactEventFiveSzerelesWorker(activeWorker)
+                          ? "5-ös Szerelés: a fizikai scanner az END kód felismerésekor Enter nélkül azonnal könyvel. Kézi beírásnál END + Enter könyvel. Az END mentése gomb vonalkód nélkül is azonnal könyvel."
+                          : "A fizikai szkenner Enterrel megerősíti az END kódot. Ezután jelöld a Tok és/vagy Nyíló elkészültét, ellenőrizd a selejtjelöléseket, majd mentsd az END-et."}
                       </div>
                     </div>
                   )}
 
                   <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                    <button onClick={() => void saveWorkLog("END")} disabled={busy} style={buttonPrimary}>END mentése</button>
+                    <button onClick={() => void handleEventFiveAwareEndSaveButton()} disabled={busy} style={buttonPrimary}>END mentése</button>
                     <button onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
                   </div>
                 </>
