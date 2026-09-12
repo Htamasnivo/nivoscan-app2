@@ -1220,6 +1220,10 @@ type ScrapReplacementRow = {
   scrap_kind?: string | null;
   route_ready?: boolean;
   termelesi_kartya_adatok?: Record<string, unknown> | null;
+  // A selejtpótlási kártya ugyanazokat a munkaállomás-specifikus mezőket is
+  // meg tudja jeleníteni, mint a normál termelési kártya.
+  crossStationStatuses?: Record<string, ProductionMonitorStatus>;
+  crossStationScrapFlags?: Record<string, boolean>;
 };
 
 
@@ -3854,7 +3858,20 @@ function isScrapReplacementProductionCardStation(stationName: string | null | un
 }
 
 function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, stationName = ""): readonly string[] {
-  if (table.dataSource === "scrap-replacement") return PRODUCTION_CARD_SCRAP_FIELD_IDS;
+  if (table.dataSource === "scrap-replacement") {
+    // A Selejtpótlás kártyán ugyanaz a teljes mezőkészlet legyen választható,
+    // mint az adott munkaállomás normál Termelési kártyáján, PLUSZ maradjanak
+    // meg a selejtpótlás saját rendszermezői is. A két kártya láthatósági /
+    // sorrend / stílus beállítása továbbra is teljesen külön mentődik.
+    const productionMirror: ProductionMonitorTableConfig = {
+      ...table,
+      dataSource: "production-plan",
+    };
+    return Array.from(new Set([
+      ...getProductionCardFieldIdsForTable(productionMirror, stationName),
+      ...PRODUCTION_CARD_SCRAP_FIELD_IDS,
+    ]));
+  }
 
   const stationPlanDefinitions = getStationPlanFieldDefinitions(stationName);
 
@@ -4129,7 +4146,7 @@ function createDefaultPriorityCardTable(theme: ProductionMonitorTheme, stationNa
   return table;
 }
 
-function createDefaultScrapReplacementCardTable(theme: ProductionMonitorTheme): ProductionMonitorTableConfig {
+function createDefaultScrapReplacementCardTable(theme: ProductionMonitorTheme, stationName = ""): ProductionMonitorTableConfig {
   const scrapTheme = normalizeProductionMonitorTheme({
     ...applyProductionCardPriorityDefaultColors(theme, "scrap-replacement"),
     panelRadius: 14,
@@ -4140,13 +4157,21 @@ function createDefaultScrapReplacementCardTable(theme: ProductionMonitorTheme): 
     scrapTheme
   );
   table.dataSource = "scrap-replacement";
-  table.fieldOrder = [...PRODUCTION_CARD_SCRAP_FIELD_IDS];
-  table.hiddenFieldIds = [
+  const allScrapFields = [...getProductionCardFieldIdsForTable(table, stationName)];
+  const normalProductionFields = getProductionCardFieldIdsForTable(
+    { ...table, dataSource: "production-plan" },
+    stationName
+  );
+  table.fieldOrder = allScrapFields;
+  // A korábbi selejtkártya megjelenése alapból maradjon változatlan. Az újonnan
+  // elérhető normál termelési mezők a Profi szerkesztőben külön bekapcsolhatók.
+  table.hiddenFieldIds = Array.from(new Set([
+    ...normalProductionFields,
     PRODUCTION_CARD_SCRAP_LAST_WORKER_FIELD_ID,
     PRODUCTION_CARD_SCRAP_STARTED_AT_FIELD_ID,
     PRODUCTION_CARD_SCRAP_COMPLETED_AT_FIELD_ID,
     PRODUCTION_CARD_SCRAP_ELAPSED_FIELD_ID,
-  ];
+  ]));
   table.fieldStyles = {
     [PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID]: {
       ...normalizeProductionMonitorFieldStyle(null),
@@ -4296,7 +4321,7 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
     });
   }
   const tables = isScrapReplacementProductionCardStation(cleanStationName)
-    ? [priorityTable, createDefaultScrapReplacementCardTable(theme), backlogTable, table]
+    ? [priorityTable, createDefaultScrapReplacementCardTable(theme, cleanStationName), backlogTable, table]
     : [priorityTable, backlogTable, table];
   return {
     id: `production-card-${cleanStationName}`,
@@ -4402,9 +4427,10 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
         // az oszlop újra megjelent. A valid mezőlista most ugyanaz a dinamikus lista,
         // amelyet a szerkesztő és a kártya renderelése is használ.
         const tableForFields: ProductionMonitorTableConfig = { ...table, dataSource };
-        const validFields: readonly string[] = dataSource === "scrap-replacement"
-          ? PRODUCTION_CARD_SCRAP_FIELD_IDS
-          : getProductionCardFieldIdsForTable(tableForFields, stationName);
+        const validFields: readonly string[] = getProductionCardFieldIdsForTable(
+          tableForFields,
+          stationName
+        );
         const validFieldSet = new Set(validFields);
         let nextFieldOrder = Array.from(new Set([
           ...table.fieldOrder.filter((fieldId) => validFieldSet.has(fieldId)),
@@ -4448,10 +4474,18 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
           PRODUCTION_CARD_LAP_TOKLEC_KESZ_FIELD_ID,
           PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID,
           ...(
-            dataSource === "production-plan" || dataSource === "priority" || dataSource === "backlog"
+            dataSource === "production-plan" || dataSource === "priority" || dataSource === "backlog" || dataSource === "scrap-replacement"
               ? validFields.filter(isProductionCardCrossStationStatusField)
               : []
           ),
+          // Régi mentett selejtkártyákban ezek a normál termelési mezők még
+          // nem léteztek. Első betöltéskor legyenek elérhetők, de ne kapcsolódjanak
+          // be maguktól; a felhasználó külön pipálhatja őket a selejtkártyán.
+          ...(dataSource === "scrap-replacement"
+            ? validFields.filter((fieldId) =>
+                !(PRODUCTION_CARD_SCRAP_FIELD_IDS as readonly string[]).includes(fieldId)
+              )
+            : []),
         ].filter((fieldId) =>
           validFieldSet.has(fieldId)
           && !table.fieldOrder.includes(fieldId)
@@ -4498,7 +4532,7 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
     const existingScrapTable = tables.find((table) => table.dataSource === "scrap-replacement");
     tables = [
       priorityTable,
-      existingScrapTable || createDefaultScrapReplacementCardTable(normalized.theme),
+      existingScrapTable || createDefaultScrapReplacementCardTable(normalized.theme, stationName),
       backlogTable,
       ...productionTables,
     ];
@@ -9053,10 +9087,16 @@ export default function Page() {
     updatedAt: string
   ): Array<{station_name:string;settings:ProductionMonitorProfile;updated_by:string|null;updated_at:string}> {
     const userKey = getProfiEditorUserSettingsKey("production-card", stationName);
-    // Belépett felhasználónál kizárólag a saját profiljába írunk.
-    // A közös állomásprofil csak első belépési fallback, ezért más felhasználó
-    // vagy háttérfrissítés nem tudja felülírni a személyes Profi beállítást.
-    return [{ station_name: userKey || stationName, settings: profile, updated_by: updatedBy, updated_at: updatedAt }];
+    const sharedRow = { station_name: stationName, settings: profile, updated_by: updatedBy, updated_at: updatedAt };
+    // A dolgozói beléptetőn a kártya dolgozó-azonosítás ELŐTT látszik, ezért ott
+    // nincs személyes Profi-felhasználó. Emiatt a szerkesztőben elmentett profil
+    // mindig bekerül a közös állomásprofilba is. A személyes árnyékprofil ettől
+    // továbbra is megmarad, így új belépéskor a szerkesztő ugyanazt kapja vissza.
+    if (!userKey || userKey === stationName) return [sharedRow];
+    return [
+      sharedRow,
+      { station_name: userKey, settings: profile, updated_by: updatedBy, updated_at: updatedAt },
+    ];
   }
 
   function buildExecutiveReportSettingsRows(
@@ -14911,14 +14951,42 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getScrapReplacementCardFieldValue(row: ScrapReplacementRow, fieldId: string): string | number {
+    const planData = row.termelesi_kartya_adatok && typeof row.termelesi_kartya_adatok === "object"
+      && !Array.isArray(row.termelesi_kartya_adatok)
+      ? row.termelesi_kartya_adatok
+      : {};
+
+    if (isProductionCardCrossStationStatusField(fieldId)) {
+      const stationName = getProductionCardCrossStationNameFromFieldId(fieldId);
+      return getProductionCardCrossStatusValue(row.crossStationStatuses?.[stationName]);
+    }
+    if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
+      const key = fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length);
+      const value = getProductionCardPlanValue(planData, key);
+      if (value === null || value === undefined) return "";
+      if (normalizePlanColumnName(key).includes("normaido")) return formatExcelDuration(value);
+      if (typeof value === "object") return JSON.stringify(value);
+      return String(value);
+    }
+
+    // A normál Termelési kártya rendszermezői is választhatók a Selejtpótlás
+    // kártyán. Az üzleti mezők a célállomás saját *_terv pillanatképéből jönnek.
+    if (fieldId === PRODUCTION_CARD_ORDER_FIELD_ID) return row.order_number;
+    if (fieldId === PRODUCTION_CARD_PRODUCT_FIELD_ID) return String(getProductionCardPlanValue(planData, "megnevezes") || getProductionCardPlanValue(planData, "termek") || "");
+    if (fieldId === PRODUCTION_CARD_QUANTITY_FIELD_ID) return String(getProductionCardPlanValue(planData, "mennyiseg") ?? "");
+    if (fieldId === PRODUCTION_CARD_DATE_FIELD_ID) return String(getProductionCardPlanValue(planData, "elkeszules_datum") || "");
+    if (fieldId === PRODUCTION_CARD_TYPE_FIELD_ID) return String(getProductionCardPlanValue(planData, "tipus") || "");
+    if (fieldId === PRODUCTION_CARD_STATUS_FIELD_ID) return getScrapReplacementStatusLabel(row);
+    if (fieldId === PRODUCTION_CARD_START_WORKER_FIELD_ID) return String(row.start_worker_name || row.reported_by_worker_name || "");
+    if (fieldId === PRODUCTION_CARD_END_WORKER_FIELD_ID) return String(row.last_worker_name || "");
+    if (fieldId === PRODUCTION_CARD_ELAPSED_FIELD_ID) return getProductionCardElapsedValue(row.started_at, row.completed_at);
+
     if (fieldId === PRODUCTION_CARD_SCRAP_ORDER_FIELD_ID) return row.order_number;
     if (fieldId === PRODUCTION_CARD_SCRAP_OUTER_FIELD_ID) return row.kulso_lap_selejt ? "Selejt" : "–";
     if (fieldId === PRODUCTION_CARD_SCRAP_INNER_FIELD_ID) return row.belso_lap_selejt ? "Selejt" : "–";
     if (fieldId === PRODUCTION_CARD_SCRAP_TOKLEC_FIELD_ID) return row.toklec_selejt ? "Selejt" : "–";
     if (fieldId === PRODUCTION_CARD_SCRAP_TOK_SIZE_FIELD_ID) {
-      const snapshot = row.termelesi_kartya_adatok && typeof row.termelesi_kartya_adatok === "object"
-        ? row.termelesi_kartya_adatok : {};
-      const value = snapshot.szereles_tok_meret;
+      const value = planData.szereles_tok_meret;
       return value === null || value === undefined || String(value).trim() === "" ? "–" : String(value);
     }
     if (fieldId === PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID) return getScrapReplacementDefectLabel(row);
@@ -15523,6 +15591,33 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         .maybeSingle();
       if (sharedResponse.error) throw sharedResponse.error;
       row = sharedResponse.data as ProductionCardStationSettingsRow | null;
+
+      // Kompatibilitás a korábbi verzióval: eddig a Profi szerkesztő csak a
+      // személyes kulcsot frissítette, miközben a dolgozói terminál a közös sort
+      // olvasta. A terminál ezért régi oszlopkiosztást láthatott (pl. Fóliázó).
+      // Ha van frissebb személyes állomásprofil, a terminál azt használja. Az új
+      // mentések már a közös sort is frissítik, így ez csak biztonsági fallback.
+      if (!preferCurrentUserProfile) {
+        const stationToken = normalizeProfiEditorSettingsToken(
+          getStationPlanIdentityKey(cleanStationName) || cleanStationName
+        );
+        if (stationToken) {
+          const personalPrefix = `${PROFI_EDITOR_SETTINGS_KEY_PREFIX}:production-card:`;
+          const personalResponse = await supabase
+            .from(PRODUCTION_CARD_SETTINGS_TABLE)
+            .select("station_name, settings, updated_by, updated_at")
+            .like("station_name", `${personalPrefix}%:${stationToken}`)
+            .order("updated_at", { ascending: false })
+            .limit(1);
+          if (personalResponse.error) throw personalResponse.error;
+          const latestPersonal = Array.isArray(personalResponse.data) && personalResponse.data.length > 0
+            ? personalResponse.data[0] as ProductionCardStationSettingsRow
+            : null;
+          const sharedTime = row?.updated_at ? new Date(row.updated_at).getTime() : 0;
+          const personalTime = latestPersonal?.updated_at ? new Date(latestPersonal.updated_at).getTime() : 0;
+          if (latestPersonal && personalTime >= sharedTime) row = latestPersonal;
+        }
+      }
     }
 
     const profile = normalizeProductionCardProfile(row?.settings, cleanStationName);
@@ -16150,6 +16245,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             || active.start_worker_name
             || null;
 
+          const existingSnapshot = active.termelesi_kartya_adatok && typeof active.termelesi_kartya_adatok === "object"
+            && !Array.isArray(active.termelesi_kartya_adatok)
+            ? active.termelesi_kartya_adatok as Record<string, unknown>
+            : {};
+          const currentStationPlan = stationPlanRows.find((planRow) =>
+            normalizeLooseText(planRow.orderNumber) === normalizeLooseText(latest.order_number)
+          );
+          const currentStationPlanData = currentStationPlan?.planData || {};
+          const existingNested = existingSnapshot.adat && typeof existingSnapshot.adat === "object" && !Array.isArray(existingSnapshot.adat)
+            ? existingSnapshot.adat as Record<string, unknown>
+            : {};
+          const currentNested = currentStationPlanData.adat && typeof currentStationPlanData.adat === "object" && !Array.isArray(currentStationPlanData.adat)
+            ? currentStationPlanData.adat as Record<string, unknown>
+            : {};
+          const targetStationSnapshot: Record<string, unknown> = {
+            ...existingSnapshot,
+            ...currentStationPlanData,
+            adat: { ...existingNested, ...currentNested },
+          };
+
           scrapReplacementRows.push({
             ...active,
             id: active.event_id ? `aggregate-${active.event_id}-${normalizedStationKey}` : `aggregate-${normalizeLooseText(latest.order_number)}`,
@@ -16167,6 +16282,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             started_at: startedTimes.length ? [...startedTimes].sort()[0] : null,
             completed_at: allDone && completedTimes.length ? [...completedTimes].sort().at(-1)! : null,
             last_worker_name: allDone ? latest.last_worker_name || null : null,
+            termelesi_kartya_adatok: targetStationSnapshot,
           });
         });
 
@@ -16793,6 +16909,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         orderNumber: row.orderNumber,
         productName: String(getProductionCardPlanValue(row.data, "termek") || getProductionCardPlanValue(row.data, "megnevezes") || ""),
       })),
+      ...scrapReplacementRows.map((row) => ({
+        orderNumber: row.order_number,
+        productName: String(
+          getProductionCardPlanValue(row.termelesi_kartya_adatok, "megnevezes")
+          || getProductionCardPlanValue(row.termelesi_kartya_adatok, "termek")
+          || ""
+        ),
+      })),
     ];
     crossStatusSourceRows.forEach((planRow) => {
       crossStationStatusesByPlanKey.set(productionCardPlanRowKey(planRow), {});
@@ -16987,6 +17111,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     backlogRows.forEach((row) => {
       row.crossStationStatuses = crossStationStatusesByPlanKey.get(productionCardPlanRowKey(row)) || {};
       row.crossStationScrapFlags = crossStationScrapFlagsByOrder.get(normalizeLooseText(row.orderNumber)) || {};
+    });
+    scrapReplacementRows.forEach((row) => {
+      const productName = String(
+        getProductionCardPlanValue(row.termelesi_kartya_adatok, "megnevezes")
+        || getProductionCardPlanValue(row.termelesi_kartya_adatok, "termek")
+        || ""
+      );
+      row.crossStationStatuses = crossStationStatusesByPlanKey.get(productionCardPlanRowKey({
+        orderNumber: row.order_number,
+        productName,
+      })) || {};
+      row.crossStationScrapFlags = crossStationScrapFlagsByOrder.get(normalizeLooseText(row.order_number)) || {};
     });
 
     const rows: ProductionCardRow[] = planRows.map((planRow) => {
@@ -18480,7 +18616,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   ): boolean {
     if (source === "priority") return getPlanSosValue((row as ProductionCardPriorityRow).data);
     if (source === "backlog") return getPlanSosValue((row as ProductionCardBacklogRow).planData);
-    if (source === "scrap-replacement") return Boolean((row as ScrapReplacementRow).sos);
+    if (source === "scrap-replacement") {
+      const scrapRow = row as ScrapReplacementRow;
+      return Boolean(scrapRow.sos) || getPlanSosValue(scrapRow.termelesi_kartya_adatok || {});
+    }
     return getPlanSosValue((row as ProductionCardRow).planData);
   }
 
