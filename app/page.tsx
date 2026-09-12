@@ -36332,6 +36332,89 @@ body {
     ) || null;
   }
 
+  type ScrapRouteProductionCycle = {
+    reproductionNumber: number;
+    productionRound: number | null;
+  };
+
+  function getScrapRouteProductionCycle(log: Pick<WorkLogRow, "ujragyartas_sorszam" | "gyartasi_kor">): ScrapRouteProductionCycle {
+    const rawReproductionNumber = Number(log.ujragyartas_sorszam);
+    const rawProductionRound = Number(log.gyartasi_kor);
+    return {
+      reproductionNumber: Number.isFinite(rawReproductionNumber) && rawReproductionNumber > 0
+        ? Math.trunc(rawReproductionNumber)
+        : 0,
+      productionRound: log.gyartasi_kor !== null && log.gyartasi_kor !== undefined && Number.isFinite(rawProductionRound)
+        ? Math.trunc(rawProductionRound)
+        : null,
+    };
+  }
+
+  function isSameScrapRouteProductionCycle(
+    left: ScrapRouteProductionCycle,
+    right: ScrapRouteProductionCycle
+  ): boolean {
+    if (left.reproductionNumber !== right.reproductionNumber) return false;
+    // Ha a gyártási kör bármelyik oldalon ki van töltve, csak azonos kör fogadható el.
+    if (left.productionRound !== null || right.productionRound !== null) {
+      return left.productionRound === right.productionRound;
+    }
+    return true;
+  }
+
+  async function fetchOpenScrapRouteSourceCycle(
+    orderNumberValue: string,
+    stationNameValue: string
+  ): Promise<ScrapRouteProductionCycle | null> {
+    if (!supabase) return null;
+    const cleanOrder = String(orderNumberValue || "").trim();
+    const stationName = String(stationNameValue || "").trim();
+    if (!cleanOrder || !stationName) return null;
+
+    const { data, error } = await supabase
+      .from("work_logs")
+      .select("id, action, created_at, start_time, start_timestamp, end_time, end_timestamp, ujragyartas_sorszam, gyartasi_kor")
+      .eq("order_number", cleanOrder)
+      .eq("machine_id", stationName)
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (error) throw error;
+
+    const openStart = ((data || []) as WorkLogRow[]).find((log) =>
+      String(log.action || "").trim().toUpperCase() !== "END"
+      && !log.end_time
+      && !log.end_timestamp
+      && (String(log.action || "").trim().toUpperCase() === "START" || Boolean(log.start_time || log.start_timestamp))
+    );
+    return openStart ? getScrapRouteProductionCycle(openStart) : null;
+  }
+
+  async function hasCompletedScrapRouteEndInCycle(
+    orderNumberValue: string,
+    stationNameValue: string,
+    sourceCycle: ScrapRouteProductionCycle
+  ): Promise<boolean> {
+    if (!supabase) return false;
+    const cleanOrder = String(orderNumberValue || "").trim();
+    const stationName = String(stationNameValue || "").trim();
+    if (!cleanOrder || !stationName) return false;
+
+    const { data, error } = await supabase
+      .from("work_logs")
+      .select("id, action, created_at, end_time, end_timestamp, ujragyartas_sorszam, gyartasi_kor")
+      .eq("order_number", cleanOrder)
+      .eq("machine_id", stationName)
+      .eq("action", "END")
+      .order("created_at", { ascending: false })
+      .limit(1000);
+    if (error) throw error;
+
+    return ((data || []) as WorkLogRow[]).some((log) =>
+      Boolean(log.end_time || log.end_timestamp)
+      && isSameScrapRouteProductionCycle(sourceCycle, getScrapRouteProductionCycle(log))
+    );
+  }
+
   async function buildScrapRouteTargets(orderNumberValue: string, sourceStationValue: string): Promise<ScrapReplacementRoute> {
     const cleanOrder = String(orderNumberValue || "").trim();
     const sourceStation = String(sourceStationValue || "").trim();
@@ -36386,6 +36469,20 @@ body {
         if (asztalos && await canUseSourceStation(asztalos)) candidates.push(asztalos.machineName);
       } else if (middleEntries.some((entry) => normalizeLooseText(entry.machineName) === normalizeLooseText(sourceEntry.machineName))) {
         if (asztalos && await canUsePriorStation(asztalos)) candidates.push(asztalos.machineName);
+
+        // Fóliázón jelentett selejtet a Fényezőhöz is visszaterítünk, DE csak akkor,
+        // ha ugyanennek a rendelésnek ugyanebben a gyártási / újragyártási ciklusában
+        // valódi, lezárt Fényező END található. Más köztes állomás logikáját nem módosítjuk.
+        if (sourceIdentity === "foliazo") {
+          const fenyezo = findScrapRouteStationByIdentity(directory, "fenyezo", group2Key);
+          if (fenyezo && await orderExistsInStationPlan(cleanOrder, fenyezo.machineName)) {
+            const sourceCycle = await fetchOpenScrapRouteSourceCycle(cleanOrder, sourceEntry.machineName);
+            if (sourceCycle && await hasCompletedScrapRouteEndInCycle(cleanOrder, fenyezo.machineName, sourceCycle)) {
+              candidates.push(fenyezo.machineName);
+            }
+          }
+        }
+
         if (await canUseSourceStation(sourceEntry)) candidates.push(sourceEntry.machineName);
       } else if (szereles && normalizeLooseText(szereles.machineName) === normalizeLooseText(sourceEntry.machineName)) {
         if (asztalos && await canUsePriorStation(asztalos)) candidates.push(asztalos.machineName);
