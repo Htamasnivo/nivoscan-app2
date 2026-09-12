@@ -14889,16 +14889,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return minutes === null ? "–" : formatDuration(minutes);
     }
     if (fieldId === PRODUCTION_CARD_TOK_FIELD_ID) {
-      if (!row.doorWorkflow) return "";
       if (row.tokKesz) return "Kész";
       const scrapLabel = getSzerelesTokScrapLabel(row);
-      return scrapLabel || (row.doorSessionTracked && !row.tokRunning ? "Hátravan" : "Folyamatban");
+      if (scrapLabel) return scrapLabel;
+      if (!row.doorWorkflow) return "";
+      return row.doorSessionTracked && !row.tokRunning ? "Hátravan" : "Folyamatban";
     }
     if (fieldId === PRODUCTION_CARD_NYILO_FIELD_ID) {
-      if (!row.doorWorkflow) return "";
       if (row.nyiloKesz) return "Kész";
       const scrapLabel = getSzerelesNyiloScrapLabel(row);
-      return scrapLabel || (row.doorSessionTracked && !row.nyiloRunning ? "Hátravan" : "Folyamatban");
+      if (scrapLabel) return scrapLabel;
+      if (!row.doorWorkflow) return "";
+      return row.doorSessionTracked && !row.nyiloRunning ? "Hátravan" : "Folyamatban";
     }
     if (fieldId === PRODUCTION_CARD_AJTOLAPOK_FIELD_ID) return row.panelWorkflow ? (row.ajtolapokKesz ? "Kész" : "Folyamatban") : "";
     if (fieldId === PRODUCTION_CARD_TOKLEC_KESZ_FIELD_ID) return row.panelWorkflow ? (row.toklecKesz ? "Kész" : "Folyamatban") : "";
@@ -14978,16 +14980,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
     if (fieldId === PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID) return row.orderNumber;
     if (fieldId === PRODUCTION_CARD_NYILO_FIELD_ID) {
-      if (!row.doorWorkflow) return "";
       if (row.nyiloKesz) return "Kész";
       const scrapLabel = getSzerelesNyiloScrapLabel(row);
-      return scrapLabel || (row.doorSessionTracked && !row.nyiloRunning ? "Hátravan" : "Folyamatban");
+      if (scrapLabel) return scrapLabel;
+      if (!row.doorWorkflow) return "";
+      return row.doorSessionTracked && !row.nyiloRunning ? "Hátravan" : "Folyamatban";
     }
     if (fieldId === PRODUCTION_CARD_TOK_FIELD_ID) {
-      if (!row.doorWorkflow) return "";
       if (row.tokKesz) return "Kész";
       const scrapLabel = getSzerelesTokScrapLabel(row);
-      return scrapLabel || (row.doorSessionTracked && !row.tokRunning ? "Hátravan" : "Folyamatban");
+      if (scrapLabel) return scrapLabel;
+      if (!row.doorWorkflow) return "";
+      return row.doorSessionTracked && !row.tokRunning ? "Hátravan" : "Folyamatban";
     }
     if (fieldId === PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID) return row.statusLabel;
     if (fieldId === PRODUCTION_CARD_PRIORITY_START_WORKER_FIELD_ID) return row.startWorkerName;
@@ -15022,14 +15026,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (fieldId === PRODUCTION_CARD_BACKLOG_START_WORKER_FIELD_ID) return row.startWorkerName;
     if (fieldId === PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID) return row.lastWorkerName;
     if (fieldId === PRODUCTION_CARD_BACKLOG_TOK_FIELD_ID) {
-      if (!row.doorWorkflow) return "";
       if (row.tokKesz) return "Kész";
-      return getSzerelesTokScrapLabel(row) || "Folyamatban";
+      const scrapLabel = getSzerelesTokScrapLabel(row);
+      if (scrapLabel) return scrapLabel;
+      if (!row.doorWorkflow) return "";
+      return "Folyamatban";
     }
     if (fieldId === PRODUCTION_CARD_BACKLOG_NYILO_FIELD_ID) {
-      if (!row.doorWorkflow) return "";
       if (row.nyiloKesz) return "Kész";
-      return getSzerelesNyiloScrapLabel(row) || "Folyamatban";
+      const scrapLabel = getSzerelesNyiloScrapLabel(row);
+      if (scrapLabel) return scrapLabel;
+      if (!row.doorWorkflow) return "";
+      return "Folyamatban";
     }
     if (fieldId === PRODUCTION_CARD_BACKLOG_ELAPSED_FIELD_ID) {
       return getProductionCardElapsedValue(row.startedAt, row.endedAt);
@@ -16702,6 +16710,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const recurring=recurringCardValues(recurringSnapshot,"backlog",String(planRow.id),planRow.productName);
         if(!recurring||recurring.status==="done")return;
         const delayDays=Math.max(1,Math.floor((new Date(`${dateKey}T00:00:00`).getTime()-new Date(`${planRow.completionDate}T00:00:00`).getTime())/86400000));
+        const recurringScrapCounts = persistedSzerelesScrapCountsByOrder.get(normalizeLooseText(planRow.orderNumber))
+          || { kulsoLap: 0, belsoLap: 0, toklec: 0 };
         backlogRows.push({
           id:planRow.id,orderNumber:planRow.orderNumber,productName:planRow.productName,
           plannedQuantity:planRow.plannedQuantity,completedQuantity:recurring.completedQuantity,
@@ -16712,6 +16722,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           startWorkerName:recurring.startWorkerName,lastWorkerName:recurring.lastWorkerName,
           startedAt:recurring.startedAt,endedAt:recurring.endedAt,
           doorWorkflow:false,tokKesz:false,nyiloKesz:false,completionPercent:null,
+          kulsoLapSelejtCount:recurringScrapCounts.kulsoLap,
+          belsoLapSelejtCount:recurringScrapCounts.belsoLap,
+          toklecSelejtCount:recurringScrapCounts.toklec,
           planData:planRow.planData,crossStationStatuses:{},
         });
       });
@@ -16942,11 +16955,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
 
     const rows: ProductionCardRow[] = planRows.map((planRow) => {
-      const recurring=recurringCardDisplayStatus(recurringSnapshot,"plan",planRow.sourceRowId,planRow.productName);
-      if(recurring){
-        const base=resolveProductionCardWorkers([],[],planRow.orderNumber);
-        return {...planRow,...base,...recurring,crossStationStatuses:{},crossStationScrapFlags:crossStationScrapFlagsByOrder.get(normalizeLooseText(planRow.orderNumber))||{}};
-      }
       const allOrderLogs = logs.filter(
         (log) => normalizeLooseText(log.order_number) === normalizeLooseText(planRow.orderNumber) && !isExecutiveCompletionLog(log)
       );
@@ -16954,6 +16962,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         getSzerelesScrapReportCounts(allOrderLogs),
         persistedSzerelesScrapCountsByOrder.get(normalizeLooseText(planRow.orderNumber))
       );
+      const recurring=recurringCardDisplayStatus(recurringSnapshot,"plan",planRow.sourceRowId,planRow.productName);
+      if(recurring){
+        const base=resolveProductionCardWorkers([],[],planRow.orderNumber);
+        return {
+          ...planRow,
+          ...base,
+          ...recurring,
+          kulsoLapSelejtCount: rowScrapCounts.kulsoLap,
+          belsoLapSelejtCount: rowScrapCounts.belsoLap,
+          toklecSelejtCount: rowScrapCounts.toklec,
+          crossStationStatuses:{},
+          crossStationScrapFlags:crossStationScrapFlagsByOrder.get(normalizeLooseText(planRow.orderNumber))||{}
+        };
+      }
       const rowLogs = filterBundleTenVisualLogsForCardRow(
         allOrderLogs,
         "production-plan",
@@ -18785,6 +18807,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                           const isTokField = fieldId === PRODUCTION_CARD_TOK_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_TOK_FIELD_ID;
                           const isNyiloField = fieldId === PRODUCTION_CARD_NYILO_FIELD_ID || fieldId === PRODUCTION_CARD_BACKLOG_NYILO_FIELD_ID;
                           const szerelesDoorRow = productionRow || backlogRow || priorityRow;
+                          const isSzerelesCard = getStationPlanIdentityKey(data.stationName) === "szereles";
                           const szerelesDoorWorkflow = Boolean(szerelesDoorRow?.doorWorkflow);
                           const szerelesDoorPartDone = isTokField
                             ? Boolean(szerelesDoorRow?.tokKesz)
@@ -18797,14 +18820,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               ? Number(szerelesDoorRow?.kulsoLapSelejtCount || 0) > 0
                                 || Number(szerelesDoorRow?.belsoLapSelejtCount || 0) > 0
                               : false;
-                          const szerelesDoorScrapCellActive = szerelesDoorWorkflow
+                          const szerelesDoorScrapCellActive = isSzerelesCard
                             && !szerelesDoorPartDone
                             && szerelesDoorPartHasScrap;
                           if (completionPercent === 50 && isStatus) {
                             background = "#2563eb";
                             color = "#eff6ff";
                           }
-                          if ((isTokField || isNyiloField) && szerelesDoorWorkflow) {
+                          if ((isTokField || isNyiloField) && isSzerelesCard && (szerelesDoorWorkflow || szerelesDoorPartDone || szerelesDoorPartHasScrap)) {
                             background = szerelesDoorPartDone
                               ? "#22c55e"
                               : szerelesDoorScrapCellActive
@@ -18892,7 +18915,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                   ? "#dc2626"
                                   : szerelesDoorScrapCellActive
                                     ? "#dc2626"
-                                    : ((isTokField || isNyiloField) && szerelesDoorWorkflow && szerelesDoorPartDone)
+                                    : ((isTokField || isNyiloField) && isSzerelesCard && szerelesDoorPartDone)
                                       ? "#22c55e"
                                       : rowSos ? PRODUCTION_CARD_SOS_ROW_BACKGROUND : quantityPartialRow
                                   ? "#2563eb"
@@ -18904,7 +18927,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                         || style.cellBackground
                                         || background
                                       ),
-                                color: crossStationScrapFlag || szerelesDoorScrapCellActive || ((isTokField || isNyiloField) && szerelesDoorWorkflow && szerelesDoorPartDone)
+                                color: crossStationScrapFlag || szerelesDoorScrapCellActive || ((isTokField || isNyiloField) && isSzerelesCard && szerelesDoorPartDone)
                                   ? "#ffffff"
                                   : rowSos ? PRODUCTION_CARD_SOS_ROW_TEXT : quantityPartialRow
                                   ? "#eff6ff"
@@ -41427,8 +41450,8 @@ body {
       }
 
       // Sikeres selejt/javítás END után előbb újraolvassuk a teljes Szerelés kártyaadatot.
-      // Egy betöltés frissíti a Termelési, Lemaradási és Prioritási kártyát is.
-      // Csak sikeres adatbázis- és kapcsolódó mentések után lépünk vissza a főképernyőre.
+      // Ugyanaz a ProductionCardData tartalmazza a Termelési, Lemaradási és Prioritási kártyát,
+      // ezért mindhárom ugyanabból a tartós selejtforrásból kapja a # számlálót.
       if(shouldReturnToMainAfterReport){
         const previousRowsForOrder = [
           ...(terminalProductionCardData.rows || []),
@@ -41441,42 +41464,41 @@ body {
           toklec: Math.max(counts.toklec, Number(row.toklecSelejtCount || 0)),
         }), { kulsoLap: 0, belsoLap: 0, toklec: 0 });
 
-        // Közvetlen fetch-et használunk, mert a háttérfrissítő wrapper a saját hibáit
-        // UI-szinten kezeli. Itt viszont csak akkor szabad főképernyőre lépni, ha
-        // ténylegesen vissza is olvasható a most elmentett selejt.
         const refreshedCard = await fetchProductionCardData(machine, getLocalDateKey(new Date()));
+
+        // A tartós DB-mentés ekkorra már sikeres. Ha a közvetlen visszaolvasás egy pillanatig
+        // még a korábbi számlálót adja, az UI azonnali overlay-t kap. Következő frissítéskor
+        // a work_logs / selejtpótlási adatokból számolt tartós érték veszi át a helyét.
         if(hasScrap){
-          const refreshedRowsForOrder = [
-            ...(refreshedCard.rows || []),
-            ...(refreshedCard.backlogRows || []),
-            ...(refreshedCard.priorityRows || []),
-          ].filter((row) => normalizeLooseText(row.orderNumber) === normalizeLooseText(order));
-          const refreshedCounts = refreshedRowsForOrder.reduce<SzerelesScrapReportCounts>((counts, row) => ({
-            kulsoLap: Math.max(counts.kulsoLap, Number(row.kulsoLapSelejtCount || 0)),
-            belsoLap: Math.max(counts.belsoLap, Number(row.belsoLapSelejtCount || 0)),
-            toklec: Math.max(counts.toklec, Number(row.toklecSelejtCount || 0)),
-          }), { kulsoLap: 0, belsoLap: 0, toklec: 0 });
-          const outerOk = !outerSheetScrap || refreshedCounts.kulsoLap >= previousCounts.kulsoLap + 1;
-          const innerOk = !innerSheetScrap || refreshedCounts.belsoLap >= previousCounts.belsoLap + 1;
-          const toklecOk = !toklecScrap || refreshedCounts.toklec >= previousCounts.toklec + 1;
-          if(!outerOk || !innerOk || !toklecOk){
-            throw new Error("A selejt mentése megtörtént, de a Szerelés kártya friss visszaolvasásában még nem jelent meg a selejt számláló. A főképernyőre lépés leállt, hogy ne vesszen el a visszaellenőrzés.");
-          }
+          const expectedCounts: SzerelesScrapReportCounts = {
+            kulsoLap: previousCounts.kulsoLap + (outerSheetScrap ? 1 : 0),
+            belsoLap: previousCounts.belsoLap + (innerSheetScrap ? 1 : 0),
+            toklec: previousCounts.toklec + (toklecScrap ? 1 : 0),
+          };
+          const applyScrapOverlay = <T extends {
+            orderNumber: string;
+            kulsoLapSelejtCount?: number;
+            belsoLapSelejtCount?: number;
+            toklecSelejtCount?: number;
+          }>(row: T): T => {
+            if(normalizeLooseText(row.orderNumber) !== normalizeLooseText(order)) return row;
+            return {
+              ...row,
+              kulsoLapSelejtCount: Math.max(Number(row.kulsoLapSelejtCount || 0), expectedCounts.kulsoLap),
+              belsoLapSelejtCount: Math.max(Number(row.belsoLapSelejtCount || 0), expectedCounts.belsoLap),
+              toklecSelejtCount: Math.max(Number(row.toklecSelejtCount || 0), expectedCounts.toklec),
+            };
+          };
+          refreshedCard.rows = (refreshedCard.rows || []).map(applyScrapOverlay);
+          refreshedCard.backlogRows = (refreshedCard.backlogRows || []).map(applyScrapOverlay);
+          refreshedCard.priorityRows = (refreshedCard.priorityRows || []).map(applyScrapOverlay);
         }
         setTerminalProductionCardData(refreshedCard);
       }
 
-      // Sikeres END után minden selejt/javítás választás ürül. Így ugyanarra a
-      // folyamatban maradó rendelésre később új, külön selejtjelentés készíthető.
+      // Pontosan ugyanaz a sikeres-END visszaállítás fusson, mint a többi könyvelésnél:
+      // dolgozó törlése, 1. lépés, névazonosító mező fókusz, END/selejt pipák ürítése.
       resetAfterSave();
-      if(shouldReturnToMainAfterReport){
-        // A resetAfterSave eleve ezt teszi, de itt explicit is rögzítjük a selejtes END
-        // navigációját, hogy semmilyen korábbi 5. lépés state ne tarthassa nyitva az END nézetet.
-        setStepHistory([]);
-        setStepFromHistory(1);
-        setFlowStage("idle");
-        setTerminalView("scanner");
-      }
 
       const nonClosingReport=shouldReturnToMainAfterReport;
       const reportLabels=[
