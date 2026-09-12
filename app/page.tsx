@@ -16044,6 +16044,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     // a megfelelő *_terv táblába. Ha onnan törlöd, a kártyáról is eltűnik.
     // ==========================================================
 
+    const isSzerelesProductionCard = getStationPlanIdentityKey(cleanStationName) === "szereles";
+    const szerelesStationAliases = isSzerelesProductionCard
+      ? getProductionCardStationAliases(cleanStationName, machineIdRows)
+      : null;
+
     const scrapReplacementRows: ScrapReplacementRow[] = [];
     // Tartós fallback a Szerelés kártyás selejt-visszajelzéshez.
     // A selejtpótlási tábla riportálható, adatbázisban tárolt eseményeit használjuk,
@@ -16072,7 +16077,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         if (getStationPlanIdentityKey(cleanStationName) === "szereles") {
           const reportSetsByOrder = new Map<string, { outer: Set<string>; inner: Set<string>; toklec: Set<string> }>();
           allNormalizedRows
-            .filter((row) => normalizeLooseText(row.source_station) === normalizedStationKey)
+            .filter((row) =>
+              isSzerelesProductionCard && szerelesStationAliases
+                ? isProductionCardStationMachineId(row.source_station, szerelesStationAliases)
+                : normalizeLooseText(row.source_station) === normalizedStationKey
+            )
             .forEach((row) => {
               const orderKey = normalizeLooseText(row.order_number);
               if (!orderKey) return;
@@ -16309,18 +16318,44 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, tok_tenyleges_perc, nyilo_tenyleges_perc, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const chunk = orderNumbers.slice(index, index + 100);
-      const { data: logData, error: logError } = await supabase
-        .from("work_logs")
-        .select(selectColumns)
-        .in("order_number", chunk)
-        .eq("machine_id", cleanStationName)
-        .order("created_at", { ascending: true })
-        .limit(10000);
+      let logData: unknown[] | null = null;
+      let logError: unknown = null;
+
+      if (isSzerelesProductionCard && szerelesStationAliases) {
+        // Szerelésnél ugyanazt a gépnév/azonosító alias-feloldást használjuk,
+        // mint a már jól működő Lemaradási kártya. Így a selejt END audit nem
+        // vész el attól, hogy a work_logs.machine_id pl. egy machine_id alias,
+        // miközben a kártya neve "Szereles".
+        const response = await supabase
+          .from("work_logs")
+          .select(`id,${selectColumns}`)
+          .in("order_number", chunk)
+          .order("created_at", { ascending: true })
+          .limit(10000);
+        logData = response.data;
+        logError = response.error;
+      } else {
+        const response = await supabase
+          .from("work_logs")
+          .select(selectColumns)
+          .in("order_number", chunk)
+          .eq("machine_id", cleanStationName)
+          .order("created_at", { ascending: true })
+          .limit(10000);
+        logData = response.data;
+        logError = response.error;
+      }
+
       if (logError) throw logError;
-      logs.push(...(((logData || []) as WorkLogRow[]).map((log) => ({
+      const stationLogs = ((logData || []) as WorkLogRow[]).filter((log) =>
+        !isSzerelesProductionCard
+        || !szerelesStationAliases
+        || isProductionCardStationMachineId(log.machine_id, szerelesStationAliases)
+      );
+      logs.push(...stationLogs.map((log) => ({
         ...log,
         worker_name: log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || null,
-      }))));
+      })));
     }
 
     const batchStarts: ProductionBatchRow[] = [];
@@ -41426,8 +41461,10 @@ body {
       }
 
       committed=true;
-      setSzerelesOrderState(result.state);setSzerelesLegacyEndMode(false);setSzerelesEndParts([]);setPendingAction(null);setActionBarcode("");setEndBarcodeConfirmed(false);
-      if(!shouldReturnToMainAfterReport){setFlowStage("szereles-choice");setStep(5);}
+      // A sikeres adatbázis-mentés után még NE töröljük a képernyő állapotát.
+      // A selejtpipák / END állapot csak akkor ürülhet, ha a kapcsolódó mentések,
+      // a tartós visszaellenőrzés és a három kártya frissítése is sikerült.
+      setSzerelesOrderState(result.state);
       const saved=result.saved_rows[0];
       const savedId=saved?.id||`${order}-${Date.now()}`;
       const savedAt=saved?.ended_at||saved?.started_at||new Date().toISOString();
@@ -41449,50 +41486,65 @@ body {
         if(routed&&(!legacyClose||result.state.is_complete))await updateSingleScrapReplacement(routed,"KESZ",savedAt);
       }
 
-      // Sikeres selejt/javítás END után előbb újraolvassuk a teljes Szerelés kártyaadatot.
-      // Ugyanaz a ProductionCardData tartalmazza a Termelési, Lemaradási és Prioritási kártyát,
-      // ezért mindhárom ugyanabból a tartós selejtforrásból kapja a # számlálót.
+      // Sikeres 5-ös selejt/javítás END után a visszalépés ELŐTT tartósan
+      // visszaellenőrizzük a mentést, majd ugyanabból a DB-adatból frissítjük
+      // a Termelési, Lemaradási és Prioritási kártya selejtszámlálóit.
       if(shouldReturnToMainAfterReport){
-        const previousRowsForOrder = [
-          ...(terminalProductionCardData.rows || []),
-          ...(terminalProductionCardData.backlogRows || []),
-          ...(terminalProductionCardData.priorityRows || []),
-        ].filter((row) => normalizeLooseText(row.orderNumber) === normalizeLooseText(order));
-        const previousCounts = previousRowsForOrder.reduce<SzerelesScrapReportCounts>((counts, row) => ({
-          kulsoLap: Math.max(counts.kulsoLap, Number(row.kulsoLapSelejtCount || 0)),
-          belsoLap: Math.max(counts.belsoLap, Number(row.belsoLapSelejtCount || 0)),
-          toklec: Math.max(counts.toklec, Number(row.toklecSelejtCount || 0)),
-        }), { kulsoLap: 0, belsoLap: 0, toklec: 0 });
+        let persistedCounts: SzerelesScrapReportCounts | null = null;
 
-        const refreshedCard = await fetchProductionCardData(machine, getLocalDateKey(new Date()));
-
-        // A tartós DB-mentés ekkorra már sikeres. Ha a közvetlen visszaolvasás egy pillanatig
-        // még a korábbi számlálót adja, az UI azonnali overlay-t kap. Következő frissítéskor
-        // a work_logs / selejtpótlási adatokból számolt tartós érték veszi át a helyét.
         if(hasScrap){
-          const expectedCounts: SzerelesScrapReportCounts = {
-            kulsoLap: previousCounts.kulsoLap + (outerSheetScrap ? 1 : 0),
-            belsoLap: previousCounts.belsoLap + (innerSheetScrap ? 1 : 0),
-            toklec: previousCounts.toklec + (toklecScrap ? 1 : 0),
-          };
-          const applyScrapOverlay = <T extends {
-            orderNumber: string;
-            kulsoLapSelejtCount?: number;
-            belsoLapSelejtCount?: number;
-            toklecSelejtCount?: number;
-          }>(row: T): T => {
-            if(normalizeLooseText(row.orderNumber) !== normalizeLooseText(order)) return row;
+          const verificationAliases = getProductionCardStationAliases(machine, machineIdRows);
+          const {data: verificationData,error: verificationError}=await supabase
+            .from("work_logs")
+            .select("id, worker_id, worker_name, order_number, action, created_at, note, start_timestamp, end_timestamp, start_time, end_time, machine_id, szereles_resz, szereles_ciklus_id, kulso_lap_selejt, belso_lap_selejt, toklec_selejt")
+            .eq("order_number",order)
+            .order("created_at",{ascending:true})
+            .limit(10000);
+          if(verificationError)throw verificationError;
+
+          const verifiedLogs=((verificationData||[]) as WorkLogRow[]).filter((log)=>
+            isProductionCardStationMachineId(log.machine_id,verificationAliases)
+          );
+          persistedCounts=getSzerelesScrapReportCounts(verifiedLogs);
+
+          if(outerSheetScrap&&persistedCounts.kulsoLap<1){
+            throw new Error("A Külső lap selejt END mentése nem ellenőrizhető vissza a work_logs táblából.");
+          }
+          if(innerSheetScrap&&persistedCounts.belsoLap<1){
+            throw new Error("A Belső lap selejt END mentése nem ellenőrizhető vissza a work_logs táblából.");
+          }
+          if(toklecScrap&&persistedCounts.toklec<1){
+            throw new Error("A Tokléc selejt END mentése nem ellenőrizhető vissza a work_logs táblából.");
+          }
+        }
+
+        // A terminál kártyája Szerelés néven fut; ezt részesítjük előnyben akkor is,
+        // ha a work_logs.machine_id egy gépkönyvtári alias/azonosító volt.
+        const refreshStation = getStationPlanIdentityKey(terminalProductionCardData.stationName) === "szereles"
+          ? terminalProductionCardData.stationName
+          : (machineOptions.find((option)=>getStationPlanIdentityKey(option)==="szereles") || machine);
+        const refreshedCard=await fetchProductionCardData(refreshStation,getLocalDateKey(new Date()));
+
+        if(hasScrap&&persistedCounts){
+          const applyPersistedScrapCounts=<T extends {
+            orderNumber:string;
+            kulsoLapSelejtCount?:number;
+            belsoLapSelejtCount?:number;
+            toklecSelejtCount?:number;
+          }>(row:T):T=>{
+            if(normalizeLooseText(row.orderNumber)!==normalizeLooseText(order))return row;
             return {
               ...row,
-              kulsoLapSelejtCount: Math.max(Number(row.kulsoLapSelejtCount || 0), expectedCounts.kulsoLap),
-              belsoLapSelejtCount: Math.max(Number(row.belsoLapSelejtCount || 0), expectedCounts.belsoLap),
-              toklecSelejtCount: Math.max(Number(row.toklecSelejtCount || 0), expectedCounts.toklec),
+              kulsoLapSelejtCount:Math.max(Number(row.kulsoLapSelejtCount||0),persistedCounts!.kulsoLap),
+              belsoLapSelejtCount:Math.max(Number(row.belsoLapSelejtCount||0),persistedCounts!.belsoLap),
+              toklecSelejtCount:Math.max(Number(row.toklecSelejtCount||0),persistedCounts!.toklec),
             };
           };
-          refreshedCard.rows = (refreshedCard.rows || []).map(applyScrapOverlay);
-          refreshedCard.backlogRows = (refreshedCard.backlogRows || []).map(applyScrapOverlay);
-          refreshedCard.priorityRows = (refreshedCard.priorityRows || []).map(applyScrapOverlay);
+          refreshedCard.rows=(refreshedCard.rows||[]).map(applyPersistedScrapCounts);
+          refreshedCard.backlogRows=(refreshedCard.backlogRows||[]).map(applyPersistedScrapCounts);
+          refreshedCard.priorityRows=(refreshedCard.priorityRows||[]).map(applyPersistedScrapCounts);
         }
+
         setTerminalProductionCardData(refreshedCard);
       }
 
