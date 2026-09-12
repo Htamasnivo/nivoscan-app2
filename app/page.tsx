@@ -41390,7 +41390,87 @@ body {
       }:{selejt_potlas:!!routed,selejt_forras_munkaallomas:routed?.source_station||null};
 
       let result:{state:SzerelesOrderState;saved_rows:Array<{id:string|number;part:SzerelesPart;started_at:string;ended_at?:string}>};
-      if(action==="END"&&!legacyClose&&hasRepair&&!hasScrap){
+      if(action==="END"&&!legacyClose&&hasScrap){
+        // 5-ös Szerelés selejtjelentés: KÜLÖN, tartós END audit sort mentünk közvetlenül
+        // a work_logs táblába. Az eredeti Nyíló/Tok START sorhoz nem írunk end_time-ot,
+        // ezért a tényleges munkamenet és az időmérés változatlanul folyamatban marad.
+        // A kártyák és a riportok ezután ebből a tartós sorból számolják a # darabszámot;
+        // a checkbox state törlése nem tudja "elfelejtetni" a selejtet.
+        const auditAt=new Date().toISOString();
+        const scrapReportId=createScrapEventId();
+        const auditMetadata:Record<string,unknown>={
+          event_bundle:5,
+          szereles_scrap_only:true,
+          szereles_part_held_open:true,
+          scrap_report_id:scrapReportId,
+          scrap_reported_at:auditAt,
+          szereles_scrap_hold_parts:[...scrapHoldParts],
+          source_start_ids:Object.fromEntries(scrapHoldParts.map(part=>[part,state.parts[part].open_id])),
+          closed_by_worker_id:Number(activeWorker.id),
+          closed_by_worker_name:activeWorker["Teljes nev"],
+          machine_id:machine,
+          order_number:order,
+          kulso_lap_selejt:outerSheetScrap,
+          belso_lap_selejt:innerSheetScrap,
+          toklec_selejt:toklecScrap,
+          szereles_scrap_tok_meret:toklecScrap?cleanTokSize:null,
+        };
+        const {data:auditRow,error:auditError}=await supabase.from("work_logs").insert([{
+          worker_id:Number(activeWorker.id),
+          worker_name:activeWorker["Teljes nev"],
+          machine_id:machine,
+          order_number:order,
+          action:"END",
+          created_at:auditAt,
+          batch_code:null,
+          event_name:"Szerelés selejt jelentés – folyamatban marad",
+          event_code:"END",
+          start_time:auditAt,
+          start_timestamp:auditAt,
+          end_time:auditAt,
+          end_timestamp:auditAt,
+          ujragyartas:state.reproduction_number>0,
+          ujragyartas_sorszam:state.reproduction_number||null,
+          gyartas_tipus:"egyedi",
+          gyartasi_kor:null,
+          // Szándékosan NULL: a selejt audit nem egy Nyíló/Tok befejezés.
+          // Így a régebbi szerelés-állapot RPC sem tudja véletlenül készre zárni a részt.
+          szereles_resz:null,
+          szereles_ciklus_id:state.cycle_id,
+          szereles_start_reszek:scrapHoldParts,
+          note:buildStructuredNote(note,auditMetadata),
+          kulso_lap_selejt:outerSheetScrap,
+          belso_lap_selejt:innerSheetScrap,
+          toklec_selejt:toklecScrap,
+          selejt_potlas:false,
+          selejt_forras_munkaallomas:machine,
+          selejt_megjegyzes:note,
+          darab:null,
+          szal:null,
+          scrap_qty:null,
+        }]).select("id, created_at, start_time, end_time, kulso_lap_selejt, belso_lap_selejt, toklec_selejt").single();
+        if(auditError)throw auditError;
+        if(!auditRow?.id)throw new Error("A selejt END audit sora nem kapott adatbázis-azonosítót.");
+        if(outerSheetScrap&&auditRow.kulso_lap_selejt!==true)throw new Error("A Külső lap selejt nem mentődött el a work_logs sorba.");
+        if(innerSheetScrap&&auditRow.belso_lap_selejt!==true)throw new Error("A Belső lap selejt nem mentődött el a work_logs sorba.");
+        if(toklecScrap&&auditRow.toklec_selejt!==true)throw new Error("A Tokléc selejt nem mentődött el a work_logs sorba.");
+
+        committed=true;
+        const freshState=await fetchSzerelesOrderState(order,machine);
+        const unexpectedlyClosed=scrapHoldParts.filter(part=>freshState.parts[part].state!=="in_progress");
+        if(unexpectedlyClosed.length>0){
+          throw new Error(`A selejtjelentés elment, de a következő rész nem maradt folyamatban: ${unexpectedlyClosed.map(szerelesPartLabel).join(" + ")}.`);
+        }
+        result={
+          state:freshState,
+          saved_rows:[{
+            id:auditRow.id,
+            part:scrapHoldParts[0]||"nyilo",
+            started_at:String(auditRow.start_time||auditRow.created_at||auditAt),
+            ended_at:String(auditRow.end_time||auditRow.created_at||auditAt),
+          }],
+        };
+      }else if(action==="END"&&!legacyClose&&hasRepair&&!hasScrap){
         // Javítás / Újragyártás jelentés: külön END audit sor készül, az eredeti START-ok
         // érintetlenek maradnak, így az időmérés és a rendelés állapota folyamatosan fut tovább.
         const auditAt=new Date().toISOString();
@@ -41523,7 +41603,11 @@ body {
         const refreshStation = getStationPlanIdentityKey(terminalProductionCardData.stationName) === "szereles"
           ? terminalProductionCardData.stationName
           : (machineOptions.find((option)=>getStationPlanIdentityKey(option)==="szereles") || machine);
-        const refreshedCard=await fetchProductionCardData(refreshStation,getLocalDateKey(new Date()));
+        const refreshDateKey = getStationPlanIdentityKey(terminalProductionCardData.stationName) === "szereles"
+          && terminalProductionCardData.dateKey
+          ? terminalProductionCardData.dateKey
+          : getLocalDateKey(new Date());
+        const refreshedCard=await fetchProductionCardData(refreshStation,refreshDateKey);
 
         if(hasScrap&&persistedCounts){
           const applyPersistedScrapCounts=<T extends {
@@ -41548,10 +41632,6 @@ body {
         setTerminalProductionCardData(refreshedCard);
       }
 
-      // Pontosan ugyanaz a sikeres-END visszaállítás fusson, mint a többi könyvelésnél:
-      // dolgozó törlése, 1. lépés, névazonosító mező fókusz, END/selejt pipák ürítése.
-      resetAfterSave();
-
       const nonClosingReport=shouldReturnToMainAfterReport;
       const reportLabels=[
         outerSheetScrap?"Külső lap selejt":"",
@@ -41567,7 +41647,20 @@ body {
       const partText=nonClosingReport
         ? ""
         : ` ${order}: ${parts.map(szerelesPartLabel).join(" + ")}.`;
-      setMessage({type:"success",text:`${legacyClose?"Régi munkamenet END":""+action} sikeresen rögzítve.${partText}${holdText} ${szerelesStateLabel(result.state)}. A korábbi adatok megmaradtak.`});
+      const successText=`${legacyClose?"Régi munkamenet END":""+action} sikeresen rögzítve.${partText}${holdText} ${szerelesStateLabel(result.state)}. A korábbi adatok megmaradtak.`;
+
+      // Selejt/javítás jelentésnél ténylegesen ugyanarra az 1. lépéses főoldalra
+      // térünk vissza, mint a Mégse / teljes visszaállítás útvonal. Ez a teljes
+      // dolgozó-, rendelés-, END- és checkbox-state-et lenullázza, de csak AZUTÁN,
+      // hogy a tartós adatbázis-mentés és a kártyafrissítés már sikerült.
+      if(nonClosingReport){
+        handleBackToName();
+        setMessage({type:"success",text:successText});
+        return;
+      }
+
+      resetAfterSave();
+      setMessage({type:"success",text:successText});
     }catch(error){
       setMessage({
         type:"error",
