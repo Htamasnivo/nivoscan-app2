@@ -41566,15 +41566,28 @@ body {
     if(action==="START"&&parts.length===0){setMessage({type:"error",text:"START előtt válaszd ki a Nyílót, a Tokot vagy mindkettőt."});return;}
     if(action==="END"&&!legacyClose&&!hasScrap&&!hasRepair&&parts.length===0){setMessage({type:"error",text:"END előtt kötelező legalább egy folyamatban lévő rész kiválasztása."});return;}
     if(action==="START"&&!isEventTenVisualWorker()&&!isStartBarcode(confirmedCode||actionBarcode)){setMessage({type:"error",text:"Előbb olvasd be és erősítsd meg a START kódot."});return;}
-    // 5-ös Szerelésnél három egyenértékű END indítás van:
-    // 1) END mentése gomb (nem kér vonalkódot), 2) scanner automata mentés,
-    // 3) kézi END + Enter. Más eseménykötegek END ellenőrzése változatlan.
-    const suppliedEndCode=(confirmedCode||actionBarcode).trim();
-    const eventFiveDirectEndConfirmed=action==="END"
-      && isExactEventFiveSzerelesWorker(activeWorker)
+    // 5-ös Szerelésnél két közvetlen END indítás is érvényes:
+    // 1) az END mentése gomb külön vonalkód nélkül,
+    // 2) kézzel beírt / scannerrel érkező érvényes END kód + Enter.
+    // A confirmedCode azért számít közvetlen megerősítésnek, mert a setEndBarcodeConfirmed(true)
+    // React state-frissítése ugyanabban az eseményben még nem feltétlenül olvasható vissza.
+    const eventFiveSzerelesEnd = action === "END"
+      && Number(getWorkerEsemenyKotegValue(activeWorker)) === 5
+      && requiresSzerelesStartParts(activeWorker);
+    const eventFiveButtonDirectSave = eventFiveSzerelesEnd && confirmedCode === "__EVENT5_END_BUTTON__";
+    const suppliedEndCode = eventFiveButtonDirectSave ? "END" : (confirmedCode || actionBarcode).trim();
+    const eventFiveCodeDirectConfirmed = eventFiveSzerelesEnd
       && !!confirmedCode
+      && confirmedCode !== "__EVENT5_END_BUTTON__"
       && isEndBarcode(confirmedCode);
-    if(action==="END"&&((!endBarcodeConfirmed&&!eventFiveDirectEndConfirmed)||!isEndBarcode(suppliedEndCode))){setMessage({type:"error",text:"Előbb erősítsd meg az END kódot Enterrel."});return;}
+    if (
+      action === "END"
+      && !eventFiveButtonDirectSave
+      && ((!endBarcodeConfirmed && !eventFiveCodeDirectConfirmed) || !isEndBarcode(suppliedEndCode))
+    ) {
+      setMessage({ type: "error", text: "Előbb erősítsd meg az END kódot Enterrel." });
+      return;
+    }
 
     const bundleTenSelectionForSzerelesStart = action === "START" && isEventTenVisualWorker()
       ? getBundleTenRowByKey(bundleTenSingleSelectionKey)
@@ -42883,7 +42896,11 @@ body {
 
     // CSAK 5-ös Szerelés: kézi END + Enter (vagy Enter suffixes scanner)
     // azonnal ugyanazt a mentést indítja el, mint az END mentése gomb.
-    if (isExactEventFiveSzerelesWorker(activeWorker)) {
+    // Ugyanazt a tényleges Szerelés-flow ellenőrzést használjuk, mint a gombnál,
+    // így nem tud visszaesni a régi "csak END megerősítés" ágba.
+    const isEventFiveSzereles = Number(getWorkerEsemenyKotegValue(activeWorker)) === 5
+      && requiresSzerelesStartParts(activeWorker);
+    if (isEventFiveSzereles) {
       await saveSzerelesSession("END", undefined, raw);
       return;
     }
@@ -42934,11 +42951,14 @@ body {
   }
 
   async function handleEventFiveAwareEndSaveButton(): Promise<void> {
-    // CSAK az 5-ös Szerelésnél a gomb önmagában END megerősítésnek számít.
-    // Minden meglévő mező-/selejt-/javítás-ellenőrzés a saveSzerelesSession-ben marad.
-    if (isExactEventFiveSzerelesWorker(activeWorker)) {
+    // CSAK a valódi 5-ös Szerelés folyamatban: a gomb önmagában END megerősítés.
+    // Nem támaszkodunk az END input / endBarcodeConfirmed állapotára.
+    // Minden egyéb meglévő ellenőrzés a saveSzerelesSession-ben változatlanul lefut.
+    const isEventFiveSzereles = Number(getWorkerEsemenyKotegValue(activeWorker)) === 5
+      && requiresSzerelesStartParts(activeWorker);
+    if (isEventFiveSzereles) {
       clearActionScanTimer();
-      await saveSzerelesSession("END", undefined, "END");
+      await saveSzerelesSession("END", undefined, "__EVENT5_END_BUTTON__");
       return;
     }
     await saveWorkLog("END");
