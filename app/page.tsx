@@ -11830,6 +11830,43 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+  async function browseDataUploadExcel(block: DataUploadBlockRow): Promise<void> {
+    try {
+      const response = await fetch("http://127.0.0.1:8765/pick-excel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!response.ok) {
+        throw new Error(`Windows agent tallózó HTTP ${response.status}`);
+      }
+      const payload = (await response.json()) as { path?: unknown; error?: unknown };
+      if (payload.error) throw new Error(String(payload.error));
+      const filePath = String(payload.path || "").trim();
+      if (!filePath) return;
+      if (!/\.(xlsx|xlsm|xltx|xltm)$/i.test(filePath)) {
+        throw new Error("Csak Excel fájl választható (.xlsx, .xlsm, .xltx, .xltm).");
+      }
+      const updatedBlock: DataUploadBlockRow = {
+        ...block,
+        file_path: filePath,
+        target_table: dataUploadTargetTableFromPath(filePath),
+      };
+      patchDataUploadBlockLocal(block.id, {
+        file_path: filePath,
+        target_table: updatedBlock.target_table,
+      });
+      const saved = await persistDataUploadBlock(updatedBlock, { quiet: true });
+      if (!saved) throw new Error("A kiválasztott Excel elérési útjának mentése nem sikerült.");
+      setMessage({ type: "success", text: `${block.name}: Excel kiválasztva – ${filePath}` });
+    } catch (error) {
+      setMessage({
+        type: "error",
+        text: `Excel tallózás sikertelen: ${normalizeError(error)}. Ellenőrizd, hogy a frissített Windows feltöltő agent fut-e ezen a gépen.`,
+      });
+    }
+  }
+
   async function queueDataUploadNow(block: DataUploadBlockRow): Promise<void> {
     if (!supabase) return;
     if (!String(block.file_path || "").trim()) {
@@ -12037,16 +12074,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
                 <div style={{ display: "grid", gridTemplateColumns: "150px minmax(260px,1fr)", gap: 10, alignItems: "center", marginTop: 14 }}>
                   <strong style={{ color: theme.mutedText }}>Excel elérési út</strong>
-                  <input
-                    value={block.file_path}
-                    onChange={(event) => {
-                      const filePath = event.target.value;
-                      patchDataUploadBlockLocal(block.id, { file_path: filePath, target_table: dataUploadTargetTableFromPath(filePath) });
-                    }}
-                    onBlur={() => void persistDataUploadBlock(dataUploadBlocks.find((row) => row.id === block.id) || block, { quiet: true })}
-                    style={input}
-                    placeholder={String.raw`P:\Adatok\Termeles.xlsx vagy \\szerver\megosztas\Termeles.xlsx`}
-                  />
+                  <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 8, alignItems: "center" }}>
+                    <input
+                      value={block.file_path}
+                      onChange={(event) => {
+                        const filePath = event.target.value;
+                        patchDataUploadBlockLocal(block.id, { file_path: filePath, target_table: dataUploadTargetTableFromPath(filePath) });
+                      }}
+                      onBlur={() => void persistDataUploadBlock(dataUploadBlocks.find((row) => row.id === block.id) || block, { quiet: true })}
+                      style={input}
+                      placeholder={String.raw`P:\Adatok\Termeles.xlsx vagy \\szerver\megosztas\Termeles.xlsx`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void browseDataUploadExcel(block)}
+                      style={{ ...buttonSecondary, background: theme.secondaryButtonBackground, color: theme.buttonText, borderColor: theme.borderColor, whiteSpace: "nowrap" }}
+                      title="Excel fájl kiválasztása a futó Windows agenten"
+                    >
+                      📎 Fájl csatolása
+                    </button>
+                  </div>
                   <strong style={{ color: theme.mutedText }}>Excel munkalap</strong>
                   <input
                     value={block.sheet_name}
