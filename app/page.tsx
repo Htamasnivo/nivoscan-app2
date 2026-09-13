@@ -5520,6 +5520,21 @@ function formatDateOnly(value: string | Date | null | undefined): string {
   return date.toLocaleDateString("hu-HU", { timeZone: APP_TIME_ZONE });
 }
 
+function formatDateTimeMinute(value: string | Date | null | undefined): string {
+  if (!value) return "-";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString("hu-HU", {
+    timeZone: APP_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 function getLocalDateKey(date: Date): string {
   const year = date.toLocaleString("en-CA", { timeZone: APP_TIME_ZONE, year: "numeric" });
   const month = date.toLocaleString("en-CA", { timeZone: APP_TIME_ZONE, month: "2-digit" });
@@ -22837,7 +22852,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               row.elkeszulesDatum,
               row.productionStatusLabel,
               row.telephely || "",
-              row.atvetel || "",
+              row.persisted
+                ? formatDateTimeMinute(
+                    row.persisted.lezart
+                      ? (row.persisted.lezart_at || row.persisted.updated_at)
+                      : row.persisted.updated_at
+                  )
+                : "",
               draft.folyamatban ? "Igen" : "Nem",
               draft.atvette ? "Igen" : "Nem",
               draft.megjegyzes || "",
@@ -22956,7 +22977,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           {ManagementNavigation()}
 
           <section data-office-window="atvetel:header" style={{ ...pagePanel, marginBottom: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1fr) minmax(640px, auto) minmax(0, 1fr)",
+                gap: 18,
+                alignItems: "start",
+                width: "100%",
+              }}
+            >
               <div>
                 <div style={{ color: "#38bdf8", fontWeight: 900, fontSize: 12, letterSpacing: 1 }}>NÍVÓ ÁTVÉTELI MONITOR</div>
                 <h2 style={{ margin: "4px 0", color: officeTheme.textColor, fontSize: 28 }}>Átvétel</h2>
@@ -22969,145 +22998,148 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 </div>
               </div>
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "minmax(390px, 1.05fr) minmax(300px, 1fr) minmax(210px, 0.65fr) auto",
-                  gap: 10,
-                  alignItems: "end",
-                  minWidth: "min(100%, 1160px)",
-                }}
-              >
-                <div style={{ display: "grid", gap: 7 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "minmax(170px, 0.9fr) 1fr 1fr", gap: 10 }}>
-                    <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
-                      Dátumszűrés alapja
-                      <select
-                        value={atvetelDateBasis}
-                        onChange={(event) =>
-                          setAtvetelDateBasis(event.target.value as AtvetelDateBasis)
-                        }
-                        style={fieldStyle}
-                      >
-                        <option value="elkeszules_datum">Elkészülési dátum</option>
-                        <option value="kiszallitasi_datum">Kiszállítási dátum</option>
-                      </select>
-                    </label>
-
-                    <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
-                      Dátumtól · {atvetelDateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülés dátuma"}
-                      <input
-                        type="date"
-                        value={atvetelDateFrom}
-                        onChange={(event) => setAtvetelDateFrom(event.target.value)}
-                        style={fieldStyle}
-                      />
-                    </label>
-
-                    <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
-                      Dátumig · {atvetelDateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülés dátuma"}
-                      <input
-                        type="date"
-                        value={atvetelDateTo}
-                        onChange={(event) => setAtvetelDateTo(event.target.value)}
-                        style={fieldStyle}
-                      />
-                    </label>
-                  </div>
-
-                  <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
-                    <button
-                      type="button"
-                      onClick={() => shiftAtvetelDateRange(-1)}
-                      style={{
-                        ...buttonSecondary,
-                        minWidth: 66,
-                        height: 36,
-                        fontSize: 20,
-                        fontWeight: 900,
-                        lineHeight: 1,
-                      }}
-                      title="Egy nappal vissza"
-                      aria-label="Egy nappal vissza"
+              <div style={{ display: "grid", gap: 7, width: "100%", justifySelf: "center" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "minmax(170px, 0.9fr) 1fr 1fr", gap: 10 }}>
+                  <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
+                    Dátumszűrés alapja
+                    <select
+                      value={atvetelDateBasis}
+                      onChange={(event) =>
+                        setAtvetelDateBasis(event.target.value as AtvetelDateBasis)
+                      }
+                      style={fieldStyle}
                     >
-                      ←
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => shiftAtvetelDateRange(1)}
-                      style={{
-                        ...buttonSecondary,
-                        minWidth: 66,
-                        height: 36,
-                        fontSize: 20,
-                        fontWeight: 900,
-                        lineHeight: 1,
-                      }}
-                      title="Egy nappal előre"
-                      aria-label="Egy nappal előre"
-                    >
-                      →
-                    </button>
-                  </div>
+                      <option value="elkeszules_datum">Elkészülési dátum</option>
+                      <option value="kiszallitasi_datum">Kiszállítási dátum</option>
+                    </select>
+                  </label>
+
+                  <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
+                    Dátumtól · {atvetelDateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülés dátuma"}
+                    <input
+                      type="date"
+                      value={atvetelDateFrom}
+                      onChange={(event) => setAtvetelDateFrom(event.target.value)}
+                      style={fieldStyle}
+                    />
+                  </label>
+
+                  <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
+                    Dátumig · {atvetelDateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülés dátuma"}
+                    <input
+                      type="date"
+                      value={atvetelDateTo}
+                      onChange={(event) => setAtvetelDateTo(event.target.value)}
+                      style={fieldStyle}
+                    />
+                  </label>
                 </div>
 
-                <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
-                  Rendelésszám kereső · 5 karakteres gyorsszűrő
-                  <input
-                    type="search"
-                    value={atvetelSearch}
-                    onChange={(event) => {
-                      const nextValue = event.target.value;
-                      setAtvetelSearch(nextValue);
-
-                      // Ha a keresőmezőt teljesen kiürítik, azonnal visszaállunk
-                      // a normál, Dátumtól–Dátumig szerinti Átvétel nézetre.
-                      if (!nextValue.trim() && atvetelCommittedSearch) {
-                        setAtvetelCommittedSearch("");
-                        void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, "");
-                      }
+                <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => shiftAtvetelDateRange(-1)}
+                    style={{
+                      ...buttonSecondary,
+                      minWidth: 66,
+                      height: 36,
+                      fontSize: 20,
+                      fontWeight: 900,
+                      lineHeight: 1,
                     }}
-                    onKeyDown={(event) => {
-                      if (event.key !== "Enter") return;
-                      event.preventDefault();
-
-                      const nextSearch = atvetelSearch.trim();
-                      setAtvetelCommittedSearch(nextSearch);
-                      void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, nextSearch);
-                    }}
-                    placeholder="Pl. R2608... vagy gyorskód: 07178"
-                    style={fieldStyle}
-                  />
-                </label>
-
-                <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
-                  Lezárási állapot
-                  <select
-                    value={atvetelClosureFilter}
-                    onChange={(event) =>
-                      setAtvetelClosureFilter(event.target.value as "open" | "closed" | "all")
-                    }
-                    style={fieldStyle}
+                    title="Egy nappal vissza"
+                    aria-label="Egy nappal vissza"
                   >
-                    <option value="open">Nem lezárt rendelések</option>
-                    <option value="closed">Lezárt rendelések</option>
-                    <option value="all">Összes rendelés</option>
-                  </select>
-                </label>
-
-                <div style={{ display: "grid", gap: 8 }}>
-                  <button type="button" onClick={handleCancelFullReset} style={buttonSecondary}>
-                    Kijelentkezés
+                    ←
                   </button>
                   <button
                     type="button"
-                    onClick={() => void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo)}
-                    disabled={atvetelLoading}
-                    style={buttonPrimary}
+                    onClick={() => shiftAtvetelDateRange(1)}
+                    style={{
+                      ...buttonSecondary,
+                      minWidth: 66,
+                      height: 36,
+                      fontSize: 20,
+                      fontWeight: 900,
+                      lineHeight: 1,
+                    }}
+                    title="Egy nappal előre"
+                    aria-label="Egy nappal előre"
                   >
-                    {atvetelLoading ? "Frissítés..." : "Frissítés"}
+                    →
                   </button>
                 </div>
+              </div>
+
+              <div aria-hidden="true" />
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "minmax(420px, 1fr) minmax(280px, 430px) 150px",
+                gap: 10,
+                alignItems: "end",
+                width: "100%",
+                marginTop: 16,
+              }}
+            >
+              <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
+                Rendelésszám kereső · 5 karakteres gyorsszűrő
+                <input
+                  type="search"
+                  value={atvetelSearch}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    setAtvetelSearch(nextValue);
+
+                    // Ha a keresőmezőt teljesen kiürítik, azonnal visszaállunk
+                    // a normál, Dátumtól–Dátumig szerinti Átvétel nézetre.
+                    if (!nextValue.trim() && atvetelCommittedSearch) {
+                      setAtvetelCommittedSearch("");
+                      void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, "");
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+
+                    const nextSearch = atvetelSearch.trim();
+                    setAtvetelCommittedSearch(nextSearch);
+                    void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, nextSearch);
+                  }}
+                  placeholder="Pl. R2608... vagy gyorskód: 07178"
+                  style={fieldStyle}
+                />
+              </label>
+
+              <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
+                Lezárási állapot
+                <select
+                  value={atvetelClosureFilter}
+                  onChange={(event) =>
+                    setAtvetelClosureFilter(event.target.value as "open" | "closed" | "all")
+                  }
+                  style={fieldStyle}
+                >
+                  <option value="open">Nem lezárt rendelések</option>
+                  <option value="closed">Lezárt rendelések</option>
+                  <option value="all">Összes rendelés</option>
+                </select>
+              </label>
+
+              <div style={{ display: "grid", gap: 8, width: 150, justifySelf: "end" }}>
+                <button type="button" onClick={handleCancelFullReset} style={{ ...buttonSecondary, width: "100%" }}>
+                  Kijelentkezés
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo)}
+                  disabled={atvetelLoading}
+                  style={{ ...buttonPrimary, width: "100%" }}
+                >
+                  {atvetelLoading ? "Frissítés..." : "Frissítés"}
+                </button>
               </div>
             </div>
           </section>
@@ -23205,8 +23237,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                         <td style={{ ...tableCellStyle, minWidth: 145, fontWeight: 800, whiteSpace: "nowrap" }}>
                           {row.kiszallitasiDatum || "—"}
                         </td>
-                        <td style={{ ...tableCellStyle, minWidth: 150, fontWeight: 800 }}>
-                          {row.atvetel || "—"}
+                        <td style={{ ...tableCellStyle, minWidth: 175, fontWeight: 800, whiteSpace: "nowrap" }}>
+                          {row.persisted
+                            ? formatDateTimeMinute(
+                                row.persisted.lezart
+                                  ? (row.persisted.lezart_at || row.persisted.updated_at)
+                                  : row.persisted.updated_at
+                              )
+                            : "—"}
                         </td>
                         <td style={{ ...tableCellStyle, textAlign: "center" }}>
                           <input
