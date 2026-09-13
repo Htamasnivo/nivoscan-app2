@@ -8797,7 +8797,7 @@ export default function Page() {
   // A kereső csak Enter után aktiválódik. Aktív keresésnél a dátumtartomány
   // nem szűri a szereles_terv táblát; törléskor visszaáll a dátumalapú nézet.
   const [atvetelCommittedSearch, setAtvetelCommittedSearch] = useState("");
-  const [atvetelClosureFilter, setAtvetelClosureFilter] = useState<"open" | "closed" | "all">("all");
+  const [atvetelClosureFilter, setAtvetelClosureFilter] = useState<"open" | "ongoing" | "closed" | "all">("all");
   const [atvetelRows, setAtvetelRows] = useState<AtvetelMonitorRow[]>([]);
   const [atvetelDrafts, setAtvetelDrafts] = useState<Record<string, AtvetelDraft>>({});
   const [atvetelSavingOrder, setAtvetelSavingOrder] = useState("");
@@ -22789,8 +22789,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const visibleRows = atvetelRows.filter((row) => {
       const closed = Boolean(row.persisted?.lezart);
+      const folyamatban = Boolean(atvetelDrafts[row.key]?.folyamatban ?? row.persisted?.folyamatban);
 
       if (atvetelClosureFilter === "open" && closed) return false;
+      if (atvetelClosureFilter === "ongoing" && (closed || !folyamatban)) return false;
       if (atvetelClosureFilter === "closed" && !closed) return false;
 
       if (!normalizedSearch) return true;
@@ -22817,7 +22819,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           const allRows = await fetchAtvetelMonitorRows("", "", "", { ignoreDateFilter: true, dateBasis: atvetelDateBasis });
           rowsToExport = allRows.filter((row) => {
             const closed = Boolean(row.persisted?.lezart);
+            const folyamatban = Boolean(atvetelDrafts[row.key]?.folyamatban ?? row.persisted?.folyamatban);
             if (atvetelClosureFilter === "open" && closed) return false;
+            if (atvetelClosureFilter === "ongoing" && (closed || !folyamatban)) return false;
             if (atvetelClosureFilter === "closed" && !closed) return false;
             return true;
           });
@@ -23128,11 +23132,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <select
                   value={atvetelClosureFilter}
                   onChange={(event) =>
-                    setAtvetelClosureFilter(event.target.value as "open" | "closed" | "all")
+                    setAtvetelClosureFilter(event.target.value as "open" | "ongoing" | "closed" | "all")
                   }
                   style={fieldStyle}
                 >
                   <option value="open">Nem lezárt rendelések</option>
+                  <option value="ongoing">Folyamatban</option>
                   <option value="closed">Lezárt rendelések</option>
                   <option value="all">Összes rendelés</option>
                 </select>
