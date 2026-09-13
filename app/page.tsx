@@ -22575,7 +22575,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!backgroundRefresh) setAtvetelLoading(true);
 
     try {
-      const nextRows = await fetchAtvetelMonitorRows(dateFrom, dateTo, searchOverride, { dateBasis: atvetelDateBasis });
+      const normalizedSearch = normalizeDashboardOrderSearch(searchOverride);
+      const ignoreDateForStatusFilter = !normalizedSearch && atvetelClosureFilter !== "all";
+      const nextRows = await fetchAtvetelMonitorRows(dateFrom, dateTo, searchOverride, {
+        dateBasis: atvetelDateBasis,
+        ignoreDateFilter: Boolean(normalizedSearch) || ignoreDateForStatusFilter,
+      });
 
       setAtvetelRows(nextRows);
 
@@ -22788,6 +22793,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const normalizedSearch = normalizeDashboardOrderSearch(atvetelCommittedSearch);
 
     const visibleRows = atvetelRows.filter((row) => {
+      // A rendelésszám kereső mindentől független: teljes szereles_terv forrásban
+      // keres, és sem a dátumszűrő, sem a lezárási állapot nem korlátozza.
+      if (normalizedSearch) {
+        return matchesDashboardOrderFilters(row.orderNumber, [atvetelCommittedSearch]);
+      }
+
       const closed = Boolean(row.persisted?.lezart);
       const folyamatban = Boolean(atvetelDrafts[row.key]?.folyamatban ?? row.persisted?.folyamatban);
 
@@ -22795,11 +22806,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (atvetelClosureFilter === "ongoing" && (closed || !folyamatban)) return false;
       if (atvetelClosureFilter === "closed" && !closed) return false;
 
-      if (!normalizedSearch) return true;
-
-      // Ugyanaz az 5 karakteres gyorskód-logika, mint a Vezetői műszerfalon.
-      // Csak az Enterrel jóváhagyott keresés szűr.
-      return matchesDashboardOrderFilters(row.orderNumber, [atvetelCommittedSearch]);
+      return true;
     });
 
     async function exportAtvetelExcel(): Promise<void> {
@@ -26327,6 +26334,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     atvetelDateTo,
     atvetelDateBasis,
     atvetelCommittedSearch,
+    atvetelClosureFilter,
     workers.length,
   ]);
 
@@ -26354,6 +26362,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     atvetelDateTo,
     atvetelDateBasis,
     atvetelCommittedSearch,
+    atvetelClosureFilter,
   ]);
 
   useEffect(() => {
@@ -26383,6 +26392,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     atvetelDateTo,
     atvetelDateBasis,
     atvetelCommittedSearch,
+    atvetelClosureFilter,
   ]);
 
   useEffect(() => {
