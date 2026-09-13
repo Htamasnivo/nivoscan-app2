@@ -22662,6 +22662,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       dirty: false,
     };
 
+    // Végleges lezárás csak akkor engedélyezett, ha az Átvette mező be van pipálva.
+    // Normál Mentésnél ez az ellenőrzés nem fut le.
+    if (closeAfterSave && !Boolean(draft.atvette)) {
+      setMessage({
+        type: "error",
+        text: "A rendelés lezárásához előbb pipáld be az Átvette mezőt.",
+      });
+      return;
+    }
+
     if (closeAfterSave) {
       setAtvetelClosingOrder(row.orderNumber);
     } else {
