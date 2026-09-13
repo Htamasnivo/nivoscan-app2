@@ -11942,6 +11942,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     return (
       <div style={{ ...pageShellStyle, background: theme.pageBackground, color: theme.textColor, fontFamily: theme.fontFamily, fontSize: theme.baseFontSize }}>
+        {ManagementNavigation()}
         <div data-office-window="data-upload:header" style={{ ...panel, display: "flex", justifyContent: "space-between", gap: 14, alignItems: "end", flexWrap: "wrap", padding: theme.padding, marginBottom: theme.gap }}>
           <div>
             <div style={{ color: theme.accentColor, fontWeight: 900, fontSize: 12, letterSpacing: 0.5 }}>EXCEL → SUPABASE</div>
