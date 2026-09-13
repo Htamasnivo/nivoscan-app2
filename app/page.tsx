@@ -1110,11 +1110,15 @@ type AtvetelCurrentRow = {
   updated_at?: string | null;
 };
 
+type AtvetelDateBasis = "elkeszules_datum" | "kiszallitasi_datum";
+
 type AtvetelMonitorRow = {
   key: string;
   orderNumber: string;
   elkeszulesDatum: string;
+  szereles: string;
   telephely: string;
+  kiszallitasiDatum: string;
   atvetel: string;
   productionStatus: ProductionMonitorStatus;
   productionStatusLabel: string;
@@ -2021,6 +2025,7 @@ const CARPENTER_SCRAP_REPLACEMENT_TABLE = "asztalos_selejt_potlas";
 const ATVETEL_CURRENT_TABLE = "ugyfel_atvette";
 const ATVETEL_LOG_TABLE = "ugyfel_atvette_log";
 const ATVETEL_SOURCE_TABLE = "szereles_terv";
+const ATVETEL_DETAILS_TABLE = "atvetel_adat";
 const ATVETEL_SOURCE_STATION = "Szereles";
 const PRODUCTION_CARD_ORDER_FIELD_ID = "__card_order_number__";
 const PRODUCTION_CARD_PRODUCT_FIELD_ID = "__card_product_name__";
@@ -8769,9 +8774,10 @@ export default function Page() {
   const productionMonitorProfilesLatestRef = useRef<ProductionMonitorProfile[]>(productionMonitorProfiles);
   const productionMonitorActiveProfileIdLatestRef = useRef(activeProductionMonitorProfileId);
 
-  // Átvétel monitor – kizárólag a szereles_terv.elkeszules_datum alapján.
+  // Átvétel monitor – szereles_terv sorok, atvetel_adat kiegészítő mezőkkel; választható dátumszűréssel.
   const [atvetelDateFrom, setAtvetelDateFrom] = useState(getLocalDateKey(new Date()));
   const [atvetelDateTo, setAtvetelDateTo] = useState(getLocalDateKey(new Date()));
+  const [atvetelDateBasis, setAtvetelDateBasis] = useState<AtvetelDateBasis>("elkeszules_datum");
   const [atvetelSearch, setAtvetelSearch] = useState("");
   // A kereső csak Enter után aktiválódik. Aktív keresésnél a dátumtartomány
   // nem szűri a szereles_terv táblát; törléskor visszaáll a dátumalapú nézet.
@@ -22220,13 +22226,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return parseSpreadsheetDate(rawValue) || valueAsText(rawValue).slice(0, 10);
   }
 
-  function getAtvetelTelephely(row: Record<string, unknown>): string {
-    return valueAsText(
-      readAtvetelPlanValue(row, [
-        "telephely",
-        "Telephely",
-      ])
-    ).trim();
+  function getAtvetelDetailsOrderNumber(row: Record<string, unknown>): string {
+    return valueAsText(readAtvetelPlanValue(row, ["rendelesszam"])).trim();
+  }
+
+  function getAtvetelDetailsSzereles(row: Record<string, unknown>): string {
+    return valueAsText(readAtvetelPlanValue(row, ["szereles"])).trim();
+  }
+
+  function getAtvetelDetailsTelephely(row: Record<string, unknown>): string {
+    return valueAsText(readAtvetelPlanValue(row, ["telephely"])).trim();
+  }
+
+  function getAtvetelDetailsShippingDate(row: Record<string, unknown>): string {
+    const rawValue = readAtvetelPlanValue(row, ["szerelesi_idopont"]);
+    return parseSpreadsheetDate(rawValue) || valueAsText(rawValue).slice(0, 10);
   }
 
   function getAtvetelSourceAtvetel(row: Record<string, unknown>): string {
@@ -22263,11 +22277,40 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return result;
   }
 
+  async function fetchAtvetelDetailsRows(
+    sourceOrderNumbers: string[]
+  ): Promise<Array<Record<string, unknown>>> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    const uniqueOrders = Array.from(new Set(
+      sourceOrderNumbers
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    ));
+
+    const result: Array<Record<string, unknown>> = [];
+    for (let index = 0; index < uniqueOrders.length; index += 100) {
+      const chunk = uniqueOrders.slice(index, index + 100);
+      if (chunk.length === 0) continue;
+
+      const response = await supabase
+        .from(ATVETEL_DETAILS_TABLE)
+        .select("rendelesszam, szereles, telephely, szerelesi_idopont")
+        .in("rendelesszam", chunk)
+        .limit(10000);
+
+      if (response.error) throw response.error;
+      result.push(...((response.data || []) as Array<Record<string, unknown>>));
+    }
+
+    return result;
+  }
+
   async function fetchAtvetelMonitorRows(
     dateFrom: string,
     dateTo: string,
     searchOverride: string,
-    options?: { ignoreDateFilter?: boolean }
+    options?: { ignoreDateFilter?: boolean; dateBasis?: AtvetelDateBasis }
   ): Promise<AtvetelMonitorRow[]> {
     if (!supabase) return [];
 
@@ -22284,44 +22327,103 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const normalizedGlobalSearch = normalizeDashboardOrderSearch(searchOverride);
     const searchWholeSourceTable = Boolean(normalizedGlobalSearch);
     const ignoreDateFilter = options?.ignoreDateFilter === true;
+    const dateBasis: AtvetelDateBasis = options?.dateBasis || atvetelDateBasis;
 
-    // 1) Sorforrás KIZÁRÓLAG: public.szereles_terv
-    // 2) Dátumforrás KIZÁRÓLAG: elkeszules_datum
-    // 3) Üres elkészülési dátum: nem jelenik meg.
+    // A megjelenített sorok alapja továbbra is KIZÁRÓLAG a public.szereles_terv.
+    // Az atvetel_adat csak kiegészítő adatforrás a pontos
+    // szereles_terv.sorszam = atvetel_adat.rendelesszam kapcsolaton keresztül.
     const sourceRows = await fetchAllAtvetelSourceRows();
+    const sourceOrderNumbers = Array.from(new Set(
+      sourceRows
+        .map((rawRow) => getAtvetelSourceOrderNumber(rawRow))
+        .filter(Boolean)
+    ));
+    const detailsRows = await fetchAtvetelDetailsRows(sourceOrderNumbers);
+
+    const detailsByOrder = new Map<
+      string,
+      { szereles: string; telephely: string; kiszallitasiDatum: string }
+    >();
+
+    detailsRows.forEach((rawRow) => {
+      const orderNumber = getAtvetelDetailsOrderNumber(rawRow);
+      if (!orderNumber) return;
+
+      const next = {
+        szereles: getAtvetelDetailsSzereles(rawRow),
+        telephely: getAtvetelDetailsTelephely(rawRow),
+        kiszallitasiDatum: getAtvetelDetailsShippingDate(rawRow),
+      };
+      const existing = detailsByOrder.get(orderNumber);
+
+      // Ha az importált Excelben ugyanaz a rendelés többször szerepel,
+      // nem készítünk duplikált Átvétel sort: az első nem üres értékeket
+      // megtartjuk ugyanahhoz a rendeléshez.
+      if (!existing) {
+        detailsByOrder.set(orderNumber, next);
+      } else {
+        detailsByOrder.set(orderNumber, {
+          szereles: existing.szereles || next.szereles,
+          telephely: existing.telephely || next.telephely,
+          kiszallitasiDatum: existing.kiszallitasiDatum || next.kiszallitasiDatum,
+        });
+      }
+    });
 
     const sourceByOrder = new Map<
       string,
-      { orderNumber: string; elkeszulesDatum: string; telephely: string; atvetel: string }
+      {
+        orderNumber: string;
+        elkeszulesDatum: string;
+        szereles: string;
+        telephely: string;
+        kiszallitasiDatum: string;
+        atvetel: string;
+      }
     >();
 
     sourceRows.forEach((rawRow) => {
       const orderNumber = getAtvetelSourceOrderNumber(rawRow);
       const elkeszulesDatum = getAtvetelCompletionDate(rawRow);
-      const telephely = getAtvetelTelephely(rawRow);
       const atvetel = getAtvetelSourceAtvetel(rawRow);
 
       if (!orderNumber) return;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(elkeszulesDatum)) return;
 
-      // Normál nézetben az elkészülési dátumtartomány szűr. Enterrel aktivált
-      // rendeléskeresésnél a TELJES szereles_terv táblában keresünk,
-      // a dátumszűrőtől függetlenül. Az Excel "minden" export ezt a szűrést
-      // külön, explicit módon kapcsolhatja ki.
+      // Pontos szöveges kapcsolat: szereles_terv.sorszam = atvetel_adat.rendelesszam.
+      const details = detailsByOrder.get(orderNumber) || {
+        szereles: "",
+        telephely: "",
+        kiszallitasiDatum: "",
+      };
+      const filterDate = dateBasis === "kiszallitasi_datum"
+        ? details.kiszallitasiDatum
+        : elkeszulesDatum;
+
+      // Enterrel aktivált rendeléskeresés továbbra is a TELJES szereles_terv
+      // táblában keres, a dátumszűrőtől függetlenül. Normál nézetben a
+      // legördülőben kiválasztott dátummező szűr.
       if (searchWholeSourceTable) {
         if (!matchesDashboardOrderFilters(orderNumber, [searchOverride])) return;
-      } else if (!ignoreDateFilter && (elkeszulesDatum < startDate || elkeszulesDatum > endDate)) {
-        return;
+      } else if (!ignoreDateFilter) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(filterDate)) return;
+        if (filterDate < startDate || filterDate > endDate) return;
       }
 
       const key = normalizeLooseText(orderNumber);
       const existing = sourceByOrder.get(key);
 
-      // Egy rendelés a monitoron pontosan egy sor.
-      // Ha több szereles_terv sor van, a legkorábbi, feltételnek megfelelő
-      // elkészülési dátumot tartjuk meg.
+      // Egy rendelés a monitoron pontosan egy sor. Ha több szereles_terv sor
+      // van, a legkorábbi elkészülési dátumú sort tartjuk meg.
       if (!existing || elkeszulesDatum < existing.elkeszulesDatum) {
-        sourceByOrder.set(key, { orderNumber, elkeszulesDatum, telephely, atvetel });
+        sourceByOrder.set(key, {
+          orderNumber,
+          elkeszulesDatum,
+          szereles: details.szereles,
+          telephely: details.telephely,
+          kiszallitasiDatum: details.kiszallitasiDatum,
+          atvetel,
+        });
       }
     });
 
@@ -22436,7 +22538,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         key: `${normalizeLooseText(sourceRow.orderNumber)}|${sourceRow.elkeszulesDatum}`,
         orderNumber: sourceRow.orderNumber,
         elkeszulesDatum: sourceRow.elkeszulesDatum,
+        szereles: sourceRow.szereles,
         telephely: sourceRow.telephely,
+        kiszallitasiDatum: sourceRow.kiszallitasiDatum,
         atvetel: sourceRow.atvetel,
         productionStatus: monitorCell.status,
         productionStatusLabel: monitorCell.label,
@@ -22456,7 +22560,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!backgroundRefresh) setAtvetelLoading(true);
 
     try {
-      const nextRows = await fetchAtvetelMonitorRows(dateFrom, dateTo, searchOverride);
+      const nextRows = await fetchAtvetelMonitorRows(dateFrom, dateTo, searchOverride, { dateBasis: atvetelDateBasis });
 
       setAtvetelRows(nextRows);
 
@@ -22685,7 +22789,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         // forrást exportáljuk. Egyébként pontosan a képernyő aktuális
         // dátum/rendelésszám + lezárási állapot szűrésének megfelelő sorokat.
         if (!hasDateFilter && !hasOrderFilter) {
-          const allRows = await fetchAtvetelMonitorRows("", "", "", { ignoreDateFilter: true });
+          const allRows = await fetchAtvetelMonitorRows("", "", "", { ignoreDateFilter: true, dateBasis: atvetelDateBasis });
           rowsToExport = allRows.filter((row) => {
             const closed = Boolean(row.persisted?.lezart);
             if (atvetelClosureFilter === "open" && closed) return false;
@@ -22857,7 +22961,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <div style={{ color: "#38bdf8", fontWeight: 900, fontSize: 12, letterSpacing: 1 }}>NÍVÓ ÁTVÉTELI MONITOR</div>
                 <h2 style={{ margin: "4px 0", color: officeTheme.textColor, fontSize: 28 }}>Átvétel</h2>
                 <div style={{ color: officeTheme.mutedText, fontSize: 13 }}>
-                  Sorforrás: <strong>szereles_terv</strong> · Szűrés alapja: <strong>Elkészülés dátuma</strong>
+                  Sorforrás: <strong>szereles_terv</strong> + <strong>atvetel_adat</strong> · Szűrés alapja:{" "}
+                  <strong>{atvetelDateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülés dátuma"}</strong>
                 </div>
                 <div style={{ color: officeTheme.mutedText, fontSize: 12, marginTop: 4 }}>
                   Utolsó frissítés: {atvetelLastUpdatedAt ? formatDateTime(atvetelLastUpdatedAt) : "–"}
@@ -22874,9 +22979,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 }}
               >
                 <div style={{ display: "grid", gap: 7 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "minmax(170px, 0.9fr) 1fr 1fr", gap: 10 }}>
                     <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
-                      Dátumtól · Elkészülés dátuma
+                      Dátumszűrés alapja
+                      <select
+                        value={atvetelDateBasis}
+                        onChange={(event) =>
+                          setAtvetelDateBasis(event.target.value as AtvetelDateBasis)
+                        }
+                        style={fieldStyle}
+                      >
+                        <option value="elkeszules_datum">Elkészülési dátum</option>
+                        <option value="kiszallitasi_datum">Kiszállítási dátum</option>
+                      </select>
+                    </label>
+
+                    <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
+                      Dátumtól · {atvetelDateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülés dátuma"}
                       <input
                         type="date"
                         value={atvetelDateFrom}
@@ -22886,7 +23005,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     </label>
 
                     <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
-                      Dátumig · Elkészülés dátuma
+                      Dátumig · {atvetelDateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülés dátuma"}
                       <input
                         type="date"
                         value={atvetelDateTo}
@@ -23028,13 +23147,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             </div>
 
             <div data-nivo-scroll-region="source-21071" style={{ overflowX: "auto", maxHeight: "calc(100vh - 310px)", overflowY: "auto", border: `1px solid ${officeTheme.borderColor}`, borderRadius: 12 }}>
-              <table style={{ width: "100%", minWidth: 1420, borderCollapse: "collapse" }}>
+              <table style={{ width: "100%", minWidth: 1760, borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
                     <th style={tableHeaderStyle}>Rendelésszám</th>
                     <th style={tableHeaderStyle}>Elkészülés dátuma</th>
                     <th style={tableHeaderStyle}>Ajtó állapota</th>
+                    <th style={tableHeaderStyle}>Szerelés</th>
                     <th style={tableHeaderStyle}>Telephely</th>
+                    <th style={tableHeaderStyle}>Kiszállítási dátum</th>
                     <th style={tableHeaderStyle}>Átvétel</th>
                     <th style={{ ...tableHeaderStyle, textAlign: "center" }}>Folyamatban</th>
                     <th style={{ ...tableHeaderStyle, textAlign: "center" }}>Átvette</th>
@@ -23045,10 +23166,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <tbody>
                   {visibleRows.length === 0 ? (
                     <tr>
-                      <td colSpan={9} style={{ ...tableCellStyle, textAlign: "center", padding: 30, color: officeTheme.mutedText }}>
+                      <td colSpan={11} style={{ ...tableCellStyle, textAlign: "center", padding: 30, color: officeTheme.mutedText }}>
                         {atvetelLoading
                           ? "Átvételi sorok betöltése..."
-                          : "A kiválasztott elkészülési dátumtartományban nincs megjeleníthető szereles_terv sor."}
+                          : `A kiválasztott ${atvetelDateBasis === "kiszallitasi_datum" ? "kiszállítási" : "elkészülési"} dátumtartományban nincs megjeleníthető szereles_terv sor.`}
                       </td>
                     </tr>
                   ) : visibleRows.map((row) => {
@@ -23076,7 +23197,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                           <span style={statusStyle(row.productionStatus)}>{row.productionStatusLabel}</span>
                         </td>
                         <td style={{ ...tableCellStyle, minWidth: 150, fontWeight: 800 }}>
+                          {row.szereles || "—"}
+                        </td>
+                        <td style={{ ...tableCellStyle, minWidth: 150, fontWeight: 800 }}>
                           {row.telephely || "—"}
+                        </td>
+                        <td style={{ ...tableCellStyle, minWidth: 145, fontWeight: 800, whiteSpace: "nowrap" }}>
+                          {row.kiszallitasiDatum || "—"}
                         </td>
                         <td style={{ ...tableCellStyle, minWidth: 150, fontWeight: 800 }}>
                           {row.atvetel || "—"}
@@ -26145,6 +26272,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     managementSection,
     atvetelDateFrom,
     atvetelDateTo,
+    atvetelDateBasis,
     atvetelCommittedSearch,
     workers.length,
   ]);
@@ -26171,6 +26299,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     managementSection,
     atvetelDateFrom,
     atvetelDateTo,
+    atvetelDateBasis,
     atvetelCommittedSearch,
   ]);
 
@@ -26185,6 +26314,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const channel = supabase
       .channel(`atvetel-${atvetelDateFrom}-${atvetelDateTo}`)
       .on("postgres_changes", { event: "*", schema: "public", table: ATVETEL_SOURCE_TABLE }, refresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: ATVETEL_DETAILS_TABLE }, refresh)
       .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refresh)
       .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, refresh)
       .on("postgres_changes", { event: "*", schema: "public", table: ATVETEL_CURRENT_TABLE }, refresh)
@@ -26198,6 +26328,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     managementSection,
     atvetelDateFrom,
     atvetelDateTo,
+    atvetelDateBasis,
     atvetelCommittedSearch,
   ]);
 
