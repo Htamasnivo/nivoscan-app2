@@ -17039,6 +17039,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const otherTableName = buildStationPlanTableName(otherStationName);
         const matchingPlanKeys = new Set<string>();
         const matchingOrderNumbers = new Set<string>();
+        const isOsszeallitasCsolezerStatus =
+          getStationPlanIdentityKey(cleanStationName) === "osszeallitas"
+          && getStationPlanIdentityKey(otherStationName) === "csolezer";
 
         // A sorszam kompatibilitási mező minden *_terv táblában a
         // gyártási számot/rendelésszámot hordozza.
@@ -17065,6 +17068,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             const otherOrderNumber = String(row.sorszam ?? "").trim();
             const otherProductName = String(row.megnevezes ?? "").trim();
             if (!otherOrderNumber) return;
+
+            // Az Összeállítás kártyán a Csőlézer állapot kizárólag a
+            // rendelésszám alapján kapcsolódik. Az Összeállítás tervben nincs
+            // kötelező megnevezés mező, ezért a korábbi rendelésszám +
+            // megnevezés kulcs miatt a Csőlézer állapot tévesen "–" maradt.
+            if (isOsszeallitasCsolezerStatus) {
+              let matchedCurrentPlanRow = false;
+              planRows.forEach((planRow) => {
+                if (normalizeLooseText(planRow.orderNumber) !== normalizeLooseText(otherOrderNumber)) return;
+                const key = productionCardPlanRowKey(planRow);
+                if (!crossStationStatusesByPlanKey.has(key)) return;
+                matchingPlanKeys.add(key);
+                matchedCurrentPlanRow = true;
+              });
+              if (matchedCurrentPlanRow) matchingOrderNumbers.add(otherOrderNumber);
+              return;
+            }
 
             const key = productionCardPlanRowKey({
               orderNumber: otherOrderNumber,
@@ -17158,6 +17178,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   === normalizeLooseText(currentPlanRow.orderNumber)
               )
           );
+
+          // Összeállítás -> Csőlézer esetén tervsor önmagában még nem jelent
+          // állapotot. Ha nincs valódi Csőlézer START/END (vagy aktív batch
+          // START), a cella maradjon "–", ahogy a kártyán eddig is jeleztük
+          // a teljesen ismeretlen állapotot.
+          if (isOsszeallitasCsolezerStatus) {
+            const hasCsolezerActivity = stationBatchStarts.length > 0 || stationLogs.some((log) => {
+              const action = String(log.action || "").trim().toUpperCase();
+              return action === "START"
+                || action === "END"
+                || Boolean(log.start_time || log.start_timestamp || log.end_time || log.end_timestamp);
+            });
+            if (!hasCsolezerActivity) return;
+          }
 
           const stationStatus = resolveProductionCardWorkers(
             stationLogs,
