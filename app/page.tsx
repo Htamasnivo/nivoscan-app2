@@ -24087,7 +24087,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <button type="button" onClick={() => void loadManagementDashboardView("custom", dashboardDate, dashboardDateTo)} disabled={loadingDashboard} style={buttonSecondary}>
               {loadingDashboard ? "Frissítés..." : "Frissítés"}
             </button>
-            <button type="button" onClick={exportDashboardAsExcel} style={buttonPrimary}>Excel export</button>
+            <button type="button" onClick={() => void exportDashboardAsExcel()} style={buttonPrimary}>Excel export</button>
             <details style={{ position: "relative" }}>
               <summary
                 style={{
@@ -30292,7 +30292,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   ): Promise<DashboardData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "id, worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
     const hasOrderFilter = orderFilters.some((value) => Boolean(normalizeDashboardOrderSearch(value)));
     const planFieldMatch = await fetchDashboardPlanFieldMatches(range, planFieldFilter);
     const planFieldTargetsDate = planFieldMatch.active && planFieldMatch.dataType === "date";
@@ -30881,91 +30881,169 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
   }
 
-  function exportDashboardAsExcel(): void {
+  async function exportDashboardAsExcel(): Promise<void> {
+    if (!supabase) {
+      setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
+      return;
+    }
+
     const XLSX = window.XLSX;
     if (!XLSX?.utils?.book_new) {
       setMessage({ type: "error", text: "Az Excel export könyvtár még nem töltődött be." });
       return;
     }
 
-    const workbook = XLSX.utils.book_new();
-    const filteredWorkerStats = getFilteredDashboardWorkerStats();
-    const workerRows: Array<Array<string | number>> = [
-      ["Dolgozó neve", "Ledolgozott idő", "Ledolgozott perc", "Lezárt work_logs sorok", "Munkával érintett napok", "Hatékonyság %"],
-      ...filteredWorkerStats.workerRows.map((row) => [
-        row.workerName,
-        row.totalDurationLabel,
-        row.totalMinutes,
-        row.closedSegments,
-        row.activeDayCount,
-        row.efficiencyPct ?? "",
-      ]),
-    ];
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(workerRows), "Dolgozói teljesítmény");
+    try {
+      const workbook = XLSX.utils.book_new();
+      const filteredWorkerStats = getFilteredDashboardWorkerStats();
+      const workerRows: Array<Array<string | number>> = [
+        ["Dolgozó neve", "Ledolgozott idő", "Ledolgozott perc", "Lezárt work_logs sorok", "Munkával érintett napok", "Hatékonyság %"],
+        ...filteredWorkerStats.workerRows.map((row) => [
+          row.workerName,
+          row.totalDurationLabel,
+          row.totalMinutes,
+          row.closedSegments,
+          row.activeDayCount,
+          row.efficiencyPct ?? "",
+        ]),
+      ];
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(workerRows), "Dolgozói teljesítmény");
 
-    const filteredActivity = getFilteredDashboardActivity();
-    const selectedStationValue = filteredWorkerStats.selectedStationValue;
-    const visibleStationRows = selectedStationValue === "all"
-      ? dashboardData.stationEfficiencyRows
-      : dashboardData.stationEfficiencyRows.filter(
-          (row) => normalizeLooseText(row.stationName) === normalizeLooseText(selectedStationValue)
-        );
-    const stationRows: Array<Array<string | number>> = [
-      ["Munkaállomás", "Tervezett tételek", "Elkészült tételek", "Hátralévő tételek", "Terv szerinti hatékonyság %"],
-      ...visibleStationRows.map((row) => [
-        row.stationName,
-        row.plannedItems,
-        row.completedItems,
-        Math.max(0, row.plannedItems - row.completedItems),
-        row.efficiencyPct ?? "",
-      ]),
-    ];
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(stationRows), "Munkaállomási terv");
+      const filteredActivity = getFilteredDashboardActivity();
+      const selectedStationValue = filteredWorkerStats.selectedStationValue;
+      const visibleStationRows = selectedStationValue === "all"
+        ? dashboardData.stationEfficiencyRows
+        : dashboardData.stationEfficiencyRows.filter(
+            (row) => normalizeLooseText(row.stationName) === normalizeLooseText(selectedStationValue)
+          );
+      const stationRows: Array<Array<string | number>> = [
+        ["Munkaállomás", "Tervezett tételek", "Elkészült tételek", "Hátralévő tételek", "Terv szerinti hatékonyság %"],
+        ...visibleStationRows.map((row) => [
+          row.stationName,
+          row.plannedItems,
+          row.completedItems,
+          Math.max(0, row.plannedItems - row.completedItems),
+          row.efficiencyPct ?? "",
+        ]),
+      ];
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(stationRows), "Munkaállomási terv");
 
-    const openWorkRows: Array<Array<string | number>> = [
-      ["Rendelésszám", "Munkaállomás", "Dolgozó", "Kezdés", "Megjegyzés"],
-      ...filteredActivity.openRows.map((row) => [
-        row.orderNumber,
-        row.station || row.role || "-",
-        row.workerName,
-        formatDateTime(row.startedAt),
-        row.lastNote || "",
-      ]),
-    ];
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(openWorkRows), "Folyamatban lévő munkák");
+      const openWorkRows: Array<Array<string | number>> = [
+        ["Rendelésszám", "Munkaállomás", "Dolgozó", "Kezdés", "Megjegyzés"],
+        ...filteredActivity.openRows.map((row) => [
+          row.orderNumber,
+          row.station || row.role || "-",
+          row.workerName,
+          formatDateTime(row.startedAt),
+          row.lastNote || "",
+        ]),
+      ];
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(openWorkRows), "Folyamatban lévő munkák");
 
-    const eventRows: Array<Array<string | number>> = [
-      ["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
-      ...filteredActivity.logs.map((log) => {
-        const action = String(log.action || "").toUpperCase();
-        const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
-        const startAt = getDashboardLogStartAt(log);
-        const endAt = getDashboardLogEndAt(log);
-        return [
-          formatDateTime(getDashboardLogEventAt(log)),
-          startAt ? formatDateTime(startAt) : "-",
-          endAt ? formatDateTime(endAt) : "-",
-          getDashboardLogElapsedLabel(log),
-          getDashboardLogWorkerName(log),
-          log.order_number || "-",
-          isEnd ? "END" : action || "START",
-          resolveLogStation(log, workers),
-          getNoteBeforeContext(log.note) || "",
+      const eventRows: Array<Array<string | number>> = [
+        ["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
+        ...filteredActivity.logs.map((log) => {
+          const action = String(log.action || "").toUpperCase();
+          const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
+          const startAt = getDashboardLogStartAt(log);
+          const endAt = getDashboardLogEndAt(log);
+          return [
+            formatDateTime(getDashboardLogEventAt(log)),
+            startAt ? formatDateTime(startAt) : "-",
+            endAt ? formatDateTime(endAt) : "-",
+            getDashboardLogElapsedLabel(log),
+            getDashboardLogWorkerName(log),
+            log.order_number || "-",
+            isEnd ? "END" : action || "START",
+            resolveLogStation(log, workers),
+            getNoteBeforeContext(log.note) || "",
+          ];
+        }),
+      ];
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(eventRows), "Eseménynapló");
+
+      // Teljes work_logs nyers mezők külön munkafülön.
+      // A cél-sorokat NEM külön szűrjük újra: pontosan ugyanazt a már kiszűrt
+      // Eseménynapló-halmazt használjuk, ezért a dátum / _terv mező / munkaállomás /
+      // dolgozó / rendelésszám szűrés egy az egyben érvényesül ezen a munkafülön is.
+      const filteredLogIds = Array.from(new Map(
+        filteredActivity.logs
+          .filter((log) => log.id !== null && log.id !== undefined && String(log.id).trim() !== "")
+          .map((log) => [String(log.id), log.id] as const)
+      ).values());
+
+      const fullWorkLogRows: Array<Record<string, unknown>> = [];
+      if (filteredLogIds.length > 0) {
+        for (let index = 0; index < filteredLogIds.length; index += 100) {
+          const idChunk = filteredLogIds.slice(index, index + 100);
+          let response = await supabase
+            .from("work_logs")
+            .select("*")
+            .in("id", idChunk);
+
+          if (response.error) {
+            response = await supabase
+              .from("work_log")
+              .select("*")
+              .in("id", idChunk);
+          }
+
+          if (response.error) throw response.error;
+          fullWorkLogRows.push(...((response.data || []) as Array<Record<string, unknown>>));
+        }
+      }
+
+      const filteredIdOrder = new Map(
+        filteredLogIds.map((id, index) => [String(id), index])
+      );
+      fullWorkLogRows.sort((left, right) =>
+        (filteredIdOrder.get(String(left.id ?? "")) ?? Number.MAX_SAFE_INTEGER)
+        - (filteredIdOrder.get(String(right.id ?? "")) ?? Number.MAX_SAFE_INTEGER)
+      );
+
+      if (fullWorkLogRows.length > 0) {
+        const workLogColumns = Array.from(new Set(
+          fullWorkLogRows.flatMap((row) => Object.keys(row))
+        ));
+        const toExcelCellValue = (value: unknown): string | number | boolean => {
+          if (value === null || value === undefined) return "";
+          if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+          try {
+            return JSON.stringify(value);
+          } catch {
+            return String(value);
+          }
+        };
+        const workLogRows: Array<Array<string | number | boolean>> = [
+          workLogColumns,
+          ...fullWorkLogRows.map((row) => workLogColumns.map((column) => toExcelCellValue(row[column]))),
         ];
-      }),
-    ];
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(eventRows), "Eseménynapló");
+        XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(workLogRows), "Work logs");
+      } else {
+        XLSX.utils.book_append_sheet(
+          workbook,
+          XLSX.utils.aoa_to_sheet([["Nincs a beállított vezetői műszerfal-szűrőknek megfelelő work_logs sor."]]),
+          "Work logs"
+        );
+      }
 
-    appendDashboardPlanOrderEndSheet(
-      workbook,
-      XLSX,
-      dashboardData,
-      filteredWorkerStats.selectedStationValue,
-      filteredWorkerStats.selectedWorkerValue
-    );
+      appendDashboardPlanOrderEndSheet(
+        workbook,
+        XLSX,
+        dashboardData,
+        filteredWorkerStats.selectedStationValue,
+        filteredWorkerStats.selectedWorkerValue
+      );
 
-    const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
-    downloadBlob(`vezetoi_dashboard_${dashboardDate}.xlsx`, new Blob([output]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+      downloadBlob(`vezetoi_dashboard_${dashboardDate}.xlsx`, new Blob([output]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    } catch (error) {
+      console.error("Vezetői műszerfal Excel export hiba:", error);
+      setMessage({
+        type: "error",
+        text: `A vezetői műszerfal Excel exportálása sikertelen: ${normalizeError(error)}`,
+      });
+    }
   }
 
   async function exportDashboardEndAsExcel(): Promise<void> {
