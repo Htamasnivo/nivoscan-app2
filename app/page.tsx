@@ -18768,6 +18768,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const urgentScrapRows = data.scrapReplacementRows || [];
     const backlogRows = data.backlogRows || [];
 
+    // A Szerelés kártya sor-kattintása rövid késleltetést kap, hogy a normál
+    // böngészős dupla/tripla kattintásos szövegkijelölés ne nyissa meg közben
+    // a részletező PDF-et. Egyszerű kattintáskor a meglévő funkció megmarad.
+    let pendingSzerelesRowClickTimer: number | null = null;
+
     const renderTable = (table: ProductionMonitorTableConfig, tableIndex: number): React.JSX.Element => {
       const isActive = table.id === profile.activeTableId;
       const isPriorityTable = table.dataSource === "priority";
@@ -18918,6 +18923,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 borderCollapse: "separate",
                 borderSpacing: 0,
                 fontFamily: theme.fontFamily,
+                // Normál böngészős szövegkijelölés az összes kártyán.
+                userSelect: "text",
+                WebkitUserSelect: "text",
+                MozUserSelect: "text",
               }}>
                 <colgroup>
                   {executiveReport && <col style={{ width: 390 }} />}
@@ -19014,13 +19023,33 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                         key={`${table.id}-${rowKey}`}
                         data-nivo-scroll-anchor={`production-card-row:${normalizeLooseText(data.stationName)}:${table.id}:${rowKey}`}
                         title={canOpenSzerelesDetailPdfRow ? "Kattints a sorra a szerelési _terv részletező PDF megnyitásához" : undefined}
-                        onClick={canOpenSzerelesDetailPdfRow ? () => {
-                          if (typeof window !== "undefined" && window.getSelection()?.toString().trim()) return;
-                          void openSzerelesPlanDetailPdf(
-                            (table.dataSource || "production-plan") as ProductionCardTableDataSource,
-                            rawRow as ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
-                            data.dateKey
-                          );
+                        onClick={canOpenSzerelesDetailPdfRow ? (event) => {
+                          if (typeof window === "undefined") return;
+
+                          // Ha a felhasználó szöveget jelöl, vagy dupla/tripla kattintással
+                          // szót/cellatartalmat választ, a sor kattintásos funkciója ne fusson le.
+                          if (window.getSelection()?.toString().trim() || event.detail > 1) {
+                            if (pendingSzerelesRowClickTimer !== null) {
+                              window.clearTimeout(pendingSzerelesRowClickTimer);
+                              pendingSzerelesRowClickTimer = null;
+                            }
+                            return;
+                          }
+
+                          // Egyetlen normál kattintás továbbra is megnyitja a PDF-et, de csak
+                          // a dupla kattintási ablak után. Így a natív kijelölés akadálytalan.
+                          if (pendingSzerelesRowClickTimer !== null) {
+                            window.clearTimeout(pendingSzerelesRowClickTimer);
+                          }
+                          pendingSzerelesRowClickTimer = window.setTimeout(() => {
+                            pendingSzerelesRowClickTimer = null;
+                            if (window.getSelection()?.toString().trim()) return;
+                            void openSzerelesPlanDetailPdf(
+                              (table.dataSource || "production-plan") as ProductionCardTableDataSource,
+                              rawRow as ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
+                              data.dateKey
+                            );
+                          }, 220);
                         } : undefined}
                         style={{ cursor: canOpenSzerelesDetailPdfRow ? "pointer" : undefined, background: rowSos ? PRODUCTION_CARD_SOS_ROW_BACKGROUND : undefined }}
                       >
@@ -19213,6 +19242,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                             <td
                               key={`${table.id}-${rowKey}-${fieldId}`}
                               title={canOpenSzerelesDetailPdf ? `${String(value || "Rendelés")} · A teljes sor kattintható a szerelési _terv részletező PDF megnyitásához` : title}
+                              draggable={false}
+                              onDragStart={(event) => event.preventDefault()}
+                              onPointerDown={(event) => {
+                                // A cellán belüli bal egérgombos húzás maradjon natív szövegkijelölés.
+                                // Csak az esemény továbbterjedését állítjuk meg, preventDefault nincs.
+                                if (event.button === 0) event.stopPropagation();
+                              }}
                               style={{
                                 padding: `${Math.max(2, Math.round(theme.cellPadding * zoomRatio))}px 5px`,
                                 background: crossStationScrapFlag
@@ -19259,6 +19295,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                 // egérrel kijelölhetők és Ctrl+C-vel másolhatók.
                                 userSelect: "text",
                                 WebkitUserSelect: "text",
+                                MozUserSelect: "text",
                               }}
                             >
                               {rowSos && isOrder ? <span style={{ color: PRODUCTION_CARD_SOS_ROW_TEXT, fontWeight: 900, marginRight: 6 }}>SOS</span> : null}
