@@ -347,6 +347,10 @@ type WorkLogRow = {
   kulso_lap_selejt?: boolean | null;
   belso_lap_selejt?: boolean | null;
   toklec_selejt?: boolean | null;
+  // 5-ös esemény / Szerelés Tokléc selejt méretadatai.
+  toklec_meretek?: number[] | null;
+  toklec_szelesseg?: number | null;
+  toklec_magassag?: number | null;
   tok_kesz?: boolean | null;
   nyilo_kesz?: boolean | null;
   reszleges_keszultseg?: number | null;
@@ -1199,6 +1203,9 @@ type ScrapReplacementRow = {
   kulso_lap_selejt: boolean;
   belso_lap_selejt: boolean;
   toklec_selejt: boolean;
+  toklec_meretek?: number[] | null;
+  toklec_szelesseg?: number | null;
+  toklec_magassag?: number | null;
   megjegyzes?: string | null;
   source_station: string;
   source_work_log_id?: string | null;
@@ -2952,6 +2959,9 @@ const PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID = "__scrap_defect__";
 const PRODUCTION_CARD_SCRAP_OUTER_FIELD_ID = "__scrap_outer_sheet__";
 const PRODUCTION_CARD_SCRAP_INNER_FIELD_ID = "__scrap_inner_sheet__";
 const PRODUCTION_CARD_SCRAP_TOKLEC_FIELD_ID = "__scrap_toklec__";
+const PRODUCTION_CARD_SCRAP_TOK_WIDTH_FIELD_ID = "__scrap_tok_width__";
+const PRODUCTION_CARD_SCRAP_TOK_HEIGHT_FIELD_ID = "__scrap_tok_height__";
+const PRODUCTION_CARD_SCRAP_TOK_SIZES_FIELD_ID = "__scrap_tok_sizes__";
 const PRODUCTION_CARD_SCRAP_TOK_SIZE_FIELD_ID = "__scrap_tok_size__";
 const PRODUCTION_CARD_SCRAP_NOTE_FIELD_ID = "__scrap_note__";
 const PRODUCTION_CARD_SCRAP_TASK_FIELD_ID = "__scrap_task__";
@@ -2968,6 +2978,9 @@ const PRODUCTION_CARD_SCRAP_FIELD_IDS = [
   PRODUCTION_CARD_SCRAP_OUTER_FIELD_ID,
   PRODUCTION_CARD_SCRAP_INNER_FIELD_ID,
   PRODUCTION_CARD_SCRAP_TOKLEC_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_TOK_WIDTH_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_TOK_HEIGHT_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_TOK_SIZES_FIELD_ID,
   PRODUCTION_CARD_SCRAP_TOK_SIZE_FIELD_ID,
   PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID,
   PRODUCTION_CARD_SCRAP_NOTE_FIELD_ID,
@@ -2989,6 +3002,9 @@ const REQUIRED_SCRAP_REPLACEMENT_VISIBLE_FIELD_IDS = new Set<string>([
   PRODUCTION_CARD_SCRAP_STATUS_FIELD_ID,
   PRODUCTION_CARD_SCRAP_REPORTED_BY_FIELD_ID,
   PRODUCTION_CARD_SCRAP_REPORTED_AT_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_TOK_WIDTH_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_TOK_HEIGHT_FIELD_ID,
+  PRODUCTION_CARD_SCRAP_TOK_SIZES_FIELD_ID,
 ]);
 
 const PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID = "__backlog_order_number__";
@@ -4002,6 +4018,9 @@ function getProductionCardFieldLabel(fieldId: string): string {
   if (fieldId === PRODUCTION_CARD_SCRAP_OUTER_FIELD_ID) return "Külső lap";
   if (fieldId === PRODUCTION_CARD_SCRAP_INNER_FIELD_ID) return "Belső lap";
   if (fieldId === PRODUCTION_CARD_SCRAP_TOKLEC_FIELD_ID) return "Tokléc";
+  if (fieldId === PRODUCTION_CARD_SCRAP_TOK_WIDTH_FIELD_ID) return "Szélesség";
+  if (fieldId === PRODUCTION_CARD_SCRAP_TOK_HEIGHT_FIELD_ID) return "Magasság";
+  if (fieldId === PRODUCTION_CARD_SCRAP_TOK_SIZES_FIELD_ID) return "Tokléc méretek";
   if (fieldId === PRODUCTION_CARD_SCRAP_TOK_SIZE_FIELD_ID) return "Tok méret";
   if (fieldId === PRODUCTION_CARD_SCRAP_DEFECT_FIELD_ID) return "Hiba";
   if (fieldId === PRODUCTION_CARD_SCRAP_NOTE_FIELD_ID) return "Megjegyzés";
@@ -8604,7 +8623,10 @@ type EventFiveBatchOrderState = {
   outerScrap: boolean;
   innerScrap: boolean;
   toklecScrap: boolean;
+  tokSzelesseg: string;
+  tokMagassag: string;
   tokMeret: string;
+  tokExtraMeretek: string[];
 };
 
 const EMPTY_EVENT_FIVE_BATCH_ORDER_STATE: EventFiveBatchOrderState = {
@@ -8615,7 +8637,10 @@ const EMPTY_EVENT_FIVE_BATCH_ORDER_STATE: EventFiveBatchOrderState = {
   outerScrap: false,
   innerScrap: false,
   toklecScrap: false,
+  tokSzelesseg: "",
+  tokMagassag: "",
   tokMeret: "",
+  tokExtraMeretek: [],
 };
 
 
@@ -9294,7 +9319,10 @@ export default function Page() {
   const [outerSheetScrap, setOuterSheetScrap] = useState(false);
   const [innerSheetScrap, setInnerSheetScrap] = useState(false);
   const [toklecScrap, setToklecScrap] = useState(false);
+  const [toklecScrapWidth, setToklecScrapWidth] = useState("");
+  const [toklecScrapHeight, setToklecScrapHeight] = useState("");
   const [toklecScrapSize, setToklecScrapSize] = useState("");
+  const [toklecScrapExtraSizes, setToklecScrapExtraSizes] = useState<string[]>([]);
   // 5-ös esemény / Szerelés: kézzel kijelölt javítási vagy újragyártási célállomások.
   const [eventFiveRepairStationKeys, setEventFiveRepairStationKeys] = useState<string[]>([]);
   const [eventFiveRepairAction, setEventFiveRepairAction] = useState<EventFiveRepairAction>("");
@@ -15054,6 +15082,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (fieldId === PRODUCTION_CARD_SCRAP_OUTER_FIELD_ID) return row.kulso_lap_selejt ? "Selejt" : "–";
     if (fieldId === PRODUCTION_CARD_SCRAP_INNER_FIELD_ID) return row.belso_lap_selejt ? "Selejt" : "–";
     if (fieldId === PRODUCTION_CARD_SCRAP_TOKLEC_FIELD_ID) return row.toklec_selejt ? "Selejt" : "–";
+    if (fieldId === PRODUCTION_CARD_SCRAP_TOK_WIDTH_FIELD_ID) {
+      const value = planData.szereles_toklec_szelesseg;
+      return value === null || value === undefined || String(value).trim() === "" ? "–" : String(value);
+    }
+    if (fieldId === PRODUCTION_CARD_SCRAP_TOK_HEIGHT_FIELD_ID) {
+      const value = planData.szereles_toklec_magassag;
+      return value === null || value === undefined || String(value).trim() === "" ? "–" : String(value);
+    }
+    if (fieldId === PRODUCTION_CARD_SCRAP_TOK_SIZES_FIELD_ID) {
+      const raw = planData.szereles_toklec_meretek;
+      const values = Array.isArray(raw) ? raw.map((value) => String(value).trim()).filter(Boolean) : [];
+      return values.length > 0 ? values.join(" / ") : "–";
+    }
     if (fieldId === PRODUCTION_CARD_SCRAP_TOK_SIZE_FIELD_ID) {
       const value = planData.szereles_tok_meret;
       return value === null || value === undefined || String(value).trim() === "" ? "–" : String(value);
@@ -33236,7 +33277,7 @@ START: ${formatDateTime(startAt)}`
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapSize("");
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setSzerelesStartParts([]);
@@ -34568,7 +34609,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapSize("");
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setTokKesz(false);
@@ -34675,7 +34716,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapSize("");
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setTokKesz(false);
@@ -34777,7 +34818,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapSize("");
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setSzerelesStartParts([]);
@@ -34867,7 +34908,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapSize("");
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setTokKesz(false);
@@ -35252,7 +35293,10 @@ body {
             setOuterSheetScrap(false);
             setInnerSheetScrap(false);
             setToklecScrap(false);
+            setToklecScrapWidth("");
+            setToklecScrapHeight("");
             setToklecScrapSize("");
+            setToklecScrapExtraSizes([]);
             setEventFiveRepairStationKeys([]);
             setEventFiveRepairAction("");
             setFlowStage("start-scan");
@@ -36070,7 +36114,7 @@ body {
       setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapSize("");
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setTokKesz(false);
@@ -36353,7 +36397,7 @@ body {
     // Állapotfrissítés után a következő régi sor ugyanígy lezárható.
     setSzerelesLegacyEndMode(true);setSzerelesStartParts([]);setSzerelesEndParts([]);
     setPendingAction("END");setActionBarcode("");setEndBarcodeConfirmed(false);setEndNote("");
-    setOuterSheetScrap(false);setInnerSheetScrap(false);setToklecScrap(false);setToklecScrapSize("");setEventFiveRepairStationKeys([]);setEventFiveRepairAction("");
+    setOuterSheetScrap(false);setInnerSheetScrap(false);setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFiveRepairStationKeys([]);setEventFiveRepairAction("");
     setFlowStage("start-scan");setStep(6);
     window.setTimeout(()=>focusAndSelectInput(actionBarcodeInputRef,{preventScroll:true}),0);
   }
@@ -36366,7 +36410,7 @@ body {
     }
     setSzerelesStartParts([]);setSzerelesEndParts([]);setSzerelesLegacyEndMode(false);setSzerelesNewCycle(false);setSzerelesRework(false);
     setPendingAction(action);setActionBarcode("");setEndBarcodeConfirmed(false);setEndNote("");
-    setOuterSheetScrap(false);setInnerSheetScrap(false);setToklecScrap(false);setToklecScrapSize("");setEventFiveRepairStationKeys([]);setEventFiveRepairAction("");
+    setOuterSheetScrap(false);setInnerSheetScrap(false);setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFiveRepairStationKeys([]);setEventFiveRepairAction("");
     setFlowStage("start-scan");setStep(6);
     window.setTimeout(()=>focusAndSelectInput(actionBarcodeInputRef,{preventScroll:true}),0);
   }
@@ -37196,6 +37240,9 @@ body {
     toklecScrap: boolean;
     note: string | null;
     tokSize?: string | null;
+    tokSizes?: string[] | null;
+    tokWidth?: string | null;
+    tokHeight?: string | null;
     genericScrap?: boolean;
     genericScrapKind?: string | null;
     preparedRoute?: ScrapReplacementRoute | null;
@@ -37214,11 +37261,20 @@ body {
     const planRow = await fetchPlanDataForOrderAtStation(params.orderNumber, snapshotStation);
     const planSnapshot = buildScrapPlanSnapshot(planRow);
     const cleanTokSize=String(params.tokSize||"").trim();
-    if(params.toklecScrap && cleanTokSize){
+    const cleanTokSizes=(params.tokSizes||[]).map((value)=>String(value||"").trim()).filter((value)=>/^\d+$/.test(value));
+    const cleanTokWidth=String(params.tokWidth||"").trim();
+    const cleanTokHeight=String(params.tokHeight||"").trim();
+    if(params.toklecScrap){
       const currentSnapshot = planSnapshot.termelesi_kartya_adatok && typeof planSnapshot.termelesi_kartya_adatok==="object" && !Array.isArray(planSnapshot.termelesi_kartya_adatok)
         ? planSnapshot.termelesi_kartya_adatok as Record<string,unknown>
         : {};
-      planSnapshot.termelesi_kartya_adatok={...currentSnapshot,szereles_tok_meret:cleanTokSize};
+      planSnapshot.termelesi_kartya_adatok={
+        ...currentSnapshot,
+        szereles_tok_meret:cleanTokSize||null,
+        szereles_toklec_meretek:cleanTokSizes.map(Number),
+        szereles_toklec_szelesseg:/^\d+$/.test(cleanTokWidth)?Number(cleanTokWidth):null,
+        szereles_toklec_magassag:/^\d+$/.test(cleanTokHeight)?Number(cleanTokHeight):null,
+      };
     }
     const scrapKind = isGeneric
       ? String(params.genericScrapKind || "").trim() || "Általános selejt"
@@ -39065,8 +39121,14 @@ body {
         if(hasScrap&&!note)throw new Error(`${order}: selejtnél kötelező a Megjegyzés.`);
         if((choice.outerScrap||choice.innerScrap)&&!parts.includes("nyilo"))throw new Error(`${order}: Külső/Belső lap selejtnél a Nyíló befejezést is jelöld ki; a Nyíló ettől még folyamatban marad.`);
         if(choice.toklecScrap&&!parts.includes("tok"))throw new Error(`${order}: Tokléc selejtnél a Tok befejezést is jelöld ki; a Tok ettől még folyamatban marad.`);
+        const cleanTokWidth=String(choice.tokSzelesseg||"").trim();
+        const cleanTokHeight=String(choice.tokMagassag||"").trim();
         const cleanTokSize=String(choice.tokMeret||"").trim();
-        if(choice.toklecScrap&&!/^\d+$/.test(cleanTokSize))throw new Error(`${order}: Tokléc selejtnél a Tok mérete kötelező és csak számot tartalmazhat.`);
+        const cleanTokExtraSizes=(choice.tokExtraMeretek||[]).map((value)=>String(value||"").trim()).filter(Boolean);
+        const allTokSizes=[cleanTokSize,...cleanTokExtraSizes].filter(Boolean);
+        const allTokDimensionInputs=[cleanTokWidth,cleanTokHeight,...allTokSizes];
+        if(choice.toklecScrap&&allTokDimensionInputs.filter(Boolean).some((value)=>!/^\d+$/.test(value)))throw new Error(`${order}: a Tokléc selejt méretmezőiben csak szám szerepelhet.`);
+        if(choice.toklecScrap&&allTokDimensionInputs.every((value)=>!value))throw new Error(`${order}: Tokléc selejtnél legalább egy méretadatot tölts ki (Szélesség, Magasság vagy Tok méret).`);
         const holdParts=(["nyilo","tok"] as SzerelesPart[]).filter(part=>
           part==="nyilo"
             ? parts.includes("nyilo")&&(choice.outerScrap||choice.innerScrap)
@@ -39081,6 +39143,9 @@ body {
         const reportedDarab=quantity.quantities[order]??null;
         items.push({order,parts,expected,meta,note:[note,endBatchNote.trim()].filter(Boolean).join(" | "),
           log_fields:{kulso_lap_selejt:choice.outerScrap,belso_lap_selejt:choice.innerScrap,toklec_selejt:choice.toklecScrap,
+            toklec_meretek:choice.toklecScrap?allTokSizes.map(Number):null,
+            toklec_szelesseg:choice.toklecScrap&&cleanTokWidth?Number(cleanTokWidth):null,
+            toklec_magassag:choice.toklecScrap&&cleanTokHeight?Number(cleanTokHeight):null,
             selejt_megjegyzes:hasScrap?note:null,darab:reportedDarab,szal:parseSzalValue(endSzal)}});
       }
       if(!items.length)throw new Error("Válassz ki legalább egy ténylegesen folyamatban lévő részt.");
@@ -39096,9 +39161,23 @@ body {
         const order=item.order;const choice=endEventFiveOrderStateMap[order]||EMPTY_EVENT_FIVE_BATCH_ORDER_STATE;
         const state=normalizeSzerelesOrderState(item.result.state);const log=item.result.saved_rows[0];
         const route=scrapRoutes.get(order);
+        const batchTokWidth=String(choice.tokSzelesseg||"").trim();
+        const batchTokHeight=String(choice.tokMagassag||"").trim();
+        const batchTokSize=String(choice.tokMeret||"").trim();
+        const batchTokExtraSizes=(choice.tokExtraMeretek||[]).map((value)=>String(value||"").trim()).filter(Boolean);
+        const batchTokSizes=[batchTokSize,...batchTokExtraSizes].filter(Boolean);
+        if(choice.toklecScrap&&log?.id){
+          const {error:tokDimensionUpdateError}=await supabase.from("work_logs").update({
+            toklec_meretek:batchTokSizes.map(Number),
+            toklec_szelesseg:batchTokWidth?Number(batchTokWidth):null,
+            toklec_magassag:batchTokHeight?Number(batchTokHeight):null,
+          }).eq("id",log.id);
+          if(tokDimensionUpdateError)throw tokDimensionUpdateError;
+        }
         if(route)await createScrapReplacementFromSheetScrap({orderNumber:order,sourceStation:machine,workLogId:log?.id||`${batch.batch_code}-${order}`,reportedAt:log?.ended_at||savedAt,
           outerScrap:choice.outerScrap,innerScrap:choice.innerScrap,toklecScrap:choice.toklecScrap,note:String(endOrderNotes[order]||"").trim()||null,
-          tokSize:choice.toklecScrap?String(choice.tokMeret||"").trim():null,preparedRoute:route});
+          tokSize:choice.toklecScrap?batchTokSize:null,tokSizes:choice.toklecScrap?batchTokSizes:null,
+          tokWidth:choice.toklecScrap?batchTokWidth:null,tokHeight:choice.toklecScrap?batchTokHeight:null,preparedRoute:route});
         const context=quantity.contexts[order];const reported=quantity.quantities[order];
         if(state.is_complete&&context&&context.plannedQuantity>1&&reported!==null&&reported!==undefined)await applyQuantityPlanCompletion(context,reported,log?.ended_at||savedAt);
       }
@@ -40299,7 +40378,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapSize("");
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
 
@@ -42055,9 +42134,17 @@ body {
             ? parts.includes("nyilo")&&(outerSheetScrap||innerSheetScrap)
             : parts.includes("tok")&&toklecScrap)
       : [];
+    const cleanTokWidth=toklecScrapWidth.trim();
+    const cleanTokHeight=toklecScrapHeight.trim();
     const cleanTokSize=toklecScrapSize.trim();
-    if(action==="END"&&toklecScrap&&!/^\d+$/.test(cleanTokSize)){
-      setMessage({type:"error",text:"Tokléc selejtnél a Tok mérete kötelező és csak számot tartalmazhat."});return;
+    const cleanTokExtraSizes=toklecScrapExtraSizes.map((value)=>String(value||"").trim()).filter(Boolean);
+    const cleanTokSizes=[cleanTokSize,...cleanTokExtraSizes].filter(Boolean);
+    const allTokDimensionInputs=[cleanTokWidth,cleanTokHeight,...cleanTokSizes];
+    if(action==="END"&&toklecScrap&&allTokDimensionInputs.filter(Boolean).some((value)=>!/^\d+$/.test(value))){
+      setMessage({type:"error",text:"A Tokléc selejt méretmezőiben csak szám szerepelhet."});return;
+    }
+    if(action==="END"&&toklecScrap&&allTokDimensionInputs.every((value)=>!value)){
+      setMessage({type:"error",text:"Tokléc selejtnél legalább egy méretadatot tölts ki (Szélesség, Magasság vagy Tok méret)."});return;
     }
     if(hasScrap&&!window.confirm(`Selejtjelölés kerül rögzítésre: ${[outerSheetScrap?"Külső lap":"",innerSheetScrap?"Belső lap":"",toklecScrap?"Tokléc":""].filter(Boolean).join(" + ")}. A szükséges selejtpótlási kártyák létrejönnek, az érintett ${scrapHoldParts.map(szerelesPartLabel).join(" + ")||"rész"} időmérése pedig tovább fut. A rendelés nem zárul le. Folytatod?`))return;
 
@@ -42126,6 +42213,9 @@ body {
           belso_lap_selejt:innerSheetScrap,
           toklec_selejt:toklecScrap,
           szereles_scrap_tok_meret:toklecScrap?cleanTokSize:null,
+          toklec_meretek:toklecScrap?cleanTokSizes.map(Number):null,
+          toklec_szelesseg:toklecScrap&&cleanTokWidth?Number(cleanTokWidth):null,
+          toklec_magassag:toklecScrap&&cleanTokHeight?Number(cleanTokHeight):null,
         };
         const {data:auditRow,error:auditError}=await supabase.from("work_logs").insert([{
           worker_id:Number(activeWorker.id),
@@ -42154,6 +42244,9 @@ body {
           kulso_lap_selejt:outerSheetScrap,
           belso_lap_selejt:innerSheetScrap,
           toklec_selejt:toklecScrap,
+          toklec_meretek:toklecScrap?cleanTokSizes.map(Number):null,
+          toklec_szelesseg:toklecScrap&&cleanTokWidth?Number(cleanTokWidth):null,
+          toklec_magassag:toklecScrap&&cleanTokHeight?Number(cleanTokHeight):null,
           selejt_potlas:false,
           selejt_forras_munkaallomas:machine,
           selejt_megjegyzes:note,
@@ -42272,7 +42365,8 @@ body {
         if(hasScrap&&scrapRoute)await createScrapReplacementFromSheetScrap({
           orderNumber:order,sourceStation:machine,workLogId:savedId,reportedAt:savedAt,
           outerScrap:outerSheetScrap,innerScrap:innerSheetScrap,toklecScrap:toklecScrap,
-          note:note||null,tokSize:toklecScrap?cleanTokSize:null,preparedRoute:scrapRoute
+          note:note||null,tokSize:toklecScrap?cleanTokSize:null,tokSizes:toklecScrap?cleanTokSizes:null,
+          tokWidth:toklecScrap?cleanTokWidth:null,tokHeight:toklecScrap?cleanTokHeight:null,preparedRoute:scrapRoute
         });
         if(hasRepair&&repairRoute)await createScrapReplacementFromSheetScrap({orderNumber:order,sourceStation:machine,workLogId:savedId,reportedAt:savedAt,outerScrap:false,innerScrap:false,toklecScrap:false,note:note||null,genericScrap:true,genericScrapKind:eventFiveRepairAction,preparedRoute:repairRoute});
         if(routed&&(!legacyClose||result.state.is_complete))await updateSingleScrapReplacement(routed,"KESZ",savedAt);
@@ -43162,7 +43256,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapSize("");
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setTokKesz(false);
@@ -45424,21 +45518,41 @@ body {
                                         Belső lap selejt
                                       </label>
                                       <label style={{ display: "flex", gap: 8, alignItems: "center", fontWeight: 800 }}>
-                                        <input type="checkbox" checked={state.toklecScrap} onChange={(e) => setOrderState({ toklecScrap: e.target.checked, ...(e.target.checked ? {} : { tokMeret: "" }) })} />
+                                        <input type="checkbox" checked={state.toklecScrap} onChange={(e) => setOrderState({ toklecScrap: e.target.checked, ...(e.target.checked ? {} : { tokSzelesseg: "", tokMagassag: "", tokMeret: "", tokExtraMeretek: [] }) })} />
                                         Tokléc selejt
                                       </label>
                                     </div>
                                     {state.toklecScrap && (
-                                      <div style={{marginTop:10}}>
-                                        <label style={{display:"block",marginBottom:6,fontWeight:900,color:"#fde68a"}}>Tok méret *</label>
-                                        <input
-                                          type="text"
-                                          inputMode="numeric"
-                                          value={state.tokMeret}
-                                          onChange={(e)=>{const value=e.target.value;if(/^\d*$/.test(value))setOrderState({tokMeret:value});}}
-                                          placeholder="Csak szám"
-                                          style={{...fieldStyle,borderColor:state.tokMeret.trim()?"#64748b":"#ef4444"}}
-                                        />
+                                      <div style={{marginTop:10,display:"grid",gap:10}}>
+                                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10}}>
+                                          <div>
+                                            <label style={{display:"block",marginBottom:6,fontWeight:900,color:"#fde68a"}}>Szélesség</label>
+                                            <input type="text" inputMode="numeric" value={state.tokSzelesseg} onChange={(e)=>{const value=e.target.value;if(/^\d*$/.test(value))setOrderState({tokSzelesseg:value});}} placeholder="Csak szám" style={fieldStyle}/>
+                                          </div>
+                                          <div>
+                                            <label style={{display:"block",marginBottom:6,fontWeight:900,color:"#fde68a"}}>Magasság</label>
+                                            <input type="text" inputMode="numeric" value={state.tokMagassag} onChange={(e)=>{const value=e.target.value;if(/^\d*$/.test(value))setOrderState({tokMagassag:value});}} placeholder="Csak szám" style={fieldStyle}/>
+                                          </div>
+                                        </div>
+                                        <div>
+                                          <label style={{display:"block",marginBottom:6,fontWeight:900,color:"#fde68a"}}>Tok méret</label>
+                                          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                                            <input type="text" inputMode="numeric" value={state.tokMeret} onChange={(e)=>{const value=e.target.value;if(/^\d*$/.test(value))setOrderState({tokMeret:value});}} placeholder="Csak szám" style={{...fieldStyle,flex:1}}/>
+                                            <button type="button" disabled={(state.tokExtraMeretek||[]).length>=10} onClick={()=>setOrderState({tokExtraMeretek:[...(state.tokExtraMeretek||[]),""]})} style={{...buttonSecondary,minWidth:44,height:44,fontSize:24,padding:"0 12px"}}>+</button>
+                                          </div>
+                                        </div>
+                                        {(state.tokExtraMeretek||[]).map((extraValue,index)=>(
+                                          <div key={`tok-extra-${order}-${index}`} style={{display:"flex",gap:8,alignItems:"end"}}>
+                                            <div style={{flex:1}}>
+                                              <label style={{display:"block",marginBottom:6,fontWeight:900,color:"#fde68a"}}>Tok méret {index+2}</label>
+                                              <input type="text" inputMode="numeric" value={extraValue} onChange={(e)=>{const value=e.target.value;if(!/^\d*$/.test(value))return;const next=[...(state.tokExtraMeretek||[])];next[index]=value;setOrderState({tokExtraMeretek:next});}} placeholder="Csak szám" style={fieldStyle}/>
+                                            </div>
+                                            <button type="button" onClick={()=>setOrderState({tokExtraMeretek:(state.tokExtraMeretek||[]).filter((_,itemIndex)=>itemIndex!==index)})} style={{...buttonSecondary,minWidth:44,height:44,fontSize:20,padding:"0 12px"}}>×</button>
+                                          </div>
+                                        ))}
+                                        {!state.tokSzelesseg.trim()&&!state.tokMagassag.trim()&&!state.tokMeret.trim()&&!(state.tokExtraMeretek||[]).some((value)=>value.trim()) && (
+                                          <div style={{color:"#fecaca",fontWeight:800,fontSize:12}}>Legalább egy méretadat kitöltése kötelező.</div>
+                                        )}
                                       </div>
                                     )}
                                   </div>
@@ -46112,22 +46226,41 @@ body {
                           Belső lap selejt
                         </label>
                         <label style={{ display: "flex", alignItems: "center", gap: 12, padding: 14, borderRadius: 12, cursor: "pointer", background: toklecScrap ? "#6b7280" : "#1f2937", color: "#fff", border: toklecScrap ? "3px solid #e5e7eb" : "2px solid #64748b", fontWeight: 900 }}>
-                          <input type="checkbox" checked={toklecScrap} onChange={(event) => {setToklecScrap(event.target.checked);if(!event.target.checked)setToklecScrapSize("");}} style={{ width: 24, height: 24, accentColor: "#6b7280" }} />
+                          <input type="checkbox" checked={toklecScrap} onChange={(event) => {setToklecScrap(event.target.checked);if(!event.target.checked){setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);}}} style={{ width: 24, height: 24, accentColor: "#6b7280" }} />
                           Tokléc selejt
                         </label>
                       </div>
                       {isDoorTwoPartWorker(activeWorker) && toklecScrap && (
-                        <div style={{marginTop:12}}>
-                          <label style={{display:"block",marginBottom:8,color:"#fde68a",fontWeight:900}}>Tok méret *</label>
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            value={toklecScrapSize}
-                            onChange={(event)=>{const value=event.target.value;if(/^\d*$/.test(value))setToklecScrapSize(value);}}
-                            onBlur={()=>{if(step===6&&pendingAction==="END")focusScannerInputAfterEditableBlur(actionBarcodeInputRef);}}
-                            placeholder="Csak szám"
-                            style={{...fieldStyle,borderColor:toklecScrapSize.trim()?"#64748b":"#ef4444"}}
-                          />
+                        <div style={{marginTop:12,display:"grid",gap:12}}>
+                          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:12}}>
+                            <div>
+                              <label style={{display:"block",marginBottom:8,color:"#fde68a",fontWeight:900}}>Szélesség</label>
+                              <input type="text" inputMode="numeric" value={toklecScrapWidth} onChange={(event)=>{const value=event.target.value;if(/^\d*$/.test(value))setToklecScrapWidth(value);}} onBlur={()=>{if(step===6&&pendingAction==="END")focusScannerInputAfterEditableBlur(actionBarcodeInputRef);}} placeholder="Csak szám" style={fieldStyle}/>
+                            </div>
+                            <div>
+                              <label style={{display:"block",marginBottom:8,color:"#fde68a",fontWeight:900}}>Magasság</label>
+                              <input type="text" inputMode="numeric" value={toklecScrapHeight} onChange={(event)=>{const value=event.target.value;if(/^\d*$/.test(value))setToklecScrapHeight(value);}} onBlur={()=>{if(step===6&&pendingAction==="END")focusScannerInputAfterEditableBlur(actionBarcodeInputRef);}} placeholder="Csak szám" style={fieldStyle}/>
+                            </div>
+                          </div>
+                          <div>
+                            <label style={{display:"block",marginBottom:8,color:"#fde68a",fontWeight:900}}>Tok méret</label>
+                            <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                              <input type="text" inputMode="numeric" value={toklecScrapSize} onChange={(event)=>{const value=event.target.value;if(/^\d*$/.test(value))setToklecScrapSize(value);}} onBlur={()=>{if(step===6&&pendingAction==="END")focusScannerInputAfterEditableBlur(actionBarcodeInputRef);}} placeholder="Csak szám" style={{...fieldStyle,flex:1}}/>
+                              <button type="button" disabled={toklecScrapExtraSizes.length>=10} onClick={()=>setToklecScrapExtraSizes((current)=>[...current,""])} style={{...buttonSecondary,minWidth:48,height:48,fontSize:26,padding:"0 14px"}}>+</button>
+                            </div>
+                          </div>
+                          {toklecScrapExtraSizes.map((extraValue,index)=>(
+                            <div key={`toklec-extra-${index}`} style={{display:"flex",gap:10,alignItems:"end"}}>
+                              <div style={{flex:1}}>
+                                <label style={{display:"block",marginBottom:8,color:"#fde68a",fontWeight:900}}>Tok méret {index+2}</label>
+                                <input type="text" inputMode="numeric" value={extraValue} onChange={(event)=>{const value=event.target.value;if(!/^\d*$/.test(value))return;setToklecScrapExtraSizes((current)=>current.map((item,itemIndex)=>itemIndex===index?value:item));}} onBlur={()=>{if(step===6&&pendingAction==="END")focusScannerInputAfterEditableBlur(actionBarcodeInputRef);}} placeholder="Csak szám" style={fieldStyle}/>
+                              </div>
+                              <button type="button" onClick={()=>setToklecScrapExtraSizes((current)=>current.filter((_,itemIndex)=>itemIndex!==index))} style={{...buttonSecondary,minWidth:48,height:48,fontSize:22,padding:"0 14px"}}>×</button>
+                            </div>
+                          ))}
+                          {!toklecScrapWidth.trim()&&!toklecScrapHeight.trim()&&!toklecScrapSize.trim()&&!toklecScrapExtraSizes.some((value)=>value.trim()) && (
+                            <div style={{color:"#fecaca",fontWeight:900,fontSize:13}}>Legalább egy méretadat kitöltése kötelező.</div>
+                          )}
                         </div>
                       )}
                     </div>
