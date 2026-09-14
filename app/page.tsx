@@ -16831,15 +16831,41 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             ? resolveProductionCardWorkers(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
             : workerStatus;
 
-          // Szinter lemaradás: ugyanazt a valódi START/END párosítást használjuk,
-          // mint a Termelési monitor. Így egy friss START nem tud "Kész" állapotot
-          // örökölni egy régebbi END-ből, és több START esetén is addig marad
-          // Folyamatban, amíg akár egyetlen nyitott START is létezik.
-          const szinterBacklogMonitorCell = isExactSzinterBacklog
-            ? getMonitorCellFromLogs(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
-            : null;
-          const effectiveRowStatus = szinterBacklogMonitorCell?.status ?? rowWorkerStatus.status;
-          const effectiveRowStatusLabel = szinterBacklogMonitorCell?.label ?? rowWorkerStatus.statusLabel;
+          // LEMARADÁSI ALAPSZABÁLY MINDEN MUNKAÁLLOMÁSON:
+          // - START után a sor maradjon Folyamatban;
+          // - csak valódi, teljes END után váljon Kész állapotúvá, így a
+          //   Lemaradások kártya renderelése automatikusan elrejti.
+          //
+          // A termelési monitor START/END párosítója kezeli azt az esetet is,
+          // amikor a START és az END két külön work_logs sor. Ez különösen a
+          // Csomagolás és a Szinter lemaradásainál fontos: a START sor ilyenkor
+          // fizikailag nyitottnak látszhat, noha egy későbbi END már lezárta.
+          const backlogLifecycleCell = getMonitorCellFromLogs(
+            effectiveRowLogs,
+            effectiveRowBatchStarts,
+            orderNumber
+          );
+          const hasFullyCompletedBacklogEnd = getRelevantCompletionLogsForQuantity(
+            effectiveRowLogs,
+            cleanStationName
+          ).length > 0;
+          const hasStructuredPartialWorkflow = Boolean(
+            rowWorkerStatus.doorWorkflow
+            || rowWorkerStatus.panelWorkflow
+            || rowWorkerStatus.threePartWorkflow
+          );
+          const effectiveRowStatus: ProductionMonitorStatus = hasStructuredPartialWorkflow
+            ? rowWorkerStatus.status
+            : backlogLifecycleCell.status === "in-progress"
+              ? "in-progress"
+              : backlogLifecycleCell.status === "done" && hasFullyCompletedBacklogEnd
+                ? "done"
+                : rowWorkerStatus.status;
+          const effectiveRowStatusLabel = effectiveRowStatus === "done"
+            ? "Kész"
+            : effectiveRowStatus === "in-progress"
+              ? (backlogLifecycleCell.label || rowWorkerStatus.statusLabel || "Folyamatban")
+              : rowWorkerStatus.statusLabel;
 
           const completedQuantity = exactRowStatusRequired
             ? Math.min(
@@ -16908,7 +16934,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     }, effectiveRowStatus === "in-progress")
                   : hasProgress ? "Folyamatban" : "Lemaradás – elvégzendő",
             startWorkerName: rowWorkerStatus.startWorkerName
-              || (effectiveRowStatus === "in-progress" ? szinterBacklogMonitorCell?.workerName || "" : ""),
+              || (effectiveRowStatus === "in-progress" ? backlogLifecycleCell.workerName || "" : ""),
             lastWorkerName: "",
             startedAt: rowWorkerStatus.startedAt,
             endedAt: rowWorkerStatus.endedAt,
@@ -18989,6 +19015,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                         data-nivo-scroll-anchor={`production-card-row:${normalizeLooseText(data.stationName)}:${table.id}:${rowKey}`}
                         title={canOpenSzerelesDetailPdfRow ? "Kattints a sorra a szerelési _terv részletező PDF megnyitásához" : undefined}
                         onClick={canOpenSzerelesDetailPdfRow ? () => {
+                          if (typeof window !== "undefined" && window.getSelection()?.toString().trim()) return;
                           void openSzerelesPlanDetailPdf(
                             (table.dataSource || "production-plan") as ProductionCardTableDataSource,
                             rawRow as ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
@@ -18998,7 +19025,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                         style={{ cursor: canOpenSzerelesDetailPdfRow ? "pointer" : undefined, background: rowSos ? PRODUCTION_CARD_SOS_ROW_BACKGROUND : undefined }}
                       >
                         {executiveReport && executiveDescriptor && executiveSelection && (
-                          <td style={{ padding: 8, background: rowSos ? PRODUCTION_CARD_SOS_ROW_BACKGROUND : executiveSelection.selected ? "#172554" : "#0f172a", color: rowSos ? PRODUCTION_CARD_SOS_ROW_TEXT : "#f8fafc", borderBottom: `1px solid ${theme.borderColor}`, borderRight: `2px solid ${theme.borderColor}`, verticalAlign: "top" }}>
+                          <td style={{ padding: 8, background: rowSos ? PRODUCTION_CARD_SOS_ROW_BACKGROUND : executiveSelection.selected ? "#172554" : "#0f172a", color: rowSos ? PRODUCTION_CARD_SOS_ROW_TEXT : "#f8fafc", borderBottom: `1px solid ${theme.borderColor}`, borderRight: `2px solid ${theme.borderColor}`, verticalAlign: "top", userSelect: "text", WebkitUserSelect: "text" }}>
                             {executiveDescriptor.kind !== "scrap-replacement" && (
                               <label style={{ display: "flex", alignItems: "center", gap: 9, fontWeight: 900, cursor: "pointer", color: rowSos ? "#ffffff" : "#5eead4", marginBottom: 8 }}>
                                 <input type="checkbox"
@@ -19228,6 +19255,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                                 cursor: canOpenSzerelesDetailPdf ? "pointer" : undefined,
                                 textDecoration: canOpenSzerelesDetailPdf ? "underline" : undefined,
                                 textUnderlineOffset: canOpenSzerelesDetailPdf ? 3 : undefined,
+                                // A kártyák celláiban lévő értékek minden munkaállomáson
+                                // egérrel kijelölhetők és Ctrl+C-vel másolhatók.
+                                userSelect: "text",
+                                WebkitUserSelect: "text",
                               }}
                             >
                               {rowSos && isOrder ? <span style={{ color: PRODUCTION_CARD_SOS_ROW_TEXT, fontWeight: 900, marginRight: 6 }}>SOS</span> : null}
