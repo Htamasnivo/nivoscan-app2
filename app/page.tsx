@@ -31519,6 +31519,109 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
   }
 
+  // Excel exportokhoz a kiválasztott Dátumtól / Dátumig tartományt közvetlenül
+  // a work_logs (és a régi work_log) táblákból olvassuk ki. Ez szándékosan nem
+  // a műszerfal memóriában lévő részhalmazára támaszkodik, így hosszabb időszaknál
+  // sem maradnak ki a korábbi napok. END eseménynél a tényleges end_time / end_timestamp
+  // az irányadó; START-nál a start_time / start_timestamp / created_at.
+  async function fetchDashboardExcelExportLogsBySelectedDateRange(): Promise<{
+    range: { startIso: string; endIso: string; label: string };
+    logs: WorkLogRow[];
+  }> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    const range = getDashboardDateRange("custom", dashboardDate, dashboardDateTo);
+    const rangeStartMs = new Date(range.startIso).getTime();
+    const rangeEndMs = new Date(range.endIso).getTime();
+    const currentPlanFieldFilter = getCurrentDashboardPlanFieldFilterState();
+    const planFieldMatch = await fetchDashboardPlanFieldMatches(range, currentPlanFieldFilter);
+    const matchesPlanFieldOrder = (orderNumber: string | null | undefined): boolean =>
+      !planFieldMatch.active || planFieldMatch.normalizedOrderKeys.has(normalizeLooseText(String(orderNumber || "")));
+
+    const selectedStationValue = dashboardSelectedStation || "all";
+    const selectedWorkerValue = dashboardSelectedWorker || "all";
+    const pageSize = 1000;
+    const allRows: WorkLogRow[] = [];
+    const sourceTables = ["work_logs", "work_log"] as const;
+    const dateColumns = ["created_at", "start_time", "start_timestamp", "end_time", "end_timestamp"] as const;
+    let successfulQueryCount = 0;
+    let lastError: unknown = null;
+
+    for (const tableName of sourceTables) {
+      for (const dateColumn of dateColumns) {
+        for (let from = 0; ; from += pageSize) {
+          const response = await supabase
+            .from(tableName)
+            .select("*")
+            .gte(dateColumn, range.startIso)
+            .lt(dateColumn, range.endIso)
+            .order(dateColumn, { ascending: true })
+            .range(from, from + pageSize - 1);
+
+          if (response.error) {
+            lastError = response.error;
+            // A régi work_log tábla vagy valamelyik régi időoszlop hiányozhat.
+            // Ilyenkor a többi forrást tovább olvassuk; csak akkor dobunk hibát,
+            // ha egyetlen lekérdezés sem volt sikeres.
+            break;
+          }
+
+          successfulQueryCount += 1;
+          const page = (response.data || []) as WorkLogRow[];
+          allRows.push(...page);
+          if (page.length < pageSize) break;
+        }
+      }
+    }
+
+    if (successfulQueryCount === 0 && lastError) throw lastError;
+
+    const seen = new Set<string>();
+    const logs = allRows
+      .map((log) => ({
+        ...log,
+        worker_name: log.worker_name
+          || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"]
+          || null,
+      }))
+      .filter((log) => {
+        const eventAt = getDashboardLogEventAt(log);
+        const eventMs = new Date(eventAt).getTime();
+        if (!eventAt || !Number.isFinite(eventMs) || eventMs < rangeStartMs || eventMs >= rangeEndMs) return false;
+        if (!matchesDashboardOrderFilters(log.order_number, dashboardOrderFiltersRef.current)) return false;
+        if (!matchesPlanFieldOrder(log.order_number)) return false;
+
+        const workerName = getDashboardLogWorkerName(log);
+        if (selectedWorkerValue !== "all" && normalizeLooseText(workerName) !== normalizeLooseText(selectedWorkerValue)) return false;
+
+        const stationName = resolveLogStation(log, workers);
+        if (selectedStationValue !== "all" && normalizeLooseText(stationName) !== normalizeLooseText(selectedStationValue)) return false;
+
+        const action = String(log.action || "").toUpperCase();
+        const uniqueKey = [
+          String(log.order_number || ""),
+          normalizeLooseText(stationName),
+          String(log.worker_id || ""),
+          String(log.worker_name || ""),
+          action,
+          String(log.created_at || ""),
+          String(log.start_time || log.start_timestamp || ""),
+          String(log.end_time || log.end_timestamp || ""),
+          String(log.batch_code || ""),
+          String(log.operation_code || ""),
+          String(log.ujragyartas_sorszam ?? ""),
+        ].join("|");
+        if (seen.has(uniqueKey)) return false;
+        seen.add(uniqueKey);
+        return true;
+      })
+      .sort((left, right) =>
+        new Date(getDashboardLogEventAt(right)).getTime() - new Date(getDashboardLogEventAt(left)).getTime()
+      );
+
+    return { range, logs };
+  }
+
   async function exportDashboardAsExcel(): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
@@ -31532,11 +31635,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
 
     try {
+      const { range, logs: exportLogs } = await fetchDashboardExcelExportLogsBySelectedDateRange();
       const workbook = XLSX.utils.book_new();
-      const filteredWorkerStats = getFilteredDashboardWorkerStats();
+      const selectedStationValue = dashboardSelectedStation || "all";
+      const selectedWorkerValue = dashboardSelectedWorker || "all";
+
+      // Az export dolgozói és folyamatban lévő összesítőit is ugyanabból a teljes,
+      // dátumtartományra közvetlenül lekért work_logs halmazból építjük fel.
+      const exportBuilt = buildDashboardData(exportLogs, workers, range);
+      const stationWorkerStats = selectedStationValue === "all"
+        ? {
+            workerRows: exportBuilt.workerRows,
+            totalMinutes: exportBuilt.totalMinutes,
+            dailyEfficiencyPct: exportBuilt.dailyEfficiencyPct,
+          }
+        : exportBuilt.stationWorkerPerformance.find(
+            (item) => normalizeLooseText(item.stationName) === normalizeLooseText(selectedStationValue)
+          ) || { workerRows: [], totalMinutes: 0, dailyEfficiencyPct: 0 };
+      const exportWorkerRows = selectedWorkerValue === "all"
+        ? stationWorkerStats.workerRows
+        : stationWorkerStats.workerRows.filter(
+            (row) => normalizeLooseText(row.workerName) === normalizeLooseText(selectedWorkerValue)
+          );
+
       const workerRows: Array<Array<string | number>> = [
         ["Dolgozó neve", "Ledolgozott idő", "Ledolgozott perc", "Lezárt work_logs sorok", "Munkával érintett napok", "Hatékonyság %"],
-        ...filteredWorkerStats.workerRows.map((row) => [
+        ...exportWorkerRows.map((row) => [
           row.workerName,
           row.totalDurationLabel,
           row.totalMinutes,
@@ -31547,8 +31671,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       ];
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(workerRows), "Dolgozói teljesítmény");
 
-      const filteredActivity = getFilteredDashboardActivity();
-      const selectedStationValue = filteredWorkerStats.selectedStationValue;
       const visibleStationRows = selectedStationValue === "all"
         ? dashboardData.stationEfficiencyRows
         : dashboardData.stationEfficiencyRows.filter(
@@ -31566,9 +31688,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       ];
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(stationRows), "Munkaállomási terv");
 
+      const visibleOpenRows = exportBuilt.openRows
+        .filter((row) =>
+          (selectedStationValue === "all" || normalizeLooseText(row.station || row.role || "") === normalizeLooseText(selectedStationValue))
+          && (selectedWorkerValue === "all" || normalizeLooseText(row.workerName) === normalizeLooseText(selectedWorkerValue))
+        )
+        .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime());
       const openWorkRows: Array<Array<string | number>> = [
         ["Rendelésszám", "Munkaállomás", "Dolgozó", "Kezdés", "Megjegyzés"],
-        ...filteredActivity.openRows.map((row) => [
+        ...visibleOpenRows.map((row) => [
           row.orderNumber,
           row.station || row.role || "-",
           row.workerName,
@@ -31580,7 +31708,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       const eventRows: Array<Array<string | number>> = [
         ["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
-        ...filteredActivity.logs.map((log) => {
+        ...exportLogs.map((log) => {
           const action = String(log.action || "").toUpperCase();
           const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
           const startAt = getDashboardLogStartAt(log);
@@ -31600,45 +31728,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       ];
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(eventRows), "Eseménynapló");
 
-      // Teljes work_logs nyers mezők külön munkafülön.
-      // A cél-sorokat NEM külön szűrjük újra: pontosan ugyanazt a már kiszűrt
-      // Eseménynapló-halmazt használjuk, ezért a dátum / _terv mező / munkaállomás /
-      // dolgozó / rendelésszám szűrés egy az egyben érvényesül ezen a munkafülön is.
-      const filteredLogIds = Array.from(new Map(
-        filteredActivity.logs
-          .filter((log) => log.id !== null && log.id !== undefined && String(log.id).trim() !== "")
-          .map((log) => [String(log.id), log.id] as const)
-      ).values());
-
-      const fullWorkLogRows: Array<Record<string, unknown>> = [];
-      if (filteredLogIds.length > 0) {
-        for (let index = 0; index < filteredLogIds.length; index += 100) {
-          const idChunk = filteredLogIds.slice(index, index + 100);
-          let response = await supabase
-            .from("work_logs")
-            .select("*")
-            .in("id", idChunk);
-
-          if (response.error) {
-            response = await supabase
-              .from("work_log")
-              .select("*")
-              .in("id", idChunk);
-          }
-
-          if (response.error) throw response.error;
-          fullWorkLogRows.push(...((response.data || []) as Array<Record<string, unknown>>));
-        }
-      }
-
-      const filteredIdOrder = new Map(
-        filteredLogIds.map((id, index) => [String(id), index])
-      );
-      fullWorkLogRows.sort((left, right) =>
-        (filteredIdOrder.get(String(left.id ?? "")) ?? Number.MAX_SAFE_INTEGER)
-        - (filteredIdOrder.get(String(right.id ?? "")) ?? Number.MAX_SAFE_INTEGER)
-      );
-
+      // A teljes work_logs mezők ugyanazt a közvetlenül lekért és dátumra szűrt
+      // halmazt használják; így itt sem tud a korábbi napokból sor elveszni.
+      const fullWorkLogRows = exportLogs as unknown as Array<Record<string, unknown>>;
       if (fullWorkLogRows.length > 0) {
         const workLogColumns = Array.from(new Set(
           fullWorkLogRows.flatMap((row) => Object.keys(row))
@@ -31669,12 +31761,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         workbook,
         XLSX,
         dashboardData,
-        filteredWorkerStats.selectedStationValue,
-        filteredWorkerStats.selectedWorkerValue
+        selectedStationValue,
+        selectedWorkerValue
       );
 
       const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
-      downloadBlob(`vezetoi_dashboard_${dashboardDate}.xlsx`, new Blob([output]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      const safeFrom = dashboardDate || "tol";
+      const safeTo = dashboardDateTo || dashboardDate || "ig";
+      downloadBlob(
+        `vezetoi_dashboard_${safeFrom}_${safeTo}.xlsx`,
+        new Blob([output]),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      setMessage({ type: "success", text: `Excel export elkészült: ${exportLogs.length} eseménysor a ${range.label} időszakból.` });
     } catch (error) {
       console.error("Vezetői műszerfal Excel export hiba:", error);
       setMessage({
@@ -31696,13 +31795,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return;
     }
 
-    const range = getDashboardDateRange("custom", dashboardDate, dashboardDateTo);
-    const currentPlanFieldFilter = getCurrentDashboardPlanFieldFilterState();
-    const rangeStartMs = new Date(range.startIso).getTime();
-    const rangeEndMs = new Date(range.endIso).getTime();
-    const filteredWorkerStats = getFilteredDashboardWorkerStats();
-    const selectedStationValue = filteredWorkerStats.selectedStationValue;
-    const selectedWorkerValue = filteredWorkerStats.selectedWorkerValue;
     const exportStationKeys = dashboardEndExportStations === null
       ? null
       : new Set(dashboardEndExportStations.map((station) => normalizeLooseText(station)));
@@ -31712,144 +31804,22 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return;
     }
 
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
-
-    const fetchPagedEndCandidates = async (
-      tableName: string,
-      dateColumn: "end_time" | "end_timestamp" | "created_at",
-      actionOnly: boolean
-    ): Promise<WorkLogRow[]> => {
-      const rows: WorkLogRow[] = [];
-      const pageSize = 1000;
-
-      for (let from = 0; ; from += pageSize) {
-        let query = supabase
-          .from(tableName)
-          .select(selectColumns)
-          .gte(dateColumn, range.startIso)
-          .lt(dateColumn, range.endIso)
-          .order(dateColumn, { ascending: true })
-          .range(from, from + pageSize - 1);
-
-        if (actionOnly) query = query.eq("action", "END");
-
-        const response = await query;
-        if (response.error) throw response.error;
-        const page = ((response.data || []) as WorkLogRow[]);
-        rows.push(...page);
-        if (page.length < pageSize) break;
-      }
-
-      return rows;
-    };
-
-    const fetchEndCandidatesByExactOrders = async (tableName: string, orderNumbers: string[]): Promise<WorkLogRow[]> => {
-      const rows: WorkLogRow[] = [];
-      for (let index = 0; index < orderNumbers.length; index += 100) {
-        const chunkOrders = orderNumbers.slice(index, index + 100);
-        const response = await supabase
-          .from(tableName)
-          .select(selectColumns)
-          .in("order_number", chunkOrders)
-          .order("created_at", { ascending: true })
-          .limit(10000);
-        if (response.error) throw response.error;
-        rows.push(...(((response.data || []) as WorkLogRow[])));
-      }
-      return rows;
-    };
-
     try {
-      const planFieldMatch = await fetchDashboardPlanFieldMatches(range, currentPlanFieldFilter);
-      const planFieldTargetsDate = planFieldMatch.active && planFieldMatch.dataType === "date";
-      const matchesPlanFieldOrder = (orderNumber: string | null | undefined): boolean =>
-        !planFieldMatch.active || planFieldMatch.normalizedOrderKeys.has(normalizeLooseText(String(orderNumber || "")));
+      const { range, logs: rangeLogs } = await fetchDashboardExcelExportLogsBySelectedDateRange();
+      const rangeStartMs = new Date(range.startIso).getTime();
+      const rangeEndMs = new Date(range.endIso).getTime();
 
-      let candidates: WorkLogRow[] = [];
-      let sourceTable = "work_logs";
-
-      if (planFieldTargetsDate) {
-        const matchingOrders = planFieldMatch.orderNumbers.filter((orderNumber) =>
-          matchesDashboardOrderFilters(orderNumber, dashboardOrderFiltersRef.current)
-        );
-
-        if (matchingOrders.length === 0) {
-          setMessage({
-            type: "info",
-            text: "A kiválasztott szűrők mellett nincs exportálható END lejelentés.",
-          });
-          return;
-        }
-
-        try {
-          candidates = await fetchEndCandidatesByExactOrders(sourceTable, matchingOrders);
-        } catch (primaryError) {
-          console.warn("END Excel export: work_logs lekérdezés sikertelen, work_log fallback következik:", primaryError);
-          sourceTable = "work_log";
-          candidates = await fetchEndCandidatesByExactOrders(sourceTable, matchingOrders);
-        }
-      } else {
-        try {
-          const [byEndTime, byEndTimestamp, byActionCreatedAt] = await Promise.all([
-            fetchPagedEndCandidates(sourceTable, "end_time", false),
-            fetchPagedEndCandidates(sourceTable, "end_timestamp", false),
-            fetchPagedEndCandidates(sourceTable, "created_at", true),
-          ]);
-          candidates = [...byEndTime, ...byEndTimestamp, ...byActionCreatedAt];
-        } catch (primaryError) {
-          console.warn("END Excel export: work_logs lekérdezés sikertelen, work_log fallback következik:", primaryError);
-          sourceTable = "work_log";
-          const [byEndTime, byEndTimestamp, byActionCreatedAt] = await Promise.all([
-            fetchPagedEndCandidates(sourceTable, "end_time", false),
-            fetchPagedEndCandidates(sourceTable, "end_timestamp", false),
-            fetchPagedEndCandidates(sourceTable, "created_at", true),
-          ]);
-          candidates = [...byEndTime, ...byEndTimestamp, ...byActionCreatedAt];
-        }
-      }
-
-      const seen = new Set<string>();
-      const endLogs = candidates
-        .map((log) => ({
-          ...log,
-          worker_name: log.worker_name
-            || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"]
-            || null,
-        }))
+      const endLogs = rangeLogs
         .filter((log) => {
           const action = String(log.action || "").toUpperCase();
           const endAt = String(log.end_time || log.end_timestamp || (action === "END" ? log.created_at : "") || "");
           const endMs = new Date(endAt).getTime();
-          if (!endAt || !Number.isFinite(endMs)) return false;
-          if (!planFieldTargetsDate && (endMs < rangeStartMs || endMs >= rangeEndMs)) return false;
+          if (!endAt || !Number.isFinite(endMs) || endMs < rangeStartMs || endMs >= rangeEndMs) return false;
           if (!(action === "END" || Boolean(log.end_time || log.end_timestamp))) return false;
           if (!isFullyCompletedEndLog(log)) return false;
-          if (!matchesDashboardOrderFilters(log.order_number, dashboardOrderFiltersRef.current)) return false;
-          if (!matchesPlanFieldOrder(log.order_number)) return false;
 
-          const workerName = getDashboardLogWorkerName(log);
-          if (selectedWorkerValue !== "all" && normalizeLooseText(workerName) !== normalizeLooseText(selectedWorkerValue)) return false;
-
-          const stationName = resolveLogStation(log, workers);
-          const stationKey = normalizeLooseText(stationName);
-          if (selectedStationValue !== "all" && stationKey !== normalizeLooseText(selectedStationValue)) return false;
+          const stationKey = normalizeLooseText(resolveLogStation(log, workers));
           if (exportStationKeys && !exportStationKeys.has(stationKey)) return false;
-
-          const uniqueKey = [
-            String(log.order_number || ""),
-            stationKey,
-            String(log.worker_id || ""),
-            String(log.worker_name || ""),
-            action,
-            String(log.created_at || ""),
-            String(log.start_time || log.start_timestamp || ""),
-            endAt,
-            String(log.batch_code || ""),
-            String(log.operation_code || ""),
-            String(log.ujragyartas_sorszam ?? ""),
-          ].join("|");
-          if (seen.has(uniqueKey)) return false;
-          seen.add(uniqueKey);
           return true;
         })
         .sort((left, right) => {
@@ -31861,10 +31831,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         });
 
       if (endLogs.length === 0) {
-        setMessage({
-          type: "info",
-          text: "A kiválasztott szűrők mellett nincs exportálható END lejelentés.",
-        });
+        setMessage({ type: "info", text: "A kiválasztott dátumtartományban és szűrőkkel nincs exportálható END lejelentés." });
         return;
       }
 
@@ -31894,8 +31861,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         workbook,
         XLSX,
         dashboardData,
-        selectedStationValue,
-        selectedWorkerValue
+        dashboardSelectedStation || "all",
+        dashboardSelectedWorker || "all"
       );
       const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
       const safeFrom = dashboardDate || "tol";
@@ -31908,7 +31875,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       setMessage({
         type: "success",
-        text: `END Excel export elkészült: ${endLogs.length} teljesen lezárt END sor.`,
+        text: `END Excel export elkészült: ${endLogs.length} teljesen lezárt END sor a ${range.label} időszakból.`,
       });
     } catch (error) {
       console.error("END Excel export hiba:", error);
