@@ -355,6 +355,13 @@ type WorkLogRow = {
   toklec_meretek?: number[] | null;
   toklec_szelesseg?: number | null;
   toklec_magassag?: number | null;
+
+  // 5-ös esemény / Szerelés: szüneteltetési audit.
+  // A szüneteltetés külön END audit sor, az eredeti Nyíló/Tok START nyitva marad.
+  szuneteltetes?: boolean | null;
+  szuneteltetes_oka?: string | null;
+  szuneteltetes_sorszam?: number | null;
+
   tok_kesz?: boolean | null;
   nyilo_kesz?: boolean | null;
   reszleges_keszultseg?: number | null;
@@ -1428,6 +1435,9 @@ type ProductionCardPriorityRow = {
   kulsoLapSelejtCount?: number;
   belsoLapSelejtCount?: number;
   toklecSelejtCount?: number;
+  szerelesPauseCount?: number;
+  szerelesPauseReason?: string;
+  szerelesPauseAt?: string | null;
   crossStationStatuses?: Record<string, ProductionMonitorStatus>;
   crossStationScrapFlags?: Record<string, boolean>;
 };
@@ -1466,6 +1476,9 @@ type ProductionCardBacklogRow = {
   kulsoLapSelejtCount?: number;
   belsoLapSelejtCount?: number;
   toklecSelejtCount?: number;
+  szerelesPauseCount?: number;
+  szerelesPauseReason?: string;
+  szerelesPauseAt?: string | null;
 
   // Az eredeti, késésbe került *_terv sor teljes adattartalma.
   // Így a Lemaradások kártyán ugyanazok az Excel/Supabase mezők
@@ -1517,6 +1530,9 @@ type ProductionCardRow = {
   kulsoLapSelejtCount?: number;
   belsoLapSelejtCount?: number;
   toklecSelejtCount?: number;
+  szerelesPauseCount?: number;
+  szerelesPauseReason?: string;
+  szerelesPauseAt?: string | null;
 
   panelWorkflow: boolean;
   ajtolapokKesz: boolean;
@@ -2054,6 +2070,8 @@ const PRODUCTION_CARD_TOK_FIELD_ID = "__card_tok_completed__";
 const PRODUCTION_CARD_NYILO_FIELD_ID = "__card_nyilo_completed__";
 const PRODUCTION_CARD_TOK_ACTUAL_FIELD_ID = "__card_tok_actual_time__";
 const PRODUCTION_CARD_NYILO_ACTUAL_FIELD_ID = "__card_nyilo_actual_time__";
+const PRODUCTION_CARD_SZUNETELTETES_FIELD_ID = "__card_szereles_pause__";
+const PRODUCTION_CARD_SZUNETELTETES_OKA_FIELD_ID = "__card_szereles_pause_reason__";
 const PRODUCTION_CARD_AJTOLAPOK_FIELD_ID = "__card_ajtolapok_completed__";
 const PRODUCTION_CARD_TOKLEC_KESZ_FIELD_ID = "__card_toklec_completed__";
 const PRODUCTION_CARD_KULSO_LAP_KESZ_FIELD_ID = "__card_kulso_lap_completed__";
@@ -3912,7 +3930,12 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
       `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${field.key}`
     );
     const prioritySzerelesPartFieldIds = getStationPlanIdentityKey(stationName) === "szereles"
-      ? [PRODUCTION_CARD_NYILO_FIELD_ID, PRODUCTION_CARD_TOK_FIELD_ID]
+      ? [
+          PRODUCTION_CARD_NYILO_FIELD_ID,
+          PRODUCTION_CARD_TOK_FIELD_ID,
+          PRODUCTION_CARD_SZUNETELTETES_FIELD_ID,
+          PRODUCTION_CARD_SZUNETELTETES_OKA_FIELD_ID,
+        ]
       : [];
     return Array.from(new Set([
       PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID,
@@ -3941,9 +3964,13 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
 
     // A *_terv mezők mellett a lemaradási rendszermezők is megmaradnak,
     // különösen a kért Késés és Állapot.
+    const backlogSzerelesPauseFields = getStationPlanIdentityKey(stationName) === "szereles"
+      ? [PRODUCTION_CARD_SZUNETELTETES_FIELD_ID, PRODUCTION_CARD_SZUNETELTETES_OKA_FIELD_ID]
+      : [];
     return Array.from(new Set([
       ...backlogPlanFieldIds,
       ...PRODUCTION_CARD_BACKLOG_FIELD_IDS,
+      ...backlogSzerelesPauseFields,
       ...getProductionCardCrossStationStatusFields(stationName),
     ]));
   }
@@ -3983,9 +4010,13 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
     ]));
   }
 
+  const szerelesPauseFields = isSzerelesProductionCard
+    ? [PRODUCTION_CARD_SZUNETELTETES_FIELD_ID, PRODUCTION_CARD_SZUNETELTETES_OKA_FIELD_ID]
+    : [];
   return Array.from(new Set([
     ...planFieldIds,
     ...PRODUCTION_CARD_FIELD_IDS,
+    ...szerelesPauseFields,
     ...crossStationStatusFieldIds,
   ]));
 }
@@ -4013,6 +4044,8 @@ function getProductionCardFieldLabel(fieldId: string): string {
   if (fieldId === PRODUCTION_CARD_NYILO_FIELD_ID) return "Nyíló";
   if (fieldId === PRODUCTION_CARD_TOK_ACTUAL_FIELD_ID) return "Tok tényleges";
   if (fieldId === PRODUCTION_CARD_NYILO_ACTUAL_FIELD_ID) return "Nyíló tényleges";
+  if (fieldId === PRODUCTION_CARD_SZUNETELTETES_FIELD_ID) return "Szüneteltetés";
+  if (fieldId === PRODUCTION_CARD_SZUNETELTETES_OKA_FIELD_ID) return "Szüneteltetés oka";
   if (fieldId === PRODUCTION_CARD_AJTOLAPOK_FIELD_ID) return "Ajtólapok";
   if (fieldId === PRODUCTION_CARD_TOKLEC_KESZ_FIELD_ID) return "Tokléc";
   if (fieldId === PRODUCTION_CARD_KULSO_LAP_KESZ_FIELD_ID) return "Külső lap kész";
@@ -6457,6 +6490,12 @@ function buildThreePartCompletionStatusLabel(snapshot: ThreePartCompletionSnapsh
 }
 
 function isFullyCompletedEndLog(log: WorkLogRow): boolean {
+  // Az 5-ös esemény Szüneteltetés auditja END eseményként könyvelődik,
+  // de NEM fejez be munkamenetet és mennyiséget sem zárhat készre.
+  if (log.szuneteltetes === true || getStructuredNoteMetadata(log.note).szereles_pause_only === true) {
+    return false;
+  }
+
   const hasThreePartCompletionData =
     log.kulso_lap_kesz !== null && log.kulso_lap_kesz !== undefined
     || log.belso_lap_kesz !== null && log.belso_lap_kesz !== undefined
@@ -8658,6 +8697,8 @@ type EventFiveBatchOrderState = {
   tokMagassag: string;
   tokMeret: string;
   tokExtraMeretek: string[];
+  szuneteltetes: boolean;
+  szuneteltetesOka: string;
 };
 
 const EMPTY_EVENT_FIVE_BATCH_ORDER_STATE: EventFiveBatchOrderState = {
@@ -8672,6 +8713,8 @@ const EMPTY_EVENT_FIVE_BATCH_ORDER_STATE: EventFiveBatchOrderState = {
   tokMagassag: "",
   tokMeret: "",
   tokExtraMeretek: [],
+  szuneteltetes: false,
+  szuneteltetesOka: "",
 };
 
 
@@ -9354,6 +9397,9 @@ export default function Page() {
   const [toklecScrapHeight, setToklecScrapHeight] = useState("");
   const [toklecScrapSize, setToklecScrapSize] = useState("");
   const [toklecScrapExtraSizes, setToklecScrapExtraSizes] = useState<string[]>([]);
+  // 5-ös esemény / Szerelés: szüneteltetés külön END auditként.
+  const [eventFivePauseEnabled, setEventFivePauseEnabled] = useState(false);
+  const [eventFivePauseReason, setEventFivePauseReason] = useState("");
   // 5-ös esemény / Szerelés: kézzel kijelölt javítási vagy újragyártási célállomások.
   const [eventFiveRepairStationKeys, setEventFiveRepairStationKeys] = useState<string[]>([]);
   const [eventFiveRepairAction, setEventFiveRepairAction] = useState<EventFiveRepairAction>("");
@@ -14984,6 +15030,35 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
   }
 
+  type SzerelesPauseSnapshot = {
+    count: number;
+    reason: string;
+    pausedAt: string | null;
+  };
+
+  function getSzerelesPauseSnapshot(sourceLogs: WorkLogRow[]): SzerelesPauseSnapshot {
+    const sessionState = resolveSzerelesSessionState(sourceLogs);
+    const currentCycleId = String(sessionState?.cycle_id || "").trim();
+    const pauseLogs = sourceLogs
+      .filter((log) => log.szuneteltetes === true)
+      .filter((log) => !currentCycleId || String(log.szereles_ciklus_id || "").trim() === currentCycleId)
+      .sort((left, right) => getWorkLogEventTime(left) - getWorkLogEventTime(right));
+
+    const latest = pauseLogs.at(-1);
+    const maxStoredOrdinal = pauseLogs.reduce(
+      (max, log) => Math.max(max, Number(log.szuneteltetes_sorszam) || 0),
+      0
+    );
+
+    return {
+      count: Math.max(pauseLogs.length, maxStoredOrdinal),
+      reason: String(latest?.szuneteltetes_oka || "").trim(),
+      pausedAt: latest
+        ? String(latest.end_time || latest.end_timestamp || latest.created_at || "").trim() || null
+        : null,
+    };
+  }
+
   function mergeSzerelesScrapReportCounts(
     workLogCounts: SzerelesScrapReportCounts,
     persistedRouteCounts?: SzerelesScrapReportCounts
@@ -15055,6 +15130,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (fieldId === PRODUCTION_CARD_TOK_ACTUAL_FIELD_ID) {
       const minutes = getProductionCardDoorActualMinutes(row, "tok");
       return minutes === null ? "–" : formatDuration(minutes);
+    }
+    if (fieldId === PRODUCTION_CARD_SZUNETELTETES_FIELD_ID) {
+      const count = Number(row.szerelesPauseCount || 0);
+      return count > 0 ? `Szüneteltetve #${count}` : "";
+    }
+    if (fieldId === PRODUCTION_CARD_SZUNETELTETES_OKA_FIELD_ID) {
+      return row.szerelesPauseReason || "";
     }
     if (fieldId === PRODUCTION_CARD_TOK_FIELD_ID) {
       if (row.tokKesz) return "Kész";
@@ -15188,6 +15270,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return String(value);
     }
     if (fieldId === PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID) return row.orderNumber;
+    if (fieldId === PRODUCTION_CARD_SZUNETELTETES_FIELD_ID) {
+      const count = Number(row.szerelesPauseCount || 0);
+      return count > 0 ? `Szüneteltetve #${count}` : "";
+    }
+    if (fieldId === PRODUCTION_CARD_SZUNETELTETES_OKA_FIELD_ID) return row.szerelesPauseReason || "";
     if (fieldId === PRODUCTION_CARD_NYILO_FIELD_ID) {
       if (row.nyiloKesz) return "Kész";
       const scrapLabel = getSzerelesNyiloScrapLabel(row);
@@ -15225,6 +15312,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
 
     if (fieldId === PRODUCTION_CARD_BACKLOG_ORDER_FIELD_ID) return row.orderNumber;
+    if (fieldId === PRODUCTION_CARD_SZUNETELTETES_FIELD_ID) {
+      const count = Number(row.szerelesPauseCount || 0);
+      return count > 0 ? `Szüneteltetve #${count}` : "";
+    }
+    if (fieldId === PRODUCTION_CARD_SZUNETELTETES_OKA_FIELD_ID) return row.szerelesPauseReason || "";
     if (fieldId === PRODUCTION_CARD_BACKLOG_PRODUCT_FIELD_ID) return row.productName;
     if (fieldId === PRODUCTION_CARD_BACKLOG_PLANNED_FIELD_ID) return row.plannedQuantity;
     if (fieldId === PRODUCTION_CARD_BACKLOG_COMPLETED_FIELD_ID) return row.completedQuantity;
@@ -16574,7 +16666,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       ...prioritySzerelesOrderNumbers,
     ]));
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, terv_futo_sorszam, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, tok_tenyleges_perc, nyilo_tenyleges_perc, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, terv_futo_sorszam, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, tok_tenyleges_perc, nyilo_tenyleges_perc, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const chunk = orderNumbers.slice(index, index + 100);
       let logData: unknown[] | null = null;
@@ -16649,6 +16741,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           getSzerelesScrapReportCounts(priorityLogs),
           persistedSzerelesScrapCountsByOrder.get(normalizeLooseText(priorityRow.orderNumber))
         );
+        const pauseSnapshot = getSzerelesPauseSnapshot(priorityLogs);
         priorityRow.doorWorkflow = doorState.doorWorkflow;
         priorityRow.tokKesz = doorState.tokKesz;
         priorityRow.nyiloKesz = doorState.nyiloKesz;
@@ -16658,6 +16751,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         priorityRow.kulsoLapSelejtCount = scrapCounts.kulsoLap;
         priorityRow.belsoLapSelejtCount = scrapCounts.belsoLap;
         priorityRow.toklecSelejtCount = scrapCounts.toklec;
+        priorityRow.szerelesPauseCount = pauseSnapshot.count;
+        priorityRow.szerelesPauseReason = pauseSnapshot.reason;
+        priorityRow.szerelesPauseAt = pauseSnapshot.pausedAt;
       });
     }
 
@@ -16851,6 +16947,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           getSzerelesScrapReportCounts(rowLogs),
           persistedSzerelesScrapCountsByOrder.get(normalizeLooseText(orderNumber))
         );
+        const rowPauseSnapshot = getSzerelesPauseSnapshot(rowLogs);
         const hasBundleTenScopedGroupActivity =
           rowLogs.some((log) => Boolean(getBundleTenVisualIdentityFromLog(log)))
           || rowBatchStarts.some((batch) => getBundleTenVisualIdentitiesFromBatch(batch, orderNumber).length > 0);
@@ -17037,6 +17134,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             kulsoLapSelejtCount: rowScrapCounts.kulsoLap,
             belsoLapSelejtCount: rowScrapCounts.belsoLap,
             toklecSelejtCount: rowScrapCounts.toklec,
+            szerelesPauseCount: rowPauseSnapshot.count,
+            szerelesPauseReason: rowPauseSnapshot.reason,
+            szerelesPauseAt: rowPauseSnapshot.pausedAt,
             planData: planRow.planData,
           });
         });
@@ -17352,6 +17452,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         getSzerelesScrapReportCounts(allOrderLogs),
         persistedSzerelesScrapCountsByOrder.get(normalizeLooseText(planRow.orderNumber))
       );
+      const rowPauseSnapshot = getSzerelesPauseSnapshot(allOrderLogs);
       const recurring=recurringCardDisplayStatus(recurringSnapshot,"plan",planRow.sourceRowId,planRow.productName);
       if(recurring){
         const base=resolveProductionCardWorkers([],[],planRow.orderNumber);
@@ -17362,6 +17463,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           kulsoLapSelejtCount: rowScrapCounts.kulsoLap,
           belsoLapSelejtCount: rowScrapCounts.belsoLap,
           toklecSelejtCount: rowScrapCounts.toklec,
+          szerelesPauseCount: rowPauseSnapshot.count,
+          szerelesPauseReason: rowPauseSnapshot.reason,
+          szerelesPauseAt: rowPauseSnapshot.pausedAt,
           crossStationStatuses:{},
           crossStationScrapFlags:crossStationScrapFlagsByOrder.get(normalizeLooseText(planRow.orderNumber))||{}
         };
@@ -17433,6 +17537,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         kulsoLapSelejtCount: rowScrapCounts.kulsoLap,
         belsoLapSelejtCount: rowScrapCounts.belsoLap,
         toklecSelejtCount: rowScrapCounts.toklec,
+        szerelesPauseCount: rowPauseSnapshot.count,
+        szerelesPauseReason: rowPauseSnapshot.reason,
+        szerelesPauseAt: rowPauseSnapshot.pausedAt,
         crossStationStatuses:
           crossStationStatusesByPlanKey.get(productionCardPlanRowKey(planRow)) || {},
         crossStationScrapFlags:
@@ -22676,7 +22783,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     // Ugyanaz a work_logs státuszlogika, mint a termelési monitorban,
     // de itt kizárólag a Szerelés munkaállomás állapota kell.
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
 
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const chunk = orderNumbers.slice(index, index + 100);
@@ -29026,7 +29133,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     ));
 
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
 
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const orderChunk = orderNumbers.slice(index, index + 100);
@@ -29870,7 +29977,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     // Egyedi nézetet és a kiválasztott dátumot TELJESEN figyelmen kívül
     // hagyjuk. Ilyenkor kizárólag a work_logs teljes történetében keresünk.
     if (normalizedActiveOrderFilters.length > 0) {
-      const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+      const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
 
       const reportedOrdersByStation = new Map<string, Set<string>>();
       const reportedCompletedOrdersByStation = new Map<string, Set<string>>();
@@ -30099,7 +30206,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       Array.from(planOrdersByStation.values()).flatMap((orders) => Array.from(orders))
     ));
     const planLogs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
 
     for (let index = 0; index < allPlannedOrders.length; index += 100) {
       const orderChunk = allPlannedOrders.slice(index, index + 100);
@@ -30462,7 +30569,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   ): Promise<DashboardData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
 
-    const selectColumns = "id, worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "id, worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
     const hasOrderFilter = orderFilters.some((value) => Boolean(normalizeDashboardOrderSearch(value)));
     const planFieldMatch = await fetchDashboardPlanFieldMatches(range, planFieldFilter);
     const planFieldTargetsDate = planFieldMatch.active && planFieldMatch.dataType === "date";
@@ -31244,7 +31351,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return;
     }
 
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
 
     const fetchPagedEndCandidates = async (
       tableName: string,
@@ -32405,7 +32512,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     try {
       const { data, error } = await supabase
         .from("work_logs")
-        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas")
+        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas")
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) throw error;
@@ -32448,7 +32555,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     try {
       const { data, error } = await supabase
         .from("work_logs")
-        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas")
+        .select("worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas")
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) throw error;
@@ -33338,7 +33445,7 @@ START: ${formatDateTime(startAt)}`
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFivePauseEnabled(false);setEventFivePauseReason("");
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setSzerelesStartParts([]);
@@ -34670,7 +34777,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFivePauseEnabled(false);setEventFivePauseReason("");
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setTokKesz(false);
@@ -34777,7 +34884,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFivePauseEnabled(false);setEventFivePauseReason("");
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setTokKesz(false);
@@ -34879,7 +34986,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFivePauseEnabled(false);setEventFivePauseReason("");
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setSzerelesStartParts([]);
@@ -34969,7 +35076,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFivePauseEnabled(false);setEventFivePauseReason("");
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setTokKesz(false);
@@ -36175,7 +36282,7 @@ body {
       setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFivePauseEnabled(false);setEventFivePauseReason("");
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setTokKesz(false);
@@ -36458,7 +36565,7 @@ body {
     // Állapotfrissítés után a következő régi sor ugyanígy lezárható.
     setSzerelesLegacyEndMode(true);setSzerelesStartParts([]);setSzerelesEndParts([]);
     setPendingAction("END");setActionBarcode("");setEndBarcodeConfirmed(false);setEndNote("");
-    setOuterSheetScrap(false);setInnerSheetScrap(false);setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFiveRepairStationKeys([]);setEventFiveRepairAction("");
+    setOuterSheetScrap(false);setInnerSheetScrap(false);setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFivePauseEnabled(false);setEventFivePauseReason("");setEventFiveRepairStationKeys([]);setEventFiveRepairAction("");
     setFlowStage("start-scan");setStep(6);
     window.setTimeout(()=>focusAndSelectInput(actionBarcodeInputRef,{preventScroll:true}),0);
   }
@@ -36471,7 +36578,7 @@ body {
     }
     setSzerelesStartParts([]);setSzerelesEndParts([]);setSzerelesLegacyEndMode(false);setSzerelesNewCycle(false);setSzerelesRework(false);
     setPendingAction(action);setActionBarcode("");setEndBarcodeConfirmed(false);setEndNote("");
-    setOuterSheetScrap(false);setInnerSheetScrap(false);setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFiveRepairStationKeys([]);setEventFiveRepairAction("");
+    setOuterSheetScrap(false);setInnerSheetScrap(false);setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFivePauseEnabled(false);setEventFivePauseReason("");setEventFiveRepairStationKeys([]);setEventFiveRepairAction("");
     setFlowStage("start-scan");setStep(6);
     window.setTimeout(()=>focusAndSelectInput(actionBarcodeInputRef,{preventScroll:true}),0);
   }
@@ -36504,7 +36611,18 @@ body {
       <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>{(["nyilo","tok"] as SzerelesPart[]).map(part=>{
         const p=state.parts[part];const available=szerelesLegacyEndMode&&state.legacy_open?true:p.state==="in_progress";
         return <label key={part} style={{padding:12,borderRadius:10,background:"#14532d",display:"flex",alignItems:"center",gap:8,opacity:available?1:.6}}>
-          <input type="checkbox" disabled={!available} checked={szerelesEndParts.includes(part)} onChange={e=>setSzerelesEndParts(previous=>e.target.checked?[...previous,part]:previous.filter(value=>value!==part))}/>
+          <input
+            type="checkbox"
+            disabled={!available}
+            checked={szerelesEndParts.includes(part)}
+            onChange={(e)=>{
+              if(e.target.checked&&eventFivePauseEnabled){
+                setEventFivePauseEnabled(false);
+                setEventFivePauseReason("");
+              }
+              setSzerelesEndParts(previous=>e.target.checked?[...previous,part]:previous.filter(value=>value!==part));
+            }}
+          />
           {szerelesPartLabel(part)} befejezés {p.done?"– kész":!available?"– még nincs START":""}
         </label>;
       })}</div>
@@ -39165,14 +39283,25 @@ body {
     if(batchFinalizeInFlightRef.current||!supabase||!activeWorker||!selectedEndBatch)return;
     const batch=selectedEndBatch;const machine=batch.machine_id||getCurrentMachineIdForInsert();
     const orders=normalizeProductionBatchOrders(batch.order_ids);const items:Array<Record<string,unknown>>=[];
+    const pauseItems:Array<{order:string;state:SzerelesOrderState;reason:string}>=[];
     const scrapRoutes=new Map<string,ScrapReplacementRoute>();
-    const quantity=await prepareBatchReportedQuantities(orders,machine,parseDarabValue(endDarab));
+    const normalEndOrders=orders.filter((order)=>!(endEventFiveOrderStateMap[order]||EMPTY_EVENT_FIVE_BATCH_ORDER_STATE).szuneteltetes);
+    const quantity=await prepareBatchReportedQuantities(normalEndOrders,machine,parseDarabValue(endDarab));
     if(!quantity)return;
     try{
       for(const order of orders){
         const choice=endEventFiveOrderStateMap[order]||EMPTY_EVENT_FIVE_BATCH_ORDER_STATE;
         const state=szerelesBatchStates[order];if(!state)throw new Error(`${order}: az állapot nem töltődött be.`);
         if(state.legacy_open)throw new Error(`${order}: régi közös START található. A Régi munkamenet lezárása funkcióval előbb zárd le a régi sort.`);
+        if(choice.szuneteltetes){
+          const pauseReason=String(choice.szuneteltetesOka||"").trim();
+          if(!pauseReason)throw new Error(`${order}: Szüneteltetésnél a Szüneteltetés oka mező kitöltése kötelező.`);
+          if(choice.outerScrap||choice.innerScrap||choice.toklecScrap)throw new Error(`${order}: a Szüneteltetés külön állapot, selejtjelentéssel együtt nem menthető.`);
+          const runningParts=(["nyilo","tok"] as SzerelesPart[]).filter(part=>state.parts[part].state==="in_progress"&&!!state.parts[part].open_id);
+          if(runningParts.length===0)throw new Error(`${order}: Szüneteltetés csak ténylegesen folyamatban lévő Nyíló vagy Tok munkához rögzíthető.`);
+          pauseItems.push({order,state,reason:pauseReason});
+          continue;
+        }
         const parts=(["nyilo","tok"] as SzerelesPart[]).filter(part=>part==="nyilo"?choice.nyiloKesz:choice.tokKesz);
         if(!parts.length)continue;
         const expected:Record<string,string>={};
@@ -39209,14 +39338,33 @@ body {
             toklec_magassag:choice.toklecScrap&&cleanTokHeight?Number(cleanTokHeight):null,
             selejt_megjegyzes:hasScrap?note:null,darab:reportedDarab,szal:parseSzalValue(endSzal)}});
       }
-      if(!items.length)throw new Error("Válassz ki legalább egy ténylegesen folyamatban lévő részt.");
+      if(!items.length&&!pauseItems.length)throw new Error("Válassz ki legalább egy ténylegesen folyamatban lévő részt vagy jelöld a Szüneteltetést.");
       if(scrapRoutes.size&&!window.confirm("A kijelölt selejtekhez létrejönnek a szükséges selejtpótlási kártyák. A hibás Nyíló/Tok munkamenet nyitva marad, az ideje tovább fut. Folytatod?"))return;
     }catch(error){setMessage({type:"error",text:normalizeError(error)});return;}
     batchFinalizeInFlightRef.current=true;setBusy(true);let committed=false;
     try{
-      const {data,error}=await supabase.rpc("nivo_szereles_koteg",{p_action:"END",p_items:items,p_machine_id:machine,p_worker_id:Number(activeWorker.id),p_worker_name:activeWorker["Teljes nev"],p_batch_code:batch.batch_code,p_note:endBatchNote.trim()||null});
-      if(error)throw error;committed=true;
-      const result=data as {results:Array<{order:string;result:{state:unknown;saved_rows:Array<{id:string|number;ended_at?:string}>}}> ;remaining_orders:string[]};
+      let result:{results:Array<{order:string;result:{state:unknown;saved_rows:Array<{id:string|number;ended_at?:string}>}}> ;remaining_orders:string[]}={
+        results:[],
+        remaining_orders:[...orders],
+      };
+      if(items.length>0){
+        const {data,error}=await supabase.rpc("nivo_szereles_koteg",{p_action:"END",p_items:items,p_machine_id:machine,p_worker_id:Number(activeWorker.id),p_worker_name:activeWorker["Teljes nev"],p_batch_code:batch.batch_code,p_note:endBatchNote.trim()||null});
+        if(error)throw error;
+        result=data as typeof result;
+        committed=true;
+      }
+      const pauseAuditResults:Array<{order:string;pauseNumber:number}>=[];
+      for(const pauseItem of pauseItems){
+        const pauseAudit=await insertEventFivePauseAudit({
+          order:pauseItem.order,
+          machine,
+          state:pauseItem.state,
+          reason:pauseItem.reason,
+          batchCode:batch.batch_code,
+        });
+        pauseAuditResults.push({order:pauseItem.order,pauseNumber:pauseAudit.pauseNumber});
+        committed=true;
+      }
       const savedAt=new Date().toISOString();
       for(const item of result.results){
         const order=item.order;const choice=endEventFiveOrderStateMap[order]||EMPTY_EVENT_FIVE_BATCH_ORDER_STATE;
@@ -39243,7 +39391,10 @@ body {
         if(state.is_complete&&context&&context.plannedQuantity>1&&reported!==null&&reported!==undefined)await applyQuantityPlanCompletion(context,reported,log?.ended_at||savedAt);
       }
       await stopScannerAsync();setScanModalOpen(false);handleReset();
-      setMessage({type:"success",text:`Szerelő köteg END mentve. ${result.results.length} rendelés érintett, ${result.remaining_orders.length} maradt a kötegben. Selejtnél az érintett Nyíló/Tok továbbra is folyamatban marad.`});
+      const pauseSummary=pauseAuditResults.length
+        ? ` ${pauseAuditResults.length} rendelés szüneteltetve (${pauseAuditResults.map((item)=>`${item.order} #${item.pauseNumber}`).join(", ")}); az eredeti időmérés tovább fut.`
+        : "";
+      setMessage({type:"success",text:`Szerelő köteg END mentve. ${result.results.length} lezárási művelet érintett, ${result.remaining_orders.length} maradt a kötegben.${pauseSummary} Selejtnél az érintett Nyíló/Tok továbbra is folyamatban marad.`});
     }catch(error){setMessage({type:"error",text:committed?`A munkamenetek mentése sikerült, de egy kapcsolódó művelet hibázott: ${normalizeError(error)}. Ne ismételd meg az END-et; ellenőrizd a selejtpótlást.`:normalizeError(error)});}
     finally{setBusy(false);window.setTimeout(()=>{batchFinalizeInFlightRef.current=false;},320);}
   }
@@ -40569,7 +40720,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFivePauseEnabled(false);setEventFivePauseReason("");
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
 
@@ -42233,6 +42384,136 @@ body {
     };
   }
 
+  async function insertEventFivePauseAudit(params: {
+    order: string;
+    machine: string;
+    state: SzerelesOrderState;
+    reason: string;
+    batchCode?: string | null;
+  }): Promise<{
+    id: string | number;
+    createdAt: string;
+    pauseNumber: number;
+    state: SzerelesOrderState;
+  }> {
+    if (!supabase || !activeWorker) throw new Error("Nincs kiválasztott dolgozó.");
+
+    const order = String(params.order || "").trim();
+    const machine = String(params.machine || "").trim();
+    const reason = String(params.reason || "").trim();
+    if (!order) throw new Error("A szüneteltetéshez hiányzik a rendelésszám.");
+    if (!reason) throw new Error("Szüneteltetésnél a Szüneteltetés oka mező kitöltése kötelező.");
+
+    const runningParts = (["nyilo", "tok"] as SzerelesPart[]).filter(
+      (part) => params.state.parts[part].state === "in_progress" && !!params.state.parts[part].open_id
+    );
+    if (runningParts.length === 0) {
+      throw new Error("Szüneteltetés csak ténylegesen folyamatban lévő Nyíló vagy Tok munkához rögzíthető.");
+    }
+
+    let pauseQuery = supabase
+      .from("work_logs")
+      .select("szuneteltetes_sorszam")
+      .eq("order_number", order)
+      .eq("szuneteltetes", true);
+
+    pauseQuery = params.state.cycle_id
+      ? pauseQuery.eq("szereles_ciklus_id", params.state.cycle_id)
+      : pauseQuery.is("szereles_ciklus_id", null);
+
+    const { data: previousPauseRows, error: previousPauseError } = await pauseQuery
+      .order("szuneteltetes_sorszam", { ascending: false })
+      .limit(10000);
+    if (previousPauseError) throw previousPauseError;
+
+    const previousPauseList = (previousPauseRows || []) as Array<{ szuneteltetes_sorszam?: number | null }>;
+    const previousMax = previousPauseList.reduce(
+      (max, row) => Math.max(max, Number(row.szuneteltetes_sorszam) || 0),
+      0
+    );
+    const pauseNumber = Math.max(previousMax, previousPauseList.length) + 1;
+    const auditAt = new Date().toISOString();
+
+    const auditMetadata: Record<string, unknown> = {
+      event_bundle: 5,
+      szereles_pause_only: true,
+      szereles_part_held_open: true,
+      pause_reported_at: auditAt,
+      szuneteltetes_sorszam: pauseNumber,
+      szuneteltetes_oka: reason,
+      active_parts: [...runningParts],
+      source_start_ids: Object.fromEntries(
+        runningParts.map((part) => [part, params.state.parts[part].open_id])
+      ),
+      closed_by_worker_id: Number(activeWorker.id),
+      closed_by_worker_name: activeWorker["Teljes nev"],
+      machine_id: machine,
+      order_number: order,
+    };
+
+    const { data: auditRow, error: auditError } = await supabase
+      .from("work_logs")
+      .insert([{
+        worker_id: Number(activeWorker.id),
+        worker_name: activeWorker["Teljes nev"],
+        machine_id: machine,
+        order_number: order,
+        action: "END",
+        created_at: auditAt,
+        batch_code: params.batchCode || null,
+        event_name: `Szüneteltetés #${pauseNumber} – folyamatban marad`,
+        event_code: "END",
+        start_time: auditAt,
+        start_timestamp: auditAt,
+        end_time: auditAt,
+        end_timestamp: auditAt,
+        ujragyartas: params.state.reproduction_number > 0,
+        ujragyartas_sorszam: params.state.reproduction_number || null,
+        gyartas_tipus: "egyedi",
+        gyartasi_kor: null,
+        // Szándékosan nincs szereles_resz: a Nyíló/Tok eredeti START sora nyitva marad.
+        szereles_resz: null,
+        szereles_ciklus_id: params.state.cycle_id,
+        szereles_start_reszek: runningParts,
+        note: buildStructuredNote(reason, auditMetadata),
+        szuneteltetes: true,
+        szuneteltetes_oka: reason,
+        szuneteltetes_sorszam: pauseNumber,
+        kulso_lap_selejt: false,
+        belso_lap_selejt: false,
+        toklec_selejt: false,
+        selejt_potlas: false,
+        selejt_forras_munkaallomas: machine,
+        selejt_megjegyzes: null,
+        darab: null,
+        szal: null,
+        scrap_qty: null,
+      }])
+      .select("id, created_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam")
+      .single();
+
+    if (auditError) throw auditError;
+    if (!auditRow?.id) throw new Error("A szüneteltetés END audit sora nem kapott adatbázis-azonosítót.");
+    if (auditRow.szuneteltetes !== true) throw new Error("A szüneteltetés állapota nem mentődött el a work_logs táblába.");
+
+    const freshState = await fetchSzerelesOrderState(order, machine);
+    const unexpectedlyClosed = runningParts.filter(
+      (part) => freshState.parts[part].state !== "in_progress"
+    );
+    if (unexpectedlyClosed.length > 0) {
+      throw new Error(
+        `A szüneteltetés elment, de a következő rész nem maradt folyamatban: ${unexpectedlyClosed.map(szerelesPartLabel).join(" + ")}.`
+      );
+    }
+
+    return {
+      id: auditRow.id,
+      createdAt: String(auditRow.created_at || auditAt),
+      pauseNumber,
+      state: freshState,
+    };
+  }
+
   function getMissingRouteParts(finalOrderNumber?: string): string[] {
     const missing: string[] = [];
     if (workerEventKoteg === 3 && !selectedEventCard) missing.push("Esemény");
@@ -42248,8 +42529,9 @@ body {
     const requestedParts=(action==="START"?normalizeSzerelesStartParts(szerelesStartParts):szerelesEndParts) as SzerelesPart[];
     const hasScrap=action==="END"&&(outerSheetScrap||innerSheetScrap||toklecScrap);
     const hasRepair=action==="END"&&eventFiveRepairStationKeys.length>0;
+    const hasPause=action==="END"&&eventFivePauseEnabled;
     const legacyClose=action==="END"&&szerelesLegacyEndMode&&state.legacy_open;
-    const shouldReturnToMainAfterReport=action==="END"&&!legacyClose&&(hasScrap||hasRepair);
+    const shouldReturnToMainAfterReport=action==="END"&&!legacyClose&&(hasScrap||hasRepair||hasPause);
     const runningParts=(["nyilo","tok"] as SzerelesPart[]).filter(part=>state.parts[part].state==="in_progress"&&!!state.parts[part].open_id);
 
     // 5-ös eseményköteg: selejt / Javítás / Újragyártás END csak jelentés.
@@ -42262,10 +42544,14 @@ body {
             ? (outerSheetScrap||innerSheetScrap)&&state.parts.nyilo.state==="in_progress"&&!!state.parts.nyilo.open_id
             : toklecScrap&&state.parts.tok.state==="in_progress"&&!!state.parts.tok.open_id)
       : [];
-    const parts:SzerelesPart[]=!legacyClose&&hasScrap ? automaticScrapParts : requestedParts;
+    const parts:SzerelesPart[]=hasPause
+      ? []
+      : !legacyClose&&hasScrap
+        ? automaticScrapParts
+        : requestedParts;
 
     if(action==="START"&&parts.length===0){setMessage({type:"error",text:"START előtt válaszd ki a Nyílót, a Tokot vagy mindkettőt."});return;}
-    if(action==="END"&&!legacyClose&&!hasScrap&&!hasRepair&&parts.length===0){setMessage({type:"error",text:"END előtt kötelező legalább egy folyamatban lévő rész kiválasztása."});return;}
+    if(action==="END"&&!legacyClose&&!hasScrap&&!hasRepair&&!hasPause&&parts.length===0){setMessage({type:"error",text:"END előtt kötelező legalább egy folyamatban lévő rész kiválasztása."});return;}
     if(action==="START"&&!isEventTenVisualWorker()&&!isStartBarcode(confirmedCode||actionBarcode)){setMessage({type:"error",text:"Előbb olvasd be és erősítsd meg a START kódot."});return;}
     // 5-ös Szerelésnél két közvetlen END indítás is érvényes:
     // 1) az END mentése gomb külön vonalkód nélkül,
@@ -42310,13 +42596,17 @@ body {
       if(parts.some(part=>state.parts[part].state==="in_progress")){setMessage({type:"error",text:"A kiválasztott rész már folyamatban van."});return;}
       if(!newCycle&&parts.some(part=>state.parts[part].done)&&!rework){setMessage({type:"error",text:"A már kész rész újraindításához jelöld be az új munkamenetet."});return;}
       if((newCycle||rework)&&!isEventTenVisualWorker()&&!window.confirm(newCycle?"Új gyártási ciklust indítasz. A korábbi munkamenetek és időmérések megmaradnak. Folytatod?":"A már kész részt új munkamenetként indítod. A korábbi idők megmaradnak. Folytatod?"))return;
-    }else if(!legacyClose&&!hasScrap&&!hasRepair&&parts.some(part=>state.parts[part].state!=="in_progress"||!state.parts[part].open_id)){
+    }else if(!legacyClose&&!hasScrap&&!hasRepair&&!hasPause&&parts.some(part=>state.parts[part].state!=="in_progress"||!state.parts[part].open_id)){
       setMessage({type:"error",text:"Csak ténylegesen folyamatban lévő részt lehet befejezni. Frissítsd a rendelést."});return;
     }
 
     const note=(overrides?.note??endNote??"").trim();
+    const pauseReason=String(eventFivePauseReason||"").trim();
     if((hasScrap||hasRepair)&&!note){setMessage({type:"error",text:"Selejt vagy javítás/újragyártás esetén a Megjegyzés kötelező."});return;}
     if(hasRepair&&!eventFiveRepairAction){setMessage({type:"error",text:"Válaszd ki: Javítás vagy Újragyártás."});return;}
+    if(hasPause&&!pauseReason){setMessage({type:"error",text:"Szüneteltetésnél a Szüneteltetés oka mező kitöltése kötelező."});return;}
+    if(hasPause&&runningParts.length===0){setMessage({type:"error",text:"Szüneteltetés csak ténylegesen folyamatban lévő Nyíló vagy Tok munkához rögzíthető."});return;}
+    if(hasPause&&(hasScrap||hasRepair)){setMessage({type:"error",text:"A Szüneteltetés külön állapot. Selejt vagy Javítás/Újragyártás jelentéssel együtt nem menthető."});return;}
 
     if(!legacyClose&&action==="END"&&(outerSheetScrap||innerSheetScrap)&&!automaticScrapParts.includes("nyilo")){
       setMessage({type:"error",text:"Külső vagy belső lap selejt csak akkor jelenthető, ha a Nyíló ténylegesen folyamatban van. A selejtjelentés nem zárja le a Nyíló munkamenetet."});return;
@@ -42350,6 +42640,7 @@ body {
 
     batchFinalizeInFlightRef.current=true;setBusy(true);
     let committed=false;
+    let savedPauseNumber:number|null=null;
     try{
       const machine=getCurrentMachineIdForInsert();
       const routed=await fetchOpenSingleScrapReplacement(order,machine);
@@ -42381,7 +42672,7 @@ body {
       }
       const expected:Record<string,string>={};
       if(action==="END"&&!legacyClose&&hasScrap)parts.forEach(part=>{expected[part]=state.parts[part].open_id!;});
-      if(action==="END"&&!legacyClose&&!hasScrap&&!hasRepair)parts.forEach(part=>{expected[part]=state.parts[part].open_id!;});
+      if(action==="END"&&!legacyClose&&!hasScrap&&!hasRepair&&!hasPause)parts.forEach(part=>{expected[part]=state.parts[part].open_id!;});
       const logFields=action==="END"?{
         kulso_lap_selejt:outerSheetScrap,belso_lap_selejt:innerSheetScrap,toklec_selejt:toklecScrap,
         selejt_megjegyzes:(hasScrap||hasRepair)?note:null,selejt_forras_munkaallomas:hasScrap||hasRepair?machine:routed?.source_station||null,
@@ -42389,7 +42680,26 @@ body {
       }:{selejt_potlas:!!routed,selejt_forras_munkaallomas:routed?.source_station||null};
 
       let result:{state:SzerelesOrderState;saved_rows:Array<{id:string|number;part:SzerelesPart;started_at:string;ended_at?:string}>};
-      if(action==="END"&&!legacyClose&&hasScrap){
+      if(action==="END"&&!legacyClose&&hasPause){
+        const pauseAudit=await insertEventFivePauseAudit({
+          order,
+          machine,
+          state,
+          reason:pauseReason,
+          batchCode:null,
+        });
+        savedPauseNumber=pauseAudit.pauseNumber;
+        committed=true;
+        result={
+          state:pauseAudit.state,
+          saved_rows:[{
+            id:pauseAudit.id,
+            part:runningParts[0]||"nyilo",
+            started_at:pauseAudit.createdAt,
+            ended_at:pauseAudit.createdAt,
+          }],
+        };
+      }else if(action==="END"&&!legacyClose&&hasScrap){
         // 5-ös Szerelés selejtjelentés: KÜLÖN, tartós END audit sort mentünk közvetlenül
         // a work_logs táblába. Az eredeti Nyíló/Tok START sorhoz nem írunk end_time-ot,
         // ezért a tényleges munkamenet és az időmérés változatlanul folyamatban marad.
@@ -42569,7 +42879,7 @@ body {
           tokWidth:toklecScrap?cleanTokWidth:null,tokHeight:toklecScrap?cleanTokHeight:null,preparedRoute:scrapRoute
         });
         if(hasRepair&&repairRoute)await createScrapReplacementFromSheetScrap({orderNumber:order,sourceStation:machine,workLogId:savedId,reportedAt:savedAt,outerScrap:false,innerScrap:false,toklecScrap:false,note:note||null,genericScrap:true,genericScrapKind:eventFiveRepairAction,preparedRoute:repairRoute});
-        if(routed&&(!legacyClose||result.state.is_complete))await updateSingleScrapReplacement(routed,"KESZ",savedAt);
+        if(routed&&!hasPause&&(!legacyClose||result.state.is_complete))await updateSingleScrapReplacement(routed,"KESZ",savedAt);
       }
 
       // Sikeres 5-ös selejt/javítás END után a visszalépés ELŐTT tartósan
@@ -42644,6 +42954,7 @@ body {
         innerSheetScrap?"Belső lap selejt":"",
         toklecScrap?"Tokléc selejt":"",
         hasRepair?eventFiveRepairAction:"",
+        hasPause?`Szüneteltetés #${savedPauseNumber||""}`:"",
       ].filter(Boolean).join(" + ");
       const holdText=nonClosingReport
         ? ` A jelentés rögzítve${reportLabels?`: ${reportLabels}`:""}. A Szerelés rendelés folyamatban maradt, az eredeti START időmérése tovább fut.`
@@ -43463,7 +43774,7 @@ body {
     setScrapQty("");
     setOuterSheetScrap(false);
     setInnerSheetScrap(false);
-    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);
+    setToklecScrap(false);setToklecScrapWidth("");setToklecScrapHeight("");setToklecScrapSize("");setToklecScrapExtraSizes([]);setEventFivePauseEnabled(false);setEventFivePauseReason("");
     setEventFiveRepairStationKeys([]);
     setEventFiveRepairAction("");
     setTokKesz(false);
@@ -45713,6 +46024,62 @@ body {
                                        </label>;
                                      })}</div>
                                    </div>
+
+                                  <div style={{ background: "#eadcc5", border: "2px solid #c7a77b", borderRadius: 10, padding: 12, marginBottom: 10, color: "#3d2d1f" }}>
+                                    <div style={{ fontWeight: 1000, fontSize: 16, marginBottom: 8 }}>Szüneteltetés</div>
+                                    <label style={{ display: "flex", gap: 9, alignItems: "center", fontWeight: 900, cursor: "pointer" }}>
+                                      <input
+                                        type="checkbox"
+                                        checked={state.szuneteltetes}
+                                        onChange={(e) => {
+                                          const checked = e.target.checked;
+                                          setOrderState({
+                                            szuneteltetes: checked,
+                                            szuneteltetesOka: checked ? state.szuneteltetesOka : "",
+                                            ...(checked ? {
+                                              tokKesz: false,
+                                              nyiloKesz: false,
+                                              outerScrap: false,
+                                              innerScrap: false,
+                                              toklecScrap: false,
+                                              tokSzelesseg: "",
+                                              tokMagassag: "",
+                                              tokMeret: "",
+                                              tokExtraMeretek: [],
+                                            } : {}),
+                                          });
+                                        }}
+                                      />
+                                      Szüneteltetés
+                                    </label>
+                                    {state.szuneteltetes && (
+                                      <div style={{ marginTop: 10 }}>
+                                        <label style={{ display: "block", marginBottom: 6, fontWeight: 900 }}>
+                                          Szüneteltetés oka *
+                                        </label>
+                                        <textarea
+                                          value={state.szuneteltetesOka}
+                                          maxLength={250}
+                                          onChange={(e) => setOrderState({ szuneteltetesOka: e.target.value.slice(0, 250) })}
+                                          placeholder="Kötelező: írd le a szüneteltetés okát"
+                                          style={{
+                                            ...textareaStyle,
+                                            minHeight: 68,
+                                            background: "#fffaf0",
+                                            color: "#3d2d1f",
+                                            border: !state.szuneteltetesOka.trim() ? "2px solid #dc2626" : "1px solid #c7a77b",
+                                          }}
+                                        />
+                                        <div style={{ marginTop: 5, fontSize: 11, textAlign: "right", color: !state.szuneteltetesOka.trim() ? "#b91c1c" : "#6b5a45" }}>
+                                          {state.szuneteltetesOka.length}/250 karakter • kötelező
+                                        </div>
+                                      </div>
+                                    )}
+                                    <div style={{ marginTop: 8, fontSize: 12, fontWeight: 700, color: "#6b5a45" }}>
+                                      A szüneteltetés külön END állapotként könyvelődik, de a Nyíló/Tok eredeti START-ja és az eltelt idő tovább fut.
+                                    </div>
+                                  </div>
+
                                   <div style={{ background: "#542600", border: "1px solid #f59e0b", borderRadius: 10, padding: 10, marginBottom: 10 }}>
                                     <div style={{ fontWeight: 900, color: "#fde68a", marginBottom: 8 }}>Selejt pontos megjelölése</div>
                                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
@@ -45764,7 +46131,7 @@ body {
                                     )}
                                   </div>
 
-                                  {renderRequiredBatchQuantityInput(order)}
+                                  {!state.szuneteltetes && renderRequiredBatchQuantityInput(order)}
 
                                   <textarea
                                     value={endOrderNotes[order] || ""}
@@ -46544,6 +46911,88 @@ body {
                   )}
 
                   {isDoorTwoPartWorker(activeWorker) && (requiresSzerelesStartParts() ? renderSzerelesEndPartPicker() : null)}
+
+                  {isExactEventFiveSzerelesWorker(activeWorker) && (
+                    <div
+                      style={{
+                        marginBottom: 18,
+                        padding: 16,
+                        borderRadius: 14,
+                        border: "2px solid #c7a77b",
+                        background: "#eadcc5",
+                        color: "#3d2d1f",
+                      }}
+                    >
+                      <div style={{ fontWeight: 1000, fontSize: 17, marginBottom: 8 }}>Szüneteltetés</div>
+                      <label style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 900, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={eventFivePauseEnabled}
+                          onChange={(event) => {
+                            const checked = event.target.checked;
+                            setEventFivePauseEnabled(checked);
+                            if (!checked) {
+                              setEventFivePauseReason("");
+                              return;
+                            }
+                            setSzerelesEndParts([]);
+                            setOuterSheetScrap(false);
+                            setInnerSheetScrap(false);
+                            setToklecScrap(false);
+                            setToklecScrapWidth("");
+                            setToklecScrapHeight("");
+                            setToklecScrapSize("");
+                            setToklecScrapExtraSizes([]);
+                            setEventFiveRepairStationKeys([]);
+                            setEventFiveRepairAction("");
+                          }}
+                          style={{ width: 22, height: 22, accentColor: "#8b6f47" }}
+                        />
+                        Szüneteltetés
+                      </label>
+
+                      {eventFivePauseEnabled && (
+                        <div style={{ marginTop: 12 }}>
+                          <label style={{ display: "block", marginBottom: 8, fontWeight: 900 }}>
+                            Szüneteltetés oka *
+                          </label>
+                          <textarea
+                            value={eventFivePauseReason}
+                            maxLength={250}
+                            required
+                            onChange={(event) => setEventFivePauseReason(event.target.value.slice(0, 250))}
+                            onBlur={() => {
+                              if (step === 6 && pendingAction === "END") {
+                                focusScannerInputAfterEditableBlur(actionBarcodeInputRef);
+                              }
+                            }}
+                            placeholder="Kötelező: írd le a szüneteltetés okát"
+                            style={{
+                              ...textareaStyle,
+                              minHeight: 78,
+                              background: "#fffaf0",
+                              color: "#3d2d1f",
+                              border: !eventFivePauseReason.trim() ? "2px solid #dc2626" : "1px solid #c7a77b",
+                            }}
+                          />
+                          <div
+                            style={{
+                              marginTop: 5,
+                              textAlign: "right",
+                              color: !eventFivePauseReason.trim() ? "#b91c1c" : "#6b5a45",
+                              fontSize: 11,
+                            }}
+                          >
+                            {eventFivePauseReason.length}/250 karakter • kötelező
+                          </div>
+                        </div>
+                      )}
+
+                      <div style={{ marginTop: 10, fontSize: 12, fontWeight: 700, color: "#6b5a45" }}>
+                        END vagy END mentése esetén külön Szüneteltetés audit készül. A Nyíló/Tok eredeti START-ja nem zárul le, ezért az eltelt idő tovább fut.
+                      </div>
+                    </div>
+                  )}
 
                   {isPanelTwoPartWorker(activeWorker) && (
                     <div style={{ marginBottom: 18, padding: 16, borderRadius: 14, border: "2px solid #22c55e", background: "linear-gradient(145deg, #052e16 0%, #064e3b 100%)" }}>
