@@ -18927,7 +18927,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     rawRow: ProductionCardRow | ProductionCardPriorityRow | ScrapReplacementRow | ProductionCardBacklogRow,
     fallbackDate: string
   ): Promise<void> {
-    if (getStationPlanIdentityKey(machineId) !== "szereles") return;
+    if (!["szereles", "asztalos"].includes(getStationPlanIdentityKey(machineId))) return;
     if (terminalEntryLayoutEditorOpen) return;
 
     const orderNumber = getSzerelesPlanDetailOrderNumber(dataSource, rawRow);
@@ -18966,7 +18966,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       try {
         previewWindow.document.body.innerHTML = `<div style="font-family:Arial,sans-serif;padding:32px;color:#7f1d1d;background:#f5f5f5;min-height:100vh"><h2>A PDF nem készíthető el</h2><p>${String(detail).replace(/[<>&]/g, "")}</p></div>`;
       } catch { /* no-op */ }
-      setMessage({ type: "error", text: `A szerelési rendelés részletező PDF-je nem készíthető el: ${detail}` });
+      setMessage({ type: "error", text: `A rendelés részletező PDF-je nem készíthető el: ${detail}` });
     }
   }
 
@@ -18999,7 +18999,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const urgentScrapRows = data.scrapReplacementRows || [];
     const backlogRows = data.backlogRows || [];
 
-    // A Szerelés kártya sor-kattintása rövid késleltetést kap, hogy a normál
+    // A Szerelés és Asztalos kártya sor-kattintása rövid késleltetést kap, hogy a normál
     // böngészős dupla/tripla kattintásos szövegkijelölés ne nyissa meg közben
     // a részletező PDF-et. Egyszerű kattintáskor a meglévő funkció megmarad.
     let pendingSzerelesRowClickTimer: number | null = null;
@@ -19246,14 +19246,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     const canOpenSzerelesDetailPdfRow = Boolean(
                       terminalEntrySurface
                       && !terminalEntryLayoutEditorOpen
-                      && getStationPlanIdentityKey(data.stationName) === "szereles"
+                      && ["szereles", "asztalos"].includes(getStationPlanIdentityKey(data.stationName))
                     );
 
                     return (
                       <tr
                         key={`${table.id}-${rowKey}`}
                         data-nivo-scroll-anchor={`production-card-row:${normalizeLooseText(data.stationName)}:${table.id}:${rowKey}`}
-                        title={canOpenSzerelesDetailPdfRow ? "Kattints a sorra a szerelési _terv részletező PDF megnyitásához" : undefined}
+                        title={canOpenSzerelesDetailPdfRow ? "Kattints a sorra a rendelési részletező PDF megnyitásához" : undefined}
                         onClick={canOpenSzerelesDetailPdfRow ? (event) => {
                           if (typeof window === "undefined") return;
 
@@ -19472,7 +19472,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                           return (
                             <td
                               key={`${table.id}-${rowKey}-${fieldId}`}
-                              title={canOpenSzerelesDetailPdf ? `${String(value || "Rendelés")} · A teljes sor kattintható a szerelési _terv részletező PDF megnyitásához` : title}
+                              title={canOpenSzerelesDetailPdf ? `${String(value || "Rendelés")} · A teljes sor kattintható a rendelési részletező PDF megnyitásához` : title}
                               draggable={false}
                               onDragStart={(event) => event.preventDefault()}
                               onPointerDown={(event) => {
