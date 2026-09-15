@@ -282,6 +282,8 @@ type OrderProductionMeta = {
   szereles_scrap_tok_meret?: string | null;
   terv_sor_id?: string | null;
   terv_megnevezes?: string | null;
+  // PrimaPower / Csőlézer: a konkrét *_terv sor futó, soha újra nem használt azonosítója.
+  terv_futo_sorszam?: number | null;
   ujragyartas: boolean;
   ujragyartas_sorszam: number | null;
   gyartas_tipus: "egyedi" | "keszlet";
@@ -341,6 +343,8 @@ type WorkLogRow = {
   ujragyartas_sorszam?: number | null;
   gyartas_tipus?: string | null;
   gyartasi_kor?: number | null;
+  // PrimaPower / Csőlézer: pontos tervsor-kapcsolat.
+  terv_futo_sorszam?: number | null;
   operation_code?: BatchOperationCode | null;
   recurring_instance_id?: string | null;
   recurring_segment_id?: string | null;
@@ -1145,6 +1149,7 @@ type ProductionCardPlanSourceRow = {
   elkeszules_datum?: string | null;
   tipus?: string | null;
   excel_sorrend?: string | number | null;
+  futo_sorszam?: string | number | null;
 };
 
 type QuantityPartialPlanState = "reszjelentes" | "nyitott_maradek" | "teljes" | null;
@@ -1475,6 +1480,8 @@ type ProductionCardRow = {
   productName: string;
   excelOrder: number;
   sourceRowId: string;
+  // Belső azonosító, a kártyán nem jelenik meg.
+  planRunSequence?: number | null;
   quantity: number | null;
   completionDate: string;
   productType: string;
@@ -2781,6 +2788,8 @@ function registerStationPlanFields(stationName: string, rows: Array<Record<strin
   const existing = STATION_PLAN_DISCOVERED_FIELDS.get(stationKey) || [];
   const fields = new Map(existing.map((field) => [field.key, field]));
   rows.forEach((row) => Object.keys(row || {}).forEach((key) => {
+    // A futó sorszám kizárólag belső sorazonosító, nem megjelenítendő kártyamező.
+    if (key === "futo_sorszam") return;
     if (key.startsWith("__") || fields.has(key)) return;
     if (stationKey === "primapower" && PRIMAPOWER_EXACT_FIELD_NAMES.has(key)) return;
     const known = [...(STATION_PLAN_EXCEL_FIELD_DEFINITIONS[stationKey] || []), ...(LEGACY_STATION_PLAN_FIELD_DEFINITIONS[stationKey] || [])]
@@ -5839,6 +5848,27 @@ function getExactProductionCardPlanTableName(stationName: string): string {
   return buildStationPlanTableName(stationName);
 }
 
+// PrimaPower és Csőlézer tervsorai ugyanazzal a rendelés-/gyártási számmal
+// később újra előfordulhatnak. Ezeknél kizárólag a monoton futó sorszám köti
+// össze a konkrét tervsort a START/END munkanaplóval.
+function usesPlanRunSequence(stationName: string | null | undefined): boolean {
+  const key = getStationPlanIdentityKey(stationName);
+  return key === "primapower" || key === "csolezer";
+}
+
+function parsePlanRunSequence(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : null;
+}
+
+function getPlanRunSequenceFromPlanData(data: Record<string, unknown> | null | undefined): number | null {
+  if (!data) return null;
+  const nested = data.adat && typeof data.adat === "object" && !Array.isArray(data.adat)
+    ? data.adat as Record<string, unknown>
+    : {};
+  return parsePlanRunSequence(data.futo_sorszam ?? nested.futo_sorszam);
+}
+
 
 function getQuantityPartialPlanMetadata(planData: Record<string, unknown> | null | undefined): {
   state: QuantityPartialPlanState;
@@ -6500,6 +6530,7 @@ function normalizeOrderProductionMeta(value: unknown): OrderProductionMeta {
     szereles_scrap_tok_meret: candidate.szereles_scrap_tok_meret == null ? null : String(candidate.szereles_scrap_tok_meret),
     terv_sor_id: candidate.terv_sor_id == null ? null : String(candidate.terv_sor_id),
     terv_megnevezes: candidate.terv_megnevezes == null ? null : String(candidate.terv_megnevezes),
+    terv_futo_sorszam: parsePlanRunSequence(candidate.terv_futo_sorszam),
     visual_source: visualSource,
     visual_source_row_id: candidate.visual_source_row_id == null ? null : String(candidate.visual_source_row_id),
     visual_source_item_key: candidate.visual_source_item_key == null ? null : String(candidate.visual_source_item_key),
@@ -16182,6 +16213,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       productName: string;
       excelOrder: number;
       sourceRowId: string;
+      planRunSequence: number | null;
       quantity: number | null;
       completionDate: string;
       productType: string;
@@ -16218,6 +16250,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               : String(row.megnevezes ?? "").trim(),
             excelOrder: parsedExcelOrder === null ? index + 1 : parsedExcelOrder,
             sourceRowId: String(row.id ?? `${dateKey}-${index + 1}`),
+            planRunSequence: parsePlanRunSequence(raw.futo_sorszam),
             quantity: parseSpreadsheetNumber(row.mennyiseg),
             completionDate: String(row.elkeszules_datum ?? dateKey).slice(0, 10),
             productType: String(row.tipus ?? "").trim(),
@@ -16541,7 +16574,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       ...prioritySzerelesOrderNumbers,
     ]));
     const logs: WorkLogRow[] = [];
-    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, tok_tenyleges_perc, nyilo_tenyleges_perc, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, terv_futo_sorszam, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, tok_tenyleges_perc, nyilo_tenyleges_perc, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const chunk = orderNumbers.slice(index, index + 100);
       let logData: unknown[] | null = null;
@@ -16843,6 +16876,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           // START/END eseményeket láthatja. Így az előző 300 -> 150 END nem jelöli
           // automatikusan késznek az új 150 db-os maradék sort.
           const isExactSzinterBacklog = getStationPlanIdentityKey(cleanStationName) === "szinter";
+          const runSequence = usesPlanRunSequence(cleanStationName)
+            ? getPlanRunSequenceFromPlanData(planRow.planData)
+            : null;
+          const isRunScopedBacklog = Boolean(runSequence);
           const sameOrderRowCount = szinterPlanRowCounts.get(normalizeLooseText(orderNumber)) || groupRows.length;
           const bundleTenScopedRowLogs = filterBundleTenVisualLogsForCardRow(
             rowLogs,
@@ -16857,17 +16894,29 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             String(planRow.id),
             `backlog:${String(planRow.id)}`
           );
-          const effectiveRowLogs = isExactSzinterBacklog
-            ? filterNivoPlanRowLogs(bundleTenScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
-            : isOpenQuantityRemainder
-              ? filterWorkLogsForQuantityPlanLifecycle(bundleTenScopedRowLogs, planRow.planData)
-              : bundleTenScopedRowLogs;
-          const effectiveRowBatchStarts = isExactSzinterBacklog
-            ? filterNivoPlanRowBatches(bundleTenScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
-            : isOpenQuantityRemainder
-              ? filterProductionBatchesForQuantityPlanLifecycle(bundleTenScopedRowBatchStarts, planRow.planData)
-              : bundleTenScopedRowBatchStarts;
-          const exactRowStatusRequired = isOpenQuantityRemainder || isExactSzinterBacklog || hasBundleTenScopedGroupActivity;
+          const runScopedRowLogs = runSequence
+            ? bundleTenScopedRowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === runSequence)
+            : bundleTenScopedRowLogs;
+          const runScopedRowBatchStarts = runSequence
+            ? bundleTenScopedRowBatchStarts.filter((batch) =>
+                parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam) === runSequence
+              )
+            : bundleTenScopedRowBatchStarts;
+          const effectiveRowLogs = isRunScopedBacklog
+            ? runScopedRowLogs
+            : isExactSzinterBacklog
+              ? filterNivoPlanRowLogs(runScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
+              : isOpenQuantityRemainder
+                ? filterWorkLogsForQuantityPlanLifecycle(runScopedRowLogs, planRow.planData)
+                : runScopedRowLogs;
+          const effectiveRowBatchStarts = isRunScopedBacklog
+            ? runScopedRowBatchStarts
+            : isExactSzinterBacklog
+              ? filterNivoPlanRowBatches(runScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
+              : isOpenQuantityRemainder
+                ? filterProductionBatchesForQuantityPlanLifecycle(runScopedRowBatchStarts, planRow.planData)
+                : runScopedRowBatchStarts;
+          const exactRowStatusRequired = isRunScopedBacklog || isOpenQuantityRemainder || isExactSzinterBacklog || hasBundleTenScopedGroupActivity;
           const rowWorkerStatus = exactRowStatusRequired
             ? resolveProductionCardWorkers(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
             : workerStatus;
@@ -16945,7 +16994,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           // A Szinter lemaradási sor státuszát kizárólag a tényleges munkamenet
           // vezérli: START -> Folyamatban, az utolsó nyitott START END-je -> Kész.
           // A darabszám önmagában nem rejtheti el és nem mozgathatja át a sort.
-          const hasProgress = isExactSzinterBacklog
+          const hasProgress = isExactSzinterBacklog || isRunScopedBacklog
             ? effectiveRowStatus === "in-progress"
             : completedQuantity > 0 || effectiveRowStatus === "in-progress";
           const status: ProductionMonitorStatus = completed ? "done" : hasProgress ? "in-progress" : "waiting";
@@ -17317,17 +17366,29 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           crossStationScrapFlags:crossStationScrapFlagsByOrder.get(normalizeLooseText(planRow.orderNumber))||{}
         };
       }
+      const runSequence = usesPlanRunSequence(cleanStationName)
+        ? (planRow.planRunSequence ?? getPlanRunSequenceFromPlanData(planRow.planData))
+        : null;
+      const runScopedOrderLogs = runSequence
+        ? allOrderLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === runSequence)
+        : allOrderLogs;
       const rowLogs = filterBundleTenVisualLogsForCardRow(
-        allOrderLogs,
+        runScopedOrderLogs,
         "production-plan",
         planRow.sourceRowId,
         `production-plan:${planRow.sourceRowId}`
       );
+      const orderBatchStarts = batchStarts.filter((batch) =>
+        Array.isArray(batch.order_ids) &&
+        batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(planRow.orderNumber))
+      );
+      const runScopedBatchStarts = runSequence
+        ? orderBatchStarts.filter((batch) =>
+            parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, planRow.orderNumber).terv_futo_sorszam) === runSequence
+          )
+        : orderBatchStarts;
       const rowBatchStarts = filterBundleTenVisualBatchesForCardRow(
-        batchStarts.filter((batch) =>
-          Array.isArray(batch.order_ids) &&
-          batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(planRow.orderNumber))
-        ),
+        runScopedBatchStarts,
         planRow.orderNumber,
         "production-plan",
         planRow.sourceRowId,
@@ -39539,6 +39600,7 @@ body {
           ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
           gyartas_tipus: orderProductionMeta.gyartas_tipus,
           gyartasi_kor: orderProductionMeta.gyartasi_kor,
+          terv_futo_sorszam: orderProductionMeta.terv_futo_sorszam ?? null,
           order_note: orderNoteClean || null,
           batch_note: batchNoteClean || null,
           note: buildStructuredNote([orderNoteClean, batchNoteClean].filter(Boolean).join(" | ") || null, {
@@ -39573,6 +39635,7 @@ body {
             ujragyartas: orderProductionMeta.ujragyartas,
             ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
             gyartas_tipus: orderProductionMeta.gyartas_tipus,
+            terv_futo_sorszam: orderProductionMeta.terv_futo_sorszam ?? null,
           }),
           scrap_qty: null,
           darab: reportedDarab,
@@ -40172,6 +40235,117 @@ body {
     };
   }
 
+  type PlanRunIdentity = {
+    rowId: string;
+    runSequence: number;
+    productName: string;
+    completionDate: string;
+  };
+
+  async function resolvePlanRunIdentityForOrder(
+    stationName: string,
+    orderId: string
+  ): Promise<PlanRunIdentity | null> {
+    if (!supabase || !usesPlanRunSequence(stationName)) return null;
+    const cleanOrder = String(orderId || "").trim();
+    if (!cleanOrder) return null;
+
+    const tableName = getExactProductionCardPlanTableName(stationName);
+    const { data: planData, error: planError } = await supabase
+      .from(tableName)
+      .select("*")
+      .eq("sorszam", cleanOrder)
+      .not("futo_sorszam", "is", null)
+      .order("elkeszules_datum", { ascending: true })
+      .order("excel_sorrend", { ascending: true, nullsFirst: false })
+      .order("futo_sorszam", { ascending: true })
+      .limit(1000);
+    if (planError) throw new Error(`A(z) ${tableName} futó sorszáma nem olvasható: ${normalizeError(planError)}`);
+
+    const planRows = ((planData || []) as Array<Record<string, unknown>>)
+      .map((raw) => {
+        const runSequence = parsePlanRunSequence(raw.futo_sorszam);
+        if (!runSequence) return null;
+        const nested = raw.adat && typeof raw.adat === "object" && !Array.isArray(raw.adat)
+          ? raw.adat as Record<string, unknown>
+          : {};
+        const productName = isPrimaPowerPlanStation(stationName)
+          ? String(raw.termek ?? nested.termek ?? raw.megnevezes ?? "").trim()
+          : String(raw.megnevezes ?? "").trim();
+        return {
+          rowId: String(raw.id ?? ""),
+          runSequence,
+          productName,
+          completionDate: String(raw.elkeszules_datum ?? "").slice(0, 10),
+          excelOrder: parseSpreadsheetNumber(raw.excel_sorrend) ?? Number.MAX_SAFE_INTEGER,
+        };
+      })
+      .filter((row): row is PlanRunIdentity & { excelOrder: number } => Boolean(row && row.rowId));
+    if (planRows.length === 0) return null;
+
+    const { data: logData, error: logError } = await supabase
+      .from("work_logs")
+      .select("terv_futo_sorszam, action, start_time, start_timestamp, end_time, end_timestamp")
+      .eq("order_number", cleanOrder)
+      .eq("machine_id", stationName)
+      .not("terv_futo_sorszam", "is", null)
+      .limit(10000);
+    if (logError) throw logError;
+
+    const completed = new Set<number>();
+    const active = new Set<number>();
+    ((logData || []) as Array<Record<string, unknown>>).forEach((log) => {
+      const runSequence = parsePlanRunSequence(log.terv_futo_sorszam);
+      if (!runSequence) return;
+      const isEnded = Boolean(log.end_time || log.end_timestamp) || String(log.action || "").trim().toUpperCase() === "END";
+      const isStarted = Boolean(log.start_time || log.start_timestamp) || String(log.action || "").trim().toUpperCase() === "START";
+      if (isEnded) completed.add(runSequence);
+      else if (isStarted) active.add(runSequence);
+    });
+
+    const today = getLocalDateKey(new Date());
+    const candidateRank = (row: PlanRunIdentity & { excelOrder: number }): [number, string, number, number] => {
+      if (row.completionDate === today) return [0, row.completionDate, row.excelOrder, row.runSequence];
+      if (row.completionDate && row.completionDate < today) return [1, row.completionDate, row.excelOrder, row.runSequence];
+      return [2, row.completionDate || "9999-12-31", row.excelOrder, row.runSequence];
+    };
+    const compareRank = (left: PlanRunIdentity & { excelOrder: number }, right: PlanRunIdentity & { excelOrder: number }): number => {
+      const a = candidateRank(left);
+      const b = candidateRank(right);
+      return a[0] - b[0] || a[1].localeCompare(b[1]) || a[2] - b[2] || a[3] - b[3];
+    };
+
+    const unused = planRows.filter((row) => !completed.has(row.runSequence) && !active.has(row.runSequence)).sort(compareRank);
+    const selected = unused[0]
+      || [...planRows].sort((left, right) => {
+          const leftToday = left.completionDate === today ? 1 : 0;
+          const rightToday = right.completionDate === today ? 1 : 0;
+          if (leftToday !== rightToday) return rightToday - leftToday;
+          const dateDiff = right.completionDate.localeCompare(left.completionDate);
+          return dateDiff !== 0 ? dateDiff : right.runSequence - left.runSequence;
+        })[0];
+
+    return selected
+      ? { rowId: selected.rowId, runSequence: selected.runSequence, productName: selected.productName, completionDate: selected.completionDate }
+      : null;
+  }
+
+  async function attachPlanRunIdentityToMeta(
+    stationName: string,
+    orderId: string,
+    meta: OrderProductionMeta
+  ): Promise<OrderProductionMeta> {
+    if (!usesPlanRunSequence(stationName) || parsePlanRunSequence(meta.terv_futo_sorszam)) return meta;
+    const identity = await resolvePlanRunIdentityForOrder(stationName, orderId);
+    if (!identity) return meta;
+    return {
+      ...meta,
+      terv_futo_sorszam: identity.runSequence,
+      terv_sor_id: meta.terv_sor_id || identity.rowId,
+      terv_megnevezes: meta.terv_megnevezes || identity.productName || null,
+    };
+  }
+
   async function prepareOrderProductionMeta(
     orderId: string,
     askForConfirmation: boolean
@@ -40181,10 +40355,13 @@ body {
     const currentMachineId = getCurrentMachineIdForInsert();
     const productType = await readOrderProductionTypeAtCurrentStation(cleanOrderId);
     const isStock = isStockProductionType(productType);
+    const planRunIdentity = usesPlanRunSequence(currentMachineId)
+      ? await resolvePlanRunIdentityForOrder(currentMachineId, cleanOrderId)
+      : null;
 
     const { data, error } = await supabase
       .from("work_logs")
-      .select("id, action, created_at, end_time, end_timestamp, ujragyartas, ujragyartas_sorszam")
+      .select("id, action, created_at, end_time, end_timestamp, ujragyartas, ujragyartas_sorszam, terv_futo_sorszam")
       .eq("order_number", cleanOrderId)
       .eq("machine_id", currentMachineId)
       .order("created_at", { ascending: false })
@@ -40198,7 +40375,9 @@ body {
       end_timestamp?: string | null;
       ujragyartas?: boolean | null;
       ujragyartas_sorszam?: number | null;
-    }>).filter((row) => Boolean(row.end_time || row.end_timestamp) || String(row.action || "").toUpperCase() === "END");
+      terv_futo_sorszam?: number | null;
+    }>).filter((row) => Boolean(row.end_time || row.end_timestamp) || String(row.action || "").toUpperCase() === "END")
+      .filter((row) => !planRunIdentity || parsePlanRunSequence(row.terv_futo_sorszam) === planRunIdentity.runSequence);
 
     if (isStock || completedRows.length === 0) {
       return {
@@ -40208,6 +40387,11 @@ body {
           ujragyartas_sorszam: null,
           gyartas_tipus: isStock ? "keszlet" : "egyedi",
           gyartasi_kor: null,
+          ...(planRunIdentity ? {
+            terv_futo_sorszam: planRunIdentity.runSequence,
+            terv_sor_id: planRunIdentity.rowId,
+            terv_megnevezes: planRunIdentity.productName || null,
+          } : {}),
         },
       };
     }
@@ -40231,6 +40415,11 @@ body {
         ujragyartas_sorszam: confirmed ? nextReproductionNumber : null,
         gyartas_tipus: "egyedi",
         gyartasi_kor: null,
+        ...(planRunIdentity ? {
+          terv_futo_sorszam: planRunIdentity.runSequence,
+          terv_sor_id: planRunIdentity.rowId,
+          terv_megnevezes: planRunIdentity.productName || null,
+        } : {}),
       },
     };
   }
@@ -40290,6 +40479,7 @@ body {
     ujragyartas_sorszam?: number | null;
     szereles_start_reszek?: string[] | null;
     note?: string | null;
+    terv_futo_sorszam?: number | null;
   } | null> {
     if (!supabase) return null;
 
@@ -40299,7 +40489,7 @@ body {
 
     let response = await supabase
       .from("work_logs")
-      .select("id, order_number, machine_id, start_time, end_time, start_timestamp, end_timestamp, action, created_at, ujragyartas, ujragyartas_sorszam, szereles_start_reszek, note, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc")
+      .select("id, order_number, machine_id, start_time, end_time, start_timestamp, end_timestamp, action, created_at, ujragyartas, ujragyartas_sorszam, szereles_start_reszek, note, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, terv_futo_sorszam")
       .eq("order_number", cleanOrderId)
       .eq("machine_id", currentMachineId)
       .not("start_time", "is", null)
@@ -40321,7 +40511,7 @@ body {
     if (!row) {
       response = await supabase
         .from("work_logs")
-        .select("id, order_number, machine_id, start_time, end_time, start_timestamp, end_timestamp, action, created_at, ujragyartas, ujragyartas_sorszam, szereles_start_reszek, note, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc")
+        .select("id, order_number, machine_id, start_time, end_time, start_timestamp, end_timestamp, action, created_at, ujragyartas, ujragyartas_sorszam, szereles_start_reszek, note, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, terv_futo_sorszam")
         .eq("order_number", cleanOrderId)
         .eq("machine_id", currentMachineId)
         .eq("action", "START")
@@ -40344,6 +40534,7 @@ body {
       ujragyartas_sorszam?: number | null;
       szereles_start_reszek?: string[] | null;
       note?: string | null;
+      terv_futo_sorszam?: number | null;
     };
   }
 
@@ -40753,6 +40944,7 @@ body {
       const nowIso = new Date().toISOString();
       const workerNameForSave = activeWorker["Teljes nev"];
       const currentMachineId = getCurrentMachineIdForInsert();
+      orderProductionMeta = await attachPlanRunIdentityToMeta(currentMachineId, finalOrder, orderProductionMeta);
 
       // Közvetlenül az INSERT előtt még egyszer ellenőrzünk, hogy a beolvasás/ellenőrzés
       // óta ne tudjon egy csoporttárs munkaállomás ugyanazzal a rendeléssel START-ot nyitni.
@@ -40792,6 +40984,7 @@ body {
           ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
           gyartas_tipus: orderProductionMeta.gyartas_tipus,
           gyartasi_kor: orderProductionMeta.gyartasi_kor,
+          terv_futo_sorszam: orderProductionMeta.terv_futo_sorszam ?? null,
           szereles_start_reszek: requiresSzerelesStartParts() ? selectedStartPartsForSave : null,
           note: buildStructuredNote("Egyedi rendelés azonnali rögzítése", {
             worker_name: workerNameForSave,
@@ -40816,6 +41009,7 @@ body {
             ujragyartas: orderProductionMeta.ujragyartas,
             ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
             gyartas_tipus: orderProductionMeta.gyartas_tipus,
+            terv_futo_sorszam: orderProductionMeta.terv_futo_sorszam ?? null,
             event_bundle: workerEventKoteg,
             ...(bundleTenSelectionForStart ? {
               visual_source: bundleTenSelectionForStart.source,
@@ -41059,6 +41253,12 @@ body {
         getProductionMetaForOrder(batchOrderProductionMeta, order),
       ])
     ) as Record<string, OrderProductionMeta>;
+
+    if (usesPlanRunSequence(currentMachineId)) {
+      for (const order of ordersForSave) {
+        productionMetaForSave[order] = await attachPlanRunIdentityToMeta(currentMachineId, order, productionMetaForSave[order]);
+      }
+    }
 
     if (isEventTenVisualWorker()) {
       bundleTenRowsForSave.forEach((row) => {
@@ -42708,6 +42908,9 @@ body {
           };
 
       const currentMachineId = getCurrentMachineIdForInsert();
+      if (action === "START") {
+        startProductionMeta = await attachPlanRunIdentityToMeta(currentMachineId, finalOrderNumber, startProductionMeta);
+      }
       const nowForSave = getLocalTimestampWithOffset();
       const activeScrapReplacement = routedScrapReplacementForStart
         || await fetchOpenSingleScrapReplacement(finalOrderNumber, currentMachineId);
@@ -42893,6 +43096,7 @@ body {
           start_timestamp: linkedStartTime,
           end_time: nowForSave,
           end_timestamp: nowForSave,
+          terv_futo_sorszam: openLog.terv_futo_sorszam ?? null,
           szereles_start_reszek: isDoorTwoPartEnd ? (linkedStartParts.length ? linkedStartParts : null) : null,
           note: buildStructuredNote(finalNote, {
             ...auditMetadata,
@@ -42906,6 +43110,7 @@ body {
                   terv_megnevezes: linkedStartMetadata.terv_megnevezes || null,
                 }
               : {}),
+            terv_futo_sorszam: openLog.terv_futo_sorszam ?? linkedStartMetadata.terv_futo_sorszam ?? null,
             ...(linkedStartMetadata.visual_source ? {
               visual_source: linkedStartMetadata.visual_source,
               visual_source_label: linkedStartMetadata.visual_source_label || null,
@@ -43090,6 +43295,7 @@ body {
           ujragyartas_sorszam: startProductionMeta.ujragyartas_sorszam,
           gyartas_tipus: startProductionMeta.gyartas_tipus,
           gyartasi_kor: startProductionMeta.gyartasi_kor,
+          terv_futo_sorszam: startProductionMeta.terv_futo_sorszam ?? null,
           szereles_start_reszek: requiresSzerelesStartParts() ? normalizeSzerelesStartParts(szerelesStartParts) : null,
           note: buildStructuredNote(finalNote, {
             ...auditMetadata,
@@ -43100,6 +43306,7 @@ body {
             ujragyartas: startProductionMeta.ujragyartas,
             ujragyartas_sorszam: startProductionMeta.ujragyartas_sorszam,
             gyartas_tipus: startProductionMeta.gyartas_tipus,
+            terv_futo_sorszam: startProductionMeta.terv_futo_sorszam ?? null,
           }),
           scrap_qty: finalScrapQty,
           kulso_lap_selejt: false,
