@@ -3828,7 +3828,7 @@ function createDefaultProductionMonitorProfile(
     id,
     name,
     planStatusFilter,
-    dateBasis: "elkeszules_datum",
+    dateBasis: "kiszallitasi_datum",
     themePresetId: "industrial-night",
     zoomPercent: 100,
     theme,
@@ -4976,10 +4976,10 @@ function normalizeProductionMonitorProfile(value: unknown, index: number): Produ
     ? rawFilter
     : inferredFilter;
   const fallback = createDefaultProductionMonitorProfile(`Monitor ${index + 1}`, `monitor-${index + 1}`, planStatusFilter);
-  const rawDateBasis = String((raw as { dateBasis?: unknown }).dateBasis || "");
-  const dateBasis: ProductionMonitorDateBasis = rawDateBasis === "kiszallitasi_datum"
-    ? "kiszallitasi_datum"
-    : "elkeszules_datum";
+  // A Termelési monitor egyetlen dátumforrása az atvetel_adat.szerelesi_idopont.
+  // A dateBasis mezőt kompatibilitásból megtartjuk a mentett profilokban,
+  // de a korábbi Elkészülési dátum választás többé nem használható.
+  const dateBasis: ProductionMonitorDateBasis = "kiszallitasi_datum";
   const profileTheme = normalizeProductionMonitorTheme(raw.theme);
   let tables: ProductionMonitorTableConfig[] = [];
 
@@ -21420,6 +21420,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const monitorTitleFontSize = Math.max(16, Math.round(profileTheme.titleFontSize * zoomRatio));
     const activeMonitorStatusLabel = getProductionMonitorPlanStatusLabel(activeProductionMonitorProfile.planStatusFilter);
 
+    const shiftProductionMonitorShippingDateRange = (direction: -1 | 1): void => {
+      const fallback = getLocalDateKey(new Date());
+      const startKey = /^\d{4}-\d{2}-\d{2}$/.test(productionMonitorDate) ? productionMonitorDate : fallback;
+      const endKey = /^\d{4}-\d{2}-\d{2}$/.test(productionMonitorDateTo) ? productionMonitorDateTo : startKey;
+      const start = new Date(`${startKey}T12:00:00`);
+      const end = new Date(`${endKey}T12:00:00`);
+      start.setDate(start.getDate() + direction);
+      end.setDate(end.getDate() + direction);
+      const nextFrom = getLocalDateKey(start);
+      const nextTo = getLocalDateKey(end);
+      setProductionMonitorDate(nextFrom);
+      setProductionMonitorDateTo(nextTo);
+      void loadProductionMonitor(
+        nextFrom,
+        activeProductionMonitorProfile.planStatusFilter,
+        nextTo,
+        "kiszallitasi_datum"
+      );
+    };
+
     const setEditorProductionMonitorFieldOrder = (
       value: React.SetStateAction<string[]>
     ): void => {
@@ -21673,7 +21693,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={{ padding: 30, color: theme.subtitleText, textAlign: "center", fontSize: 17 }}>A kiválasztott naphoz nincs aktív termelési terv.</div>
           ) : productionMonitorData.rows.length === 0 ? (
             <div style={{ padding: 30, color: theme.subtitleText, textAlign: "center", fontSize: 17 }}>
-              A kiválasztott időszakban nincs „{activeMonitorStatusLabel}” státuszú rendelés a szereles_terv napi tervében.
+              A kiválasztott kiszállítási időszakban nincs megjeleníthető „{activeMonitorStatusLabel}” rendelés az atvetel_adat táblában.
             </div>
           ) : runtime.visibleFieldIds.length === 0 ? (
             <div style={{ padding: 30, color: theme.subtitleText, textAlign: "center", fontSize: 17 }}>
@@ -21914,21 +21934,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       : `Nincs aktív terv · ${productionMonitorDate} → ${productionMonitorDateTo}`}
                   </div>
                 )}
-                <div
-                  style={{
-                    display: "inline-flex",
-                    marginTop: standalone ? 0 : 6,
-                    padding: standalone ? "2px 6px" : "5px 9px",
-                    borderRadius: 999,
-                    border: `1px solid ${profileTheme.borderColor}`,
-                    background: profileTheme.headerPanelBackground,
-                    color: profileTheme.headerPanelText,
-                    fontSize: standalone ? 10 : 12,
-                    fontWeight: 900,
-                  }}
-                >
-                  Szűrés alapja: {activeProductionMonitorProfile.dateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülési dátum"}
-                </div>
                 {profileTheme.showLastUpdated && (
                   <div style={{ color: profileTheme.subtitleText, opacity: 0.82, fontSize: standalone ? 10 : 12, marginTop: standalone ? 0 : 4 }}>
                     Utolsó adatfrissítés: {productionMonitorData.lastUpdatedAt ? formatDateTime(productionMonitorData.lastUpdatedAt) : "-"}
@@ -21969,7 +21974,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               </select>
               {standalone ? (
                 <div
-                  title="A külön monitor mindig a mai Szerelés napi tervét mutatja"
+                  title="A külön monitor mindig a mai kiszállítási dátum rendeléseit mutatja"
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -21986,35 +21991,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     boxSizing: "border-box",
                   }}
                 >
-                  Mai dátum: {formatDateOnly(`${getLocalDateKey(new Date())}T12:00:00`)}
+                  Mai kiszállítás: {formatDateOnly(`${getLocalDateKey(new Date())}T12:00:00`)}
                 </div>
               ) : (
                 <>
-                  <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
-                    <span>Dátum alapja</span>
-                    <select
-                      value={activeProductionMonitorProfile.dateBasis}
-                      onChange={(event) => {
-                        const nextBasis = event.target.value === "kiszallitasi_datum"
-                          ? "kiszallitasi_datum"
-                          : "elkeszules_datum";
-                        updateActiveProductionMonitorProfile((profile) => ({ ...profile, dateBasis: nextBasis }));
-                        void loadProductionMonitor(
-                          productionMonitorDate,
-                          activeProductionMonitorProfile.planStatusFilter,
-                          productionMonitorDateTo,
-                          nextBasis
-                        );
-                      }}
-                      style={{ ...fieldStyle, width: 190, background: "#ffffff", color: "#111827" }}
-                    >
-                      <option value="elkeszules_datum">Elkészülés dátuma</option>
-                      <option value="kiszallitasi_datum">Kiszállítási dátum</option>
-                    </select>
-                  </label>
+                  <button
+                    type="button"
+                    title="Előző kiszállítási nap"
+                    onClick={() => shiftProductionMonitorShippingDateRange(-1)}
+                    style={{ ...buttonSecondary, minWidth: 44, padding: "9px 12px", fontSize: 18, fontWeight: 1000 }}
+                  >
+                    ←
+                  </button>
 
                   <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
-                    <span>Dátumtól · {activeProductionMonitorProfile.dateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülési dátum"}</span>
+                    <span>Kiszállítási dátumtól</span>
                     <input
                       type="date"
                       value={productionMonitorDate}
@@ -22034,7 +22025,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                           nextFrom,
                           activeProductionMonitorProfile.planStatusFilter,
                           nextTo,
-                          activeProductionMonitorProfile.dateBasis
+                          "kiszallitasi_datum"
                         );
                       }}
                       style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
@@ -22042,7 +22033,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   </label>
 
                   <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
-                    <span>Dátumig · {activeProductionMonitorProfile.dateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülési dátum"}</span>
+                    <span>Kiszállítási dátumig</span>
                     <input
                       type="date"
                       value={productionMonitorDateTo}
@@ -22062,12 +22053,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                           nextFrom,
                           activeProductionMonitorProfile.planStatusFilter,
                           nextTo,
-                          activeProductionMonitorProfile.dateBasis
+                          "kiszallitasi_datum"
                         );
                       }}
                       style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
                     />
                   </label>
+
+                  <button
+                    type="button"
+                    title="Következő kiszállítási nap"
+                    onClick={() => shiftProductionMonitorShippingDateRange(1)}
+                    style={{ ...buttonSecondary, minWidth: 44, padding: "9px 12px", fontSize: 18, fontWeight: 1000 }}
+                  >
+                    →
+                  </button>
                 </>
               )}
 
@@ -22079,7 +22079,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     standalone ? todayKey : productionMonitorDate,
                     activeProductionMonitorProfile.planStatusFilter,
                     standalone ? todayKey : productionMonitorDateTo,
-                    activeProductionMonitorProfile.dateBasis
+                    "kiszallitasi_datum"
                   );
                 }}
                 disabled={loadingProductionMonitor}
@@ -25921,7 +25921,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         dateFrom,
         activeProductionMonitorProfile.planStatusFilter,
         dateTo,
-        activeProductionMonitorProfile.dateBasis
+        "kiszallitasi_datum"
       );
     };
 
@@ -25962,7 +25962,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           productionMonitorDate,
           activeProductionMonitorProfile.planStatusFilter,
           productionMonitorDateTo,
-          activeProductionMonitorProfile.dateBasis
+          "kiszallitasi_datum"
         ));
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plans" }, () => {
@@ -25970,7 +25970,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           productionMonitorDate,
           activeProductionMonitorProfile.planStatusFilter,
           productionMonitorDateTo,
-          activeProductionMonitorProfile.dateBasis
+          "kiszallitasi_datum"
         ));
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, () => {
@@ -25978,7 +25978,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           productionMonitorDate,
           activeProductionMonitorProfile.planStatusFilter,
           productionMonitorDateTo,
-          activeProductionMonitorProfile.dateBasis
+          "kiszallitasi_datum"
         ));
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, () => {
@@ -25986,14 +25986,23 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           productionMonitorDate,
           activeProductionMonitorProfile.planStatusFilter,
           productionMonitorDateTo,
-          activeProductionMonitorProfile.dateBasis
+          "kiszallitasi_datum"
+        ));
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: ATVETEL_DETAILS_TABLE }, () => {
+        void runNivoBackgroundRefresh(() => loadProductionMonitor(
+          productionMonitorDate,
+          activeProductionMonitorProfile.planStatusFilter,
+          productionMonitorDateTo,
+          "kiszallitasi_datum"
         ));
       })
       ;
 
-    // A monitor adatforrása most a munkaállomási *_terv tábla, ezért ezek
-    // változásaira is azonnal frissítünk. Az 5 mp-es háttérfrissítés ettől
-    // függetlenül biztonsági tartalékként megmarad.
+    // A sorforrás az atvetel_adat, a munkaállomási *_terv táblák pedig azt
+    // döntik el, mely állomások relevánsak az adott rendeléshez. Mindkét
+    // adatforrás változásaira azonnal frissítünk; az 5 mp-es háttérfrissítés
+    // ettől függetlenül biztonsági tartalékként megmarad.
     getOrderedDashboardStations().forEach((station) => {
       channel = channel.on(
         "postgres_changes",
@@ -26002,7 +26011,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           void runNivoBackgroundRefresh(() => loadProductionMonitor(
             productionMonitorDate,
             activeProductionMonitorProfile.planStatusFilter,
-            productionMonitorDateTo
+            productionMonitorDateTo,
+            "kiszallitasi_datum"
           ));
         }
       );
@@ -29168,6 +29178,81 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return result;
   }
 
+
+  type ProductionMonitorShippingSourceRow = {
+    orderNumber: string;
+    shippingDate: string;
+  };
+
+  async function fetchProductionMonitorShippingSourceRows(
+    startDateKey: string,
+    endDateKey: string
+  ): Promise<ProductionMonitorShippingSourceRow[]> {
+    if (!supabase) return [];
+
+    type RankedShippingRow = {
+      orderNumber: string;
+      shippingDate: string;
+      timestampRank: number;
+      idRank: number;
+      sequenceRank: number;
+    };
+
+    const ranked = new Map<string, RankedShippingRow>();
+    const pageSize = 1000;
+    let sequenceRank = 0;
+
+    const readRankTimestamp = (row: Record<string, unknown>): number => {
+      const raw = readRecordValue(row, ["updated_at", "created_at", "imported_at", "feltoltve", "feltöltve"]);
+      if (raw === null || raw === undefined || String(raw).trim() === "") return Number.NEGATIVE_INFINITY;
+      const parsed = new Date(String(raw)).getTime();
+      return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+    };
+
+    // A teljes atvetel_adat táblát lapozva olvassuk, mert a Termelési monitor
+    // sorforrása mostantól maga a kiszállítási lista. Így az a rendelés is
+    // megjelenhet, amely még egyetlen *_terv táblában sem szerepel.
+    for (let from = 0; ; from += pageSize) {
+      const response = await supabase
+        .from(ATVETEL_DETAILS_TABLE)
+        .select("*")
+        .range(from, from + pageSize - 1);
+      if (response.error) throw response.error;
+
+      const page = (response.data || []) as Array<Record<string, unknown>>;
+      for (const rawRow of page) {
+        sequenceRank += 1;
+        const orderNumber = getAtvetelDetailsOrderNumber(rawRow);
+        const shippingDate = getAtvetelDetailsShippingDate(rawRow);
+        if (!orderNumber || !/^\d{4}-\d{2}-\d{2}$/.test(shippingDate)) continue;
+
+        const key = normalizeLooseText(orderNumber);
+        const rawId = readRecordValue(rawRow, ["id"]);
+        const numericId = Number(rawId);
+        const candidate: RankedShippingRow = {
+          orderNumber,
+          shippingDate,
+          timestampRank: readRankTimestamp(rawRow),
+          idRank: Number.isFinite(numericId) ? numericId : Number.NEGATIVE_INFINITY,
+          sequenceRank,
+        };
+        const existing = ranked.get(key);
+        const isNewer = !existing
+          || candidate.timestampRank > existing.timestampRank
+          || (candidate.timestampRank === existing.timestampRank && candidate.idRank > existing.idRank)
+          || (candidate.timestampRank === existing.timestampRank && candidate.idRank === existing.idRank && candidate.sequenceRank > existing.sequenceRank);
+        if (isNewer) ranked.set(key, candidate);
+      }
+
+      if (page.length < pageSize) break;
+    }
+
+    return Array.from(ranked.values())
+      .filter((row) => row.shippingDate >= startDateKey && row.shippingDate <= endDateKey)
+      .sort((left, right) => left.shippingDate.localeCompare(right.shippingDate) || left.orderNumber.localeCompare(right.orderNumber, "hu"))
+      .map((row) => ({ orderNumber: row.orderNumber, shippingDate: row.shippingDate }));
+  }
+
   async function fetchProductionMonitorData(
     dateKey: string,
     planStatusFilter: ProductionMonitorPlanStatusFilter = activeProductionMonitorProfile.planStatusFilter,
@@ -29175,6 +29260,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     dateBasis: ProductionMonitorDateBasis = activeProductionMonitorProfile.dateBasis
   ): Promise<ProductionMonitorData> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    // A Termelési monitor dátumszűrője kizárólag a kiszállítási dátumot használja.
+    // A paraméter csak a régi hívások kompatibilitása miatt maradt meg.
+    dateBasis = "kiszallitasi_datum";
 
     const todayKey = getLocalDateKey(new Date());
     let startDateKey = /^\d{4}-\d{2}-\d{2}$/.test(dateKey) ? dateKey : todayKey;
@@ -29244,6 +29333,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       completionDate: string;
       filterDate: string;
       requiredStations: Set<string>;
+      planStatusKinds: Set<string>;
+      hasSzerelesPlanStatus: boolean;
+      hasPlanCompletionDate: boolean;
     };
 
     const aggregates: MonitorPlanAggregate[] = [];
@@ -29284,8 +29376,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       readMonitorPlanValue(row, ["termek", "termék", "megnevezes", "megnevezés", "product_name"])
     );
 
-    let shippingDateByOrder = new Map<string, string>();
-
     const getPlanCompletionDate = (row: Record<string, unknown>): string => {
       const rawValue = readMonitorPlanValue(row, [
         "elkeszules_datum",
@@ -29297,110 +29387,38 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return parseSpreadsheetDate(rawValue) || valueAsText(rawValue).slice(0, 10);
     };
 
-    const getPlanMonitorDate = (row: Record<string, unknown>): string => {
-      if (dateBasis === "kiszallitasi_datum") {
-        return shippingDateByOrder.get(normalizeLooseText(getPlanOrderNumber(row))) || "";
-      }
-      return getPlanCompletionDate(row);
-    };
+    // 1) A látható sorlista alapja KIZÁRÓLAG az atvetel_adat legutóbbi,
+    // nem üres szerelesi_idopont értéke. A *_terv táblák nem hoznak létre
+    // monitor sort; csak azt mondják meg, mely munkaállomások relevánsak.
+    const shippingSourceRows = await fetchProductionMonitorShippingSourceRows(startDateKey, endDateKey);
+    shippingSourceRows.forEach((sourceRow) => {
+      const normalizedOrder = normalizeLooseText(sourceRow.orderNumber);
+      if (!normalizedOrder || aggregatesByOrder.has(normalizedOrder)) return;
+      const aggregate: MonitorPlanAggregate = {
+        itemId: normalizedOrder,
+        orderNumber: sourceRow.orderNumber,
+        sequenceNumber,
+        plannedQuantity: null,
+        productName: "",
+        // Ha nincs egyetlen tervsor sem, a Lemaradások mezőhöz legalább a
+        // kiszállítási dátum rendelkezésre áll. Ha később találunk tervdátumot,
+        // azt használjuk a meglévő lemaradás-logika változtatása nélkül.
+        completionDate: sourceRow.shippingDate,
+        filterDate: sourceRow.shippingDate,
+        requiredStations: new Set<string>(),
+        planStatusKinds: new Set<string>(),
+        hasSzerelesPlanStatus: false,
+        hasPlanCompletionDate: false,
+      };
+      sequenceNumber += 1;
+      aggregates.push(aggregate);
+      aggregatesByOrder.set(normalizedOrder, aggregate);
+    });
 
-    const addAssemblyPlanRow = (row: Record<string, unknown>): void => {
-      // A Termelési monitor sora KIZÁRÓLAG a szereles_terv tervéből származik.
-      // A kiválasztott időszak sorai mellett a mai vagy korábbi, még nem teljesen
-      // lezárt szerelési rendelések is bekerülnek lemaradásként. A tényleges
-      // lezártságot a work_logs feldolgozása után ellenőrizzük.
-      const completionDate = getPlanCompletionDate(row);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(completionDate)) return;
-      const filterDate = getPlanMonitorDate(row);
-
-      const isInsideSelectedRange = /^\d{4}-\d{2}-\d{2}$/.test(filterDate)
-        && filterDate >= startDateKey
-        && filterDate <= endDateKey;
-      const canBeBacklogCandidate = completionDate <= todayKey;
-      if (!isInsideSelectedRange && !canBeBacklogCandidate) return;
-
-      const rowStatus = normalizeLooseText(valueAsText(
-        readMonitorPlanValue(row, ["statusz", "státusz", "status"])
-      ));
-      if (rowStatus !== normalizedWantedStatus) return;
-
-      const orderNumber = getPlanOrderNumber(row);
-      if (!orderNumber) return;
-
-      const productName = getPlanProductName(row);
-      const normalizedOrder = normalizeLooseText(orderNumber);
-      let aggregate = aggregatesByOrder.get(normalizedOrder);
-
-      if (!aggregate) {
-        const quantityRaw = readMonitorPlanValue(row, ["mennyiseg", "mennyiség", "planned_quantity"]);
-        const quantityNumber = Number(quantityRaw);
-        aggregate = {
-          itemId: normalizedOrder,
-          orderNumber,
-          sequenceNumber,
-          plannedQuantity: Number.isFinite(quantityNumber) ? quantityNumber : null,
-          productName,
-          completionDate,
-          filterDate,
-          requiredStations: new Set<string>([assemblyStationName]),
-        };
-        sequenceNumber += 1;
-        aggregates.push(aggregate);
-        aggregatesByOrder.set(normalizedOrder, aggregate);
-      } else {
-        aggregate.requiredStations.add(assemblyStationName);
-        if (!aggregate.productName && productName) aggregate.productName = productName;
-        // Ha ugyanaz a rendelés több tervnapon is szerepel, a legfrissebb
-        // elkészülési dátum tekintendő érvényesnek (átütemezés kezelése).
-        if (completionDate > aggregate.completionDate) aggregate.completionDate = completionDate;
-        if (filterDate && (!aggregate.filterDate || filterDate > aggregate.filterDate)) aggregate.filterDate = filterDate;
-        const quantityRaw = readMonitorPlanValue(row, ["mennyiseg", "mennyiség", "planned_quantity"]);
-        const quantityNumber = Number(quantityRaw);
-        if (Number.isFinite(quantityNumber)) {
-          aggregate.plannedQuantity = aggregate.plannedQuantity === null
-            ? quantityNumber
-            : Math.max(aggregate.plannedQuantity, quantityNumber);
-        }
-      }
-    };
-
-    // 1) A látható sorlista kizárólag a Szerelés napi tervéből épül fel.
-    const assemblyPlanResponse = await supabase
-      .from("szereles_terv")
-      .select("*")
-      .limit(10000);
-
-    if (assemblyPlanResponse.error) throw assemblyPlanResponse.error;
-
-    const assemblyPlanRows = ((assemblyPlanResponse.data || []) as Record<string, unknown>[])
-      .slice()
-      .sort((left, right) => {
-        const leftOrder = Number(left.excel_sorrend);
-        const rightOrder = Number(right.excel_sorrend);
-        const leftSafe = Number.isFinite(leftOrder) ? leftOrder : Number.MAX_SAFE_INTEGER;
-        const rightSafe = Number.isFinite(rightOrder) ? rightOrder : Number.MAX_SAFE_INTEGER;
-        if (leftSafe !== rightSafe) return leftSafe - rightSafe;
-        const leftId = Number(left.id);
-        const rightId = Number(right.id);
-        if (Number.isFinite(leftId) && Number.isFinite(rightId)) return leftId - rightId;
-        return 0;
-      });
-
-    if (dateBasis === "kiszallitasi_datum") {
-      const assemblyOrderNumbers = Array.from(new Set(
-        assemblyPlanRows.map((row) => getPlanOrderNumber(row)).filter(Boolean)
-      ));
-      shippingDateByOrder = await fetchProductionMonitorShippingDateMap(assemblyOrderNumbers);
-    }
-
-    assemblyPlanRows.forEach(addAssemblyPlanRow);
-
-    // 2) A többi munkaállomás saját *_terv táblája csak azt dönti el,
-    // hogy a Szerelés napi tervének adott rendeléséhez az oszlop releváns-e.
-    // Más állomás terve SOHA nem hozhat létre új sort ezen a monitoron.
+    // 2) Minden munkaállomás saját *_terv táblája csak az állomás relevanciáját,
+    // valamint a meglévő terv-metaadatokat adja hozzá az atvetel_adat soraihoz.
+    // Ha a rendelés nincs az adott állomás tervében, azon az oszlopon „–” marad.
     for (const station of monitorStations) {
-      if (normalizeLooseText(station) === normalizeLooseText(assemblyStationName)) continue;
-
       const tableName = buildStationPlanTableName(station);
       const response = await supabase
         .from(tableName)
@@ -29416,12 +29434,61 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const orderNumber = getPlanOrderNumber(row);
         if (!orderNumber) return;
         const aggregate = aggregatesByOrder.get(normalizeLooseText(orderNumber));
-        if (aggregate) aggregate.requiredStations.add(station);
+        if (!aggregate) return;
+
+        aggregate.requiredStations.add(station);
+
+        const rowStatus = normalizeLooseText(valueAsText(
+          readMonitorPlanValue(row, ["statusz", "státusz", "status"])
+        ));
+        // Az Ajtó / Kerítés profilbesorolás elsődlegesen ugyanúgy a Szerelés
+        // tervsorából származik, mint korábban. Ha Szerelés tervsor még nincs,
+        // más *_terv tábla kizárólag akkor segíthet a besorolásban, ha a statusz
+        // értéke ténylegesen Ajtó vagy Kerítés. Egyéb statusz érték nem számít.
+        const validMonitorStatus = rowStatus === normalizeLooseText("Ajtó") || rowStatus === normalizeLooseText("Kerítés");
+        if (validMonitorStatus) {
+          const isSzerelesPlan = getStationPlanIdentityKey(station) === "szereles";
+          if (isSzerelesPlan && !aggregate.hasSzerelesPlanStatus) {
+            aggregate.planStatusKinds.clear();
+            aggregate.hasSzerelesPlanStatus = true;
+          }
+          if (isSzerelesPlan || !aggregate.hasSzerelesPlanStatus) {
+            aggregate.planStatusKinds.add(rowStatus);
+          }
+        }
+
+        const productName = getPlanProductName(row);
+        if (!aggregate.productName && productName) aggregate.productName = productName;
+
+        const quantityRaw = readMonitorPlanValue(row, ["mennyiseg", "mennyiség", "planned_quantity"]);
+        const quantityNumber = Number(quantityRaw);
+        if (Number.isFinite(quantityNumber)) {
+          aggregate.plannedQuantity = aggregate.plannedQuantity === null
+            ? quantityNumber
+            : Math.max(aggregate.plannedQuantity, quantityNumber);
+        }
+
+        const completionDate = getPlanCompletionDate(row);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(completionDate)) {
+          if (!aggregate.hasPlanCompletionDate || completionDate > aggregate.completionDate) {
+            aggregate.completionDate = completionDate;
+          }
+          aggregate.hasPlanCompletionDate = true;
+        }
       });
     }
 
+    // Az Ajtó / Kerítés monitorprofil megmarad. Ha van tervből származó státusz,
+    // ugyanúgy az dönti el, melyik profilban jelenik meg a rendelés. Az olyan
+    // atvetel_adat sor, amely még egyetlen *_terv táblában sincs, Ajtó sorként
+    // jelenik meg, hogy a mai kiszállításból semmi ne vesszen el.
+    const filteredAggregates = aggregates.filter((aggregate) => {
+      if (aggregate.planStatusKinds.size === 0) return planStatusFilter === "ajto";
+      return aggregate.planStatusKinds.has(normalizedWantedStatus);
+    });
+
     const orderNumbers = Array.from(new Set(
-      aggregates.map((row) => row.orderNumber.trim()).filter(Boolean)
+      filteredAggregates.map((row) => row.orderNumber.trim()).filter(Boolean)
     ));
 
     const logs: WorkLogRow[] = [];
@@ -29483,7 +29550,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return Math.max(0, Math.round((toMs - fromMs) / 86400000));
     };
 
-    const rows: ProductionMonitorRow[] = aggregates
+    const rows: ProductionMonitorRow[] = filteredAggregates
       .sort((left, right) => {
         if (left.completionDate !== right.completionDate) {
           return left.completionDate.localeCompare(right.completionDate);
@@ -29552,9 +29619,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           && aggregate.filterDate <= endDateKey;
         const isBacklog = aggregate.completionDate <= todayKey && assemblyCell.status !== "done";
 
-        // A kiválasztott időszakon kívül csak a Szerelésen még nem teljesen kész
-        // mai vagy korábbi rendelések maradnak a monitoron.
-        if (!isInsideSelectedRange && !isBacklog) return null;
+        // A sorforrás maga a kiválasztott kiszállítási dátumtartomány, ezért
+        // a monitorba kizárólag az ehhez tartozó atvetel_adat rendelések kerülnek.
+        if (!isInsideSelectedRange) return null;
 
         const backlogDays = aggregate.completionDate <= todayKey
           ? productionMonitorDateDiffDays(aggregate.completionDate, todayKey)
@@ -29583,9 +29650,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       .filter((row): row is ProductionMonitorRow => row !== null);
 
     const syntheticPlan: ProductionPlanRow = {
-      id: `monitor-${planStatusFilter}-${dateBasis}-${startDateKey}-${endDateKey}`,
+      id: `monitor-${planStatusFilter}-kiszallitasi_datum-${startDateKey}-${endDateKey}`,
       plan_date: monitorDateRangeLabel,
-      name: `Szerelés napi terv · ${statusLabel} · ${dateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülési dátum"}`,
+      name: `${statusLabel} kiszállítási lista`,
       is_active: true,
       uploaded_by: null,
       created_at: new Date().toISOString(),
@@ -29610,7 +29677,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const backgroundRefresh = isNivoBackgroundRefreshRunning();
     if (!backgroundRefresh) setLoadingProductionMonitor(true);
     try {
-      const data = await fetchProductionMonitorData(dateKey, planStatusFilter, dateToKey, dateBasis);
+      const data = await fetchProductionMonitorData(dateKey, planStatusFilter, dateToKey, "kiszallitasi_datum");
       setProductionMonitorData(data);
     } catch (error) {
       console.error("SUPABASE HIBA loadProductionMonitor:", error);
