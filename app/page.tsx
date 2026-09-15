@@ -24024,8 +24024,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       </td></tr>
                     ) : visibleRows.map((row, rowIndex) => {
                       const closed = Boolean(row.persisted?.lezart);
+                      const folyamatban = Boolean(atvetelDrafts[row.key]?.folyamatban ?? row.persisted?.folyamatban);
                       return (
-                        <tr key={row.key} style={{ background: closed ? "#15803d" : rowIndex % 2 === 0 ? officeTheme.panelAltBackground : officeTheme.sectionBackground, transition: "background 120ms ease" }}>
+                        <tr
+                          key={row.key}
+                          style={{
+                            background: closed
+                              ? "#15803d"
+                              : folyamatban
+                                ? "#f59e0b"
+                                : rowIndex % 2 === 0
+                                  ? officeTheme.panelAltBackground
+                                  : officeTheme.sectionBackground,
+                            transition: "background 120ms ease",
+                          }}
+                        >
                           {visibleColumns.map((column) => renderCell(row, column))}
                         </tr>
                       );
