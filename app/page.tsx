@@ -1147,11 +1147,18 @@ type AtvetelDateBasis = "elkeszules_datum" | "kiszallitasi_datum";
 type AtvetelMonitorRow = {
   key: string;
   orderNumber: string;
+  rovidRendeles: string;
   elkeszulesDatum: string;
+  nev: string;
+  varos: string;
+  csapat: string;
   szereles: string;
-  telephely: string;
-  kiszallitasiDatum: string;
   atvetel: string;
+  telephely: string;
+  szereloKomment: string;
+  teljesCim: string;
+  kiszallitasiDatum: string;
+  szerelesiIdopontRaw: string;
   productionStatus: ProductionMonitorStatus;
   productionStatusLabel: string;
   persisted: AtvetelCurrentRow | null;
@@ -1163,6 +1170,105 @@ type AtvetelDraft = {
   megjegyzes: string;
   dirty: boolean;
 };
+
+type AtvetelTableColumnId =
+  | "orderNumber"
+  | "rovidRendeles"
+  | "productionStatus"
+  | "nev"
+  | "varos"
+  | "csapat"
+  | "szereles"
+  | "atvetel"
+  | "telephely"
+  | "szereloKomment"
+  | "savedAt"
+  | "folyamatban"
+  | "atvette"
+  | "megjegyzes"
+  | "actions";
+
+type AtvetelTableColumnConfig = {
+  id: AtvetelTableColumnId;
+  label: string;
+  width: number;
+  visible: boolean;
+  align: "left" | "center" | "right";
+};
+
+type AtvetelColumnFilter = {
+  text: string;
+  selectedValues: string[] | null;
+};
+
+type AtvetelSortState = {
+  columnId: AtvetelTableColumnId;
+  direction: "asc" | "desc";
+} | null;
+
+type AtvetelFilterMenuState = {
+  columnId: AtvetelTableColumnId;
+  x: number;
+  y: number;
+} | null;
+
+type AtvetelAddressTooltipState = {
+  rowKey: string;
+  address: string;
+  x: number;
+  y: number;
+} | null;
+
+const ATVETEL_TABLE_CONFIG_PAGE_KEY = "__atvetel_table_config_v2__";
+
+const DEFAULT_ATVETEL_TABLE_COLUMNS: AtvetelTableColumnConfig[] = [
+  { id: "orderNumber", label: "Rendelésszám", width: 165, visible: true, align: "left" },
+  { id: "rovidRendeles", label: "Rövid Rendelés", width: 145, visible: true, align: "left" },
+  { id: "productionStatus", label: "Ajtó állapota", width: 190, visible: true, align: "left" },
+  { id: "nev", label: "Név", width: 210, visible: true, align: "left" },
+  { id: "varos", label: "Város", width: 150, visible: true, align: "left" },
+  { id: "csapat", label: "Csapat", width: 130, visible: true, align: "left" },
+  { id: "szereles", label: "Szerelés", width: 145, visible: true, align: "left" },
+  { id: "atvetel", label: "Átvétel", width: 145, visible: true, align: "left" },
+  { id: "telephely", label: "Telephely", width: 145, visible: true, align: "left" },
+  { id: "szereloKomment", label: "Szerelő komment", width: 260, visible: true, align: "left" },
+  { id: "savedAt", label: "Mentett Idő", width: 175, visible: true, align: "left" },
+  { id: "folyamatban", label: "Folyamatban", width: 125, visible: true, align: "center" },
+  { id: "atvette", label: "Átvette", width: 105, visible: true, align: "center" },
+  { id: "megjegyzes", label: "Megjegyzés", width: 320, visible: true, align: "left" },
+  { id: "actions", label: "Mentés / Lezárás", width: 230, visible: true, align: "center" },
+];
+
+function createDefaultAtvetelTableColumns(): AtvetelTableColumnConfig[] {
+  return DEFAULT_ATVETEL_TABLE_COLUMNS.map((column) => ({ ...column }));
+}
+
+function normalizeAtvetelTableColumns(value: unknown): AtvetelTableColumnConfig[] {
+  const defaults = createDefaultAtvetelTableColumns();
+  if (!Array.isArray(value)) return defaults;
+  const defaultById = new Map(defaults.map((column) => [column.id, column]));
+  const seen = new Set<AtvetelTableColumnId>();
+  const normalized: AtvetelTableColumnConfig[] = [];
+  value.forEach((raw) => {
+    if (!raw || typeof raw !== "object") return;
+    const item = raw as Partial<AtvetelTableColumnConfig>;
+    const id = String(item.id || "") as AtvetelTableColumnId;
+    const fallback = defaultById.get(id);
+    if (!fallback || seen.has(id)) return;
+    seen.add(id);
+    const numericWidth = Number(item.width);
+    normalized.push({
+      ...fallback,
+      width: Number.isFinite(numericWidth) ? Math.max(70, Math.min(700, Math.round(numericWidth))) : fallback.width,
+      visible: item.visible !== false,
+      align: item.align === "center" || item.align === "right" || item.align === "left" ? item.align : fallback.align,
+    });
+  });
+  defaults.forEach((column) => {
+    if (!seen.has(column.id)) normalized.push(column);
+  });
+  return normalized;
+}
 
 
 type ProductionCardPlanSourceRow = {
@@ -8921,6 +9027,14 @@ export default function Page() {
   const [atvetelLoading, setAtvetelLoading] = useState(false);
   const [atvetelExporting, setAtvetelExporting] = useState(false);
   const [atvetelLastUpdatedAt, setAtvetelLastUpdatedAt] = useState("");
+  const [atvetelTableEditMode, setAtvetelTableEditMode] = useState(false);
+  const [atvetelTableColumns, setAtvetelTableColumns] = useState<AtvetelTableColumnConfig[]>(createDefaultAtvetelTableColumns());
+  const [atvetelColumnFilters, setAtvetelColumnFilters] = useState<Partial<Record<AtvetelTableColumnId, AtvetelColumnFilter>>>({});
+  const [atvetelSortState, setAtvetelSortState] = useState<AtvetelSortState>(null);
+  const [atvetelFilterMenu, setAtvetelFilterMenu] = useState<AtvetelFilterMenuState>(null);
+  const [atvetelAddressTooltip, setAtvetelAddressTooltip] = useState<AtvetelAddressTooltipState>(null);
+  const atvetelDraggedColumnIdRef = useRef<AtvetelTableColumnId | null>(null);
+  const atvetelTableSettingsSaveTimerRef = useRef<number | null>(null);
 
 
   const [productionCardDate, setProductionCardDate] = useState(getLocalDateKey(new Date()));
@@ -22578,28 +22692,147 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return valueAsText(readAtvetelPlanValue(row, ["rendelesszam"])).trim();
   }
 
+  function getAtvetelDetailsShortOrder(row: Record<string, unknown>): string {
+    return valueAsText(readAtvetelPlanValue(row, ["rovid_rendeles", "rövid_rendelés", "rovid rendeles"])).trim();
+  }
+
+  function getAtvetelDetailsName(row: Record<string, unknown>): string {
+    return valueAsText(readAtvetelPlanValue(row, ["nev", "név"])).trim();
+  }
+
+  function getAtvetelDetailsCity(row: Record<string, unknown>): string {
+    return valueAsText(readAtvetelPlanValue(row, ["varos", "város"])).trim();
+  }
+
+  function getAtvetelDetailsTeam(row: Record<string, unknown>): string {
+    return valueAsText(readAtvetelPlanValue(row, ["csapat"])).trim();
+  }
+
   function getAtvetelDetailsSzereles(row: Record<string, unknown>): string {
-    return valueAsText(readAtvetelPlanValue(row, ["szereles"])).trim();
+    return valueAsText(readAtvetelPlanValue(row, ["szereles", "szerelés"])).trim();
+  }
+
+  function getAtvetelDetailsAtvetel(row: Record<string, unknown>): string {
+    return valueAsText(readAtvetelPlanValue(row, ["atvetel", "átvétel"])).trim();
   }
 
   function getAtvetelDetailsTelephely(row: Record<string, unknown>): string {
     return valueAsText(readAtvetelPlanValue(row, ["telephely"])).trim();
   }
 
+  function getAtvetelDetailsInstallerComment(row: Record<string, unknown>): string {
+    return valueAsText(readAtvetelPlanValue(row, ["szerelo_komment", "szerelő_komment", "szerelo komment"])).trim();
+  }
+
+  function getAtvetelDetailsFullAddress(row: Record<string, unknown>): string {
+    return valueAsText(readAtvetelPlanValue(row, ["teljes_cim", "teljes_cím", "teljes cim"])).trim();
+  }
+
+  function getAtvetelDetailsSzerelesiIdopontRaw(row: Record<string, unknown>): unknown {
+    return readAtvetelPlanValue(row, ["szerelesi_idopont", "szerelési_időpont"]);
+  }
+
   function getAtvetelDetailsShippingDate(row: Record<string, unknown>): string {
-    const rawValue = readAtvetelPlanValue(row, ["szerelesi_idopont"]);
+    const rawValue = getAtvetelDetailsSzerelesiIdopontRaw(row);
     return parseSpreadsheetDate(rawValue) || valueAsText(rawValue).slice(0, 10);
   }
 
-  function getAtvetelSourceAtvetel(row: Record<string, unknown>): string {
-    return valueAsText(
-      readAtvetelPlanValue(row, [
-        "atvetel",
-        "átvétel",
-        "Atvetel",
-        "Átvétel",
-      ])
-    ).trim();
+  function getAtvetelDetailsSzerelesTimestampRank(row: Record<string, unknown>): number | null {
+    const rawValue = getAtvetelDetailsSzerelesiIdopontRaw(row);
+    if (rawValue === null || rawValue === undefined || String(rawValue).trim() === "") return null;
+
+    if (rawValue instanceof Date && Number.isFinite(rawValue.getTime())) return rawValue.getTime();
+
+    const numericValue = typeof rawValue === "number"
+      ? rawValue
+      : /^\d+(?:[.,]\d+)?$/.test(String(rawValue).trim())
+        ? Number(String(rawValue).trim().replace(",", "."))
+        : NaN;
+    if (Number.isFinite(numericValue) && numericValue > 20000) {
+      return Date.UTC(1899, 11, 30) + numericValue * 86400000;
+    }
+
+    const text = String(rawValue).trim();
+    const ymd = text.match(/^(\d{4})[-./]\s*(\d{1,2})[-./]\s*(\d{1,2})\.?(?:[T\s]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+    if (ymd) {
+      const parsed = new Date(
+        Number(ymd[1]),
+        Number(ymd[2]) - 1,
+        Number(ymd[3]),
+        Number(ymd[4] || 0),
+        Number(ymd[5] || 0),
+        Number(ymd[6] || 0),
+        0
+      ).getTime();
+      if (Number.isFinite(parsed)) return parsed;
+    }
+
+    const dmy = text.match(/^(\d{1,2})[-./]\s*(\d{1,2})[-./]\s*(\d{4})\.?(?:[T\s]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+    if (dmy) {
+      const parsed = new Date(
+        Number(dmy[3]),
+        Number(dmy[2]) - 1,
+        Number(dmy[1]),
+        Number(dmy[4] || 0),
+        Number(dmy[5] || 0),
+        Number(dmy[6] || 0),
+        0
+      ).getTime();
+      if (Number.isFinite(parsed)) return parsed;
+    }
+
+    const parsed = new Date(text).getTime();
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function getAtvetelDetailsIdRank(row: Record<string, unknown>): number {
+    const rawId = readRecordValue(row, ["id"]);
+    const numericId = Number(rawId);
+    return Number.isFinite(numericId) ? numericId : Number.NEGATIVE_INFINITY;
+  }
+
+  function selectLatestAtvetelDetailRows(rows: Array<Record<string, unknown>>): Map<string, Record<string, unknown>> {
+    type RankedDetail = {
+      row: Record<string, unknown>;
+      timestampRank: number | null;
+      idRank: number;
+      sequenceRank: number;
+    };
+    const ranked = new Map<string, RankedDetail>();
+    let sequenceRank = 0;
+
+    rows.forEach((row) => {
+      sequenceRank += 1;
+      const orderNumber = getAtvetelDetailsOrderNumber(row);
+      if (!orderNumber) return;
+      const key = normalizeLooseText(orderNumber);
+      const candidate: RankedDetail = {
+        row,
+        timestampRank: getAtvetelDetailsSzerelesTimestampRank(row),
+        idRank: getAtvetelDetailsIdRank(row),
+        sequenceRank,
+      };
+      const existing = ranked.get(key);
+      if (!existing) {
+        ranked.set(key, candidate);
+        return;
+      }
+
+      const candidateHasTime = candidate.timestampRank !== null;
+      const existingHasTime = existing.timestampRank !== null;
+      const isNewer = candidateHasTime !== existingHasTime
+        ? candidateHasTime
+        : candidateHasTime && existingHasTime
+          ? (candidate.timestampRank! > existing.timestampRank!
+            || (candidate.timestampRank === existing.timestampRank && candidate.idRank > existing.idRank)
+            || (candidate.timestampRank === existing.timestampRank && candidate.idRank === existing.idRank && candidate.sequenceRank > existing.sequenceRank))
+          : (candidate.idRank > existing.idRank
+            || (candidate.idRank === existing.idRank && candidate.sequenceRank > existing.sequenceRank));
+
+      if (isNewer) ranked.set(key, candidate);
+    });
+
+    return new Map(Array.from(ranked.entries()).map(([key, value]) => [key, value.row]));
   }
 
   async function fetchAllAtvetelSourceRows(): Promise<Array<Record<string, unknown>>> {
@@ -22625,6 +22858,24 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return result;
   }
 
+  async function fetchAllAtvetelDetailsRows(): Promise<Array<Record<string, unknown>>> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    const result: Array<Record<string, unknown>> = [];
+    const pageSize = 1000;
+    for (let from = 0; ; from += pageSize) {
+      const response = await supabase
+        .from(ATVETEL_DETAILS_TABLE)
+        .select("*")
+        .range(from, from + pageSize - 1);
+      if (response.error) throw response.error;
+      const page = (response.data || []) as Array<Record<string, unknown>>;
+      result.push(...page);
+      if (page.length < pageSize) break;
+    }
+    return result;
+  }
+
   async function fetchAtvetelDetailsRows(
     sourceOrderNumbers: string[]
   ): Promise<Array<Record<string, unknown>>> {
@@ -22643,7 +22894,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       const response = await supabase
         .from(ATVETEL_DETAILS_TABLE)
-        .select("rendelesszam, szereles, telephely, szerelesi_idopont")
+        .select("*")
         .in("rendelesszam", chunk)
         .limit(10000);
 
@@ -22677,80 +22928,49 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const ignoreDateFilter = options?.ignoreDateFilter === true;
     const dateBasis: AtvetelDateBasis = options?.dateBasis || atvetelDateBasis;
 
-    // A megjelenített sorok alapja továbbra is KIZÁRÓLAG a public.szereles_terv.
-    // Az atvetel_adat csak kiegészítő adatforrás a pontos
-    // szereles_terv.sorszam = atvetel_adat.rendelesszam kapcsolaton keresztül.
-    const sourceRows = await fetchAllAtvetelSourceRows();
-    const sourceOrderNumbers = Array.from(new Set(
-      sourceRows
-        .map((rawRow) => getAtvetelSourceOrderNumber(rawRow))
-        .filter(Boolean)
-    ));
-    const detailsRows = await fetchAtvetelDetailsRows(sourceOrderNumbers);
+    // Az Átvétel sorforrása mostantól az atvetel_adat. Egy rendelésből csak
+    // a legkésőbbi, NEM ÜRES szerelesi_idoponttal rendelkező rekord marad meg.
+    // Az óra/perc a kiválasztásnál számít, a felületen azonban csak a dátum jelenik meg.
+    const [sourceRows, allDetailsRows] = await Promise.all([
+      fetchAllAtvetelSourceRows(),
+      fetchAllAtvetelDetailsRows(),
+    ]);
+    const latestDetailsByOrder = selectLatestAtvetelDetailRows(allDetailsRows);
 
-    const detailsByOrder = new Map<
-      string,
-      { szereles: string; telephely: string; kiszallitasiDatum: string }
-    >();
-
-    detailsRows.forEach((rawRow) => {
-      const orderNumber = getAtvetelDetailsOrderNumber(rawRow);
-      if (!orderNumber) return;
-
-      const next = {
-        szereles: getAtvetelDetailsSzereles(rawRow),
-        telephely: getAtvetelDetailsTelephely(rawRow),
-        kiszallitasiDatum: getAtvetelDetailsShippingDate(rawRow),
-      };
-      const existing = detailsByOrder.get(orderNumber);
-
-      // Ha az importált Excelben ugyanaz a rendelés többször szerepel,
-      // nem készítünk duplikált Átvétel sort: az első nem üres értékeket
-      // megtartjuk ugyanahhoz a rendeléshez.
-      if (!existing) {
-        detailsByOrder.set(orderNumber, next);
-      } else {
-        detailsByOrder.set(orderNumber, {
-          szereles: existing.szereles || next.szereles,
-          telephely: existing.telephely || next.telephely,
-          kiszallitasiDatum: existing.kiszallitasiDatum || next.kiszallitasiDatum,
-        });
-      }
-    });
-
-    const sourceByOrder = new Map<
-      string,
-      {
-        orderNumber: string;
-        elkeszulesDatum: string;
-        szereles: string;
-        telephely: string;
-        kiszallitasiDatum: string;
-        atvetel: string;
-      }
-    >();
-
+    const sourceCompletionByOrder = new Map<string, string>();
     sourceRows.forEach((rawRow) => {
       const orderNumber = getAtvetelSourceOrderNumber(rawRow);
-      const elkeszulesDatum = getAtvetelCompletionDate(rawRow);
-      const atvetel = getAtvetelSourceAtvetel(rawRow);
+      const completionDate = getAtvetelCompletionDate(rawRow);
+      if (!orderNumber || !/^\d{4}-\d{2}-\d{2}$/.test(completionDate)) return;
+      const key = normalizeLooseText(orderNumber);
+      const existing = sourceCompletionByOrder.get(key);
+      // A háttérben megőrizzük a korábbi szereles_terv elkészülési dátumlogikát.
+      if (!existing || completionDate < existing) sourceCompletionByOrder.set(key, completionDate);
+    });
 
+    const sourceOrders: Array<{
+      orderNumber: string;
+      rovidRendeles: string;
+      elkeszulesDatum: string;
+      nev: string;
+      varos: string;
+      csapat: string;
+      szereles: string;
+      atvetel: string;
+      telephely: string;
+      szereloKomment: string;
+      teljesCim: string;
+      kiszallitasiDatum: string;
+      szerelesiIdopontRaw: string;
+    }> = [];
+
+    latestDetailsByOrder.forEach((detailRow) => {
+      const orderNumber = getAtvetelDetailsOrderNumber(detailRow);
       if (!orderNumber) return;
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(elkeszulesDatum)) return;
+      const elkeszulesDatum = sourceCompletionByOrder.get(normalizeLooseText(orderNumber)) || "";
+      const kiszallitasiDatum = getAtvetelDetailsShippingDate(detailRow);
+      const filterDate = dateBasis === "kiszallitasi_datum" ? kiszallitasiDatum : elkeszulesDatum;
 
-      // Pontos szöveges kapcsolat: szereles_terv.sorszam = atvetel_adat.rendelesszam.
-      const details = detailsByOrder.get(orderNumber) || {
-        szereles: "",
-        telephely: "",
-        kiszallitasiDatum: "",
-      };
-      const filterDate = dateBasis === "kiszallitasi_datum"
-        ? details.kiszallitasiDatum
-        : elkeszulesDatum;
-
-      // Enterrel aktivált rendeléskeresés továbbra is a TELJES szereles_terv
-      // táblában keres, a dátumszűrőtől függetlenül. Normál nézetben a
-      // legördülőben kiválasztott dátummező szűr.
       if (searchWholeSourceTable) {
         if (!matchesDashboardOrderFilters(orderNumber, [searchOverride])) return;
       } else if (!ignoreDateFilter) {
@@ -22758,32 +22978,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         if (filterDate < startDate || filterDate > endDate) return;
       }
 
-      const key = normalizeLooseText(orderNumber);
-      const existing = sourceByOrder.get(key);
-
-      // Egy rendelés a monitoron pontosan egy sor. Ha több szereles_terv sor
-      // van, a legkorábbi elkészülési dátumú sort tartjuk meg.
-      if (!existing || elkeszulesDatum < existing.elkeszulesDatum) {
-        sourceByOrder.set(key, {
-          orderNumber,
-          elkeszulesDatum,
-          szereles: details.szereles,
-          telephely: details.telephely,
-          kiszallitasiDatum: details.kiszallitasiDatum,
-          atvetel,
-        });
-      }
+      sourceOrders.push({
+        orderNumber,
+        rovidRendeles: getAtvetelDetailsShortOrder(detailRow),
+        elkeszulesDatum,
+        nev: getAtvetelDetailsName(detailRow),
+        varos: getAtvetelDetailsCity(detailRow),
+        csapat: getAtvetelDetailsTeam(detailRow),
+        szereles: getAtvetelDetailsSzereles(detailRow),
+        atvetel: getAtvetelDetailsAtvetel(detailRow),
+        telephely: getAtvetelDetailsTelephely(detailRow),
+        szereloKomment: getAtvetelDetailsInstallerComment(detailRow),
+        teljesCim: getAtvetelDetailsFullAddress(detailRow),
+        kiszallitasiDatum,
+        szerelesiIdopontRaw: valueAsText(getAtvetelDetailsSzerelesiIdopontRaw(detailRow)).trim(),
+      });
     });
 
-    const sourceOrders = Array.from(sourceByOrder.values())
-      .sort((left, right) =>
-        left.elkeszulesDatum.localeCompare(right.elkeszulesDatum)
-        || left.orderNumber.localeCompare(right.orderNumber, "hu", { numeric: true })
-      );
+    sourceOrders.sort((left, right) => {
+      const leftDate = dateBasis === "kiszallitasi_datum" ? left.kiszallitasiDatum : left.elkeszulesDatum;
+      const rightDate = dateBasis === "kiszallitasi_datum" ? right.kiszallitasiDatum : right.elkeszulesDatum;
+      return leftDate.localeCompare(rightDate)
+        || left.orderNumber.localeCompare(right.orderNumber, "hu", { numeric: true });
+    });
 
     const orderNumbers = sourceOrders.map((row) => row.orderNumber);
 
-    // Aktuális Átvétel állapotok.
     const currentRows: AtvetelCurrentRow[] = [];
     for (let index = 0; index < orderNumbers.length; index += 100) {
       const chunk = orderNumbers.slice(index, index + 100);
@@ -22802,8 +23022,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       currentRows.map((row) => [normalizeLooseText(row.order_number), row])
     );
 
-    // Ugyanaz a work_logs státuszlogika, mint a termelési monitorban,
-    // de itt kizárólag a Szerelés munkaállomás állapota kell.
     const logs: WorkLogRow[] = [];
     const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
 
@@ -22883,13 +23101,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       );
 
       return {
-        key: `${normalizeLooseText(sourceRow.orderNumber)}|${sourceRow.elkeszulesDatum}`,
+        key: normalizeLooseText(sourceRow.orderNumber),
         orderNumber: sourceRow.orderNumber,
+        rovidRendeles: sourceRow.rovidRendeles,
         elkeszulesDatum: sourceRow.elkeszulesDatum,
+        nev: sourceRow.nev,
+        varos: sourceRow.varos,
+        csapat: sourceRow.csapat,
         szereles: sourceRow.szereles,
-        telephely: sourceRow.telephely,
-        kiszallitasiDatum: sourceRow.kiszallitasiDatum,
         atvetel: sourceRow.atvetel,
+        telephely: sourceRow.telephely,
+        szereloKomment: sourceRow.szereloKomment,
+        teljesCim: sourceRow.teljesCim,
+        kiszallitasiDatum: sourceRow.kiszallitasiDatum,
+        szerelesiIdopontRaw: sourceRow.szerelesiIdopontRaw,
         productionStatus: monitorCell.status,
         productionStatusLabel: monitorCell.label,
         persisted: currentByOrder.get(normalizeLooseText(sourceRow.orderNumber)) || null,
@@ -23121,13 +23346,160 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     setAtvetelDateTo(nextTo);
   }
 
+  async function loadAtvetelTableSettings(): Promise<void> {
+    const workerName = String(activeWorker?.["Teljes nev"] || "").trim();
+    const localKey = `nivo-atvetel-table-config:${workerName || "default"}`;
+
+    try {
+      if (typeof window !== "undefined") {
+        const cached = window.localStorage.getItem(localKey);
+        if (cached) {
+          const parsed = JSON.parse(cached) as { columns?: unknown };
+          if (parsed?.columns) setAtvetelTableColumns(normalizeAtvetelTableColumns(parsed.columns));
+        }
+      }
+    } catch {
+      // A Supabase beállítás ettől még betölthető.
+    }
+
+    if (!supabase || !activeWorker || !workerName) return;
+    try {
+      const response = await supabase
+        .from("user_ui_preferences")
+        .select("theme_json")
+        .eq("worker_name", workerName)
+        .eq("page_key", ATVETEL_TABLE_CONFIG_PAGE_KEY)
+        .limit(1);
+      if (response.error) throw response.error;
+      const row = (response.data || [])[0] as { theme_json?: Record<string, unknown> | null } | undefined;
+      const columns = row?.theme_json?.columns;
+      if (columns) {
+        const normalized = normalizeAtvetelTableColumns(columns);
+        setAtvetelTableColumns(normalized);
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(localKey, JSON.stringify({ columns: normalized }));
+        }
+      }
+    } catch (error) {
+      console.warn("Átvétel táblázatbeállítás betöltési hiba:", error);
+    }
+  }
+
+  function queueAtvetelTableSettingsSave(columns: AtvetelTableColumnConfig[]): void {
+    const normalized = normalizeAtvetelTableColumns(columns);
+    const workerName = String(activeWorker?.["Teljes nev"] || "").trim();
+    const localKey = `nivo-atvetel-table-config:${workerName || "default"}`;
+
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(localKey, JSON.stringify({ columns: normalized }));
+      }
+    } catch {
+      // A Supabase mentés ettől még működhet.
+    }
+
+    if (typeof window === "undefined") return;
+    if (atvetelTableSettingsSaveTimerRef.current !== null) {
+      window.clearTimeout(atvetelTableSettingsSaveTimerRef.current);
+    }
+    atvetelTableSettingsSaveTimerRef.current = window.setTimeout(() => {
+      atvetelTableSettingsSaveTimerRef.current = null;
+      if (!supabase || !activeWorker || !workerName) return;
+      void (async () => {
+        try {
+          const response = await supabase.from("user_ui_preferences").upsert({
+            worker_name: workerName,
+            worker_id: activeWorker.id,
+            page_key: ATVETEL_TABLE_CONFIG_PAGE_KEY,
+            theme_preset: "custom",
+            theme_json: { columns: normalized },
+            updated_at: new Date().toISOString(),
+          }, { onConflict: "worker_name,page_key" });
+          if (response.error) throw response.error;
+        } catch (error) {
+          console.warn("Átvétel táblázatbeállítás mentési hiba:", error);
+        }
+      })();
+    }, 500);
+  }
+
+  function updateAtvetelTableColumns(
+    updater: (current: AtvetelTableColumnConfig[]) => AtvetelTableColumnConfig[]
+  ): void {
+    setAtvetelTableColumns((current) => {
+      const next = normalizeAtvetelTableColumns(updater(current.map((column) => ({ ...column }))));
+      queueAtvetelTableSettingsSave(next);
+      return next;
+    });
+  }
+
+  function moveAtvetelTableColumn(columnId: AtvetelTableColumnId, direction: -1 | 1): void {
+    updateAtvetelTableColumns((current) => {
+      const index = current.findIndex((column) => column.id === columnId);
+      if (index < 0) return current;
+      const target = index + direction;
+      if (target < 0 || target >= current.length) return current;
+      const next = [...current];
+      const [moved] = next.splice(index, 1);
+      next.splice(target, 0, moved);
+      return next;
+    });
+  }
+
+  function reorderAtvetelTableColumn(sourceId: AtvetelTableColumnId, targetId: AtvetelTableColumnId): void {
+    if (sourceId === targetId) return;
+    updateAtvetelTableColumns((current) => {
+      const sourceIndex = current.findIndex((column) => column.id === sourceId);
+      const targetIndex = current.findIndex((column) => column.id === targetId);
+      if (sourceIndex < 0 || targetIndex < 0) return current;
+      const next = [...current];
+      const [moved] = next.splice(sourceIndex, 1);
+      next.splice(targetIndex, 0, moved);
+      return next;
+    });
+  }
+
   function AtvetelAdmin(): React.JSX.Element {
     const officeTheme = getOfficeTheme("atvetel");
     const normalizedSearch = normalizeDashboardOrderSearch(atvetelCommittedSearch);
 
-    const visibleRows = atvetelRows.filter((row) => {
-      // A rendelésszám kereső mindentől független: teljes szereles_terv forrásban
-      // keres, és sem a dátumszűrő, sem a lezárási állapot nem korlátozza.
+    const getDraft = (row: AtvetelMonitorRow): AtvetelDraft => atvetelDrafts[row.key] || {
+      folyamatban: Boolean(row.persisted?.folyamatban),
+      atvette: Boolean(row.persisted?.atvette),
+      megjegyzes: String(row.persisted?.megjegyzes || ""),
+      dirty: false,
+    };
+
+    const getSavedAtLabel = (row: AtvetelMonitorRow): string => row.persisted
+      ? formatDateTimeMinute(
+          row.persisted.lezart
+            ? (row.persisted.lezart_at || row.persisted.updated_at)
+            : row.persisted.updated_at
+        )
+      : "";
+
+    const getColumnFilterValue = (row: AtvetelMonitorRow, columnId: AtvetelTableColumnId): string => {
+      const draft = getDraft(row);
+      if (columnId === "orderNumber") return row.orderNumber || "—";
+      if (columnId === "rovidRendeles") return row.rovidRendeles || "—";
+      if (columnId === "productionStatus") return row.productionStatusLabel || "—";
+      if (columnId === "nev") return row.nev || "—";
+      if (columnId === "varos") return row.varos || "—";
+      if (columnId === "csapat") return row.csapat || "—";
+      if (columnId === "szereles") return row.szereles || "—";
+      if (columnId === "atvetel") return row.atvetel || "—";
+      if (columnId === "telephely") return row.telephely || "—";
+      if (columnId === "szereloKomment") return row.szereloKomment || "—";
+      if (columnId === "savedAt") return getSavedAtLabel(row) || "—";
+      if (columnId === "folyamatban") return draft.folyamatban ? "Igen" : "Nem";
+      if (columnId === "atvette") return draft.atvette ? "Igen" : "Nem";
+      if (columnId === "megjegyzes") return draft.megjegyzes || "—";
+      if (columnId === "actions") return row.persisted?.lezart ? "Lezárt" : "Nyitott";
+      return "—";
+    };
+
+    const baseRows = atvetelRows.filter((row) => {
+      // A rendelésszám-kereső továbbra is minden más szűrőtől független.
       if (normalizedSearch) {
         return matchesDashboardOrderFilters(row.orderNumber, [atvetelCommittedSearch]);
       }
@@ -23138,42 +23510,94 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (atvetelClosureFilter === "open" && closed) return false;
       if (atvetelClosureFilter === "ongoing" && (closed || !folyamatban)) return false;
       if (atvetelClosureFilter === "closed" && !closed) return false;
-
       return true;
     });
 
+    const visibleRows = baseRows
+      .filter((row) => {
+        for (const column of atvetelTableColumns) {
+          const filter = atvetelColumnFilters[column.id];
+          if (!filter) continue;
+          const value = getColumnFilterValue(row, column.id);
+          const normalizedValue = normalizeLooseText(value);
+          const normalizedText = normalizeLooseText(filter.text || "");
+          if (normalizedText && !normalizedValue.includes(normalizedText)) return false;
+          if (filter.selectedValues !== null && !filter.selectedValues.includes(value)) return false;
+        }
+        return true;
+      })
+      .sort((left, right) => {
+        if (!atvetelSortState) return 0;
+        const columnId = atvetelSortState.columnId;
+        let result = 0;
+        if (columnId === "savedAt") {
+          const leftRaw = left.persisted?.lezart
+            ? (left.persisted.lezart_at || left.persisted.updated_at)
+            : left.persisted?.updated_at;
+          const rightRaw = right.persisted?.lezart
+            ? (right.persisted.lezart_at || right.persisted.updated_at)
+            : right.persisted?.updated_at;
+          const leftMs = leftRaw ? new Date(leftRaw).getTime() : Number.NEGATIVE_INFINITY;
+          const rightMs = rightRaw ? new Date(rightRaw).getTime() : Number.NEGATIVE_INFINITY;
+          result = leftMs - rightMs;
+        } else if (columnId === "folyamatban" || columnId === "atvette") {
+          const leftValue = getColumnFilterValue(left, columnId) === "Igen" ? 1 : 0;
+          const rightValue = getColumnFilterValue(right, columnId) === "Igen" ? 1 : 0;
+          result = leftValue - rightValue;
+        } else {
+          const leftValue = getColumnFilterValue(left, columnId);
+          const rightValue = getColumnFilterValue(right, columnId);
+          result = leftValue.localeCompare(rightValue, "hu", { numeric: true, sensitivity: "base" });
+        }
+        return atvetelSortState.direction === "asc" ? result : -result;
+      });
+
+    const visibleColumns = atvetelTableColumns.filter((column) => column.visible);
+    const totalTableWidth = Math.max(
+      900,
+      visibleColumns.reduce((sum, column) => sum + column.width, 0)
+    );
+
+    const getUniqueColumnValues = (columnId: AtvetelTableColumnId): string[] => Array.from(new Set<string>(
+      baseRows.map((row) => getColumnFilterValue(row, columnId))
+    )).sort((left, right) => left.localeCompare(right, "hu", { numeric: true, sensitivity: "base" }));
+
+    const updateColumnFilter = (columnId: AtvetelTableColumnId, patch: Partial<AtvetelColumnFilter>): void => {
+      setAtvetelColumnFilters((current) => {
+        const previous = current[columnId] || { text: "", selectedValues: null };
+        return {
+          ...current,
+          [columnId]: { ...previous, ...patch },
+        };
+      });
+    };
+
+    const clearColumnFilter = (columnId: AtvetelTableColumnId): void => {
+      setAtvetelColumnFilters((current) => {
+        const next = { ...current };
+        delete next[columnId];
+        return next;
+      });
+    };
+
+    const hasActiveColumnFilter = (columnId: AtvetelTableColumnId): boolean => {
+      const filter = atvetelColumnFilters[columnId];
+      return Boolean(filter && (filter.text.trim() || filter.selectedValues !== null));
+    };
+
+    const cycleSort = (columnId: AtvetelTableColumnId): void => {
+      setAtvetelSortState((current) => {
+        if (!current || current.columnId !== columnId) return { columnId, direction: "asc" };
+        if (current.direction === "asc") return { columnId, direction: "desc" };
+        return null;
+      });
+    };
+
     async function exportAtvetelExcel(): Promise<void> {
       if (atvetelExporting) return;
-
       setAtvetelExporting(true);
       try {
-        const hasDateFilter = Boolean(atvetelDateFrom.trim() || atvetelDateTo.trim());
-        const hasOrderFilter = Boolean(normalizeDashboardOrderSearch(atvetelCommittedSearch));
-
-        let rowsToExport: AtvetelMonitorRow[];
-
-        // Ha nincs sem dátum-, sem rendelésszám-szűrés, a TELJES szereles_terv
-        // forrást exportáljuk. Egyébként pontosan a képernyő aktuális
-        // dátum/rendelésszám + lezárási állapot szűrésének megfelelő sorokat.
-        if (!hasDateFilter && !hasOrderFilter) {
-          const allRows = await fetchAtvetelMonitorRows("", "", "", { ignoreDateFilter: true, dateBasis: atvetelDateBasis });
-          rowsToExport = allRows.filter((row) => {
-            const closed = Boolean(row.persisted?.lezart);
-            const folyamatban = Boolean(atvetelDrafts[row.key]?.folyamatban ?? row.persisted?.folyamatban);
-            if (atvetelClosureFilter === "open" && closed) return false;
-            if (atvetelClosureFilter === "ongoing" && (closed || !folyamatban)) return false;
-            if (atvetelClosureFilter === "closed" && !closed) return false;
-            return true;
-          });
-        } else {
-          rowsToExport = [...visibleRows];
-        }
-
-        rowsToExport.sort((left, right) =>
-          left.elkeszulesDatum.localeCompare(right.elkeszulesDatum)
-          || left.orderNumber.localeCompare(right.orderNumber, "hu", { numeric: true })
-        );
-
+        const rowsToExport = [...visibleRows];
         if (rowsToExport.length === 0) {
           setMessage({ type: "error", text: "Nincs exportálható Átvétel sor a jelenlegi szűréshez." });
           return;
@@ -23181,68 +23605,51 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
         const XLSX = await waitForXlsx();
         const workbook = XLSX.utils.book_new();
-
         const excelRows: Array<Array<string | number>> = [
           [
             "Rendelésszám",
-            "Elkészülés dátuma",
+            "Rövid Rendelés",
             "Ajtó állapota",
-            "Telephely",
+            "Név",
+            "Város",
+            "Csapat",
+            "Szerelés",
             "Átvétel",
+            "Telephely",
+            "Szerelő komment",
+            "Mentett Idő",
             "Folyamatban",
             "Átvette",
             "Megjegyzés",
           ],
           ...rowsToExport.map((row) => {
-            const draft = atvetelDrafts[row.key] || {
-              folyamatban: Boolean(row.persisted?.folyamatban),
-              atvette: Boolean(row.persisted?.atvette),
-              megjegyzes: String(row.persisted?.megjegyzes || ""),
-              dirty: false,
-            };
-
+            const draft = getDraft(row);
             return [
               row.orderNumber,
-              row.elkeszulesDatum,
+              row.rovidRendeles,
               row.productionStatusLabel,
-              row.telephely || "",
-              row.persisted
-                ? formatDateTimeMinute(
-                    row.persisted.lezart
-                      ? (row.persisted.lezart_at || row.persisted.updated_at)
-                      : row.persisted.updated_at
-                  )
-                : "",
+              row.nev,
+              row.varos,
+              row.csapat,
+              row.szereles,
+              row.atvetel,
+              row.telephely,
+              row.szereloKomment,
+              getSavedAtLabel(row),
               draft.folyamatban ? "Igen" : "Nem",
               draft.atvette ? "Igen" : "Nem",
-              draft.megjegyzes || "",
+              draft.megjegyzes,
             ];
           }),
         ];
 
-        XLSX.utils.book_append_sheet(
-          workbook,
-          XLSX.utils.aoa_to_sheet(excelRows),
-          "Átvétel"
-        );
-
+        XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(excelRows), "Átvétel");
         const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
-        downloadBlob(
-          "Átvétel.xlsx",
-          new Blob([output]),
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        );
-
-        setMessage({
-          type: "success",
-          text: `Átvétel Excel export elkészült: ${rowsToExport.length} sor.`,
-        });
+        downloadBlob("Átvétel.xlsx", new Blob([output]), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        setMessage({ type: "success", text: `Átvétel Excel export elkészült: ${rowsToExport.length} sor.` });
       } catch (error) {
         console.error("ÁTVÉTEL EXCEL EXPORT HIBA:", error);
-        setMessage({
-          type: "error",
-          text: `Az Átvétel Excel export sikertelen: ${normalizeError(error)}`,
-        });
+        setMessage({ type: "error", text: `Az Átvétel Excel export sikertelen: ${normalizeError(error)}` });
       } finally {
         setAtvetelExporting(false);
       }
@@ -23268,87 +23675,178 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
 
     const tableHeaderStyle: React.CSSProperties = {
-      padding: "10px 9px",
-      borderBottom: `1px solid ${officeTheme.borderColor}`,
+      padding: "6px 7px",
+      border: `1px solid ${officeTheme.borderColor}`,
       background: officeTheme.headerBackground,
       color: officeTheme.textColor,
       fontWeight: 900,
       textAlign: "left",
       position: "sticky",
       top: 0,
-      zIndex: 2,
+      zIndex: 4,
+      boxSizing: "border-box",
     };
 
     const tableCellStyle: React.CSSProperties = {
-      padding: "9px",
-      borderBottom: `1px solid ${officeTheme.borderColor}`,
+      padding: "6px 7px",
+      border: `1px solid ${officeTheme.borderColor}`,
       color: officeTheme.textColor,
       verticalAlign: "middle",
+      boxSizing: "border-box",
+      overflowWrap: "anywhere",
+      userSelect: "text",
+      WebkitUserSelect: "text",
     };
 
     const statusStyle = (status: ProductionMonitorStatus): React.CSSProperties => {
-      if (status === "done") {
-        return {
-          display: "inline-flex",
-          padding: "6px 9px",
-          borderRadius: 999,
-          background: "#16a34a",
-          color: "#052e16",
-          fontWeight: 900,
-        };
-      }
-      if (status === "in-progress") {
-        return {
-          display: "inline-flex",
-          padding: "6px 9px",
-          borderRadius: 999,
-          background: "#f59e0b",
-          color: "#451a03",
-          fontWeight: 900,
-        };
-      }
-      return {
-        display: "inline-flex",
-        padding: "6px 9px",
-        borderRadius: 999,
-        background: "#334155",
-        color: "#f8fafc",
-        fontWeight: 900,
+      if (status === "done") return { display: "inline-flex", padding: "5px 8px", borderRadius: 999, background: "#16a34a", color: "#052e16", fontWeight: 900 };
+      if (status === "in-progress") return { display: "inline-flex", padding: "5px 8px", borderRadius: 999, background: "#f59e0b", color: "#451a03", fontWeight: 900 };
+      return { display: "inline-flex", padding: "5px 8px", borderRadius: 999, background: "#334155", color: "#f8fafc", fontWeight: 900 };
+    };
+
+    const renderCell = (row: AtvetelMonitorRow, column: AtvetelTableColumnConfig): React.JSX.Element => {
+      const draft = getDraft(row);
+      const saving = normalizeLooseText(atvetelSavingOrder) === normalizeLooseText(row.orderNumber);
+      const closing = normalizeLooseText(atvetelClosingOrder) === normalizeLooseText(row.orderNumber);
+      const closed = Boolean(row.persisted?.lezart);
+      const cellStyle: React.CSSProperties = {
+        ...tableCellStyle,
+        width: column.width,
+        minWidth: column.width,
+        maxWidth: column.width,
+        textAlign: column.align,
       };
+
+      if (column.id === "productionStatus") {
+        return <td key={column.id} style={cellStyle}><span style={statusStyle(row.productionStatus)}>{row.productionStatusLabel}</span></td>;
+      }
+
+      if (column.id === "varos") {
+        return (
+          <td
+            key={column.id}
+            style={{ ...cellStyle, fontWeight: 800, cursor: row.teljesCim ? "help" : undefined }}
+            onMouseEnter={(event) => {
+              if (!row.teljesCim) return;
+              setAtvetelAddressTooltip({ rowKey: row.key, address: row.teljesCim, x: event.clientX + 16, y: event.clientY + 16 });
+            }}
+            onMouseMove={(event) => {
+              if (!row.teljesCim) return;
+              setAtvetelAddressTooltip({ rowKey: row.key, address: row.teljesCim, x: event.clientX + 16, y: event.clientY + 16 });
+            }}
+            onMouseLeave={() => setAtvetelAddressTooltip((current) => current?.rowKey === row.key ? null : current)}
+          >
+            {row.varos || "—"}
+          </td>
+        );
+      }
+
+      if (column.id === "folyamatban") {
+        return (
+          <td key={column.id} style={cellStyle}>
+            <input
+              type="checkbox"
+              checked={draft.folyamatban}
+              disabled={closed || saving || closing}
+              onChange={(event) => updateAtvetelDraft(row.key, { folyamatban: event.target.checked })}
+              style={{ width: 20, height: 20, cursor: closed ? "not-allowed" : "pointer", opacity: closed ? 0.75 : 1 }}
+            />
+          </td>
+        );
+      }
+
+      if (column.id === "atvette") {
+        return (
+          <td key={column.id} style={cellStyle}>
+            <input
+              type="checkbox"
+              checked={draft.atvette}
+              disabled={closed || saving || closing}
+              onChange={(event) => updateAtvetelDraft(row.key, { atvette: event.target.checked })}
+              style={{ width: 20, height: 20, cursor: closed ? "not-allowed" : "pointer", opacity: closed ? 0.75 : 1 }}
+            />
+          </td>
+        );
+      }
+
+      if (column.id === "megjegyzes") {
+        return (
+          <td key={column.id} style={cellStyle}>
+            <textarea
+              value={draft.megjegyzes}
+              disabled={closed || saving || closing}
+              onChange={(event) => updateAtvetelDraft(row.key, { megjegyzes: event.target.value })}
+              placeholder={closed ? "A rendelés le van zárva." : "Megjegyzés az átvételhez..."}
+              rows={2}
+              style={{ ...fieldStyle, minHeight: 48, resize: "vertical", padding: "7px 8px" }}
+            />
+          </td>
+        );
+      }
+
+      if (column.id === "actions") {
+        return (
+          <td key={column.id} style={cellStyle}>
+            <div style={{ display: "flex", justifyContent: "center", gap: 6, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => void saveAtvetelRow(row, false)}
+                disabled={closed || saving || closing}
+                style={{ ...buttonPrimary, minWidth: 88, opacity: closed || saving || closing ? 0.65 : 1 }}
+              >
+                {closed ? "Lezárva" : saving ? "Mentés..." : "Mentés"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveAtvetelRow(row, true)}
+                disabled={closed || saving || closing}
+                style={{ ...buttonSecondary, minWidth: 88, borderColor: closed ? "#86efac" : "#22c55e", background: closed ? "#166534" : "#14532d", color: "#ffffff", opacity: closed || saving || closing ? 0.7 : 1, fontWeight: 900 }}
+              >
+                {closed ? "Lezárva" : closing ? "Lezárás..." : "Lezárás"}
+              </button>
+            </div>
+            {closed && (
+              <div style={{ marginTop: 5, color: "#dcfce7", fontSize: 10, fontWeight: 900 }}>
+                {row.persisted?.lezart_at ? formatDateTime(row.persisted.lezart_at) : "Véglegesen lezárva"}
+                {row.persisted?.lezarta_worker_name ? ` · ${row.persisted.lezarta_worker_name}` : ""}
+              </div>
+            )}
+            {!closed && draft.dirty && <div style={{ marginTop: 4, color: "#fbbf24", fontSize: 10, fontWeight: 800 }}>Nincs mentve</div>}
+          </td>
+        );
+      }
+
+      const valueMap: Record<Exclude<AtvetelTableColumnId, "productionStatus" | "varos" | "folyamatban" | "atvette" | "megjegyzes" | "actions">, string> = {
+        orderNumber: row.orderNumber,
+        rovidRendeles: row.rovidRendeles,
+        nev: row.nev,
+        csapat: row.csapat,
+        szereles: row.szereles,
+        atvetel: row.atvetel,
+        telephely: row.telephely,
+        szereloKomment: row.szereloKomment,
+        savedAt: getSavedAtLabel(row),
+      };
+      const value = valueMap[column.id as keyof typeof valueMap] || "";
+      return <td key={column.id} style={{ ...cellStyle, fontWeight: column.id === "orderNumber" ? 900 : 700 }}>{value || "—"}</td>;
     };
 
     return (
-      <div
-        style={{
-          minHeight: "100vh",
-          background: officeTheme.pageBackground,
-          color: officeTheme.textColor,
-          fontFamily: officeTheme.fontFamily,
-          padding: officeTheme.padding,
-        }}
-      >
+      <div style={{ minHeight: "100vh", background: officeTheme.pageBackground, color: officeTheme.textColor, fontFamily: officeTheme.fontFamily, padding: officeTheme.padding }}>
         <div style={{ width: "100%", maxWidth: "none", margin: "0 auto" }}>
           {ManagementNavigation()}
 
           <section data-office-window="atvetel:header" style={{ ...pagePanel, marginBottom: 14 }}>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "minmax(0, 1fr) minmax(640px, auto) minmax(0, 1fr)",
-                gap: 18,
-                alignItems: "start",
-                width: "100%",
-              }}
-            >
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(640px, auto) minmax(0, 1fr)", gap: 18, alignItems: "start", width: "100%" }}>
               <div>
                 <div style={{ color: "#38bdf8", fontWeight: 900, fontSize: 12, letterSpacing: 1 }}>NÍVÓ ÁTVÉTELI MONITOR</div>
                 <h2 style={{ margin: "4px 0", color: officeTheme.textColor, fontSize: 28 }}>Átvétel</h2>
                 <div style={{ color: officeTheme.mutedText, fontSize: 13 }}>
-                  Sorforrás: <strong>szereles_terv</strong> + <strong>atvetel_adat</strong> · Szűrés alapja:{" "}
+                  Sorforrás: <strong>atvetel_adat</strong> · Ajtó állapot: <strong>rendszer / Szerelés</strong> · Szűrés alapja:{" "}
                   <strong>{atvetelDateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülés dátuma"}</strong>
                 </div>
                 <div style={{ color: officeTheme.mutedText, fontSize: 12, marginTop: 4 }}>
-                  Utolsó frissítés: {atvetelLastUpdatedAt ? formatDateTime(atvetelLastUpdatedAt) : "–"}
+                  Azonos rendelésszámból a legkésőbbi szerelési időpontú sor látszik · Utolsó frissítés: {atvetelLastUpdatedAt ? formatDateTime(atvetelLastUpdatedAt) : "–"}
                 </div>
               </div>
 
@@ -23356,88 +23854,29 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <div style={{ display: "grid", gridTemplateColumns: "minmax(170px, 0.9fr) 1fr 1fr", gap: 10 }}>
                   <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
                     Dátumszűrés alapja
-                    <select
-                      value={atvetelDateBasis}
-                      onChange={(event) =>
-                        setAtvetelDateBasis(event.target.value as AtvetelDateBasis)
-                      }
-                      style={fieldStyle}
-                    >
+                    <select value={atvetelDateBasis} onChange={(event) => setAtvetelDateBasis(event.target.value as AtvetelDateBasis)} style={fieldStyle}>
                       <option value="elkeszules_datum">Elkészülési dátum</option>
                       <option value="kiszallitasi_datum">Kiszállítási dátum</option>
                     </select>
                   </label>
-
                   <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
                     Dátumtól · {atvetelDateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülés dátuma"}
-                    <input
-                      type="date"
-                      value={atvetelDateFrom}
-                      onChange={(event) => setAtvetelDateFrom(event.target.value)}
-                      style={fieldStyle}
-                    />
+                    <input type="date" value={atvetelDateFrom} onChange={(event) => setAtvetelDateFrom(event.target.value)} style={fieldStyle} />
                   </label>
-
                   <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
                     Dátumig · {atvetelDateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülés dátuma"}
-                    <input
-                      type="date"
-                      value={atvetelDateTo}
-                      onChange={(event) => setAtvetelDateTo(event.target.value)}
-                      style={fieldStyle}
-                    />
+                    <input type="date" value={atvetelDateTo} onChange={(event) => setAtvetelDateTo(event.target.value)} style={fieldStyle} />
                   </label>
                 </div>
-
                 <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
-                  <button
-                    type="button"
-                    onClick={() => shiftAtvetelDateRange(-1)}
-                    style={{
-                      ...buttonSecondary,
-                      minWidth: 66,
-                      height: 36,
-                      fontSize: 20,
-                      fontWeight: 900,
-                      lineHeight: 1,
-                    }}
-                    title="Egy nappal vissza"
-                    aria-label="Egy nappal vissza"
-                  >
-                    ←
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => shiftAtvetelDateRange(1)}
-                    style={{
-                      ...buttonSecondary,
-                      minWidth: 66,
-                      height: 36,
-                      fontSize: 20,
-                      fontWeight: 900,
-                      lineHeight: 1,
-                    }}
-                    title="Egy nappal előre"
-                    aria-label="Egy nappal előre"
-                  >
-                    →
-                  </button>
+                  <button type="button" onClick={() => shiftAtvetelDateRange(-1)} style={{ ...buttonSecondary, minWidth: 66, height: 36, fontSize: 20, fontWeight: 900, lineHeight: 1 }} title="Egy nappal vissza">←</button>
+                  <button type="button" onClick={() => shiftAtvetelDateRange(1)} style={{ ...buttonSecondary, minWidth: 66, height: 36, fontSize: 20, fontWeight: 900, lineHeight: 1 }} title="Egy nappal előre">→</button>
                 </div>
               </div>
-
               <div aria-hidden="true" />
             </div>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "minmax(420px, 1fr) minmax(280px, 430px) 150px",
-                gap: 10,
-                alignItems: "end",
-                width: "100%",
-                marginTop: 16,
-              }}
-            >
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(420px, 1fr) minmax(280px, 430px) 150px", gap: 10, alignItems: "end", width: "100%", marginTop: 16 }}>
               <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
                 Rendelésszám kereső · 5 karakteres gyorsszűrő
                 <input
@@ -23446,9 +23885,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   onChange={(event) => {
                     const nextValue = event.target.value;
                     setAtvetelSearch(nextValue);
-
-                    // Ha a keresőmezőt teljesen kiürítik, azonnal visszaállunk
-                    // a normál, Dátumtól–Dátumig szerinti Átvétel nézetre.
                     if (!nextValue.trim() && atvetelCommittedSearch) {
                       setAtvetelCommittedSearch("");
                       void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, "");
@@ -23457,7 +23893,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   onKeyDown={(event) => {
                     if (event.key !== "Enter") return;
                     event.preventDefault();
-
                     const nextSearch = atvetelSearch.trim();
                     setAtvetelCommittedSearch(nextSearch);
                     void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, nextSearch);
@@ -23469,13 +23904,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
               <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
                 Lezárási állapot
-                <select
-                  value={atvetelClosureFilter}
-                  onChange={(event) =>
-                    setAtvetelClosureFilter(event.target.value as "open" | "ongoing" | "closed" | "all")
-                  }
-                  style={fieldStyle}
-                >
+                <select value={atvetelClosureFilter} onChange={(event) => setAtvetelClosureFilter(event.target.value as "open" | "ongoing" | "closed" | "all")} style={fieldStyle}>
                   <option value="open">Nem lezárt rendelések</option>
                   <option value="ongoing">Folyamatban</option>
                   <option value="closed">Lezárt rendelések</option>
@@ -23484,15 +23913,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               </label>
 
               <div style={{ display: "grid", gap: 8, width: 150, justifySelf: "end" }}>
-                <button type="button" onClick={handleCancelFullReset} style={{ ...buttonSecondary, width: "100%" }}>
-                  Kijelentkezés
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo)}
-                  disabled={atvetelLoading}
-                  style={{ ...buttonPrimary, width: "100%" }}
-                >
+                <button type="button" onClick={handleCancelFullReset} style={{ ...buttonSecondary, width: "100%" }}>Kijelentkezés</button>
+                <button type="button" onClick={() => void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo)} disabled={atvetelLoading} style={{ ...buttonPrimary, width: "100%" }}>
                   {atvetelLoading ? "Frissítés..." : "Frissítés"}
                 </button>
               </div>
@@ -23504,205 +23926,172 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <div>
                 <h3 style={{ margin: 0, color: officeTheme.textColor, fontSize: 21 }}>Átvételi sorok</h3>
                 <div style={{ color: officeTheme.mutedText, fontSize: 12, marginTop: 3 }}>
-                  {visibleRows.length} megjelenített rendelés · minden sor külön Mentés és végleges Lezárás gombbal
+                  {visibleRows.length} megjelenített rendelés · Excel-szerű oszlopszűrés és rendezés
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <button
-                  type="button"
-                  onClick={() => void exportAtvetelExcel()}
-                  disabled={atvetelLoading || atvetelExporting}
-                  style={buttonPrimary}
-                >
+                <button type="button" onClick={() => setAtvetelTableEditMode((value) => !value)} style={atvetelTableEditMode ? buttonPrimary : buttonSecondary}>
+                  {atvetelTableEditMode ? "Profi szerkesztő bezárása" : "Profi szerkesztő"}
+                </button>
+                <button type="button" onClick={() => void exportAtvetelExcel()} disabled={atvetelLoading || atvetelExporting} style={buttonPrimary}>
                   {atvetelExporting ? "Excel export..." : "Excel export"}
                 </button>
-
                 {(atvetelSearch || atvetelCommittedSearch) && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAtvetelSearch("");
-                      setAtvetelCommittedSearch("");
-                      void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, "");
-                    }}
-                    style={buttonSecondary}
-                  >
+                  <button type="button" onClick={() => { setAtvetelSearch(""); setAtvetelCommittedSearch(""); void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, ""); }} style={buttonSecondary}>
                     Keresés törlése
                   </button>
                 )}
               </div>
             </div>
 
-            <div data-nivo-scroll-region="source-21071" style={{ overflowX: "auto", maxHeight: "calc(100vh - 310px)", overflowY: "auto", border: `1px solid ${officeTheme.borderColor}`, borderRadius: 12 }}>
-              <table style={{ width: "100%", minWidth: 1760, borderCollapse: "collapse" }}>
-                <thead>
-                  <tr>
-                    <th style={tableHeaderStyle}>Rendelésszám</th>
-                    <th style={tableHeaderStyle}>Elkészülés dátuma</th>
-                    <th style={tableHeaderStyle}>Ajtó állapota</th>
-                    <th style={tableHeaderStyle}>Szerelés</th>
-                    <th style={tableHeaderStyle}>Telephely</th>
-                    <th style={tableHeaderStyle}>Kiszállítási dátum</th>
-                    <th style={tableHeaderStyle}>Átvétel</th>
-                    <th style={{ ...tableHeaderStyle, textAlign: "center" }}>Folyamatban</th>
-                    <th style={{ ...tableHeaderStyle, textAlign: "center" }}>Átvette</th>
-                    <th style={tableHeaderStyle}>Megjegyzés</th>
-                    <th style={{ ...tableHeaderStyle, textAlign: "center" }}>Mentés / Lezárás</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleRows.length === 0 ? (
+            {atvetelTableEditMode && (
+              <div style={{ marginBottom: 12, padding: 12, border: `1px solid ${officeTheme.borderColor}`, borderRadius: 10, background: officeTheme.panelAltBackground }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+                  <div>
+                    <strong>Átvételi táblázat Profi szerkesztő</strong>
+                    <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Kapcsold ki/be az oszlopokat, húzd át őket, módosítsd a szélességet és az igazítást. A beállítás automatikusan mentődik.</div>
+                  </div>
+                  <button type="button" onClick={() => updateAtvetelTableColumns(() => createDefaultAtvetelTableColumns())} style={buttonSecondary}>Alapbeállítás</button>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 8 }}>
+                  {atvetelTableColumns.map((column, index) => (
+                    <div
+                      key={column.id}
+                      draggable
+                      onDragStart={() => { atvetelDraggedColumnIdRef.current = column.id; }}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => { event.preventDefault(); const sourceId = atvetelDraggedColumnIdRef.current; atvetelDraggedColumnIdRef.current = null; if (sourceId) reorderAtvetelTableColumn(sourceId, column.id); }}
+                      onDragEnd={() => { atvetelDraggedColumnIdRef.current = null; }}
+                      style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) 86px 104px auto", gap: 7, alignItems: "center", padding: 8, border: `1px solid ${officeTheme.borderColor}`, borderRadius: 8, background: officeTheme.sectionBackground, cursor: "grab" }}
+                    >
+                      <input type="checkbox" checked={column.visible} onChange={(event) => updateAtvetelTableColumns((current) => current.map((item) => item.id === column.id ? { ...item, visible: event.target.checked } : item))} />
+                      <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{column.label}</strong>
+                      <input type="number" min={70} max={700} value={column.width} onChange={(event) => updateAtvetelTableColumns((current) => current.map((item) => item.id === column.id ? { ...item, width: Number(event.target.value) || item.width } : item))} style={{ ...fieldStyle, padding: "6px 7px", minHeight: 34 }} title="Oszlopszélesség pixelben" />
+                      <select value={column.align} onChange={(event) => updateAtvetelTableColumns((current) => current.map((item) => item.id === column.id ? { ...item, align: event.target.value as "left" | "center" | "right" } : item))} style={{ ...fieldStyle, padding: "6px 7px", minHeight: 34 }}>
+                        <option value="left">Bal</option><option value="center">Közép</option><option value="right">Jobb</option>
+                      </select>
+                      <div style={{ display: "flex", gap: 3 }}>
+                        <button type="button" disabled={index === 0} onClick={() => moveAtvetelTableColumn(column.id, -1)} style={{ ...buttonSecondary, padding: "5px 7px" }}>←</button>
+                        <button type="button" disabled={index === atvetelTableColumns.length - 1} onClick={() => moveAtvetelTableColumn(column.id, 1)} style={{ ...buttonSecondary, padding: "5px 7px" }}>→</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {visibleColumns.length === 0 ? (
+              <div style={{ padding: 30, textAlign: "center", color: officeTheme.mutedText, border: `1px solid ${officeTheme.borderColor}` }}>
+                Minden oszlop el van rejtve. Nyisd meg a Profi szerkesztőt, és kapcsolj vissza legalább egy mezőt.
+              </div>
+            ) : (
+              <div data-nivo-scroll-region="source-21071" style={{ overflowX: "auto", maxHeight: "calc(100vh - 310px)", overflowY: "auto", border: `1px solid ${officeTheme.borderColor}`, borderRadius: 8 }}>
+                <table style={{ width: totalTableWidth, minWidth: "100%", borderCollapse: "collapse", tableLayout: "fixed", background: officeTheme.sectionBackground }}>
+                  <colgroup>{visibleColumns.map((column) => <col key={column.id} style={{ width: column.width }} />)}</colgroup>
+                  <thead>
                     <tr>
-                      <td colSpan={11} style={{ ...tableCellStyle, textAlign: "center", padding: 30, color: officeTheme.mutedText }}>
-                        {atvetelLoading
-                          ? "Átvételi sorok betöltése..."
-                          : `A kiválasztott ${atvetelDateBasis === "kiszallitasi_datum" ? "kiszállítási" : "elkészülési"} dátumtartományban nincs megjeleníthető szereles_terv sor.`}
-                      </td>
+                      {visibleColumns.map((column) => {
+                        const sortMark = atvetelSortState?.columnId === column.id ? (atvetelSortState.direction === "asc" ? " ▲" : " ▼") : "";
+                        const filterActive = hasActiveColumnFilter(column.id);
+                        return (
+                          <th key={column.id} style={{ ...tableHeaderStyle, width: column.width, minWidth: column.width, maxWidth: column.width, textAlign: column.align }}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
+                              <button type="button" data-preserve-action-color="true" onClick={() => cycleSort(column.id)} style={{ flex: 1, minWidth: 0, border: 0, background: "transparent", color: officeTheme.textColor, fontWeight: 900, cursor: "pointer", textAlign: column.align, padding: 0 }} title="Rendezés">
+                                {column.label}{sortMark}
+                              </button>
+                              <button
+                                type="button"
+                                data-preserve-action-color="true"
+                                onClick={(event) => {
+                                  const rect = event.currentTarget.getBoundingClientRect();
+                                  setAtvetelFilterMenu((current) => current?.columnId === column.id ? null : { columnId: column.id, x: rect.left, y: rect.bottom + 5 });
+                                }}
+                                style={{ border: `1px solid ${filterActive ? officeTheme.accentColor : officeTheme.borderColor}`, background: filterActive ? officeTheme.navActiveBackground : officeTheme.panelAltBackground, color: officeTheme.textColor, borderRadius: 4, padding: "1px 5px", cursor: "pointer", fontWeight: 900 }}
+                                title="Excel-szerű oszlopszűrő"
+                              >
+                                ▾
+                              </button>
+                            </div>
+                          </th>
+                        );
+                      })}
                     </tr>
-                  ) : visibleRows.map((row) => {
-                    const draft = atvetelDrafts[row.key] || {
-                      folyamatban: false,
-                      atvette: false,
-                      megjegyzes: "",
-                      dirty: false,
-                    };
-                    const saving = normalizeLooseText(atvetelSavingOrder) === normalizeLooseText(row.orderNumber);
-                    const closing = normalizeLooseText(atvetelClosingOrder) === normalizeLooseText(row.orderNumber);
-                    const closed = Boolean(row.persisted?.lezart);
-
-                    return (
-                      <tr
-                        key={row.key}
-                        style={{
-                          background: closed ? "#15803d" : officeTheme.panelAltBackground,
-                          transition: "background 120ms ease",
-                        }}
-                      >
-                        <td style={{ ...tableCellStyle, fontWeight: 900, whiteSpace: "nowrap" }}>{row.orderNumber}</td>
-                        <td style={{ ...tableCellStyle, whiteSpace: "nowrap" }}>{row.elkeszulesDatum}</td>
-                        <td style={tableCellStyle}>
-                          <span style={statusStyle(row.productionStatus)}>{row.productionStatusLabel}</span>
-                        </td>
-                        <td style={{ ...tableCellStyle, minWidth: 150, fontWeight: 800 }}>
-                          {row.szereles || "—"}
-                        </td>
-                        <td style={{ ...tableCellStyle, minWidth: 150, fontWeight: 800 }}>
-                          {row.telephely || "—"}
-                        </td>
-                        <td style={{ ...tableCellStyle, minWidth: 145, fontWeight: 800, whiteSpace: "nowrap" }}>
-                          {row.kiszallitasiDatum || "—"}
-                        </td>
-                        <td style={{ ...tableCellStyle, minWidth: 175, fontWeight: 800, whiteSpace: "nowrap" }}>
-                          {row.persisted
-                            ? formatDateTimeMinute(
-                                row.persisted.lezart
-                                  ? (row.persisted.lezart_at || row.persisted.updated_at)
-                                  : row.persisted.updated_at
-                              )
-                            : "—"}
-                        </td>
-                        <td style={{ ...tableCellStyle, textAlign: "center" }}>
-                          <input
-                            type="checkbox"
-                            checked={draft.folyamatban}
-                            disabled={closed || saving || closing}
-                            onChange={(event) =>
-                              updateAtvetelDraft(row.key, { folyamatban: event.target.checked })
-                            }
-                            style={{
-                              width: 22,
-                              height: 22,
-                              cursor: closed ? "not-allowed" : "pointer",
-                              opacity: closed ? 0.75 : 1,
-                            }}
-                          />
-                        </td>
-                        <td style={{ ...tableCellStyle, textAlign: "center" }}>
-                          <input
-                            type="checkbox"
-                            checked={draft.atvette}
-                            disabled={closed || saving || closing}
-                            onChange={(event) =>
-                              updateAtvetelDraft(row.key, { atvette: event.target.checked })
-                            }
-                            style={{
-                              width: 22,
-                              height: 22,
-                              cursor: closed ? "not-allowed" : "pointer",
-                              opacity: closed ? 0.75 : 1,
-                            }}
-                          />
-                        </td>
-                        <td style={{ ...tableCellStyle, minWidth: 320 }}>
-                          <textarea
-                            value={draft.megjegyzes}
-                            disabled={closed || saving || closing}
-                            onChange={(event) =>
-                              updateAtvetelDraft(row.key, { megjegyzes: event.target.value })
-                            }
-                            placeholder={closed ? "A rendelés le van zárva." : "Megjegyzés az átvételhez..."}
-                            rows={2}
-                            style={{
-                              ...fieldStyle,
-                              minHeight: 58,
-                              resize: "vertical",
-                            }}
-                          />
-                        </td>
-                        <td style={{ ...tableCellStyle, textAlign: "center", whiteSpace: "nowrap" }}>
-                          <div style={{ display: "flex", justifyContent: "center", gap: 7, flexWrap: "wrap" }}>
-                            <button
-                              type="button"
-                              onClick={() => void saveAtvetelRow(row, false)}
-                              disabled={closed || saving || closing}
-                              style={{
-                                ...buttonPrimary,
-                                minWidth: 96,
-                                opacity: closed || saving || closing ? 0.65 : 1,
-                              }}
-                            >
-                              {closed ? "Lezárva" : saving ? "Mentés..." : "Mentés"}
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => void saveAtvetelRow(row, true)}
-                              disabled={closed || saving || closing}
-                              style={{
-                                ...buttonSecondary,
-                                minWidth: 96,
-                                borderColor: closed ? "#86efac" : "#22c55e",
-                                background: closed ? "#166534" : "#14532d",
-                                color: "#ffffff",
-                                opacity: closed || saving || closing ? 0.7 : 1,
-                                fontWeight: 900,
-                              }}
-                            >
-                              {closed ? "Lezárva" : closing ? "Lezárás..." : "Lezárás"}
-                            </button>
-                          </div>
-
-                          {closed && (
-                            <div style={{ marginTop: 6, color: "#dcfce7", fontSize: 11, fontWeight: 900 }}>
-                              {row.persisted?.lezart_at ? formatDateTime(row.persisted.lezart_at) : "Véglegesen lezárva"}
-                              {row.persisted?.lezarta_worker_name ? ` · ${row.persisted.lezarta_worker_name}` : ""}
-                            </div>
-                          )}
-
-                          {!closed && draft.dirty && (
-                            <div style={{ marginTop: 5, color: "#fbbf24", fontSize: 11, fontWeight: 800 }}>
-                              Nincs mentve
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {visibleRows.length === 0 ? (
+                      <tr><td colSpan={visibleColumns.length} style={{ ...tableCellStyle, textAlign: "center", padding: 30, color: officeTheme.mutedText }}>
+                        {atvetelLoading ? "Átvételi sorok betöltése..." : "A jelenlegi dátum-, állapot- és oszlopszűrők mellett nincs megjeleníthető rendelés."}
+                      </td></tr>
+                    ) : visibleRows.map((row, rowIndex) => {
+                      const closed = Boolean(row.persisted?.lezart);
+                      return (
+                        <tr key={row.key} style={{ background: closed ? "#15803d" : rowIndex % 2 === 0 ? officeTheme.panelAltBackground : officeTheme.sectionBackground, transition: "background 120ms ease" }}>
+                          {visibleColumns.map((column) => renderCell(row, column))}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </section>
         </div>
+
+        {atvetelFilterMenu && (() => {
+          const column = atvetelTableColumns.find((item) => item.id === atvetelFilterMenu.columnId);
+          if (!column) return null;
+          const uniqueValues = getUniqueColumnValues(column.id);
+          const filter = atvetelColumnFilters[column.id] || { text: "", selectedValues: null };
+          const selectedValues = filter.selectedValues;
+          const maxX = typeof window !== "undefined" ? Math.max(8, window.innerWidth - 350) : atvetelFilterMenu.x;
+          const maxY = typeof window !== "undefined" ? Math.max(8, window.innerHeight - 480) : atvetelFilterMenu.y;
+          return (
+            <div style={{ position: "fixed", left: Math.min(atvetelFilterMenu.x, maxX), top: Math.min(atvetelFilterMenu.y, maxY), zIndex: 20000, width: 330, maxHeight: 460, overflow: "auto", padding: 12, borderRadius: 9, border: `2px solid ${officeTheme.borderColor}`, background: officeTheme.panelBackground, color: officeTheme.textColor, boxShadow: "0 18px 44px rgba(0,0,0,0.5)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                <strong>{column.label} szűrő</strong>
+                <button type="button" onClick={() => setAtvetelFilterMenu(null)} style={{ ...buttonSecondary, padding: "4px 8px" }}>✕</button>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 8 }}>
+                <button type="button" onClick={() => setAtvetelSortState({ columnId: column.id, direction: "asc" })} style={buttonSecondary}>A → Z / növekvő</button>
+                <button type="button" onClick={() => setAtvetelSortState({ columnId: column.id, direction: "desc" })} style={buttonSecondary}>Z → A / csökkenő</button>
+              </div>
+              <input value={filter.text} onChange={(event) => updateColumnFilter(column.id, { text: event.target.value })} placeholder="Szöveges keresés ebben az oszlopban" style={{ ...fieldStyle, marginBottom: 8 }} />
+              <div style={{ display: "flex", gap: 6, marginBottom: 7 }}>
+                <button type="button" onClick={() => updateColumnFilter(column.id, { selectedValues: null })} style={{ ...buttonSecondary, flex: 1 }}>Összes</button>
+                <button type="button" onClick={() => updateColumnFilter(column.id, { selectedValues: [] })} style={{ ...buttonSecondary, flex: 1 }}>Egyik sem</button>
+                <button type="button" onClick={() => clearColumnFilter(column.id)} style={{ ...buttonSecondary, flex: 1 }}>Szűrő törlése</button>
+              </div>
+              <div style={{ display: "grid", gap: 3, maxHeight: 250, overflowY: "auto", borderTop: `1px solid ${officeTheme.borderColor}`, paddingTop: 6 }}>
+                {uniqueValues.map((value) => {
+                  const checked = selectedValues === null || selectedValues.includes(value);
+                  return (
+                    <label key={value} style={{ display: "flex", gap: 7, alignItems: "center", padding: "4px 2px", cursor: "pointer" }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) => {
+                          const currentSelected = selectedValues === null ? [...uniqueValues] : [...selectedValues];
+                          const next = event.target.checked
+                            ? Array.from(new Set([...currentSelected, value]))
+                            : currentSelected.filter((item) => item !== value);
+                          updateColumnFilter(column.id, { selectedValues: next });
+                        }}
+                      />
+                      <span style={{ overflowWrap: "anywhere" }}>{value}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
+
+        {atvetelAddressTooltip && (
+          <div style={{ position: "fixed", left: Math.min(atvetelAddressTooltip.x, typeof window !== "undefined" ? Math.max(8, window.innerWidth - 440) : atvetelAddressTooltip.x), top: Math.min(atvetelAddressTooltip.y, typeof window !== "undefined" ? Math.max(8, window.innerHeight - 130) : atvetelAddressTooltip.y), zIndex: 25000, maxWidth: 420, padding: "10px 13px", borderRadius: 9, background: "#0f172a", color: "#f8fafc", border: "1px solid #38bdf8", boxShadow: "0 14px 38px rgba(0,0,0,0.48)", fontWeight: 800, pointerEvents: "none", lineHeight: 1.4 }}>
+            <div style={{ color: "#7dd3fc", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.7, marginBottom: 3 }}>Teljes cím</div>
+            {atvetelAddressTooltip.address}
+          </div>
+        )}
       </div>
     );
   }
@@ -26864,6 +27253,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
 
   useEffect(() => {
+    if (!activeWorker || terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "atvetel") return;
+    void loadAtvetelTableSettings();
+    return () => {
+      if (typeof window !== "undefined" && atvetelTableSettingsSaveTimerRef.current !== null) {
+        window.clearTimeout(atvetelTableSettingsSaveTimerRef.current);
+        atvetelTableSettingsSaveTimerRef.current = null;
+      }
+      setAtvetelFilterMenu(null);
+      setAtvetelAddressTooltip(null);
+    };
+  }, [activeWorker?.id, terminalView, flowStage, managementSection]);
+
+  useEffect(() => {
     if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
     if (
       terminalView !== "management"
@@ -29134,10 +29536,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     let sequenceRank = 0;
 
     const readRankTimestamp = (row: Record<string, unknown>): number => {
-      const raw = readRecordValue(row, ["updated_at", "created_at", "imported_at", "feltoltve", "feltöltve"]);
-      if (raw === null || raw === undefined || String(raw).trim() === "") return Number.NEGATIVE_INFINITY;
-      const parsed = new Date(String(raw)).getTime();
-      return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+      const parsed = getAtvetelDetailsSzerelesTimestampRank(row);
+      return parsed === null ? Number.NEGATIVE_INFINITY : parsed;
     };
 
     for (let index = 0; index < orderNumbers.length; index += 100) {
@@ -29203,10 +29603,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     let sequenceRank = 0;
 
     const readRankTimestamp = (row: Record<string, unknown>): number => {
-      const raw = readRecordValue(row, ["updated_at", "created_at", "imported_at", "feltoltve", "feltöltve"]);
-      if (raw === null || raw === undefined || String(raw).trim() === "") return Number.NEGATIVE_INFINITY;
-      const parsed = new Date(String(raw)).getTime();
-      return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+      const parsed = getAtvetelDetailsSzerelesTimestampRank(row);
+      return parsed === null ? Number.NEGATIVE_INFINITY : parsed;
     };
 
     // A teljes atvetel_adat táblát lapozva olvassuk, mert a Termelési monitor
