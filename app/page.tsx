@@ -586,8 +586,22 @@ type DashboardData = {
 };
 
 type DashboardFilterMode = "daily" | "weekly" | "monthly" | "custom";
-type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "reproduction-report" | "atvetel" | "label-printer" | "executive-report" | "report-delivery" | "data-upload";
+type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "pause-report" | "reproduction-report" | "atvetel" | "label-printer" | "executive-report" | "report-delivery" | "data-upload";
 type OfficePageKey = ManagementSection;
+
+type PausedSzerelesRow = {
+  key: string;
+  orderNumber: string;
+  statusLabel: string;
+  pauseCount: number;
+  pauseReason: string;
+  pausedAt: string | null;
+  pausedByWorkerName: string;
+  cycleId: string | null;
+  nyiloState: SzerelesPartState;
+  tokState: SzerelesPartState;
+  fullStart: string | null;
+};
 
 type DataUploadRecurrenceMode = "daily" | "weekly" | "monthly_date" | "monthly_weekday";
 type DataUploadMonthWeek = "first" | "second" | "third" | "fourth" | "last";
@@ -824,11 +838,11 @@ function createDefaultOfficeThemeMap(): Record<OfficePageKey, OfficeThemeConfig>
   const base = OFFICE_THEME_PRESETS["industrial-night"].theme;
   return {
     dashboard: cloneOfficeTheme(base), "production-plan": cloneOfficeTheme(base), "production-monitor": cloneOfficeTheme(base),
-    "production-card": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "atvetel": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "executive-report": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base), "data-upload": cloneOfficeTheme(base),
+    "production-card": cloneOfficeTheme(base), "pause-report": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "atvetel": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "executive-report": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base), "data-upload": cloneOfficeTheme(base),
   };
 }
 function createDefaultOfficeThemePresetMap(): Record<OfficePageKey, OfficeThemePresetId> {
-  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "reproduction-report":"industrial-night", "atvetel":"industrial-night", "label-printer":"industrial-night", "executive-report":"industrial-night", "report-delivery":"industrial-night", "data-upload":"industrial-night" };
+  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "pause-report":"industrial-night", "reproduction-report":"industrial-night", "atvetel":"industrial-night", "label-printer":"industrial-night", "executive-report":"industrial-night", "report-delivery":"industrial-night", "data-upload":"industrial-night" };
 }
 
 const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]> = {
@@ -847,6 +861,9 @@ const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]>
   ],
   "production-card": [
     { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Kártyaszerkesztő fejléc" }, { id:"editor", label:"Profi termelésikártya-szerkesztő" }, { id:"empty", label:"Üres / betöltési állapot" },
+  ],
+  "pause-report": [
+    { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Szüneteltetés fejléc" }, { id:"table", label:"Szüneteltetett szerelési rendelések" },
   ],
   "reproduction-report": [
     { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Újragyártási riport fejléc" }, { id:"filters", label:"Riportszűrők" }, { id:"summary", label:"Összesítő mutatók" },
@@ -9535,6 +9552,10 @@ export default function Page() {
     };
   }, [officeThemeScopeMenuOpen]);
 
+  const [pausedSzerelesRows, setPausedSzerelesRows] = useState<PausedSzerelesRow[]>([]);
+  const [loadingPausedSzerelesRows, setLoadingPausedSzerelesRows] = useState(false);
+  const [pausedSzerelesLastUpdatedAt, setPausedSzerelesLastUpdatedAt] = useState("");
+
   const [reproductionReportFilterMode, setReproductionReportFilterMode] = useState<ReproductionReportFilterMode>("monthly");
   const [reproductionReportDate, setReproductionReportDate] = useState(getLocalDateKey(new Date()));
   const [reproductionReportDateTo, setReproductionReportDateTo] = useState(getLocalDateKey(new Date()));
@@ -12943,7 +12964,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function ManagementNavigation(): React.JSX.Element {
     const allItems: Array<{ id: ManagementSection; label: string }> = [
       { id:"dashboard", label:"Vezetői műszerfal" }, { id:"production-plan", label:"Termelés tervezése" }, { id:"production-monitor", label:"Termelési monitor" },
-      { id:"production-card", label:"Termelési kártya" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" }, { id:"data-upload", label:"Adat feltöltés" },
+      { id:"production-card", label:"Termelési kártya" }, { id:"pause-report", label:"Szüneteltetés" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" }, { id:"data-upload", label:"Adat feltöltés" },
     ];
 
     // Esemeny_Koteg = 9: csak ez a két irodai menüpont látható.
@@ -13007,6 +13028,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 productionMonitorDateTo
               );
               else if (item.id === "production-card") { const stations = getOrderedDashboardStations(); const nextStation = productionCardAdminStation || stations[0] || ""; if (nextStation && nextStation !== productionCardAdminStation) setProductionCardAdminStation(nextStation); if (nextStation) { void loadProductionCardSettingsForStation(nextStation); void loadProductionCardData(nextStation, productionCardDate); } }
+              else if (item.id === "pause-report") void loadPausedSzerelesRows();
               else if (item.id === "reproduction-report") void loadReproductionReport(reproductionReportFilterMode, reproductionReportDate, reproductionReportDateTo, reproductionReportSelectedStation);
               else if (item.id === "atvetel") {
                 // Minden új belépéskor az összes rendelés legyen látható.
@@ -23685,6 +23707,209 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
   }
 
+  async function loadPausedSzerelesRows(): Promise<void> {
+    if (!supabase) return;
+    setLoadingPausedSzerelesRows(true);
+    try {
+      const selectColumns = "id, worker_id, worker_name, order_number, action, created_at, note, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam";
+      const pauseResponse = await supabase
+        .from("work_logs")
+        .select(selectColumns)
+        .eq("szuneteltetes", true)
+        .order("created_at", { ascending: false })
+        .limit(5000);
+      if (pauseResponse.error) throw pauseResponse.error;
+
+      const pauseLogs = (pauseResponse.data || []) as WorkLogRow[];
+      const orderNumbers = Array.from(new Set(
+        pauseLogs.map((row) => String(row.order_number || "").trim()).filter(Boolean)
+      ));
+
+      if (orderNumbers.length === 0) {
+        setPausedSzerelesRows([]);
+        setPausedSzerelesLastUpdatedAt(new Date().toISOString());
+        return;
+      }
+
+      const allLogs: WorkLogRow[] = [];
+      for (let index = 0; index < orderNumbers.length; index += 100) {
+        const chunk = orderNumbers.slice(index, index + 100);
+        const response = await supabase
+          .from("work_logs")
+          .select(selectColumns)
+          .in("order_number", chunk)
+          .order("created_at", { ascending: true })
+          .limit(10000);
+        if (response.error) throw response.error;
+        allLogs.push(...((response.data || []) as WorkLogRow[]));
+      }
+
+      const byOrder = new Map<string, WorkLogRow[]>();
+      allLogs.forEach((log) => {
+        const key = normalizeLooseText(log.order_number);
+        if (!key) return;
+        const list = byOrder.get(key) || [];
+        list.push(log);
+        byOrder.set(key, list);
+      });
+
+      const rows: PausedSzerelesRow[] = [];
+      for (const orderNumber of orderNumbers) {
+        const orderLogs = byOrder.get(normalizeLooseText(orderNumber)) || [];
+        const state = resolveSzerelesSessionState(orderLogs);
+        if (!state) continue;
+
+        const runningParts = (["nyilo", "tok"] as SzerelesPart[]).filter(
+          (part) => state.parts[part].state === "in_progress"
+        );
+        if (runningParts.length === 0 || state.is_complete) continue;
+
+        const currentCycleId = String(state.cycle_id || "").trim();
+        const currentPauseLogs = orderLogs
+          .filter((log) => log.szuneteltetes === true)
+          .filter((log) => !currentCycleId || String(log.szereles_ciklus_id || "").trim() === currentCycleId)
+          .sort((left, right) => getWorkLogEventTime(left) - getWorkLogEventTime(right));
+        if (currentPauseLogs.length === 0) continue;
+
+        const latestPause = currentPauseLogs.at(-1)!;
+        const pauseCount = Math.max(
+          currentPauseLogs.length,
+          currentPauseLogs.reduce((max, log) => Math.max(max, Number(log.szuneteltetes_sorszam) || 0), 0)
+        );
+        const pausedByWorkerName = String(
+          latestPause.worker_name
+          || workers.find((worker) => Number(worker.id) === Number(latestPause.worker_id))?.["Teljes nev"]
+          || ""
+        ).trim();
+
+        rows.push({
+          key: `${normalizeLooseText(orderNumber)}|${currentCycleId || "cycle"}`,
+          orderNumber,
+          statusLabel: szerelesStateLabel(state),
+          pauseCount,
+          pauseReason: String(latestPause.szuneteltetes_oka || "").trim(),
+          pausedAt: String(latestPause.end_time || latestPause.end_timestamp || latestPause.created_at || "").trim() || null,
+          pausedByWorkerName,
+          cycleId: state.cycle_id,
+          nyiloState: { ...state.parts.nyilo },
+          tokState: { ...state.parts.tok },
+          fullStart: state.full_start,
+        });
+      }
+
+      rows.sort((left, right) => {
+        const leftTime = left.pausedAt ? new Date(left.pausedAt).getTime() : 0;
+        const rightTime = right.pausedAt ? new Date(right.pausedAt).getTime() : 0;
+        return rightTime - leftTime || left.orderNumber.localeCompare(right.orderNumber, "hu");
+      });
+
+      setPausedSzerelesRows(rows);
+      setPausedSzerelesLastUpdatedAt(new Date().toISOString());
+    } catch (error) {
+      console.error("SUPABASE HIBA loadPausedSzerelesRows:", error);
+      setMessage({ type: "error", text: `A szüneteltetett szerelési rendelések betöltése sikertelen: ${normalizeError(error)}` });
+    } finally {
+      setLoadingPausedSzerelesRows(false);
+    }
+  }
+
+  function PausedSzerelesAdmin(): React.JSX.Element {
+    const officeTheme = getOfficeTheme("pause-report");
+    const pagePanel: React.CSSProperties = {
+      background: officeTheme.panelBackground,
+      border: `${officeTheme.borderWidth}px solid ${officeTheme.borderColor}`,
+      borderRadius: officeTheme.borderRadius,
+      boxShadow: `0 10px ${officeTheme.shadowBlur}px rgba(0,0,0,${officeTheme.shadowOpacity})`,
+    };
+    const headerCell: React.CSSProperties = {
+      padding: "10px 9px",
+      borderBottom: `1px solid ${officeTheme.borderColor}`,
+      borderRight: `1px solid ${officeTheme.borderColor}`,
+      textAlign: "left",
+      whiteSpace: "nowrap",
+      color: officeTheme.textColor,
+      background: officeTheme.headerBackground,
+      fontSize: 12,
+      fontWeight: 900,
+    };
+    const cell: React.CSSProperties = {
+      padding: "10px 9px",
+      borderBottom: `1px solid ${officeTheme.borderColor}`,
+      borderRight: `1px solid ${officeTheme.borderColor}`,
+      color: officeTheme.textColor,
+      verticalAlign: "top",
+      fontSize: 12,
+    };
+
+    return (
+      <div style={{ minHeight: "100vh", padding: 14, background: officeTheme.pageBackground, color: officeTheme.textColor, fontFamily: officeTheme.fontFamily }}>
+        <ManagementNavigation />
+        <div data-office-window="pause-report:header" style={{ ...pagePanel, padding: 16, marginBottom: 14, display: "flex", justifyContent: "space-between", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 1000, letterSpacing: ".08em", color: officeTheme.accentColor }}>SZERELÉS</div>
+            <h2 style={{ margin: "4px 0 4px", fontSize: 28 }}>Szüneteltetett rendelések</h2>
+            <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>
+              Csak azok az 5-ös eseményes Szerelés rendelések látszanak, amelyeknél a jelenlegi gyártási ciklusban volt szüneteltetés és legalább egy Nyíló/Tok munkamenet még folyamatban van.
+            </div>
+            <div style={{ color: officeTheme.mutedText, fontSize: 11, marginTop: 4 }}>
+              Utolsó frissítés: {pausedSzerelesLastUpdatedAt ? formatDateTime(pausedSzerelesLastUpdatedAt) : "–"} · A nézet csak megjelenítésre szolgál.
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ padding: "9px 12px", borderRadius: 999, background: officeTheme.navActiveBackground, border: `1px solid ${officeTheme.accentColor}`, fontWeight: 900 }}>Szerelés</div>
+            <button type="button" onClick={() => void loadPausedSzerelesRows()} disabled={loadingPausedSzerelesRows} style={buttonSecondary}>
+              {loadingPausedSzerelesRows ? "Frissítés..." : "Frissítés"}
+            </button>
+          </div>
+        </div>
+
+        <div data-office-window="pause-report:table" style={{ ...pagePanel, padding: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+            <strong style={{ fontSize: 17 }}>Aktív szüneteltetések</strong>
+            <span style={{ color: officeTheme.mutedText, fontSize: 12 }}>{pausedSzerelesRows.length} rendelés</span>
+          </div>
+          <div data-nivo-scroll-region="pause-report-table" style={{ overflow: "auto", border: `1px solid ${officeTheme.borderColor}`, borderRadius: 10 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1450 }}>
+              <thead>
+                <tr>
+                  {["Rendelésszám", "Szerelés állapot", "Szüneteltetés", "Szüneteltetés oka", "Szüneteltetés időpontja", "Szüneteltető dolgozó", "Nyíló eltelt idő", "Tok eltelt idő", "Teljes eltelt idő"].map((label) => (
+                    <th key={label} style={headerCell}>{label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {loadingPausedSzerelesRows && pausedSzerelesRows.length === 0 ? (
+                  <tr><td colSpan={9} style={{ ...cell, textAlign: "center", padding: 28, color: officeTheme.mutedText }}>Szüneteltetett rendelések betöltése...</td></tr>
+                ) : pausedSzerelesRows.length === 0 ? (
+                  <tr><td colSpan={9} style={{ ...cell, textAlign: "center", padding: 28, color: officeTheme.mutedText }}>Nincs aktív szüneteltetett Szerelés rendelés.</td></tr>
+                ) : pausedSzerelesRows.map((row) => {
+                  const nyiloMinutes = szerelesPartMinutes(row.nyiloState, szerelesClock);
+                  const tokMinutes = szerelesPartMinutes(row.tokState, szerelesClock);
+                  const totalMinutes = row.fullStart
+                    ? diffMinutes(row.fullStart, null)
+                    : Math.max(nyiloMinutes || 0, tokMinutes || 0);
+                  return (
+                    <tr key={row.key}>
+                      <td style={{ ...cell, fontWeight: 1000, whiteSpace: "nowrap" }}>{row.orderNumber}</td>
+                      <td style={cell}>{row.statusLabel}</td>
+                      <td style={{ ...cell, fontWeight: 900, whiteSpace: "nowrap" }}>Szüneteltetve #{row.pauseCount}</td>
+                      <td style={{ ...cell, minWidth: 320, whiteSpace: "pre-wrap" }}>{row.pauseReason || "–"}</td>
+                      <td style={{ ...cell, whiteSpace: "nowrap" }}>{row.pausedAt ? formatDateTime(row.pausedAt) : "–"}</td>
+                      <td style={{ ...cell, whiteSpace: "nowrap" }}>{row.pausedByWorkerName || "–"}</td>
+                      <td style={{ ...cell, whiteSpace: "nowrap" }}>{nyiloMinutes === null ? "–" : formatDuration(nyiloMinutes)}</td>
+                      <td style={{ ...cell, whiteSpace: "nowrap" }}>{tokMinutes === null ? "–" : formatDuration(tokMinutes)}</td>
+                      <td style={{ ...cell, whiteSpace: "nowrap", fontWeight: 900 }}>{formatDuration(totalMinutes)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function ReproductionReportAdmin(): React.JSX.Element {
     const officeTheme = getOfficeTheme("reproduction-report");
     const range = getReproductionReportDateRange(
@@ -23976,6 +24201,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (managementSection === "production-plan") return ProductionPlanAdmin();
     if (managementSection === "production-monitor") return ProductionPlanMonitor({});
     if (managementSection === "production-card") return ProductionCardAdmin();
+    if (managementSection === "pause-report") return PausedSzerelesAdmin();
     if (managementSection === "reproduction-report") return ReproductionReportAdmin();
     if (managementSection === "atvetel") return AtvetelAdmin();
     if (managementSection === "label-printer") return OfficeLabelPrinterAdmin();
@@ -28889,6 +29115,59 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+  async function fetchProductionMonitorShippingDateMap(orderNumbers: string[]): Promise<Map<string, string>> {
+    const result = new Map<string, string>();
+    if (!supabase || orderNumbers.length === 0) return result;
+
+    type RankedShippingDate = { date: string; timestampRank: number; idRank: number; sequenceRank: number };
+    const ranked = new Map<string, RankedShippingDate>();
+    let sequenceRank = 0;
+
+    const readRankTimestamp = (row: Record<string, unknown>): number => {
+      const raw = readRecordValue(row, ["updated_at", "created_at", "imported_at", "feltoltve", "feltöltve"]);
+      if (raw === null || raw === undefined || String(raw).trim() === "") return Number.NEGATIVE_INFINITY;
+      const parsed = new Date(String(raw)).getTime();
+      return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+    };
+
+    for (let index = 0; index < orderNumbers.length; index += 100) {
+      const chunk = orderNumbers.slice(index, index + 100);
+      if (chunk.length === 0) continue;
+      const response = await supabase
+        .from(ATVETEL_DETAILS_TABLE)
+        .select("*")
+        .in("rendelesszam", chunk)
+        .limit(10000);
+      if (response.error) throw response.error;
+
+      for (const rawRow of (response.data || []) as Array<Record<string, unknown>>) {
+        sequenceRank += 1;
+        const orderNumber = getAtvetelDetailsOrderNumber(rawRow);
+        const shippingDate = getAtvetelDetailsShippingDate(rawRow);
+        if (!orderNumber || !/^\d{4}-\d{2}-\d{2}$/.test(shippingDate)) continue;
+
+        const key = normalizeLooseText(orderNumber);
+        const rawId = readRecordValue(rawRow, ["id"]);
+        const numericId = Number(rawId);
+        const candidate: RankedShippingDate = {
+          date: shippingDate,
+          timestampRank: readRankTimestamp(rawRow),
+          idRank: Number.isFinite(numericId) ? numericId : Number.NEGATIVE_INFINITY,
+          sequenceRank,
+        };
+        const existing = ranked.get(key);
+        const isNewer = !existing
+          || candidate.timestampRank > existing.timestampRank
+          || (candidate.timestampRank === existing.timestampRank && candidate.idRank > existing.idRank)
+          || (candidate.timestampRank === existing.timestampRank && candidate.idRank === existing.idRank && candidate.sequenceRank > existing.sequenceRank);
+        if (isNewer) ranked.set(key, candidate);
+      }
+    }
+
+    ranked.forEach((value, key) => result.set(key, value.date));
+    return result;
+  }
+
   async function fetchProductionMonitorData(
     dateKey: string,
     planStatusFilter: ProductionMonitorPlanStatusFilter = activeProductionMonitorProfile.planStatusFilter,
@@ -28963,6 +29242,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       plannedQuantity: number | null;
       productName: string;
       completionDate: string;
+      filterDate: string;
       requiredStations: Set<string>;
     };
 
@@ -29004,24 +29284,24 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       readMonitorPlanValue(row, ["termek", "termék", "megnevezes", "megnevezés", "product_name"])
     );
 
-    const getPlanMonitorDate = (row: Record<string, unknown>): string => {
-      const aliases = dateBasis === "kiszallitasi_datum"
-        ? [
-            "kiszallitasi_datum",
-            "kiszállítási_dátum",
-            "kiszallitasi datum",
-            "kiszállítási dátum",
-            "kiszallitas_datum",
-          ]
-        : [
-            "elkeszules_datum",
-            "elkészülés_dátum",
-            "elkeszules datum",
-            "elkészülés dátum",
-            "elkeszulesdatum",
-          ];
-      const rawValue = readMonitorPlanValue(row, aliases);
+    let shippingDateByOrder = new Map<string, string>();
+
+    const getPlanCompletionDate = (row: Record<string, unknown>): string => {
+      const rawValue = readMonitorPlanValue(row, [
+        "elkeszules_datum",
+        "elkészülés_dátum",
+        "elkeszules datum",
+        "elkészülés dátum",
+        "elkeszulesdatum",
+      ]);
       return parseSpreadsheetDate(rawValue) || valueAsText(rawValue).slice(0, 10);
+    };
+
+    const getPlanMonitorDate = (row: Record<string, unknown>): string => {
+      if (dateBasis === "kiszallitasi_datum") {
+        return shippingDateByOrder.get(normalizeLooseText(getPlanOrderNumber(row))) || "";
+      }
+      return getPlanCompletionDate(row);
     };
 
     const addAssemblyPlanRow = (row: Record<string, unknown>): void => {
@@ -29029,10 +29309,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       // A kiválasztott időszak sorai mellett a mai vagy korábbi, még nem teljesen
       // lezárt szerelési rendelések is bekerülnek lemaradásként. A tényleges
       // lezártságot a work_logs feldolgozása után ellenőrizzük.
-      const completionDate = getPlanMonitorDate(row);
+      const completionDate = getPlanCompletionDate(row);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(completionDate)) return;
+      const filterDate = getPlanMonitorDate(row);
 
-      const isInsideSelectedRange = completionDate >= startDateKey && completionDate <= endDateKey;
+      const isInsideSelectedRange = /^\d{4}-\d{2}-\d{2}$/.test(filterDate)
+        && filterDate >= startDateKey
+        && filterDate <= endDateKey;
       const canBeBacklogCandidate = completionDate <= todayKey;
       if (!isInsideSelectedRange && !canBeBacklogCandidate) return;
 
@@ -29058,6 +29341,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           plannedQuantity: Number.isFinite(quantityNumber) ? quantityNumber : null,
           productName,
           completionDate,
+          filterDate,
           requiredStations: new Set<string>([assemblyStationName]),
         };
         sequenceNumber += 1;
@@ -29069,6 +29353,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         // Ha ugyanaz a rendelés több tervnapon is szerepel, a legfrissebb
         // elkészülési dátum tekintendő érvényesnek (átütemezés kezelése).
         if (completionDate > aggregate.completionDate) aggregate.completionDate = completionDate;
+        if (filterDate && (!aggregate.filterDate || filterDate > aggregate.filterDate)) aggregate.filterDate = filterDate;
         const quantityRaw = readMonitorPlanValue(row, ["mennyiseg", "mennyiség", "planned_quantity"]);
         const quantityNumber = Number(quantityRaw);
         if (Number.isFinite(quantityNumber)) {
@@ -29100,6 +29385,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         if (Number.isFinite(leftId) && Number.isFinite(rightId)) return leftId - rightId;
         return 0;
       });
+
+    if (dateBasis === "kiszallitasi_datum") {
+      const assemblyOrderNumbers = Array.from(new Set(
+        assemblyPlanRows.map((row) => getPlanOrderNumber(row)).filter(Boolean)
+      ));
+      shippingDateByOrder = await fetchProductionMonitorShippingDateMap(assemblyOrderNumbers);
+    }
 
     assemblyPlanRows.forEach(addAssemblyPlanRow);
 
@@ -29255,7 +29547,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               : "waiting";
 
         const assemblyCell = stationCells[assemblyStationName] || getMonitorCellFromLogs([]);
-        const isInsideSelectedRange = aggregate.completionDate >= startDateKey && aggregate.completionDate <= endDateKey;
+        const isInsideSelectedRange = /^\d{4}-\d{2}-\d{2}$/.test(aggregate.filterDate)
+          && aggregate.filterDate >= startDateKey
+          && aggregate.filterDate <= endDateKey;
         const isBacklog = aggregate.completionDate <= todayKey && assemblyCell.status !== "done";
 
         // A kiválasztott időszakon kívül csak a Szerelésen még nem teljesen kész
