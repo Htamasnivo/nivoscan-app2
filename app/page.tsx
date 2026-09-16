@@ -1333,6 +1333,8 @@ type ScrapReplacementRow = {
   sos?: boolean;
   id: number | string;
   order_number: string;
+  // Csak megjelenítésre: atvetel_adat.szerelesi_idopont dátumrésze.
+  kiszallitasiDatumAdat?: string;
   kulso_lap_selejt: boolean;
   belso_lap_selejt: boolean;
   toklec_selejt: boolean;
@@ -1539,6 +1541,8 @@ type ProductionCardPriorityRow = {
   id: string;
   priorityOrderId: string;
   orderNumber: string;
+  // Csak megjelenítésre: atvetel_adat.szerelesi_idopont dátumrésze.
+  kiszallitasiDatumAdat?: string;
   data: Record<string, unknown>;
   status: ProductionMonitorStatus;
   statusLabel: string;
@@ -1574,6 +1578,8 @@ type PriorityHistoryRow = {
 type ProductionCardBacklogRow = {
   id: string;
   orderNumber: string;
+  // Csak megjelenítésre: atvetel_adat.szerelesi_idopont dátumrésze.
+  kiszallitasiDatumAdat?: string;
   productName: string;
   plannedQuantity: number;
   completedQuantity: number;
@@ -1611,6 +1617,8 @@ type ProductionCardBacklogRow = {
 
 type ProductionCardRow = {
   orderNumber: string;
+  // Csak megjelenítésre: atvetel_adat.szerelesi_idopont dátumrésze.
+  kiszallitasiDatumAdat?: string;
   productName: string;
   excelOrder: number;
   sourceRowId: string;
@@ -2700,8 +2708,12 @@ const LEGACY_STATION_PLAN_FIELD_DEFINITIONS: Record<string, StationPlanFieldDefi
 };
 
 const PRODUCTION_CARD_PLAN_FIELD_PREFIX = "__plan_field__:";
-const PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID =
+// A már meglévő, *_terv táblából érkező Kiszállítási dátum mező az eredeti
+// plan-field azonosítón marad. Az atvetel_adat.szerelesi_idopont külön,
+// csak megjelenített kártyamezőt kap, hogy a két adatforrás ne keveredjen.
+const PRODUCTION_CARD_PLAN_KISZALLITASI_DATUM_FIELD_ID =
   `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}kiszallitasi_datum`;
+const PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID = "__card_atvetel_shipping_date__";
 const STATION_PLAN_KISZALLITASI_DATUM_FIELD: StationPlanFieldDefinition = {
   key: "kiszallitasi_datum",
   label: "Kiszállítási dátum",
@@ -4060,6 +4072,7 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
       : [];
     return Array.from(new Set([
       PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID,
+      PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID,
       ...priorityPlanFieldIds,
       ...prioritySzerelesPartFieldIds,
       PRODUCTION_CARD_PRIORITY_STATUS_FIELD_ID,
@@ -4090,6 +4103,7 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
       : [];
     return Array.from(new Set([
       ...backlogPlanFieldIds,
+      PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID,
       ...PRODUCTION_CARD_BACKLOG_FIELD_IDS,
       ...backlogSzerelesPauseFields,
       ...getProductionCardCrossStationStatusFields(stationName),
@@ -4121,6 +4135,7 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
   if (excelExactCardStations.has(getStationPlanIdentityKey(stationName))) {
     return Array.from(new Set([
       ...planFieldIds,
+      PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID,
       ...PRODUCTION_CARD_REQUIRED_FIELD_IDS,
       PRODUCTION_CARD_AJTOLAPOK_FIELD_ID,
       PRODUCTION_CARD_TOKLEC_KESZ_FIELD_ID,
@@ -4136,6 +4151,7 @@ function getProductionCardFieldIdsForTable(table: ProductionMonitorTableConfig, 
     : [];
   return Array.from(new Set([
     ...planFieldIds,
+    PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID,
     ...PRODUCTION_CARD_FIELD_IDS,
     ...szerelesPauseFields,
     ...crossStationStatusFieldIds,
@@ -4148,6 +4164,7 @@ function getProductionCardFieldLabel(fieldId: string): string {
       getProductionCardCrossStationNameFromFieldId(fieldId)
     );
   }
+  if (fieldId === PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID) return "Kiszallitasi datum adat";
   if (fieldId === `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}sos`) return "SOS";
   if (fieldId.startsWith(PRODUCTION_CARD_PLAN_FIELD_PREFIX)) {
     return getStationPlanFieldLabel(fieldId.slice(PRODUCTION_CARD_PLAN_FIELD_PREFIX.length));
@@ -4304,7 +4321,7 @@ function createDefaultPriorityCardTable(theme: ProductionMonitorTheme, stationNa
   );
   table.dataSource = "priority";
   table.fieldOrder = [...getProductionCardFieldIdsForTable(table, stationName)];
-  table.hiddenFieldIds = [];
+  table.hiddenFieldIds = [PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID];
   table.fieldStyles = {
     [PRODUCTION_CARD_PRIORITY_ORDER_FIELD_ID]: {
       ...normalizeProductionMonitorFieldStyle(null),
@@ -4403,6 +4420,7 @@ function createDefaultBacklogCardTable(theme: ProductionMonitorTheme, stationNam
   table.dataSource = "backlog";
   table.fieldOrder = [...getProductionCardFieldIdsForTable(table, stationName)];
   table.hiddenFieldIds = [
+    PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID,
     PRODUCTION_CARD_BACKLOG_COMPLETED_FIELD_ID,
     PRODUCTION_CARD_BACKLOG_START_WORKER_FIELD_ID,
     PRODUCTION_CARD_BACKLOG_LAST_WORKER_FIELD_ID,
@@ -4462,6 +4480,7 @@ function createDefaultProductionCardProfile(stationName = "Munkaállomás"): Pro
     PRODUCTION_CARD_KULSO_LAP_KESZ_FIELD_ID,
     PRODUCTION_CARD_BELSO_LAP_KESZ_FIELD_ID,
     PRODUCTION_CARD_LAP_TOKLEC_KESZ_FIELD_ID,
+    PRODUCTION_CARD_PLAN_KISZALLITASI_DATUM_FIELD_ID,
     PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID,
     ...crossStationStatusFieldIds,
   ]));
@@ -4659,6 +4678,7 @@ function normalizeProductionCardProfile(value: unknown, stationName: string): Pr
           PRODUCTION_CARD_KULSO_LAP_KESZ_FIELD_ID,
           PRODUCTION_CARD_BELSO_LAP_KESZ_FIELD_ID,
           PRODUCTION_CARD_LAP_TOKLEC_KESZ_FIELD_ID,
+          PRODUCTION_CARD_PLAN_KISZALLITASI_DATUM_FIELD_ID,
           PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID,
           ...(
             dataSource === "production-plan" || dataSource === "priority" || dataSource === "backlog" || dataSource === "scrap-replacement"
@@ -15241,6 +15261,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getProductionCardFieldValue(row: ProductionCardRow, fieldId: string): string | number {
+    if (fieldId === PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID) {
+      return row.kiszallitasiDatumAdat || "–";
+    }
     if (isProductionCardCrossStationStatusField(fieldId)) {
       const stationName = getProductionCardCrossStationNameFromFieldId(fieldId);
       const status = row.crossStationStatuses?.[stationName];
@@ -15312,6 +15335,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getScrapReplacementCardFieldValue(row: ScrapReplacementRow, fieldId: string): string | number {
+    if (fieldId === PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID) {
+      return row.kiszallitasiDatumAdat || "–";
+    }
     const planData = row.termelesi_kartya_adatok && typeof row.termelesi_kartya_adatok === "object"
       && !Array.isArray(row.termelesi_kartya_adatok)
       ? row.termelesi_kartya_adatok
@@ -15409,6 +15435,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getPriorityCardFieldValue(row: ProductionCardPriorityRow, fieldId: string): string | number {
+    if (fieldId === PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID) {
+      return row.kiszallitasiDatumAdat || "–";
+    }
     if (isProductionCardCrossStationStatusField(fieldId)) {
       return getProductionCardCrossStatusValue(row.crossStationStatuses?.[getProductionCardCrossStationNameFromFieldId(fieldId)]);
     }
@@ -15450,6 +15479,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function getBacklogCardFieldValue(row: ProductionCardBacklogRow, fieldId: string): string | number {
+    if (fieldId === PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID) {
+      return row.kiszallitasiDatumAdat || "–";
+    }
     if (isProductionCardCrossStationStatusField(fieldId)) {
       return getProductionCardCrossStatusValue(row.crossStationStatuses?.[getProductionCardCrossStationNameFromFieldId(fieldId)]);
     }
@@ -17331,6 +17363,45 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
 
     // ==========================================================
+    // ATVETEL_ADAT -> KÁRTYÁK: KISZÁLLÍTÁSI DÁTUM ADAT
+    //
+    // Nincs adatmásolás a *_terv táblákba. A kapcsolat kizárólag:
+    //   atvetel_adat.rendelesszam = *_terv.sorszam
+    // A legutóbbi nem üres szerelesi_idopont dátumrésze csak a megjelenített
+    // kártyasorhoz kerül hozzá memóriában.
+    // ==========================================================
+    const productionCardShippingOrderNumbers = Array.from(new Set([
+      ...planRows.map((row) => row.orderNumber),
+      ...backlogRows.map((row) => row.orderNumber),
+      ...priorityRows.map((row) => row.orderNumber),
+      ...scrapReplacementRows.map((row) => row.order_number),
+    ].map((value) => String(value || "").trim()).filter(Boolean)));
+
+    let productionCardShippingDateByOrder = new Map<string, string>();
+    if (productionCardShippingOrderNumbers.length > 0) {
+      try {
+        productionCardShippingDateByOrder = await fetchProductionMonitorShippingDateMap(
+          productionCardShippingOrderNumbers
+        );
+      } catch (error) {
+        sourceErrors.push(`Az atvetel_adat kiszállítási dátuma nem olvasható: ${normalizeError(error)}`);
+      }
+    }
+
+    const getProductionCardShippingDate = (orderNumber: string): string =>
+      productionCardShippingDateByOrder.get(normalizeLooseText(String(orderNumber || ""))) || "";
+
+    priorityRows.forEach((row) => {
+      row.kiszallitasiDatumAdat = getProductionCardShippingDate(row.orderNumber);
+    });
+    backlogRows.forEach((row) => {
+      row.kiszallitasiDatumAdat = getProductionCardShippingDate(row.orderNumber);
+    });
+    scrapReplacementRows.forEach((row) => {
+      row.kiszallitasiDatumAdat = getProductionCardShippingDate(row.order_number);
+    });
+
+    // ==========================================================
     // TÖBBI TERMELÉSI KÁRTYA ÁLLAPOTA
     //
     // A jelenlegi kártya saját planRows listája változatlan marad.
@@ -17611,6 +17682,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           ...planRow,
           ...base,
           ...recurring,
+          kiszallitasiDatumAdat: getProductionCardShippingDate(planRow.orderNumber),
           kulsoLapSelejtCount: rowScrapCounts.kulsoLap,
           belsoLapSelejtCount: rowScrapCounts.belsoLap,
           toklecSelejtCount: rowScrapCounts.toklec,
@@ -17685,6 +17757,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return {
         ...planRow,
         ...status,
+        kiszallitasiDatumAdat: getProductionCardShippingDate(planRow.orderNumber),
         kulsoLapSelejtCount: rowScrapCounts.kulsoLap,
         belsoLapSelejtCount: rowScrapCounts.belsoLap,
         toklecSelejtCount: rowScrapCounts.toklec,
@@ -18278,6 +18351,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         ? PRIMAPOWER_NEW_FIELD_KEYS.map((key) => `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}${key}`)
         : []),
       ...[PRODUCTION_CARD_DATE_FIELD_ID].filter((fieldId) => !isRequiredProductionCardField(fieldId)),
+      PRODUCTION_CARD_KISZALLITASI_DATUM_FIELD_ID,
       ...table.fieldOrder.filter(isProductionCardCrossStationStatusField),
     ]));
     updateProductionCardProfile((profile) => ({
