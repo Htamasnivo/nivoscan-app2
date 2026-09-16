@@ -9031,6 +9031,22 @@ export default function Page() {
   const [atvetelFilterMenu, setAtvetelFilterMenu] = useState<AtvetelFilterMenuState>(null);
   const [atvetelAddressTooltip, setAtvetelAddressTooltip] = useState<AtvetelAddressTooltipState>(null);
   const atvetelDraggedColumnIdRef = useRef<AtvetelTableColumnId | null>(null);
+  const atvetelFilterMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!atvetelFilterMenu || typeof document === "undefined") return;
+
+    const handleOutsideAtvetelFilterClick = (event: MouseEvent): void => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      if (atvetelFilterMenuRef.current?.contains(target)) return;
+      if (target.closest('[data-atvetel-filter-trigger="true"]')) return;
+      setAtvetelFilterMenu(null);
+    };
+
+    document.addEventListener("mousedown", handleOutsideAtvetelFilterClick, true);
+    return () => document.removeEventListener("mousedown", handleOutsideAtvetelFilterClick, true);
+  }, [atvetelFilterMenu]);
   const atvetelTableSettingsSaveTimerRef = useRef<number | null>(null);
 
 
@@ -9221,7 +9237,9 @@ export default function Page() {
   const [executiveReportSelections, setExecutiveReportSelections] = useState<Record<string, ExecutiveReportSelection>>({});
   const [loadingExecutiveReport, setLoadingExecutiveReport] = useState(false);
   const [savingExecutiveReport, setSavingExecutiveReport] = useState(false);
+  const [deletingExecutiveReport, setDeletingExecutiveReport] = useState(false);
   const executiveReportSaveInFlightRef = useRef(false);
+  const executiveReportDeleteInFlightRef = useRef(false);
   const [executiveRecurringAuthWorkerId, setExecutiveRecurringAuthWorkerId] = useState<number | null>(null);
   const [executiveRecurringAuthPassword, setExecutiveRecurringAuthPassword] = useState("");
   const [executiveRecurringAuthBusy, setExecutiveRecurringAuthBusy] = useState(false);
@@ -19716,6 +19734,91 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
   }
 
+  function mergeExecutiveReportLayoutFromProductionCard(
+    executiveProfile: ProductionMonitorProfile,
+    productionProfile: ProductionMonitorProfile,
+    stationName: string
+  ): ProductionMonitorProfile {
+    const executive = normalizeProductionCardProfile(executiveProfile, stationName);
+    const production = normalizeProductionCardProfile(productionProfile, stationName);
+    const usedExecutiveTableIds = new Set<string>();
+
+    const mergedTables = production.tables.map((productionTable) => {
+      const source = productionTable.dataSource || "production-plan";
+      let executiveTable = executive.tables.find((table) => table.id === productionTable.id);
+      if (!executiveTable) {
+        executiveTable = executive.tables.find((table) =>
+          !usedExecutiveTableIds.has(table.id)
+          && (table.dataSource || "production-plan") === source
+        );
+      }
+      if (executiveTable) usedExecutiveTableIds.add(executiveTable.id);
+
+      const productionFieldStyles = productionTable.fieldStyles || {};
+      const executiveFieldStyles = executiveTable?.fieldStyles || {};
+      const productionKnownFieldIds = new Set([
+        ...productionTable.fieldOrder,
+        ...productionTable.hiddenFieldIds,
+        ...Object.keys(productionFieldStyles),
+      ]);
+      const fieldIds = Array.from(new Set([
+        ...Object.keys(productionFieldStyles),
+        ...Object.keys(executiveFieldStyles),
+      ]));
+      const fieldStyles: Record<string, ProductionMonitorFieldStyle> = {};
+
+      fieldIds.forEach((fieldId) => {
+        const executiveStyle = normalizeProductionMonitorFieldStyle(
+          executiveFieldStyles[fieldId] || productionFieldStyles[fieldId]
+        );
+        if (productionKnownFieldIds.has(fieldId)) {
+          const productionStyle = normalizeProductionMonitorFieldStyle(productionFieldStyles[fieldId]);
+          fieldStyles[fieldId] = {
+            ...executiveStyle,
+            widthWeight: productionStyle.widthWeight,
+            textAlign: productionStyle.textAlign,
+          };
+        } else {
+          // Vezetői-specifikus mező: a saját elrendezését is változatlanul megtartjuk.
+          fieldStyles[fieldId] = executiveStyle;
+        }
+      });
+
+      const executiveOnlyOrder = (executiveTable?.fieldOrder || []).filter(
+        (fieldId) => !productionKnownFieldIds.has(fieldId)
+      );
+      const executiveOnlyHidden = (executiveTable?.hiddenFieldIds || []).filter(
+        (fieldId) => !productionKnownFieldIds.has(fieldId)
+      );
+
+      return {
+        ...productionTable,
+        name: executiveTable?.name || productionTable.name,
+        title: executiveTable?.title || productionTable.title,
+        theme: executiveTable?.theme || productionTable.theme,
+        fieldOrder: [...productionTable.fieldOrder, ...executiveOnlyOrder],
+        hiddenFieldIds: Array.from(new Set([...productionTable.hiddenFieldIds, ...executiveOnlyHidden])),
+        fieldStyles,
+      };
+    });
+
+    executive.tables.forEach((table) => {
+      if (!usedExecutiveTableIds.has(table.id) && !mergedTables.some((item) => item.id === table.id)) {
+        mergedTables.push(table);
+      }
+    });
+
+    const activeTableId = mergedTables.some((table) => table.id === production.activeTableId)
+      ? production.activeTableId
+      : executive.activeTableId;
+
+    return normalizeProductionCardProfile({
+      ...executive,
+      tables: mergedTables,
+      activeTableId,
+    }, stationName);
+  }
+
   async function fetchExecutiveReportProfileForStation(
     stationName: string
   ): Promise<{ profile: ProductionMonitorProfile; updatedAt: string; inheritedFromProductionCard: boolean }> {
@@ -19734,6 +19837,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     // elrejtett oszlopokat is kidobhatna, amelyek a mentett profilban benne vannak.
     await loadStationPlanSchemaForStation(cleanStation);
 
+    // A Vezetői jelentés alap-elrendezése a Termelési kártyán már beállított
+    // mezőláthatóságot, sorrendet, szélességet és igazítást követi.
+    const productionProfileResult = await fetchProductionCardProfileForStation(cleanStation, true);
+
     const userKey = getProfiEditorUserSettingsKey("executive-report", cleanStation);
     if (userKey) {
       const personalResponse = await supabase
@@ -19744,8 +19851,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (personalResponse.error) throw personalResponse.error;
       if (personalResponse.data) {
         const row = personalResponse.data as ProductionCardStationSettingsRow;
+        const executiveProfile = normalizeProductionCardProfile(row.settings, cleanStation);
         return {
-          profile: normalizeProductionCardProfile(row.settings, cleanStation),
+          profile: mergeExecutiveReportLayoutFromProductionCard(
+            executiveProfile,
+            productionProfileResult.profile,
+            cleanStation
+          ),
           updatedAt: row.updated_at || "",
           inheritedFromProductionCard: false,
         };
@@ -19761,8 +19873,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     if (sharedResponse.data) {
       const row = sharedResponse.data as ProductionCardStationSettingsRow;
+      const executiveProfile = normalizeProductionCardProfile(row.settings, cleanStation);
       return {
-        profile: normalizeProductionCardProfile(row.settings, cleanStation),
+        profile: mergeExecutiveReportLayoutFromProductionCard(
+          executiveProfile,
+          productionProfileResult.profile,
+          cleanStation
+        ),
         updatedAt: row.updated_at || "",
         inheritedFromProductionCard: false,
       };
@@ -19770,10 +19887,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     // Első használatkor a belépett irodai felhasználó SAJÁT dolgozói kártyaprofilját
     // örökli, utána a vezetői profil külön, ugyanennek a felhasználónak mentődik.
-    const productionProfile = await fetchProductionCardProfileForStation(cleanStation, true);
     return {
       profile: normalizeProductionCardProfile(
-        JSON.parse(JSON.stringify(productionProfile.profile)) as ProductionMonitorProfile,
+        JSON.parse(JSON.stringify(productionProfileResult.profile)) as ProductionMonitorProfile,
         cleanStation
       ),
       updatedAt: "",
@@ -20715,8 +20831,94 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
+  async function deleteExecutiveReportSelectionsFromPlan(): Promise<void> {
+    if (!supabase || executiveReportDeleteInFlightRef.current || savingExecutiveReport) return;
+
+    const selected = (Object.values(executiveReportSelections) as ExecutiveReportSelection[]).filter((row) => row.selected);
+    if (!selected.length) {
+      setMessage({ type: "error", text: "Jelölj ki legalább egy sort a törléshez." });
+      return;
+    }
+
+    if (!window.confirm(`Biztosan törlöd a kijelölt ${selected.length} sort a termelési tervből?\n\nCsak a konkrét *_terv sor törlődik; work_logs, START/END, selejt, prioritás és egyéb történeti adat nem.`)) return;
+
+    executiveReportDeleteInFlightRef.current = true;
+    setDeletingExecutiveReport(true);
+    const deletedSelectionKeys: string[] = [];
+    const deletedPlanKeys = new Set<string>();
+    const errors: string[] = [];
+
+    try {
+      for (const row of selected) {
+        try {
+          const tableName = getExactProductionCardPlanTableName(row.stationName);
+          const planRowId = String(
+            row.planRowId
+            || (row.kind === "production-plan" || row.kind === "backlog" ? row.sourceId : "")
+            || ""
+          ).trim();
+
+          if (!planRowId) {
+            throw new Error("Ehhez a sorhoz nincs biztonságosan azonosítható konkrét _terv sorazonosító.");
+          }
+
+          const planKey = `${tableName}|${planRowId}`;
+          if (deletedPlanKeys.has(planKey)) {
+            deletedSelectionKeys.push(row.key);
+            continue;
+          }
+
+          const existingResponse = await supabase
+            .from(tableName)
+            .select("id, sorszam")
+            .eq("id", planRowId)
+            .maybeSingle();
+          if (existingResponse.error) throw existingResponse.error;
+          if (!existingResponse.data) throw new Error(`A konkrét ${tableName} sor már nem található.`);
+
+          const storedOrderNumber = String(existingResponse.data.sorszam || "").trim();
+          if (normalizeLooseText(storedOrderNumber) !== normalizeLooseText(row.orderNumber)) {
+            throw new Error("A tervsor azonosítója más rendelésszámhoz tartozik, ezért a törlés biztonsági okból leállt.");
+          }
+
+          const deleteResponse = await supabase
+            .from(tableName)
+            .delete()
+            .eq("id", planRowId)
+            .select("id, sorszam")
+            .maybeSingle();
+          if (deleteResponse.error) throw deleteResponse.error;
+          if (!deleteResponse.data) throw new Error("A _terv sor törlése nem igazolható.");
+
+          deletedPlanKeys.add(planKey);
+          deletedSelectionKeys.push(row.key);
+        } catch (error) {
+          errors.push(`${row.orderNumber} (${row.kind}): ${normalizeError(error)}`);
+        }
+      }
+
+      if (deletedSelectionKeys.length) {
+        setExecutiveReportSelections((current) => {
+          const next = { ...current };
+          deletedSelectionKeys.forEach((key) => { delete next[key]; });
+          return next;
+        });
+        await loadExecutiveReportView(executiveReportStation, executiveReportDateFrom, executiveReportDateTo);
+      }
+
+      if (errors.length) {
+        setMessage({ type: "error", text: `${deletedPlanKeys.size} _terv sor törölve, ${errors.length} sor nem törölhető. ${errors.join(" | ")}` });
+      } else {
+        setMessage({ type: "success", text: `${deletedPlanKeys.size} kijelölt _terv sor sikeresen törölve. A work_logs és minden történeti adat változatlan maradt.` });
+      }
+    } finally {
+      executiveReportDeleteInFlightRef.current = false;
+      setDeletingExecutiveReport(false);
+    }
+  }
+
   async function saveExecutiveReportSelections(): Promise<void> {
-    if (executiveReportSaveInFlightRef.current) return;
+    if (executiveReportSaveInFlightRef.current || executiveReportDeleteInFlightRef.current) return;
     const selected = Object.values(executiveReportSelections).filter(row => row.selected);
     if (!selected.length) {
       setMessage({ type: "error", text: "Jelölj ki legalább egy rendelést." });
@@ -21022,24 +21224,44 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             {" · "}
             <strong style={{ color: theme.textColor }}>Egyéb</strong>: kötelező indoklással könyvel.
           </div>
-          <button
-            type="button"
-            onClick={() => void saveExecutiveReportSelections()}
-            disabled={savingExecutiveReport || selectedCount === 0}
-            style={{
-              minHeight: 48,
-              padding: "10px 18px",
-              borderRadius: Math.max(8, theme.borderRadius - 3),
-              border: `2px solid ${theme.accentColor}`,
-              background: savingExecutiveReport || selectedCount === 0 ? theme.secondaryButtonBackground : theme.primaryButtonBackground,
-              color: theme.buttonText,
-              fontWeight: 1000,
-              cursor: savingExecutiveReport || selectedCount === 0 ? "not-allowed" : "pointer",
-              opacity: savingExecutiveReport || selectedCount === 0 ? .65 : 1,
-            }}
-          >
-            {savingExecutiveReport ? "Készre könyvelés..." : `Készre könyvelés${selectedCount ? ` (${selectedCount})` : ""}`}
-          </button>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <button
+              type="button"
+              onClick={() => void saveExecutiveReportSelections()}
+              disabled={savingExecutiveReport || deletingExecutiveReport || selectedCount === 0}
+              style={{
+                minHeight: 48,
+                padding: "10px 18px",
+                borderRadius: Math.max(8, theme.borderRadius - 3),
+                border: `2px solid ${theme.accentColor}`,
+                background: savingExecutiveReport || deletingExecutiveReport || selectedCount === 0 ? theme.secondaryButtonBackground : theme.primaryButtonBackground,
+                color: theme.buttonText,
+                fontWeight: 1000,
+                cursor: savingExecutiveReport || deletingExecutiveReport || selectedCount === 0 ? "not-allowed" : "pointer",
+                opacity: savingExecutiveReport || deletingExecutiveReport || selectedCount === 0 ? .65 : 1,
+              }}
+            >
+              {savingExecutiveReport ? "Készre könyvelés..." : `Készre könyvelés${selectedCount ? ` (${selectedCount})` : ""}`}
+            </button>
+            <button
+              type="button"
+              onClick={() => void deleteExecutiveReportSelectionsFromPlan()}
+              disabled={savingExecutiveReport || deletingExecutiveReport || selectedCount === 0}
+              style={{
+                minHeight: 48,
+                padding: "10px 18px",
+                borderRadius: Math.max(8, theme.borderRadius - 3),
+                border: "2px solid #991b1b",
+                background: savingExecutiveReport || deletingExecutiveReport || selectedCount === 0 ? "#7f1d1d" : "#dc2626",
+                color: "#ffffff",
+                fontWeight: 1000,
+                cursor: savingExecutiveReport || deletingExecutiveReport || selectedCount === 0 ? "not-allowed" : "pointer",
+                opacity: savingExecutiveReport || deletingExecutiveReport || selectedCount === 0 ? .65 : 1,
+              }}
+            >
+              {deletingExecutiveReport ? "Törlés könyvelése..." : `Törlés könyvelése${selectedCount ? ` (${selectedCount})` : ""}`}
+            </button>
+          </div>
         </div>
       </NivoExecutiveScrollBoundary>
     );
@@ -23577,6 +23799,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       });
     };
 
+    const clearAllAtvetelFilters = (): void => {
+      const today = getLocalDateKey(new Date());
+      setAtvetelDateFrom(today);
+      setAtvetelDateTo(today);
+      setAtvetelSearch("");
+      setAtvetelCommittedSearch("");
+      setAtvetelClosureFilter("all");
+      setAtvetelColumnFilters({});
+      setAtvetelSortState(null);
+      setAtvetelFilterMenu(null);
+      setAtvetelAddressTooltip(null);
+      void loadAtvetelMonitor(today, today, "");
+    };
+
     async function exportAtvetelExcel(): Promise<void> {
       if (atvetelExporting) return;
       setAtvetelExporting(true);
@@ -23920,11 +24156,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <button type="button" onClick={() => void exportAtvetelExcel()} disabled={atvetelLoading || atvetelExporting} style={buttonPrimary}>
                   {atvetelExporting ? "Excel export..." : "Excel export"}
                 </button>
-                {(atvetelSearch || atvetelCommittedSearch) && (
-                  <button type="button" onClick={() => { setAtvetelSearch(""); setAtvetelCommittedSearch(""); void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, ""); }} style={buttonSecondary}>
-                    Keresés törlése
-                  </button>
-                )}
+                <button type="button" onClick={clearAllAtvetelFilters} style={buttonSecondary}>
+                  Szűrők törlése
+                </button>
               </div>
             </div>
 
@@ -23986,6 +24220,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               <button
                                 type="button"
                                 data-preserve-action-color="true"
+                                data-atvetel-filter-trigger="true"
                                 onClick={(event) => {
                                   const rect = event.currentTarget.getBoundingClientRect();
                                   setAtvetelFilterMenu((current) => current?.columnId === column.id ? null : { columnId: column.id, x: rect.left, y: rect.bottom + 5 });
@@ -24043,7 +24278,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           const maxX = typeof window !== "undefined" ? Math.max(8, window.innerWidth - 350) : atvetelFilterMenu.x;
           const maxY = typeof window !== "undefined" ? Math.max(8, window.innerHeight - 480) : atvetelFilterMenu.y;
           return (
-            <div style={{ position: "fixed", left: Math.min(atvetelFilterMenu.x, maxX), top: Math.min(atvetelFilterMenu.y, maxY), zIndex: 20000, width: 330, maxHeight: 460, overflow: "auto", padding: 12, borderRadius: 9, border: `2px solid ${officeTheme.borderColor}`, background: officeTheme.panelBackground, color: officeTheme.textColor, boxShadow: "0 18px 44px rgba(0,0,0,0.5)" }}>
+            <div ref={atvetelFilterMenuRef} style={{ position: "fixed", left: Math.min(atvetelFilterMenu.x, maxX), top: Math.min(atvetelFilterMenu.y, maxY), zIndex: 20000, width: 330, maxHeight: 460, overflow: "auto", padding: 12, borderRadius: 9, border: `2px solid ${officeTheme.borderColor}`, background: officeTheme.panelBackground, color: officeTheme.textColor, boxShadow: "0 18px 44px rgba(0,0,0,0.5)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 8 }}>
                 <strong>{column.label} szűrő</strong>
                 <button type="button" onClick={() => setAtvetelFilterMenu(null)} style={{ ...buttonSecondary, padding: "4px 8px" }}>✕</button>
