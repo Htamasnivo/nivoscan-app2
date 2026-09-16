@@ -1142,8 +1142,6 @@ type AtvetelCurrentRow = {
   updated_at?: string | null;
 };
 
-type AtvetelDateBasis = "elkeszules_datum" | "kiszallitasi_datum";
-
 type AtvetelMonitorRow = {
   key: string;
   orderNumber: string;
@@ -9011,13 +9009,12 @@ export default function Page() {
   const productionMonitorProfilesLatestRef = useRef<ProductionMonitorProfile[]>(productionMonitorProfiles);
   const productionMonitorActiveProfileIdLatestRef = useRef(activeProductionMonitorProfileId);
 
-  // Átvétel monitor – szereles_terv sorok, atvetel_adat kiegészítő mezőkkel; választható dátumszűréssel.
+  // Átvétel monitor – az alap dátumszűrés mindig az atvetel_adat.szerelesi_idopont (Kiszállítási dátum) dátumrésze.
   const [atvetelDateFrom, setAtvetelDateFrom] = useState(getLocalDateKey(new Date()));
   const [atvetelDateTo, setAtvetelDateTo] = useState(getLocalDateKey(new Date()));
-  const [atvetelDateBasis, setAtvetelDateBasis] = useState<AtvetelDateBasis>("elkeszules_datum");
   const [atvetelSearch, setAtvetelSearch] = useState("");
-  // A kereső csak Enter után aktiválódik. Aktív keresésnél a dátumtartomány
-  // nem szűri a szereles_terv táblát; törléskor visszaáll a dátumalapú nézet.
+  // A kereső csak Enter után aktiválódik, és mindig a felső Kiszállítási dátum
+  // alapszűrőn belül szűkíti tovább a megjelenített rendeléseket.
   const [atvetelCommittedSearch, setAtvetelCommittedSearch] = useState("");
   const [atvetelClosureFilter, setAtvetelClosureFilter] = useState<"open" | "ongoing" | "closed" | "all">("all");
   const [atvetelRows, setAtvetelRows] = useState<AtvetelMonitorRow[]>([]);
@@ -22908,8 +22905,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   async function fetchAtvetelMonitorRows(
     dateFrom: string,
     dateTo: string,
-    searchOverride: string,
-    options?: { ignoreDateFilter?: boolean; dateBasis?: AtvetelDateBasis }
+    searchOverride: string
   ): Promise<AtvetelMonitorRow[]> {
     if (!supabase) return [];
 
@@ -22924,9 +22920,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
 
     const normalizedGlobalSearch = normalizeDashboardOrderSearch(searchOverride);
-    const searchWholeSourceTable = Boolean(normalizedGlobalSearch);
-    const ignoreDateFilter = options?.ignoreDateFilter === true;
-    const dateBasis: AtvetelDateBasis = options?.dateBasis || atvetelDateBasis;
 
     // Az Átvétel sorforrása mostantól az atvetel_adat. Egy rendelésből csak
     // a legkésőbbi, NEM ÜRES szerelesi_idoponttal rendelkező rekord marad meg.
@@ -22969,14 +22962,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (!orderNumber) return;
       const elkeszulesDatum = sourceCompletionByOrder.get(normalizeLooseText(orderNumber)) || "";
       const kiszallitasiDatum = getAtvetelDetailsShippingDate(detailRow);
-      const filterDate = dateBasis === "kiszallitasi_datum" ? kiszallitasiDatum : elkeszulesDatum;
 
-      if (searchWholeSourceTable) {
-        if (!matchesDashboardOrderFilters(orderNumber, [searchOverride])) return;
-      } else if (!ignoreDateFilter) {
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(filterDate)) return;
-        if (filterDate < startDate || filterDate > endDate) return;
-      }
+      // A felső dátumszűrő az Átvétel oldal alapszűrője: minden további
+      // keresés, lezárási állapot és Excel-szerű oszlopszűrés ezen belül érvényes.
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(kiszallitasiDatum)) return;
+      if (kiszallitasiDatum < startDate || kiszallitasiDatum > endDate) return;
+      if (normalizedGlobalSearch && !matchesDashboardOrderFilters(orderNumber, [searchOverride])) return;
 
       sourceOrders.push({
         orderNumber,
@@ -22996,9 +22987,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
 
     sourceOrders.sort((left, right) => {
-      const leftDate = dateBasis === "kiszallitasi_datum" ? left.kiszallitasiDatum : left.elkeszulesDatum;
-      const rightDate = dateBasis === "kiszallitasi_datum" ? right.kiszallitasiDatum : right.elkeszulesDatum;
-      return leftDate.localeCompare(rightDate)
+      return left.kiszallitasiDatum.localeCompare(right.kiszallitasiDatum)
         || left.orderNumber.localeCompare(right.orderNumber, "hu", { numeric: true });
     });
 
@@ -23133,12 +23122,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!backgroundRefresh) setAtvetelLoading(true);
 
     try {
-      const normalizedSearch = normalizeDashboardOrderSearch(searchOverride);
-      const ignoreDateForStatusFilter = !normalizedSearch && atvetelClosureFilter !== "all";
-      const nextRows = await fetchAtvetelMonitorRows(dateFrom, dateTo, searchOverride, {
-        dateBasis: atvetelDateBasis,
-        ignoreDateFilter: Boolean(normalizedSearch) || ignoreDateForStatusFilter,
-      });
+      const nextRows = await fetchAtvetelMonitorRows(dateFrom, dateTo, searchOverride);
 
       setAtvetelRows(nextRows);
 
@@ -23499,9 +23483,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
 
     const baseRows = atvetelRows.filter((row) => {
-      // A rendelésszám-kereső továbbra is minden más szűrőtől független.
-      if (normalizedSearch) {
-        return matchesDashboardOrderFilters(row.orderNumber, [atvetelCommittedSearch]);
+      // A rendelésszám-kereső az alap Kiszállítási dátum szűrés után érvényesül.
+      if (normalizedSearch && !matchesDashboardOrderFilters(row.orderNumber, [atvetelCommittedSearch])) {
+        return false;
       }
 
       const closed = Boolean(row.persisted?.lezart);
@@ -23843,7 +23827,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <h2 style={{ margin: "4px 0", color: officeTheme.textColor, fontSize: 28 }}>Átvétel</h2>
                 <div style={{ color: officeTheme.mutedText, fontSize: 13 }}>
                   Sorforrás: <strong>atvetel_adat</strong> · Ajtó állapot: <strong>rendszer / Szerelés</strong> · Szűrés alapja:{" "}
-                  <strong>{atvetelDateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülés dátuma"}</strong>
+                  <strong>Kiszállítási dátum</strong>
                 </div>
                 <div style={{ color: officeTheme.mutedText, fontSize: 12, marginTop: 4 }}>
                   Azonos rendelésszámból a legkésőbbi szerelési időpontú sor látszik · Utolsó frissítés: {atvetelLastUpdatedAt ? formatDateTime(atvetelLastUpdatedAt) : "–"}
@@ -23851,21 +23835,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               </div>
 
               <div style={{ display: "grid", gap: 7, width: "100%", justifySelf: "center" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "minmax(170px, 0.9fr) 1fr 1fr", gap: 10 }}>
+                <style>{`
+                  input[data-atvetel-shipping-date]::-webkit-calendar-picker-indicator {
+                    filter: brightness(0) invert(1);
+                    opacity: 1;
+                    cursor: pointer;
+                  }
+                `}</style>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                   <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
-                    Dátumszűrés alapja
-                    <select value={atvetelDateBasis} onChange={(event) => setAtvetelDateBasis(event.target.value as AtvetelDateBasis)} style={fieldStyle}>
-                      <option value="elkeszules_datum">Elkészülési dátum</option>
-                      <option value="kiszallitasi_datum">Kiszállítási dátum</option>
-                    </select>
+                    Dátumtól · Kiszállítási dátum
+                    <input data-atvetel-shipping-date type="date" value={atvetelDateFrom} onChange={(event) => setAtvetelDateFrom(event.target.value)} style={{ ...fieldStyle, colorScheme: "dark" }} />
                   </label>
                   <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
-                    Dátumtól · {atvetelDateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülés dátuma"}
-                    <input type="date" value={atvetelDateFrom} onChange={(event) => setAtvetelDateFrom(event.target.value)} style={fieldStyle} />
-                  </label>
-                  <label style={{ display: "grid", gap: 5, color: officeTheme.mutedText, fontWeight: 800 }}>
-                    Dátumig · {atvetelDateBasis === "kiszallitasi_datum" ? "Kiszállítási dátum" : "Elkészülés dátuma"}
-                    <input type="date" value={atvetelDateTo} onChange={(event) => setAtvetelDateTo(event.target.value)} style={fieldStyle} />
+                    Dátumig · Kiszállítási dátum
+                    <input data-atvetel-shipping-date type="date" value={atvetelDateTo} onChange={(event) => setAtvetelDateTo(event.target.value)} style={{ ...fieldStyle, colorScheme: "dark" }} />
                   </label>
                 </div>
                 <div style={{ display: "flex", justifyContent: "center", gap: 8 }}>
@@ -27294,7 +27278,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     managementSection,
     atvetelDateFrom,
     atvetelDateTo,
-    atvetelDateBasis,
     atvetelCommittedSearch,
     atvetelClosureFilter,
     workers.length,
@@ -27322,7 +27305,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     managementSection,
     atvetelDateFrom,
     atvetelDateTo,
-    atvetelDateBasis,
     atvetelCommittedSearch,
     atvetelClosureFilter,
   ]);
@@ -27352,7 +27334,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     managementSection,
     atvetelDateFrom,
     atvetelDateTo,
-    atvetelDateBasis,
     atvetelCommittedSearch,
     atvetelClosureFilter,
   ]);
