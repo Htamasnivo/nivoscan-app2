@@ -1157,6 +1157,7 @@ type AtvetelMonitorRow = {
   teljesCim: string;
   kiszallitasiDatum: string;
   szerelesiIdopontRaw: string;
+  nincsKiszallitasiDatum: boolean;
   productionStatus: ProductionMonitorStatus;
   productionStatusLabel: string;
   persisted: AtvetelCurrentRow | null;
@@ -9032,6 +9033,7 @@ export default function Page() {
   // Átvétel monitor – az alap dátumszűrés mindig az atvetel_adat.szerelesi_idopont (Kiszállítási dátum) dátumrésze.
   const [atvetelDateFrom, setAtvetelDateFrom] = useState(getLocalDateKey(new Date()));
   const [atvetelDateTo, setAtvetelDateTo] = useState(getLocalDateKey(new Date()));
+  const [atvetelShowUndatedOrders, setAtvetelShowUndatedOrders] = useState(true);
   const [atvetelSearch, setAtvetelSearch] = useState("");
   // A kereső csak Enter után aktiválódik, és mindig a felső Kiszállítási dátum
   // alapszűrőn belül szűkíti tovább a megjelenített rendeléseket.
@@ -23241,7 +23243,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   async function fetchAtvetelMonitorRows(
     dateFrom: string,
     dateTo: string,
-    searchOverride: string
+    searchOverride: string,
+    showUndatedOrders: boolean = atvetelShowUndatedOrders
   ): Promise<AtvetelMonitorRow[]> {
     if (!supabase) return [];
 
@@ -23291,6 +23294,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       teljesCim: string;
       kiszallitasiDatum: string;
       szerelesiIdopontRaw: string;
+      nincsKiszallitasiDatum: boolean;
     }> = [];
 
     latestDetailsByOrder.forEach((detailRow) => {
@@ -23299,10 +23303,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const elkeszulesDatum = sourceCompletionByOrder.get(normalizeLooseText(orderNumber)) || "";
       const kiszallitasiDatum = getAtvetelDetailsShippingDate(detailRow);
 
-      // A felső dátumszűrő az Átvétel oldal alapszűrője: minden további
-      // keresés, lezárási állapot és Excel-szerű oszlopszűrés ezen belül érvényes.
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(kiszallitasiDatum)) return;
-      if (kiszallitasiDatum < startDate || kiszallitasiDatum > endDate) return;
+      // A felső dátumszűrő az Átvétel oldal alapszűrője. Ha a külön kapcsoló
+      // engedélyezett, a dátum nélküli atvetel_adat rendelések is megjelennek.
+      const hasShippingDate = /^\d{4}-\d{2}-\d{2}$/.test(kiszallitasiDatum);
+      if (hasShippingDate) {
+        if (kiszallitasiDatum < startDate || kiszallitasiDatum > endDate) return;
+      } else if (!showUndatedOrders) {
+        return;
+      }
       if (normalizedGlobalSearch && !matchesDashboardOrderFilters(orderNumber, [searchOverride])) return;
 
       sourceOrders.push({
@@ -23319,6 +23327,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         teljesCim: getAtvetelDetailsFullAddress(detailRow),
         kiszallitasiDatum,
         szerelesiIdopontRaw: valueAsText(getAtvetelDetailsSzerelesiIdopontRaw(detailRow)).trim(),
+        nincsKiszallitasiDatum: !hasShippingDate,
       });
     });
 
@@ -23440,6 +23449,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         teljesCim: sourceRow.teljesCim,
         kiszallitasiDatum: sourceRow.kiszallitasiDatum,
         szerelesiIdopontRaw: sourceRow.szerelesiIdopontRaw,
+        nincsKiszallitasiDatum: sourceRow.nincsKiszallitasiDatum,
         productionStatus: monitorCell.status,
         productionStatusLabel: monitorCell.label,
         persisted: currentByOrder.get(normalizeLooseText(sourceRow.orderNumber)) || null,
@@ -23450,7 +23460,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   async function loadAtvetelMonitor(
     dateFrom = atvetelDateFrom,
     dateTo = atvetelDateTo,
-    searchOverride = atvetelCommittedSearch
+    searchOverride = atvetelCommittedSearch,
+    showUndatedOrders = atvetelShowUndatedOrders
   ): Promise<void> {
     if (!supabase) return;
 
@@ -23458,7 +23469,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!backgroundRefresh) setAtvetelLoading(true);
 
     try {
-      const nextRows = await fetchAtvetelMonitorRows(dateFrom, dateTo, searchOverride);
+      const nextRows = await fetchAtvetelMonitorRows(dateFrom, dateTo, searchOverride, showUndatedOrders);
 
       setAtvetelRows(nextRows);
 
@@ -24206,6 +24217,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   <button type="button" onClick={() => shiftAtvetelDateRange(-1)} style={{ ...buttonSecondary, minWidth: 66, height: 36, fontSize: 20, fontWeight: 900, lineHeight: 1 }} title="Egy nappal vissza">←</button>
                   <button type="button" onClick={() => shiftAtvetelDateRange(1)} style={{ ...buttonSecondary, minWidth: 66, height: 36, fontSize: 20, fontWeight: 900, lineHeight: 1 }} title="Egy nappal előre">→</button>
                 </div>
+                <label style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, color: officeTheme.textColor, fontWeight: 800, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={atvetelShowUndatedOrders}
+                    onChange={(event) => {
+                      const nextValue = event.target.checked;
+                      setAtvetelShowUndatedOrders(nextValue);
+                      void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, atvetelCommittedSearch, nextValue);
+                    }}
+                  />
+                  Dátum nélküli rendelések megjelenítése
+                </label>
               </div>
               <div aria-hidden="true" />
             </div>
@@ -24366,9 +24389,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                               ? "#15803d"
                               : folyamatban
                                 ? "#f59e0b"
-                                : rowIndex % 2 === 0
-                                  ? officeTheme.panelAltBackground
-                                  : officeTheme.sectionBackground,
+                                : row.nincsKiszallitasiDatum
+                                  ? "#6b7280"
+                                  : rowIndex % 2 === 0
+                                    ? officeTheme.panelAltBackground
+                                    : officeTheme.sectionBackground,
                             transition: "background 120ms ease",
                           }}
                         >
