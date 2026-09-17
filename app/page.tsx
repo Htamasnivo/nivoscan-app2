@@ -9034,6 +9034,9 @@ export default function Page() {
   const [atvetelDateFrom, setAtvetelDateFrom] = useState(getLocalDateKey(new Date()));
   const [atvetelDateTo, setAtvetelDateTo] = useState(getLocalDateKey(new Date()));
   const [atvetelShowUndatedOrders, setAtvetelShowUndatedOrders] = useState(true);
+  // A ref biztosítja, hogy az automatikus / realtime frissítések mindig az aktuális
+  // kapcsolóállapotot használják, és egy korábbi kérés ne tudja visszahozni a dátum nélküli sorokat.
+  const atvetelShowUndatedOrdersRef = useRef(true);
   const [atvetelSearch, setAtvetelSearch] = useState("");
   // A kereső csak Enter után aktiválódik, és mindig a felső Kiszállítási dátum
   // alapszűrőn belül szűkíti tovább a megjelenített rendeléseket.
@@ -23244,7 +23247,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     dateFrom: string,
     dateTo: string,
     searchOverride: string,
-    showUndatedOrders: boolean = atvetelShowUndatedOrders
+    showUndatedOrders: boolean = atvetelShowUndatedOrdersRef.current
   ): Promise<AtvetelMonitorRow[]> {
     if (!supabase) return [];
 
@@ -23461,7 +23464,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     dateFrom = atvetelDateFrom,
     dateTo = atvetelDateTo,
     searchOverride = atvetelCommittedSearch,
-    showUndatedOrders = atvetelShowUndatedOrders
+    showUndatedOrders = atvetelShowUndatedOrdersRef.current
   ): Promise<void> {
     if (!supabase) return;
 
@@ -23470,6 +23473,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     try {
       const nextRows = await fetchAtvetelMonitorRows(dateFrom, dateTo, searchOverride, showUndatedOrders);
+
+      // Ha közben a felhasználó átállította a „Dátum nélküli rendelések” pipát,
+      // egy korábban indított háttérlekérés eredménye nem írhatja felül az új állapotot.
+      if (showUndatedOrders !== atvetelShowUndatedOrdersRef.current) return;
 
       setAtvetelRows(nextRows);
 
@@ -24223,6 +24230,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                     checked={atvetelShowUndatedOrders}
                     onChange={(event) => {
                       const nextValue = event.target.checked;
+                      atvetelShowUndatedOrdersRef.current = nextValue;
                       setAtvetelShowUndatedOrders(nextValue);
                       void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo, atvetelCommittedSearch, nextValue);
                     }}
@@ -27615,6 +27623,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
 
+
+  const previousManagementSectionForAtvetelRef = useRef(managementSection);
+  useEffect(() => {
+    const previousSection = previousManagementSectionForAtvetelRef.current;
+    if (managementSection === "atvetel" && previousSection !== "atvetel") {
+      // Új belépéskor ez az alapértelmezett állapot: a dátum nélküli rendelések látszanak.
+      atvetelShowUndatedOrdersRef.current = true;
+      setAtvetelShowUndatedOrders(true);
+    }
+    previousManagementSectionForAtvetelRef.current = managementSection;
+  }, [managementSection]);
 
   useEffect(() => {
     if (!activeWorker || terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "atvetel") return;
