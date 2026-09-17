@@ -21847,6 +21847,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       );
     };
 
+    const resetProductionMonitorShippingDateRange = (): void => {
+      const todayKey = getLocalDateKey(new Date());
+      setProductionMonitorDate(todayKey);
+      setProductionMonitorDateTo(todayKey);
+      void loadProductionMonitor(
+        todayKey,
+        activeProductionMonitorProfile.planStatusFilter,
+        todayKey,
+        "kiszallitasi_datum"
+      );
+    };
+
     const setEditorProductionMonitorFieldOrder = (
       value: React.SetStateAction<string[]>
     ): void => {
@@ -22379,9 +22391,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 ))}
                 <option value="custom">Egyedi stílus</option>
               </select>
-              {standalone ? (
+              {standalone && (
                 <div
-                  title="A külön monitor mindig a mai kiszállítási dátum rendeléseit mutatja"
+                  title="Mai kiszállítási dátum"
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -22400,92 +22412,100 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 >
                   Mai kiszállítás: {formatDateOnly(`${getLocalDateKey(new Date())}T12:00:00`)}
                 </div>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    title="Előző kiszállítási nap"
-                    onClick={() => shiftProductionMonitorShippingDateRange(-1)}
-                    style={{ ...buttonSecondary, minWidth: 44, padding: "9px 12px", fontSize: 18, fontWeight: 1000 }}
-                  >
-                    ←
-                  </button>
+              )}
 
-                  <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
-                    <span>Kiszállítási dátumtól</span>
-                    <input
-                      type="date"
-                      value={productionMonitorDate}
-                      max={productionMonitorDateTo || undefined}
-                      onChange={(event) => {
-                        const nextFrom = event.target.value;
-                        if (!nextFrom) return;
+              <button
+                type="button"
+                title="Előző kiszállítási nap"
+                onClick={() => shiftProductionMonitorShippingDateRange(-1)}
+                style={{ ...buttonSecondary, minWidth: 44, padding: "9px 12px", fontSize: 18, fontWeight: 1000 }}
+              >
+                ←
+              </button>
 
-                        const nextTo = !productionMonitorDateTo || nextFrom > productionMonitorDateTo
-                          ? nextFrom
-                          : productionMonitorDateTo;
+              <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
+                <span>Kiszállítási dátumtól</span>
+                <input
+                  type="date"
+                  value={productionMonitorDate}
+                  max={productionMonitorDateTo || undefined}
+                  onChange={(event) => {
+                    const nextFrom = event.target.value;
+                    if (!nextFrom) return;
 
-                        setProductionMonitorDate(nextFrom);
-                        if (nextTo !== productionMonitorDateTo) setProductionMonitorDateTo(nextTo);
+                    const nextTo = !productionMonitorDateTo || nextFrom > productionMonitorDateTo
+                      ? nextFrom
+                      : productionMonitorDateTo;
 
-                        void loadProductionMonitor(
-                          nextFrom,
-                          activeProductionMonitorProfile.planStatusFilter,
-                          nextTo,
-                          "kiszallitasi_datum"
-                        );
-                      }}
-                      style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
-                    />
-                  </label>
+                    setProductionMonitorDate(nextFrom);
+                    if (nextTo !== productionMonitorDateTo) setProductionMonitorDateTo(nextTo);
 
-                  <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
-                    <span>Kiszállítási dátumig</span>
-                    <input
-                      type="date"
-                      value={productionMonitorDateTo}
-                      min={productionMonitorDate || undefined}
-                      onChange={(event) => {
-                        const nextTo = event.target.value;
-                        if (!nextTo) return;
+                    void loadProductionMonitor(
+                      nextFrom,
+                      activeProductionMonitorProfile.planStatusFilter,
+                      nextTo,
+                      "kiszallitasi_datum"
+                    );
+                  }}
+                  style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
+                />
+              </label>
 
-                        const nextFrom = !productionMonitorDate || nextTo < productionMonitorDate
-                          ? nextTo
-                          : productionMonitorDate;
+              <label style={{ display: "grid", gap: 3, fontSize: 11, fontWeight: 800, color: profileTheme.subtitleText }}>
+                <span>Kiszállítási dátumig</span>
+                <input
+                  type="date"
+                  value={productionMonitorDateTo}
+                  min={productionMonitorDate || undefined}
+                  onChange={(event) => {
+                    const nextTo = event.target.value;
+                    if (!nextTo) return;
 
-                        if (nextFrom !== productionMonitorDate) setProductionMonitorDate(nextFrom);
-                        setProductionMonitorDateTo(nextTo);
+                    const nextFrom = !productionMonitorDate || nextTo < productionMonitorDate
+                      ? nextTo
+                      : productionMonitorDate;
 
-                        void loadProductionMonitor(
-                          nextFrom,
-                          activeProductionMonitorProfile.planStatusFilter,
-                          nextTo,
-                          "kiszallitasi_datum"
-                        );
-                      }}
-                      style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
-                    />
-                  </label>
+                    if (nextFrom !== productionMonitorDate) setProductionMonitorDate(nextFrom);
+                    setProductionMonitorDateTo(nextTo);
 
-                  <button
-                    type="button"
-                    title="Következő kiszállítási nap"
-                    onClick={() => shiftProductionMonitorShippingDateRange(1)}
-                    style={{ ...buttonSecondary, minWidth: 44, padding: "9px 12px", fontSize: 18, fontWeight: 1000 }}
-                  >
-                    →
-                  </button>
-                </>
+                    void loadProductionMonitor(
+                      nextFrom,
+                      activeProductionMonitorProfile.planStatusFilter,
+                      nextTo,
+                      "kiszallitasi_datum"
+                    );
+                  }}
+                  style={{ ...fieldStyle, width: 165, background: "#ffffff", color: "#111827" }}
+                />
+              </label>
+
+              <button
+                type="button"
+                title="Következő kiszállítási nap"
+                onClick={() => shiftProductionMonitorShippingDateRange(1)}
+                style={{ ...buttonSecondary, minWidth: 44, padding: "9px 12px", fontSize: 18, fontWeight: 1000 }}
+              >
+                →
+              </button>
+
+              {standalone && (
+                <button
+                  type="button"
+                  title="Dátumszűrő visszaállítása a mai napra"
+                  onClick={resetProductionMonitorShippingDateRange}
+                  style={buttonSecondary}
+                >
+                  Szűrők törlése
+                </button>
               )}
 
               <button
                 type="button"
                 onClick={() => {
-                  const todayKey = getLocalDateKey(new Date());
                   void loadProductionMonitor(
-                    standalone ? todayKey : productionMonitorDate,
+                    productionMonitorDate,
                     activeProductionMonitorProfile.planStatusFilter,
-                    standalone ? todayKey : productionMonitorDateTo,
+                    productionMonitorDateTo,
                     "kiszallitasi_datum"
                   );
                 }}
@@ -26605,17 +26625,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!monitorVisible) return;
 
     const refreshProductionMonitor = (): Promise<void> => {
-      const todayKey = getLocalDateKey(new Date());
-      const dateFrom = standaloneProductionMonitor ? todayKey : productionMonitorDate;
-      const dateTo = standaloneProductionMonitor ? todayKey : productionMonitorDateTo;
-      if (standaloneProductionMonitor) {
-        if (productionMonitorDate !== todayKey) setProductionMonitorDate(todayKey);
-        if (productionMonitorDateTo !== todayKey) setProductionMonitorDateTo(todayKey);
-      }
       return loadProductionMonitor(
-        dateFrom,
+        productionMonitorDate,
         activeProductionMonitorProfile.planStatusFilter,
-        dateTo,
+        productionMonitorDateTo,
         "kiszallitasi_datum"
       );
     };
