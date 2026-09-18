@@ -17165,6 +17165,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             ? getPlanRunSequenceFromPlanData(planRow.planData)
             : null;
           const isRunScopedBacklog = Boolean(runSequence);
+          const isCsolezerRunScopedBacklog =
+            getStationPlanIdentityKey(cleanStationName) === "csolezer"
+            && Boolean(runSequence);
           const sameOrderRowCount = szinterPlanRowCounts.get(normalizeLooseText(orderNumber)) || groupRows.length;
           const bundleTenScopedRowLogs = filterBundleTenVisualLogsForCardRow(
             rowLogs,
@@ -17179,6 +17182,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             String(planRow.id),
             `backlog:${String(planRow.id)}`
           );
+
+          // Csőlézernél a futó sorszám a konkrét tervsor elsődleges azonosítója.
+          // A lemaradási kártya ezért közvetlenül a teljes, adott rendeléshez tartozó
+          // work_logs készletből választja ki az azonos terv_futo_sorszam sorait.
+          // Így egy korábbi/eltérő vizuális kártyaazonosító nem tudja elrejteni a
+          // tényleges START/END naplót. A PrimaPower meglévő működését nem változtatjuk.
+          const csolezerExactRunLogs = isCsolezerRunScopedBacklog
+            ? rowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === runSequence)
+            : [];
+          const csolezerExactRunBatchStarts = isCsolezerRunScopedBacklog
+            ? rowBatchStarts.filter((batch) =>
+                parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam) === runSequence
+              )
+            : [];
+
           const runScopedRowLogs = runSequence
             ? bundleTenScopedRowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === runSequence)
             : bundleTenScopedRowLogs;
@@ -17187,20 +17205,24 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam) === runSequence
               )
             : bundleTenScopedRowBatchStarts;
-          const effectiveRowLogs = isRunScopedBacklog
-            ? runScopedRowLogs
-            : isExactSzinterBacklog
-              ? filterNivoPlanRowLogs(runScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
-              : isOpenQuantityRemainder
-                ? filterWorkLogsForQuantityPlanLifecycle(runScopedRowLogs, planRow.planData)
-                : runScopedRowLogs;
-          const effectiveRowBatchStarts = isRunScopedBacklog
-            ? runScopedRowBatchStarts
-            : isExactSzinterBacklog
-              ? filterNivoPlanRowBatches(runScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
-              : isOpenQuantityRemainder
-                ? filterProductionBatchesForQuantityPlanLifecycle(runScopedRowBatchStarts, planRow.planData)
-                : runScopedRowBatchStarts;
+          const effectiveRowLogs = isCsolezerRunScopedBacklog
+            ? csolezerExactRunLogs
+            : isRunScopedBacklog
+              ? runScopedRowLogs
+              : isExactSzinterBacklog
+                ? filterNivoPlanRowLogs(runScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
+                : isOpenQuantityRemainder
+                  ? filterWorkLogsForQuantityPlanLifecycle(runScopedRowLogs, planRow.planData)
+                  : runScopedRowLogs;
+          const effectiveRowBatchStarts = isCsolezerRunScopedBacklog
+            ? csolezerExactRunBatchStarts
+            : isRunScopedBacklog
+              ? runScopedRowBatchStarts
+              : isExactSzinterBacklog
+                ? filterNivoPlanRowBatches(runScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
+                : isOpenQuantityRemainder
+                  ? filterProductionBatchesForQuantityPlanLifecycle(runScopedRowBatchStarts, planRow.planData)
+                  : runScopedRowBatchStarts;
           const exactRowStatusRequired = isRunScopedBacklog || isOpenQuantityRemainder || isExactSzinterBacklog || hasBundleTenScopedGroupActivity;
           const rowWorkerStatus = exactRowStatusRequired
             ? resolveProductionCardWorkers(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
