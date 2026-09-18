@@ -23817,12 +23817,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const nowIso = new Date().toISOString();
       const workerId = Number.isFinite(workerIdNumber) ? workerIdNumber : null;
       const workerName = activeWorker?.["Teljes nev"] || null;
+      const rowElkeszulesDatum = String(row.elkeszulesDatum || "").trim();
+      const beepitesiDatum = /^\d{4}-\d{2}-\d{2}$/.test(rowElkeszulesDatum)
+        ? rowElkeszulesDatum
+        : getLocalDateKey(new Date());
 
       // Lezáráskor UGYANEBBEN a mentésben bekerülnek a checkboxok,
       // megjegyzés és a lezárási adatok is.
       const payload = {
         order_number: row.orderNumber,
-        beepitesi_datum: row.elkeszulesDatum,
+        beepitesi_datum: beepitesiDatum,
         production_status: row.productionStatusLabel,
         folyamatban: Boolean(draft.folyamatban),
         atvette: Boolean(draft.atvette),
