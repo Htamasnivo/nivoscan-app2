@@ -1347,6 +1347,25 @@ type ReklamacioTableColumnConfig = {
   align: "left" | "center" | "right";
 };
 
+type ReklamacioTableStyleConfig = {
+  fontFamily: string;
+  headerFontSize: number;
+  cellFontSize: number;
+  headerFontWeight: number;
+  cellFontWeight: number;
+  rowHeight: number;
+  paddingX: number;
+  paddingY: number;
+  headerBackground: string;
+  headerTextColor: string;
+  cellBackground: string;
+  alternateCellBackground: string;
+  cellTextColor: string;
+  borderColor: string;
+  borderWidth: number;
+  borderRadius: number;
+};
+
 type ReklamacioColumnFilter = { text: string; selectedValues: string[] | null };
 type ReklamacioSortState = { columnId: ReklamacioTableColumnId; direction: "asc" | "desc" } | null;
 type ReklamacioFilterMenuState = { columnId: ReklamacioTableColumnId; x: number; y: number } | null;
@@ -1365,8 +1384,64 @@ const DEFAULT_REKLAMACIO_TABLE_COLUMNS: ReklamacioTableColumnConfig[] = [
   { id: "actions", label: "Mentés / Lezárás", width: 240, visible: true, align: "right" },
 ];
 
+const DEFAULT_REKLAMACIO_TABLE_STYLE: ReklamacioTableStyleConfig = {
+  fontFamily: "Arial, sans-serif",
+  headerFontSize: 12,
+  cellFontSize: 12,
+  headerFontWeight: 900,
+  cellFontWeight: 400,
+  rowHeight: 54,
+  paddingX: 7,
+  paddingY: 6,
+  headerBackground: "#29484a",
+  headerTextColor: "#f8fafc",
+  cellBackground: "#193638",
+  alternateCellBackground: "#29484a",
+  cellTextColor: "#f8fafc",
+  borderColor: "#466d70",
+  borderWidth: 1,
+  borderRadius: 8,
+};
+
 function createDefaultReklamacioTableColumns(): ReklamacioTableColumnConfig[] {
   return DEFAULT_REKLAMACIO_TABLE_COLUMNS.map((column) => ({ ...column }));
+}
+
+function createDefaultReklamacioTableStyle(): ReklamacioTableStyleConfig {
+  return { ...DEFAULT_REKLAMACIO_TABLE_STYLE };
+}
+
+function normalizeReklamacioTableStyle(value: unknown): ReklamacioTableStyleConfig {
+  const fallback = createDefaultReklamacioTableStyle();
+  if (!value || typeof value !== "object") return fallback;
+  const raw = value as Partial<ReklamacioTableStyleConfig>;
+  const numberInRange = (candidate: unknown, defaultValue: number, min: number, max: number): number => {
+    const parsed = Number(candidate);
+    return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.round(parsed))) : defaultValue;
+  };
+  const safeColor = (candidate: unknown, defaultValue: string): string => {
+    const normalized = String(candidate || "").trim();
+    return /^#[0-9a-f]{6}$/i.test(normalized) ? normalized : defaultValue;
+  };
+  const fontFamily = String(raw.fontFamily || "").trim();
+  return {
+    fontFamily: fontFamily || fallback.fontFamily,
+    headerFontSize: numberInRange(raw.headerFontSize, fallback.headerFontSize, 8, 30),
+    cellFontSize: numberInRange(raw.cellFontSize, fallback.cellFontSize, 8, 30),
+    headerFontWeight: numberInRange(raw.headerFontWeight, fallback.headerFontWeight, 100, 1000),
+    cellFontWeight: numberInRange(raw.cellFontWeight, fallback.cellFontWeight, 100, 1000),
+    rowHeight: numberInRange(raw.rowHeight, fallback.rowHeight, 32, 180),
+    paddingX: numberInRange(raw.paddingX, fallback.paddingX, 0, 30),
+    paddingY: numberInRange(raw.paddingY, fallback.paddingY, 0, 30),
+    headerBackground: safeColor(raw.headerBackground, fallback.headerBackground),
+    headerTextColor: safeColor(raw.headerTextColor, fallback.headerTextColor),
+    cellBackground: safeColor(raw.cellBackground, fallback.cellBackground),
+    alternateCellBackground: safeColor(raw.alternateCellBackground, fallback.alternateCellBackground),
+    cellTextColor: safeColor(raw.cellTextColor, fallback.cellTextColor),
+    borderColor: safeColor(raw.borderColor, fallback.borderColor),
+    borderWidth: numberInRange(raw.borderWidth, fallback.borderWidth, 0, 6),
+    borderRadius: numberInRange(raw.borderRadius, fallback.borderRadius, 0, 24),
+  };
 }
 
 function normalizeReklamacioTableColumns(value: unknown): ReklamacioTableColumnConfig[] {
@@ -2067,6 +2142,7 @@ type ReportDeliveryReportType =
   | "plan-vs-completed"
   | "closed-orders"
   | "atvetel"
+  | "reklamacio"
   | "custom";
 
 type ReportDeliveryFrequency = "daily" | "weekly" | "monthly";
@@ -2210,6 +2286,7 @@ const REPORT_DELIVERY_REPORT_TYPE_LABELS: Record<ReportDeliveryReportType, strin
   "plan-vs-completed": "Termelési terv vs. elkészült",
   "closed-orders": "Lezárt rendelések",
   atvetel: "Átvétel",
+  reklamacio: "Reklamációs riport",
   custom: "Egyedi kombinált riport",
 };
 
@@ -6015,7 +6092,7 @@ function canWorkerAccessManagementSection(
   section: ManagementSection
 ): boolean {
   if (!isLimitedOfficeWorker(worker)) return true;
-  return section === "atvetel" || section === "production-monitor";
+  return section === "atvetel" || section === "production-monitor" || section === "reklamacio";
 }
 
 function isManagementDashboardWorker(worker: Worker | null): boolean {
@@ -9268,6 +9345,7 @@ export default function Page() {
   const [reklamacioLastUpdatedAt, setReklamacioLastUpdatedAt] = useState("");
   const [reklamacioTableEditMode, setReklamacioTableEditMode] = useState(false);
   const [reklamacioTableColumns, setReklamacioTableColumns] = useState<ReklamacioTableColumnConfig[]>(createDefaultReklamacioTableColumns());
+  const [reklamacioTableStyle, setReklamacioTableStyle] = useState<ReklamacioTableStyleConfig>(createDefaultReklamacioTableStyle());
   const [reklamacioColumnFilters, setReklamacioColumnFilters] = useState<Partial<Record<ReklamacioTableColumnId, ReklamacioColumnFilter>>>({});
   const [reklamacioSortState, setReklamacioSortState] = useState<ReklamacioSortState>(null);
   const [reklamacioFilterMenu, setReklamacioFilterMenu] = useState<ReklamacioFilterMenuState>(null);
@@ -11596,6 +11674,123 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
   }
 
+  async function fetchReklamacioReportRows(
+    profile: ReportDeliveryProfile,
+    range: { startIso: string; endIso: string }
+  ): Promise<ReklamacioViewRow[]> {
+    if (!supabase) return [];
+    const response = await supabase
+      .from(REKLAMACIO_TABLE)
+      .select("id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
+      .gte("created_at", range.startIso)
+      .lt("created_at", range.endIso)
+      .order("created_at", { ascending: true })
+      .limit(10000);
+    if (response.error) throw response.error;
+
+    const orderFilters = parseReportDeliveryOrderFilters(profile.orderFilter);
+    const dbRows = ((response.data || []) as ReklamacioDbRow[]).filter((row) => {
+      const orderNumber = String(row.rendelesszam || "").trim();
+      if (!orderNumber) return false;
+      if (orderFilters.length > 0 && !matchesDashboardOrderFilters(orderNumber, orderFilters)) return false;
+      if (profile.workerFilter !== "all" && normalizeLooseText(String(row.created_by_worker_name || "")) !== normalizeLooseText(profile.workerFilter)) return false;
+      return true;
+    });
+
+    const drawingsByReklamacioId = new Map<string, ReklamacioSavedDrawing[]>();
+    const reklamacioIds = dbRows.map((row) => String(row.id || "")).filter(Boolean);
+    for (let index = 0; index < reklamacioIds.length; index += 100) {
+      const drawingResponse = await supabase
+        .from(REKLAMACIO_DRAWINGS_TABLE)
+        .select("id, reklamacio_id, rendelesszam, nev, rajz_url, storage_path, sorrend, created_at, updated_at")
+        .in("reklamacio_id", reklamacioIds.slice(index, index + 100))
+        .order("sorrend", { ascending: true })
+        .order("created_at", { ascending: true });
+      if (drawingResponse.error) {
+        console.warn("Reklamációs riport rajzlista nem olvasható:", drawingResponse.error);
+        break;
+      }
+      ((drawingResponse.data || []) as Array<Record<string, unknown>>).forEach((drawing) => {
+        const reklamacioId = String(drawing.reklamacio_id || "");
+        if (!reklamacioId) return;
+        const item: ReklamacioSavedDrawing = {
+          id: String(drawing.id || ""), reklamacioId,
+          rendelesszam: String(drawing.rendelesszam || ""),
+          name: String(drawing.nev || "Rajz"), url: String(drawing.rajz_url || ""),
+          storagePath: String(drawing.storage_path || ""), orderIndex: Number(drawing.sorrend || 0),
+          createdAt: String(drawing.created_at || ""), updatedAt: String(drawing.updated_at || ""),
+        };
+        drawingsByReklamacioId.set(reklamacioId, [...(drawingsByReklamacioId.get(reklamacioId) || []), item]);
+      });
+    }
+
+    const orderNumbers = Array.from(new Set(dbRows.map((row) => String(row.rendelesszam || "").trim()).filter(Boolean)));
+    const { presence: planPresence, latestDates: planLatestDates } = await fetchReklamacioPlanPresence(orderNumbers);
+    const logs: WorkLogRow[] = [];
+    const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+    for (let index = 0; index < orderNumbers.length; index += 100) {
+      const chunk = orderNumbers.slice(index, index + 100);
+      let logResponse = await supabase.from("work_logs").select(selectColumns).in("order_number", chunk).order("created_at", { ascending: true }).limit(10000);
+      if (logResponse.error) logResponse = await supabase.from("work_log").select(selectColumns).in("order_number", chunk).order("created_at", { ascending: true }).limit(10000);
+      if (logResponse.error) throw logResponse.error;
+      logs.push(...(((logResponse.data as WorkLogRow[]) || []).map((log) => ({
+        ...log,
+        worker_name: log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || null,
+      }))));
+    }
+
+    const batchStarts: ProductionBatchRow[] = [];
+    if (orderNumbers.length > 0) {
+      const batchResponse = await supabase.from("production_batches")
+        .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta, operation_code, operation_status")
+        .not("start_time", "is", null).limit(10000);
+      if (batchResponse.error) throw batchResponse.error;
+      const wanted = new Set(orderNumbers.map((value) => normalizeLooseText(value)));
+      batchStarts.push(...(((batchResponse.data as ProductionBatchRow[]) || []).filter((batch) =>
+        Array.isArray(batch.order_ids) && batch.order_ids.some((orderId) => wanted.has(normalizeLooseText(String(orderId))))
+      )));
+    }
+
+    return dbRows.map((dbRow) => {
+      const orderNumber = String(dbRow.rendelesszam || "").trim();
+      const reklamacioId = String(dbRow.id || "");
+      const savedDrawings = drawingsByReklamacioId.get(reklamacioId) || [];
+      const legacyDrawingUrl = String(dbRow.rajz_url || "");
+      const drawings = savedDrawings.length > 0 || !legacyDrawingUrl ? savedDrawings : [{
+        id: `legacy-${reklamacioId}`, reklamacioId, rendelesszam: orderNumber, name: "Rajz 1", url: legacyDrawingUrl,
+        storagePath: "", orderIndex: 0, createdAt: String(dbRow.created_at || ""), updatedAt: String(dbRow.updated_at || ""), isLegacy: true,
+      }];
+      const workshop: ReklamacioWorkshop = dbRow.muhely === "Asztalos" || dbRow.muhely === "Lakatos" ? dbRow.muhely : "";
+      const required = workshop ? REKLAMACIO_STATIONS[workshop] : [];
+      const normalizedOrderNumber = normalizeLooseText(orderNumber);
+      const gyartasbaTerveDatum = required.reduce((latestDate, station) => {
+        const stationDate = planLatestDates.get(getStationPlanIdentityKey(station.stationName))?.get(normalizedOrderNumber) || "";
+        return stationDate > latestDate ? stationDate : latestDate;
+      }, "");
+      const orderLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizedOrderNumber);
+      const stationStates: ReklamacioStationState[] = required.map((station) => {
+        const stationKey = getStationPlanIdentityKey(station.stationName);
+        if (!planPresence.get(stationKey)?.has(normalizedOrderNumber)) return { stationName: station.stationName, label: station.label, status: "not-required", statusLabel: "–" };
+        const wantedStationKey = getProductionCardStationMatchKey(station.stationName);
+        const stationLogs = orderLogs.filter((log) => getProductionCardStationMatchKey(resolveLogStation(log, workers)) === wantedStationKey);
+        const stationBatches = batchStarts.filter((batch) => getProductionCardStationMatchKey(batch.machine_id) === wantedStationKey
+          && Array.isArray(batch.order_ids) && batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizedOrderNumber));
+        const cell = getMonitorCellFromLogs(stationLogs, stationBatches, orderNumber);
+        return { stationName: station.stationName, label: station.label, status: cell.status, statusLabel: cell.label };
+      });
+      const presentStates = stationStates.filter((state) => state.status !== "not-required");
+      return {
+        key: reklamacioId, id: reklamacioId, isNew: false, rendelesszam: orderNumber,
+        alapRendelesszam: String(dbRow.alap_rendelesszam || "").trim(), muhely: workshop,
+        gyartandoTetelek: String(dbRow.gyartando_tetelek || ""), kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
+        rajzUrl: legacyDrawingUrl, drawings, mentesDatum: String(dbRow.mentes_datum || ""), gyartasbaTerveDatum,
+        keszDatum: String(dbRow.kesz_datum || ""), lezart: Boolean(dbRow.lezart), createdAt: String(dbRow.created_at || ""),
+        updatedAt: String(dbRow.updated_at || ""), stationStates,
+        canClose: presentStates.length > 0 && presentStates.every((state) => state.status === "done"),
+      };
+    });
+  }
+
   async function createGenericReportDeliveryPdfBlob(
     profile: ReportDeliveryProfile,
     sourceData: DashboardData,
@@ -11623,6 +11818,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const stationLabel = profile.stationFilter === "all" ? "Összes munkaállomás" : profile.stationFilter;
     const workerLabel = profile.workerFilter === "all" ? "Összes dolgozó" : profile.workerFilter;
     const orderLabel = profile.orderFilter.trim() || "Összes rendelés";
+    const filterSummary = profile.reportType === "reklamacio"
+      ? `${workerLabel} • ${orderLabel} • felvétel dátuma szerint`
+      : `${stationLabel} • ${workerLabel} • ${orderLabel}`;
 
     const fitLogo = (maxWidth: number, maxHeight: number): { width: number; height: number } => {
       const ratio = logoSize.width / Math.max(1, logoSize.height);
@@ -11727,7 +11925,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         doc.line(metaX, top + 29, pageWidth - marginX, top + 29);
       };
       drawMetaRow("calendar", "Időszak", range.label, 21, 2);
-      drawMetaRow("filter", "Szűrés", `${stationLabel} • ${workerLabel} • ${orderLabel}`, 51, 3);
+      drawMetaRow("filter", "Szűrés", filterSummary, 51, 3);
       drawMetaRow("clock", "Generálva", generatedAt, 83, 2);
 
       doc.setFillColor(...charcoal);
@@ -11740,7 +11938,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       doc.line(marginX + 94, 126, marginX + 94, 141);
       doc.setFont(PDF_FONT_FAMILY, "normal");
       doc.setFontSize(6.7);
-      doc.text("A mentett profil szűrése alapján automatikusan generált termelési riport.", marginX + 108, 137, { maxWidth: contentWidth - 120 });
+      doc.text(profile.reportType === "reklamacio"
+        ? "Az időszakban felvett reklamációk nyomtatható összesítője, gyártási állapotokkal és rajzhivatkozásokkal."
+        : "A mentett profil szűrése alapján automatikusan generált termelési riport.", marginX + 108, 137, { maxWidth: contentWidth - 120 });
       return 166;
     };
 
@@ -11929,6 +12129,57 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       );
     };
 
+    const addReklamacioReport = async (): Promise<void> => {
+      const rows = await fetchReklamacioReportRows(profile, range);
+      const openCount = rows.filter((row) => !row.lezart).length;
+      const closedCount = rows.filter((row) => row.lezart).length;
+      const drawingCount = rows.reduce((sum, row) => sum + row.drawings.length, 0);
+
+      addSection(
+        "Reklamációs összesítő",
+        [["Időszak", "Felvett reklamáció", "Nyitott", "Lezárt", "Rajzok száma"]],
+        [[range.label, rows.length, openCount, closedCount, drawingCount]]
+      );
+
+      addSection(
+        "Az adott időszakban felvett reklamációk",
+        [["Rendelésszám", "Műhely", "Gyártandó tételek", "Kért dátum", "Felvétel", "Mentés"]],
+        rows.map((row) => [
+          row.rendelesszam || "-",
+          row.muhely || "-",
+          row.gyartandoTetelek || "-",
+          row.kertDatum || "-",
+          row.createdAt ? formatDateTimeMinute(row.createdAt) : "-",
+          row.mentesDatum ? formatDateTimeMinute(row.mentesDatum) : "-",
+        ])
+      );
+
+      addSection(
+        "Gyártási és munkaállomás állapotok",
+        [["Rendelésszám", "Munkaállomások állapota", "Gyártásba téve", "Kész dátum", "Állapot"]],
+        rows.map((row) => [
+          row.rendelesszam || "-",
+          row.stationStates.length > 0
+            ? row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join("\n")
+            : "-",
+          row.gyartasbaTerveDatum ? formatDateOnly(row.gyartasbaTerveDatum) : "-",
+          row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "-",
+          row.lezart ? "Lezárva" : "Nyitott",
+        ])
+      );
+
+      const drawingRows = rows.flatMap((row) => row.drawings.map((drawing, index) => [
+        row.rendelesszam || "-",
+        `${index + 1}. ${drawing.name || "Rajz"}`,
+        drawing.url || "-",
+      ]));
+      addSection(
+        "Reklamációs rajzok – Power BI URL-ek",
+        [["Rendelésszám", "Rajz neve", "Publikus URL"]],
+        drawingRows
+      );
+    };
+
     const addBlock = async (blockId: ReportDeliveryBlock): Promise<void> => {
       if (blockId === "worker-analysis") {
         addSection(
@@ -12009,6 +12260,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       for (const blockId of profile.customBlocks) await addBlock(blockId);
     } else if (profile.reportType === "atvetel") {
       await addAtvetelReport();
+    } else if (profile.reportType === "reklamacio") {
+      await addReklamacioReport();
     } else {
       await addBlock(profile.reportType as ReportDeliveryBlock);
     }
@@ -12022,7 +12275,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       doc.setFont(PDF_FONT_FAMILY, "normal");
       doc.setFontSize(6.3);
       doc.setTextColor(...mid);
-      doc.text("NÍVÓ • Automatikus termelési riport", marginX, footerY + 7);
+      doc.text(`NÍVÓ • ${title}`, marginX, footerY + 7);
       doc.text(`Generálva: ${generatedAt}`, pageWidth / 2, footerY + 7, { align: "center" });
       doc.text(`Oldal ${pageNumber} / ${pageCount}`, pageWidth - marginX, footerY + 7, { align: "right" });
     }
@@ -12033,7 +12286,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   async function createReportDeliveryProfilePdfBlob(profile: ReportDeliveryProfile): Promise<Blob> {
     const range = getReportDeliveryProfileRange(profile);
-    const sourceData = await fetchDashboardData(range, parseReportDeliveryOrderFilters(profile.orderFilter));
+    const sourceData: DashboardData = profile.reportType === "reklamacio"
+      ? {
+          logs: [], availableOrderNumbers: [], orderRows: [], openRows: [], workerRows: [], scrapRows: [], productTypeRows: [],
+          exportRows: [], stationEfficiencyRows: [], stationTypePerformanceRows: [], stationWorkerPerformance: [], planOrderEndRows: [],
+          totalMinutes: 0, totalScrap: 0, dailyEfficiencyPct: 0, lastUpdatedAt: new Date().toISOString(),
+        }
+      : await fetchDashboardData(range, parseReportDeliveryOrderFilters(profile.orderFilter));
     if (profile.reportType === "worker-analysis") {
       return await createProfessionalWorkerAnalysisPdfBlob({
         sourceData,
@@ -12087,8 +12346,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const formData = new FormData();
         formData.append("to", recipient);
         formData.append("subject", `${testOnly ? "[TESZT] " : ""}${profile.name}`);
-        formData.append("html", `<p><strong>${profile.name}</strong></p><p>A csatolt PDF automatikusan generált termelési riport.</p>`);
-        formData.append("text", `${profile.name}\nAutomatikusan generált termelési riport.`);
+        const reportTypeLabel = REPORT_DELIVERY_REPORT_TYPE_LABELS[profile.reportType];
+        formData.append("html", `<p><strong>${profile.name}</strong></p><p>A csatolt PDF automatikusan generált ${escapeHtml(reportTypeLabel.toLowerCase())}.</p>`);
+        formData.append("text", `${profile.name}\nAutomatikusan generált ${reportTypeLabel.toLowerCase()}.`);
         formData.append("requestedFormat", "pdf");
         formData.append("pdf", pdfBlob, `${profile.name.replace(/[^a-zA-Z0-9_-]+/g, "_") || "riport"}.pdf`);
 
@@ -12989,7 +13249,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: style.gap }}>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Profil neve<input value={draft.name} onChange={(e) => updateReportDeliveryDraft(profile.id, { name: e.target.value })} style={control} /></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Címzettek (email, vessző/pontosvessző)<textarea value={reportDeliveryRecipientTextById[profile.id] ?? draft.recipients.join("; ")} onChange={(e) => { const value = e.target.value; setReportDeliveryRecipientTextById((current) => ({ ...current, [profile.id]: value })); updateReportDeliveryDraft(profile.id, { recipients: parseReportDeliveryRecipients(value) }); }} style={textareaControl} /></label>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Riport típusa<select value={draft.reportType} onChange={(e) => updateReportDeliveryDraft(profile.id, { reportType: e.target.value as ReportDeliveryReportType })} style={control}>{Object.entries(REPORT_DELIVERY_REPORT_TYPE_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}</select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Riport típusa<select value={draft.reportType} onChange={(e) => { const reportType = e.target.value as ReportDeliveryReportType; updateReportDeliveryDraft(profile.id, reportType === "reklamacio" ? { reportType, frequency: "daily", reportFilterMode: "today" } : { reportType }); }} style={control}>{Object.entries(REPORT_DELIVERY_REPORT_TYPE_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}</select></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Munkaállomás<select value={draft.stationFilter} onChange={(e) => updateReportDeliveryDraft(profile.id, { stationFilter: e.target.value })} style={control}><option value="all">Összes munkaállomás</option>{stationOptions.map((station) => <option key={station} value={station}>{station}</option>)}</select></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Dolgozó<select value={draft.workerFilter} onChange={(e) => updateReportDeliveryDraft(profile.id, { workerFilter: e.target.value })} style={control}><option value="all">Összes dolgozó</option>{workerOptions.map((workerName) => <option key={workerName} value={workerName}>{workerName}</option>)}</select></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Rendelésszám / gyorskód<input value={draft.orderFilter} onChange={(e) => updateReportDeliveryDraft(profile.id, { orderFilter: e.target.value })} placeholder="pl. 07178 vagy R260716178" style={control} /></label>
@@ -13407,12 +13667,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       { id:"production-card", label:"Termelési kártya" }, { id:"pause-report", label:"Szüneteltetés" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"reklamacio", label:"Reklamáció" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" }, { id:"data-upload", label:"Adat feltöltés" },
     ];
 
-    // Esemeny_Koteg = 9: csak ez a két irodai menüpont látható.
+    // Esemeny_Koteg = 9: csak ez a három irodai menüpont látható.
     // A Megjelenés/Profi szerkesztő funkciók nem kerülnek letiltásra,
     // mert a két engedélyezett oldalon mindent ugyanúgy állíthat.
     const items = isLimitedOfficeWorker(activeWorker)
       ? allItems.filter(
-          (item) => item.id === "atvetel" || item.id === "production-monitor"
+          (item) => item.id === "atvetel" || item.id === "production-monitor" || item.id === "reklamacio"
         )
       : allItems;
     const currentTheme = getOfficeTheme(managementSection);
@@ -24557,8 +24817,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (typeof window !== "undefined") {
         const cached = window.localStorage.getItem(localKey);
         if (cached) {
-          const parsed = JSON.parse(cached) as { columns?: unknown };
+          const parsed = JSON.parse(cached) as { columns?: unknown; style?: unknown };
           if (parsed.columns) setReklamacioTableColumns(normalizeReklamacioTableColumns(parsed.columns));
+          if (parsed.style) setReklamacioTableStyle(normalizeReklamacioTableStyle(parsed.style));
         }
       }
     } catch {}
@@ -24567,19 +24828,22 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const response = await supabase.from("user_ui_preferences").select("theme_json").eq("worker_name", workerName).eq("page_key", REKLAMACIO_TABLE_CONFIG_PAGE_KEY).limit(1);
       if (response.error) throw response.error;
       const row = (response.data || [])[0] as { theme_json?: Record<string, unknown> | null } | undefined;
-      if (row?.theme_json?.columns) {
-        const normalized = normalizeReklamacioTableColumns(row.theme_json.columns);
-        setReklamacioTableColumns(normalized);
-        if (typeof window !== "undefined") window.localStorage.setItem(localKey, JSON.stringify({ columns: normalized }));
+      if (row?.theme_json?.columns || row?.theme_json?.style) {
+        const normalizedColumns = normalizeReklamacioTableColumns(row.theme_json.columns);
+        const normalizedStyle = normalizeReklamacioTableStyle(row.theme_json.style);
+        setReklamacioTableColumns(normalizedColumns);
+        setReklamacioTableStyle(normalizedStyle);
+        if (typeof window !== "undefined") window.localStorage.setItem(localKey, JSON.stringify({ columns: normalizedColumns, style: normalizedStyle }));
       }
     } catch (error) { console.warn("Reklamáció táblázatbeállítás betöltési hiba:", error); }
   }
 
-  function queueReklamacioTableSettingsSave(columns: ReklamacioTableColumnConfig[]): void {
-    const normalized = normalizeReklamacioTableColumns(columns);
+  function queueReklamacioTableSettingsSave(columns: ReklamacioTableColumnConfig[], style: ReklamacioTableStyleConfig): void {
+    const normalizedColumns = normalizeReklamacioTableColumns(columns);
+    const normalizedStyle = normalizeReklamacioTableStyle(style);
     const workerName = String(activeWorker?.["Teljes nev"] || "").trim();
     const localKey = `nivo-reklamacio-table-config:${workerName || "default"}`;
-    try { if (typeof window !== "undefined") window.localStorage.setItem(localKey, JSON.stringify({ columns: normalized })); } catch {}
+    try { if (typeof window !== "undefined") window.localStorage.setItem(localKey, JSON.stringify({ columns: normalizedColumns, style: normalizedStyle })); } catch {}
     if (typeof window === "undefined") return;
     if (reklamacioTableSettingsSaveTimerRef.current !== null) window.clearTimeout(reklamacioTableSettingsSaveTimerRef.current);
     reklamacioTableSettingsSaveTimerRef.current = window.setTimeout(() => {
@@ -24590,7 +24854,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         worker_id: activeWorker.id,
         page_key: REKLAMACIO_TABLE_CONFIG_PAGE_KEY,
         theme_preset: "custom",
-        theme_json: { columns: normalized },
+        theme_json: { columns: normalizedColumns, style: normalizedStyle },
         updated_at: new Date().toISOString(),
       }, { onConflict: "worker_name,page_key" }).then(({ error }) => { if (error) console.warn("Reklamáció táblázatbeállítás mentési hiba:", error); });
     }, 500);
@@ -24599,9 +24863,25 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function updateReklamacioTableColumns(updater: (current: ReklamacioTableColumnConfig[]) => ReklamacioTableColumnConfig[]): void {
     setReklamacioTableColumns((current) => {
       const next = normalizeReklamacioTableColumns(updater(current.map((item) => ({ ...item }))));
-      queueReklamacioTableSettingsSave(next);
+      queueReklamacioTableSettingsSave(next, reklamacioTableStyle);
       return next;
     });
+  }
+
+  function updateReklamacioTableStyle(patch: Partial<ReklamacioTableStyleConfig>): void {
+    setReklamacioTableStyle((current) => {
+      const next = normalizeReklamacioTableStyle({ ...current, ...patch });
+      queueReklamacioTableSettingsSave(reklamacioTableColumns, next);
+      return next;
+    });
+  }
+
+  function resetReklamacioTableSettings(): void {
+    const columns = createDefaultReklamacioTableColumns();
+    const style = createDefaultReklamacioTableStyle();
+    setReklamacioTableColumns(columns);
+    setReklamacioTableStyle(style);
+    queueReklamacioTableSettingsSave(columns, style);
   }
 
   function moveReklamacioTableColumn(columnId: ReklamacioTableColumnId, direction: -1 | 1): void {
@@ -25721,10 +26001,30 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const officeTheme = getOfficeTheme("reklamacio");
     const pagePanel: React.CSSProperties = { background: officeTheme.panelBackground, border: `${officeTheme.borderWidth}px solid ${officeTheme.borderColor}`, borderRadius: officeTheme.borderRadius, boxShadow: `0 10px ${officeTheme.shadowBlur}px rgba(0,0,0,${officeTheme.shadowOpacity})` };
     const fieldStyle: React.CSSProperties = { minHeight: officeTheme.fieldHeight, width: "100%", background: officeTheme.inputBackground, color: officeTheme.inputText, border: `${officeTheme.borderWidth}px solid ${officeTheme.borderColor}`, borderRadius: Math.max(4, officeTheme.borderRadius - 5), padding: "7px 9px", boxSizing: "border-box", fontFamily: officeTheme.fontFamily, fontSize: officeTheme.baseFontSize };
-    const tableHeaderStyle: React.CSSProperties = { padding: "7px 7px", borderRight: `1px solid ${officeTheme.borderColor}`, borderBottom: `1px solid ${officeTheme.borderColor}`, background: officeTheme.headerBackground, color: officeTheme.textColor, fontSize: 12, fontWeight: 900, position: "sticky", top: 0, zIndex: 3 };
-    const tableCellStyle: React.CSSProperties = { padding: "6px 7px", borderRight: `1px solid ${officeTheme.borderColor}`, borderBottom: `1px solid ${officeTheme.borderColor}`, color: officeTheme.textColor, fontSize: 12, verticalAlign: "middle", overflowWrap: "anywhere" };
+    const tableInputStyle: React.CSSProperties = { ...fieldStyle, fontFamily: reklamacioTableStyle.fontFamily, fontSize: reklamacioTableStyle.cellFontSize };
+    const tableHeaderStyle: React.CSSProperties = { height: reklamacioTableStyle.rowHeight, padding: `${reklamacioTableStyle.paddingY}px ${reklamacioTableStyle.paddingX}px`, borderRight: `${reklamacioTableStyle.borderWidth}px solid ${reklamacioTableStyle.borderColor}`, borderBottom: `${reklamacioTableStyle.borderWidth}px solid ${reklamacioTableStyle.borderColor}`, background: reklamacioTableStyle.headerBackground, color: reklamacioTableStyle.headerTextColor, fontFamily: reklamacioTableStyle.fontFamily, fontSize: reklamacioTableStyle.headerFontSize, fontWeight: reklamacioTableStyle.headerFontWeight, position: "sticky", top: 0, zIndex: 3 };
+    const tableCellStyle: React.CSSProperties = { minHeight: reklamacioTableStyle.rowHeight, height: reklamacioTableStyle.rowHeight, padding: `${reklamacioTableStyle.paddingY}px ${reklamacioTableStyle.paddingX}px`, borderRight: `${reklamacioTableStyle.borderWidth}px solid ${reklamacioTableStyle.borderColor}`, borderBottom: `${reklamacioTableStyle.borderWidth}px solid ${reklamacioTableStyle.borderColor}`, color: reklamacioTableStyle.cellTextColor, fontFamily: reklamacioTableStyle.fontFamily, fontSize: reklamacioTableStyle.cellFontSize, fontWeight: reklamacioTableStyle.cellFontWeight, verticalAlign: "middle", overflowWrap: "anywhere" };
     const visibleColumns = reklamacioTableColumns.filter((column) => column.visible);
     const totalTableWidth = Math.max(1000, visibleColumns.reduce((sum, column) => sum + column.width, 0));
+    const tableNumberSettings: Array<{ key: keyof ReklamacioTableStyleConfig; label: string; min: number; max: number }> = [
+      { key: "headerFontSize", label: "Fejléc betűméret", min: 8, max: 30 },
+      { key: "cellFontSize", label: "Cella betűméret", min: 8, max: 30 },
+      { key: "headerFontWeight", label: "Fejléc vastagság", min: 100, max: 1000 },
+      { key: "cellFontWeight", label: "Cella vastagság", min: 100, max: 1000 },
+      { key: "rowHeight", label: "Sormagasság", min: 32, max: 180 },
+      { key: "paddingX", label: "Vízszintes térköz", min: 0, max: 30 },
+      { key: "paddingY", label: "Függőleges térköz", min: 0, max: 30 },
+      { key: "borderWidth", label: "Szegélyvastagság", min: 0, max: 6 },
+      { key: "borderRadius", label: "Sarokkerekítés", min: 0, max: 24 },
+    ];
+    const tableColorSettings: Array<{ key: keyof ReklamacioTableStyleConfig; label: string }> = [
+      { key: "headerBackground", label: "Fejléc háttér" },
+      { key: "headerTextColor", label: "Fejléc szöveg" },
+      { key: "cellBackground", label: "Cellák háttere" },
+      { key: "alternateCellBackground", label: "Váltott sor háttere" },
+      { key: "cellTextColor", label: "Cellák szövege" },
+      { key: "borderColor", label: "Táblázat szegélye" },
+    ];
 
     const getReklamacioDrawingItems = (row: ReklamacioViewRow): Array<{ key: string; name: string; source: string; saved?: ReklamacioSavedDrawing }> => {
       const draft = getReklamacioDraft(row);
@@ -25797,13 +26097,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const disabled = row.lezart || reklamacioSavingKey === row.key;
       let content: React.ReactNode = null;
       if (column.id === "rendelesszam") {
-        content = row.isNew ? <input value={draft.rendelesszam} maxLength={10} placeholder="R + 9 számjegy" onChange={(event) => updateReklamacioDraft(row.key, { rendelesszam: event.target.value.toUpperCase().replace(/[^R0-9]/g, "").slice(0, 10) })} style={fieldStyle} /> : <strong>{row.rendelesszam}</strong>;
+        content = row.isNew ? <input value={draft.rendelesszam} maxLength={10} placeholder="R + 9 számjegy" onChange={(event) => updateReklamacioDraft(row.key, { rendelesszam: event.target.value.toUpperCase().replace(/[^R0-9]/g, "").slice(0, 10) })} style={tableInputStyle} /> : <strong>{row.rendelesszam}</strong>;
       } else if (column.id === "muhely") {
-        content = <select value={draft.muhely} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { muhely: event.target.value as ReklamacioWorkshop })} style={fieldStyle}><option value="">Válassz...</option><option value="Asztalos">Asztalos</option><option value="Lakatos">Lakatos</option></select>;
+        content = <select value={draft.muhely} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { muhely: event.target.value as ReklamacioWorkshop })} style={tableInputStyle}><option value="">Válassz...</option><option value="Asztalos">Asztalos</option><option value="Lakatos">Lakatos</option></select>;
       } else if (column.id === "gyartandoTetelek") {
-        content = <textarea value={draft.gyartandoTetelek} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { gyartandoTetelek: event.target.value })} rows={2} placeholder="Gyártandó tételek" style={{ ...fieldStyle, resize: "vertical", minHeight: 56 }} />;
+        content = <textarea value={draft.gyartandoTetelek} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { gyartandoTetelek: event.target.value })} rows={2} placeholder="Gyártandó tételek" style={{ ...tableInputStyle, resize: "vertical", minHeight: 56 }} />;
       } else if (column.id === "kertDatum") {
-        content = <input type="date" value={draft.kertDatum} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { kertDatum: event.target.value })} style={{ ...fieldStyle, colorScheme: "dark" }} />;
+        content = <input type="date" value={draft.kertDatum} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { kertDatum: event.target.value })} style={{ ...tableInputStyle, colorScheme: "dark" }} />;
       } else if (column.id === "rajz") {
         const drawings = getReklamacioDrawingItems(row);
         content = <div style={{ display: "grid", gap: 6 }}>
@@ -25855,7 +26155,31 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
           {reklamacioTableEditMode && (
             <div style={{ marginBottom: 12, padding: 12, border: `1px solid ${officeTheme.borderColor}`, borderRadius: 9, background: officeTheme.panelAltBackground }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 9 }}><strong>Reklamációs táblázat Profi szerkesztő</strong><button type="button" onClick={() => updateReklamacioTableColumns(() => createDefaultReklamacioTableColumns())} style={buttonSecondary}>Alapbeállítás</button></div>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 9 }}><strong>Reklamációs táblázat Profi szerkesztő</strong><button type="button" onClick={resetReklamacioTableSettings} style={buttonSecondary}>Alapbeállítás</button></div>
+              <div style={{ display: "grid", gap: 9, padding: 10, marginBottom: 10, border: `1px solid ${officeTheme.borderColor}`, borderRadius: 8, background: officeTheme.sectionBackground }}>
+                <strong>Táblázat megjelenése</strong>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
+                  <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 800 }}>Betűtípus
+                    <select value={reklamacioTableStyle.fontFamily} onChange={(event) => updateReklamacioTableStyle({ fontFamily: event.target.value })} style={{ ...fieldStyle, minHeight: 36, padding: "5px 7px" }}>
+                      <option value="Arial, sans-serif">Arial</option>
+                      <option value="Inter, Arial, sans-serif">Inter</option>
+                      <option value="Verdana, sans-serif">Verdana</option>
+                      <option value="Tahoma, sans-serif">Tahoma</option>
+                      <option value="Georgia, serif">Georgia</option>
+                      <option value="Consolas, monospace">Consolas</option>
+                    </select>
+                  </label>
+                  {tableNumberSettings.map((setting) => <label key={setting.key} style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 800 }}>{setting.label}
+                    <input type="number" min={setting.min} max={setting.max} step={setting.key.includes("Weight") ? 100 : 1} value={Number(reklamacioTableStyle[setting.key])} onChange={(event) => updateReklamacioTableStyle({ [setting.key]: Number(event.target.value) } as Partial<ReklamacioTableStyleConfig>)} style={{ ...fieldStyle, minHeight: 36, padding: "5px 7px" }} />
+                  </label>)}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
+                  {tableColorSettings.map((setting) => <label key={setting.key} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 7, alignItems: "center", minHeight: 40, padding: "5px 8px", border: `1px solid ${officeTheme.borderColor}`, borderRadius: 7, fontSize: 11, fontWeight: 800 }}><span>{setting.label}<small style={{ display: "block", color: officeTheme.mutedText, marginTop: 2 }}>{String(reklamacioTableStyle[setting.key])}</small></span>
+                    <input type="color" value={String(reklamacioTableStyle[setting.key])} onChange={(event) => updateReklamacioTableStyle({ [setting.key]: event.target.value } as Partial<ReklamacioTableStyleConfig>)} style={{ width: 48, height: 31, border: 0, background: "transparent", cursor: "pointer" }} />
+                  </label>)}
+                </div>
+              </div>
+              <div style={{ marginBottom: 7, fontSize: 11, fontWeight: 900, color: officeTheme.mutedText }}>Oszlopok – láthatóság, sorrend, szélesség és igazítás</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 8 }}>
                 {reklamacioTableColumns.map((column, index) => <div key={column.id} draggable onDragStart={() => { reklamacioDraggedColumnIdRef.current = column.id; }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const source = reklamacioDraggedColumnIdRef.current; reklamacioDraggedColumnIdRef.current = null; if (source) reorderReklamacioTableColumn(source, column.id); }} onDragEnd={() => { reklamacioDraggedColumnIdRef.current = null; }} style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) 86px 104px auto", gap: 7, alignItems: "center", padding: 8, border: `1px solid ${officeTheme.borderColor}`, borderRadius: 8, background: officeTheme.sectionBackground, cursor: "grab" }}>
                   <input type="checkbox" checked={column.visible} onChange={(event) => updateReklamacioTableColumns((current) => current.map((item) => item.id === column.id ? { ...item, visible: event.target.checked } : item))} />
@@ -25868,15 +26192,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             </div>
           )}
 
-          {visibleColumns.length === 0 ? <div style={{ padding: 30, textAlign: "center", color: officeTheme.mutedText }}>Minden oszlop el van rejtve.</div> : <div data-nivo-scroll-region="reklamacio-table" style={{ overflow: "auto", maxHeight: "calc(100vh - 250px)", border: `1px solid ${officeTheme.borderColor}`, borderRadius: 8 }}>
-            <table style={{ width: totalTableWidth, minWidth: "100%", borderCollapse: "collapse", tableLayout: "fixed", background: officeTheme.sectionBackground }}>
+          {visibleColumns.length === 0 ? <div style={{ padding: 30, textAlign: "center", color: officeTheme.mutedText }}>Minden oszlop el van rejtve.</div> : <div data-nivo-scroll-region="reklamacio-table" style={{ overflow: "auto", maxHeight: "calc(100vh - 250px)", border: `${reklamacioTableStyle.borderWidth}px solid ${reklamacioTableStyle.borderColor}`, borderRadius: reklamacioTableStyle.borderRadius }}>
+            <table style={{ width: totalTableWidth, minWidth: "100%", borderCollapse: "collapse", tableLayout: "fixed", background: reklamacioTableStyle.cellBackground, fontFamily: reklamacioTableStyle.fontFamily }}>
               <colgroup>{visibleColumns.map((column) => <col key={column.id} style={{ width: column.width }} />)}</colgroup>
               <thead><tr>{visibleColumns.map((column) => {
                 const sortMark = reklamacioSortState?.columnId === column.id ? (reklamacioSortState.direction === "asc" ? " ▲" : " ▼") : "";
                 const filterActive = hasActiveFilter(column.id);
-                return <th key={column.id} style={{ ...tableHeaderStyle, textAlign: column.align, width: column.width }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 4 }}><button type="button" data-preserve-action-color="true" onClick={() => cycleSort(column.id)} style={{ flex: 1, minWidth: 0, border: 0, background: "transparent", color: officeTheme.textColor, fontWeight: 900, cursor: "pointer", textAlign: column.align, padding: 0 }}>{column.label}{sortMark}</button><button type="button" data-preserve-action-color="true" data-reklamacio-filter-trigger="true" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setReklamacioFilterMenu((current) => current?.columnId === column.id ? null : { columnId: column.id, x: rect.left, y: rect.bottom + 5 }); }} style={{ border: `1px solid ${filterActive ? officeTheme.accentColor : officeTheme.borderColor}`, background: filterActive ? officeTheme.navActiveBackground : officeTheme.panelAltBackground, color: officeTheme.textColor, borderRadius: 4, padding: "1px 5px", cursor: "pointer", fontWeight: 900 }}>▾</button></div></th>;
+                return <th key={column.id} style={{ ...tableHeaderStyle, textAlign: column.align, width: column.width }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 4 }}><button type="button" data-preserve-action-color="true" onClick={() => cycleSort(column.id)} style={{ flex: 1, minWidth: 0, border: 0, background: "transparent", color: reklamacioTableStyle.headerTextColor, fontFamily: reklamacioTableStyle.fontFamily, fontSize: reklamacioTableStyle.headerFontSize, fontWeight: reklamacioTableStyle.headerFontWeight, cursor: "pointer", textAlign: column.align, padding: 0 }}>{column.label}{sortMark}</button><button type="button" data-preserve-action-color="true" data-reklamacio-filter-trigger="true" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setReklamacioFilterMenu((current) => current?.columnId === column.id ? null : { columnId: column.id, x: rect.left, y: rect.bottom + 5 }); }} style={{ border: `1px solid ${filterActive ? officeTheme.accentColor : reklamacioTableStyle.borderColor}`, background: filterActive ? officeTheme.navActiveBackground : reklamacioTableStyle.headerBackground, color: reklamacioTableStyle.headerTextColor, borderRadius: 4, padding: "1px 5px", cursor: "pointer", fontWeight: 900 }}>▾</button></div></th>;
               })}</tr></thead>
-              <tbody>{visibleRows.length === 0 ? <tr><td colSpan={visibleColumns.length} style={{ ...tableCellStyle, textAlign: "center", padding: 30, color: officeTheme.mutedText }}>{reklamacioLoading ? "Reklamációk betöltése..." : "Nincs megjeleníthető reklamáció."}</td></tr> : visibleRows.map((row, index) => <tr key={row.key} style={{ background: row.lezart ? "rgba(22,163,74,0.18)" : index % 2 === 0 ? officeTheme.panelAltBackground : officeTheme.sectionBackground }}>{visibleColumns.map((column) => renderCell(row, column))}</tr>)}</tbody>
+              <tbody>{visibleRows.length === 0 ? <tr><td colSpan={visibleColumns.length} style={{ ...tableCellStyle, textAlign: "center", padding: 30 }}>{reklamacioLoading ? "Reklamációk betöltése..." : "Nincs megjeleníthető reklamáció."}</td></tr> : visibleRows.map((row, index) => <tr key={row.key} style={{ background: row.lezart ? "rgba(22,163,74,0.22)" : index % 2 === 0 ? reklamacioTableStyle.alternateCellBackground : reklamacioTableStyle.cellBackground }}>{visibleColumns.map((column) => renderCell(row, column))}</tr>)}</tbody>
             </table>
           </div>}
         </section>
@@ -27867,7 +28191,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     setTerminalView("management");
 
-    if (!currentSectionAllowed || isLimitedOfficeWorker(activeWorker)) {
+    if (!currentSectionAllowed) {
       setManagementSection(defaultSection);
     }
 
@@ -33624,8 +33948,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     // azok változatlanul hívhatják ezt a függvényt, a 9-es mégsem jut
     // a teljes irodai dashboardra.
     if (activeWorker && isLimitedOfficeWorker(activeWorker)) {
-      setManagementSection("atvetel");
-      setAtvetelClosureFilter("all");
+      const limitedSection = canWorkerAccessManagementSection(activeWorker, managementSection)
+        ? managementSection
+        : "atvetel";
+      if (limitedSection !== managementSection) setManagementSection(limitedSection);
 
       if (!backgroundRefresh) {
         setTerminalView("management");
@@ -33638,7 +33964,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         setStep(7);
       }
 
-      await loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo);
+      if (limitedSection === "reklamacio") {
+        await loadReklamacioRows({ quiet: backgroundRefresh });
+      } else if (limitedSection === "production-monitor") {
+        await loadProductionMonitor(productionMonitorDate, activeProductionMonitorProfile.planStatusFilter, productionMonitorDateTo);
+      } else {
+        setAtvetelClosureFilter("all");
+        await loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo);
+      }
       return;
     }
     if (!supabase) {
