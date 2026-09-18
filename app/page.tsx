@@ -11992,11 +11992,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       y = drawHeader(true);
     };
 
-    const startNewReportPage = (): void => {
-      pdf.addPage("a4", "portrait");
-      y = drawHeader(true);
-    };
-
     const drawSectionBand = (heading: string): void => {
       ensureSpace(42);
       doc.setFillColor(...charcoal);
@@ -12167,17 +12162,112 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       const openCount = rows.filter((row) => !row.lezart).length;
       const closedCount = rows.filter((row) => row.lezart).length;
 
-      addSection(
-        "Reklamációs összesítő",
-        [["Időszak", "Felvett reklamáció", "Nyitott", "Lezárt"]],
-        [[range.label, rows.length, openCount, closedCount]]
-      );
+      const drawSummaryBlockAt = (top: number): number => {
+        const bandHeight = 25;
+        const bandGap = 9;
+        const headerHeight = 17;
+        const rowHeight = 20;
+        const tableTop = top + bandHeight + bandGap;
+        const columnWidths = [contentWidth * 0.42, contentWidth * 0.24, contentWidth * 0.17, contentWidth * 0.17];
+        const headings = ["Időszak", "Felvett reklamáció", "Nyitott", "Lezárt"];
+        const values = [range.label, String(rows.length), String(openCount), String(closedCount)];
 
-      startNewReportPage();
-      addSection(
+        doc.setFillColor(...charcoal);
+        doc.rect(marginX, top, contentWidth, bandHeight, "F");
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(8.5);
+        doc.setTextColor(255, 255, 255);
+        doc.text("REKLAMÁCIÓS ÖSSZESÍTŐ", marginX + 10, top + 16);
+
+        let columnX = marginX;
+        headings.forEach((heading, index) => {
+          const width = columnWidths[index];
+          doc.setFillColor(76, 79, 84);
+          doc.rect(columnX, tableTop, width, headerHeight, "F");
+          doc.setDrawColor(...border);
+          doc.rect(columnX, tableTop, width, headerHeight, "S");
+          doc.setFont(PDF_FONT_FAMILY, "bold");
+          doc.setFontSize(6.8);
+          doc.setTextColor(255, 255, 255);
+          doc.text(heading, columnX + 5, tableTop + 11);
+
+          doc.setFillColor(...pale);
+          doc.rect(columnX, tableTop + headerHeight, width, rowHeight, "F");
+          doc.setDrawColor(...border);
+          doc.rect(columnX, tableTop + headerHeight, width, rowHeight, "S");
+          doc.setFont(PDF_FONT_FAMILY, "normal");
+          doc.setFontSize(6.8);
+          doc.setTextColor(...ink);
+          doc.text(values[index], columnX + 5, tableTop + headerHeight + 13, { maxWidth: width - 10 });
+          columnX += width;
+        });
+
+        return tableTop + headerHeight + rowHeight + 18;
+      };
+
+      const drawDetailBandAt = (heading: string, top: number): number => {
+        doc.setFillColor(...charcoal);
+        doc.rect(marginX, top, contentWidth, 25, "F");
+        doc.setFont(PDF_FONT_FAMILY, "bold");
+        doc.setFontSize(8.5);
+        doc.setTextColor(255, 255, 255);
+        doc.text(heading.toUpperCase(), marginX + 10, top + 16);
+        return top + 34;
+      };
+
+      const addReklamacioDetailTable = (
+        heading: string,
+        head: string[][],
+        body: Array<Array<string | number>>,
+        startOnNewPage: boolean
+      ): void => {
+        if (startOnNewPage) {
+          pdf.addPage("a4", "portrait");
+          y = drawHeader(false);
+          y = drawSummaryBlockAt(y);
+        }
+        const tableStartY = drawDetailBandAt(heading, y);
+        pdf.autoTable({
+          startY: tableStartY,
+          head,
+          body: body.length ? body : [["-", "Nincs adat", ...Array(Math.max(0, head[0].length - 2)).fill("-")]],
+          theme: "grid",
+          margin: { left: marginX, right: marginX, top: tableStartY, bottom: 45 },
+          styles: {
+            font: PDF_FONT_FAMILY,
+            fontSize: 6.3,
+            cellPadding: 3.5,
+            overflow: "linebreak",
+            textColor: ink,
+            lineColor: border,
+            lineWidth: 0.35,
+          },
+          headStyles: {
+            font: PDF_FONT_FAMILY,
+            fontStyle: "bold",
+            fillColor: [76, 79, 84],
+            textColor: [255, 255, 255],
+            lineColor: [160, 163, 168],
+            lineWidth: 0.35,
+          },
+          alternateRowStyles: { fillColor: pale },
+          columnStyles: { 0: { cellWidth: 34, halign: "center" } },
+          didDrawPage: (data: any) => {
+            if (Number(data?.pageNumber || 1) <= 1) return;
+            let continuationY = drawHeader(false);
+            continuationY = drawSummaryBlockAt(continuationY);
+            drawDetailBandAt(heading, continuationY);
+          },
+        });
+        y = Number(pdf.lastAutoTable?.finalY || tableStartY + 70) + 18;
+      };
+
+      y = drawSummaryBlockAt(y);
+      addReklamacioDetailTable(
         "Az adott időszakban felvett reklamációk",
-        [["Rendelésszám", "Műhely", "Gyártandó tételek", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"]],
-        rows.map((row) => [
+        [["Sorszám", "Rendelésszám", "Műhely", "Gyártandó tételek", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"]],
+        rows.map((row, index) => [
+          index + 1,
           row.rendelesszam || "-",
           row.muhely || "-",
           row.gyartandoTetelek || "-",
@@ -12185,14 +12275,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           row.createdAt ? formatDateTimeMinute(row.createdAt) : "-",
           row.createdByWorkerName || "-",
           row.mentesDatum ? formatDateTimeMinute(row.mentesDatum) : "-",
-        ])
+        ]),
+        false
       );
 
-      startNewReportPage();
-      addSection(
+      addReklamacioDetailTable(
         "Gyártási és munkaállomás állapotok",
-        [["Rendelésszám", "Munkaállomások állapota", "Felvétel", "Kért dátum", "Gyártásba téve", "Kész dátum", "Állapot"]],
-        statusRows.map((row) => [
+        [["Sorszám", "Rendelésszám", "Munkaállomások állapota", "Felvétel", "Kért dátum", "Gyártásba téve", "Kész dátum", "Állapot"]],
+        statusRows.map((row, index) => [
+          index + 1,
           row.rendelesszam || "-",
           row.stationStates.length > 0
             ? row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join("\n")
@@ -12202,7 +12293,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           row.gyartasbaTerveDatum ? formatDateOnly(row.gyartasbaTerveDatum) : "-",
           row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "-",
           row.lezart ? "Kész" : "Nyitott",
-        ])
+        ]),
+        true
       );
     };
 
