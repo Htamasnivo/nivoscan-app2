@@ -1308,6 +1308,7 @@ type ReklamacioViewRow = {
   rajzUrl: string;
   drawings: ReklamacioSavedDrawing[];
   mentesDatum: string;
+  gyartasbaTerveDatum: string;
   keszDatum: string;
   lezart: boolean;
   createdAt: string;
@@ -1334,6 +1335,7 @@ type ReklamacioTableColumnId =
   | "rajz"
   | "munkaallomasAllapot"
   | "mentesDatum"
+  | "gyartasbaTerveDatum"
   | "keszDatum"
   | "actions";
 
@@ -1358,6 +1360,7 @@ const DEFAULT_REKLAMACIO_TABLE_COLUMNS: ReklamacioTableColumnConfig[] = [
   { id: "rajz", label: "Rajz", width: 185, visible: true, align: "center" },
   { id: "munkaallomasAllapot", label: "Munkaállomások állapota", width: 430, visible: true, align: "left" },
   { id: "mentesDatum", label: "Mentés Dátuma", width: 185, visible: true, align: "left" },
+  { id: "gyartasbaTerveDatum", label: "Gyártásba téve dátum", width: 190, visible: true, align: "left" },
   { id: "keszDatum", label: "Kész Dátum", width: 185, visible: true, align: "left" },
   { id: "actions", label: "Mentés / Lezárás", width: 240, visible: true, align: "right" },
 ];
@@ -1387,7 +1390,17 @@ function normalizeReklamacioTableColumns(value: unknown): ReklamacioTableColumnC
       align: item.align === "center" || item.align === "right" || item.align === "left" ? item.align : fallback.align,
     });
   });
-  defaults.forEach((column) => { if (!seen.has(column.id)) normalized.push(column); });
+  defaults.forEach((column) => {
+    if (seen.has(column.id)) return;
+    if (column.id === "gyartasbaTerveDatum") {
+      const saveDateIndex = normalized.findIndex((item) => item.id === "mentesDatum");
+      if (saveDateIndex >= 0) {
+        normalized.splice(saveDateIndex + 1, 0, column);
+        return;
+      }
+    }
+    normalized.push(column);
+  });
   return normalized;
 }
 
@@ -24142,6 +24155,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       rajzUrl: "",
       drawings: [],
       mentesDatum: "",
+      gyartasbaTerveDatum: "",
       keszDatum: "",
       lezart: false,
       createdAt: "",
@@ -24156,33 +24170,49 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }));
   }
 
-  async function fetchReklamacioPlanPresence(orderNumbers: string[]): Promise<Map<string, Set<string>>> {
-    const result = new Map<string, Set<string>>();
+  async function fetchReklamacioPlanPresence(orderNumbers: string[]): Promise<{
+    presence: Map<string, Set<string>>;
+    latestDates: Map<string, Map<string, string>>;
+  }> {
+    const presence = new Map<string, Set<string>>();
+    const latestDates = new Map<string, Map<string, string>>();
     const allStations = Array.from(new Map(
       Object.values(REKLAMACIO_STATIONS).flat().map((item) => [getStationPlanIdentityKey(item.stationName), item])
     ).values());
-    allStations.forEach((station) => result.set(getStationPlanIdentityKey(station.stationName), new Set<string>()));
-    if (!supabase || orderNumbers.length === 0) return result;
+    allStations.forEach((station) => {
+      const stationKey = getStationPlanIdentityKey(station.stationName);
+      presence.set(stationKey, new Set<string>());
+      latestDates.set(stationKey, new Map<string, string>());
+    });
+    if (!supabase || orderNumbers.length === 0) return { presence, latestDates };
 
     await Promise.all(allStations.map(async (station) => {
       const stationKey = getStationPlanIdentityKey(station.stationName);
       const tableName = buildStationPlanTableName(station.stationName);
-      const found = result.get(stationKey) || new Set<string>();
+      const found = presence.get(stationKey) || new Set<string>();
+      const stationLatestDates = latestDates.get(stationKey) || new Map<string, string>();
       for (let index = 0; index < orderNumbers.length; index += 100) {
         const chunk = orderNumbers.slice(index, index + 100);
-        const response = await supabase.from(tableName).select("sorszam").in("sorszam", chunk).limit(10000);
+        const response = await supabase.from(tableName).select("sorszam, elkeszules_datum").in("sorszam", chunk).limit(10000);
         if (response.error) {
           console.warn(`Reklamáció tervkapcsolat nem olvasható (${tableName}):`, response.error);
           continue;
         }
-        ((response.data || []) as Array<{ sorszam?: unknown }>).forEach((item) => {
+        ((response.data || []) as Array<{ sorszam?: unknown; elkeszules_datum?: unknown }>).forEach((item) => {
           const order = String(item.sorszam ?? "").trim();
-          if (order) found.add(normalizeLooseText(order));
+          if (!order) return;
+          const normalizedOrder = normalizeLooseText(order);
+          found.add(normalizedOrder);
+          const dateValue = parseStationPlanDateValue(item.elkeszules_datum);
+          if (!dateValue) return;
+          const previousDate = stationLatestDates.get(normalizedOrder) || "";
+          if (!previousDate || dateValue > previousDate) stationLatestDates.set(normalizedOrder, dateValue);
         });
       }
-      result.set(stationKey, found);
+      presence.set(stationKey, found);
+      latestDates.set(stationKey, stationLatestDates);
     }));
-    return result;
+    return { presence, latestDates };
   }
 
   async function loadReklamacioRows(options?: { quiet?: boolean }): Promise<void> {
@@ -24229,7 +24259,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         });
       }
       const orderNumbers = Array.from(new Set(dbRows.map((row) => String(row.rendelesszam || "").trim()).filter(Boolean)));
-      const planPresence = await fetchReklamacioPlanPresence(orderNumbers);
+      const { presence: planPresence, latestDates: planLatestDates } = await fetchReklamacioPlanPresence(orderNumbers);
 
       const logs: WorkLogRow[] = [];
       const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
@@ -24278,6 +24308,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         }];
         const workshop: ReklamacioWorkshop = dbRow.muhely === "Asztalos" || dbRow.muhely === "Lakatos" ? dbRow.muhely : "";
         const required = workshop ? REKLAMACIO_STATIONS[workshop] : [];
+        const normalizedOrderNumber = normalizeLooseText(orderNumber);
+        const gyartasbaTerveDatum = required.reduce((latestDate, station) => {
+          const stationKey = getStationPlanIdentityKey(station.stationName);
+          const stationDate = planLatestDates.get(stationKey)?.get(normalizedOrderNumber) || "";
+          return stationDate > latestDate ? stationDate : latestDate;
+        }, "");
         const orderLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(orderNumber));
         const stationStates: ReklamacioStationState[] = required.map((station) => {
           const stationKey = getStationPlanIdentityKey(station.stationName);
@@ -24305,6 +24341,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           rajzUrl: String(dbRow.rajz_url || ""),
           drawings,
           mentesDatum: String(dbRow.mentes_datum || ""),
+          gyartasbaTerveDatum,
           keszDatum: String(dbRow.kesz_datum || ""),
           lezart: Boolean(dbRow.lezart),
           createdAt: String(dbRow.created_at || ""),
@@ -25709,6 +25746,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       }
       if (columnId === "munkaallomasAllapot") return row.stationStates.length ? row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join(" | ") : "—";
       if (columnId === "mentesDatum") return row.mentesDatum ? formatDateTimeMinute(row.mentesDatum) : "—";
+      if (columnId === "gyartasbaTerveDatum") return row.gyartasbaTerveDatum ? formatDateOnly(row.gyartasbaTerveDatum) : "-";
       if (columnId === "keszDatum") return row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "—";
       if (columnId === "actions") return row.lezart ? "Lezárt" : row.canClose ? "Lezárható" : "Aktív";
       return "";
@@ -25782,6 +25820,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         content = renderStationStates(row);
       } else if (column.id === "mentesDatum") {
         content = row.mentesDatum ? formatDateTimeMinute(row.mentesDatum) : "–";
+      } else if (column.id === "gyartasbaTerveDatum") {
+        content = row.gyartasbaTerveDatum ? formatDateOnly(row.gyartasbaTerveDatum) : "-";
       } else if (column.id === "keszDatum") {
         content = row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "–";
       } else if (column.id === "actions") {
