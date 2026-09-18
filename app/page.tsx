@@ -1277,6 +1277,25 @@ type ReklamacioStationState = {
   statusLabel: string;
 };
 
+type ReklamacioSavedDrawing = {
+  id: string;
+  reklamacioId: string;
+  rendelesszam: string;
+  name: string;
+  url: string;
+  storagePath: string;
+  orderIndex: number;
+  createdAt: string;
+  updatedAt: string;
+  isLegacy?: boolean;
+};
+
+type ReklamacioPendingDrawing = {
+  key: string;
+  name: string;
+  dataUrl: string;
+};
+
 type ReklamacioViewRow = {
   key: string;
   id: string | null;
@@ -1287,6 +1306,7 @@ type ReklamacioViewRow = {
   gyartandoTetelek: string;
   kertDatum: string;
   rajzUrl: string;
+  drawings: ReklamacioSavedDrawing[];
   mentesDatum: string;
   keszDatum: string;
   lezart: boolean;
@@ -1302,21 +1322,8 @@ type ReklamacioDraft = {
   gyartandoTetelek: string;
   kertDatum: string;
   rajzDataUrl: string;
+  pendingDrawings: ReklamacioPendingDrawing[];
   dirty: boolean;
-};
-
-type ReklamacioDrawingMode = "draw" | "erase" | "text";
-type ReklamacioTextResizeHandle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
-type ReklamacioTextBox = {
-  id: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  text: string;
-  fontSize: number;
-  bold: boolean;
-  editing: boolean;
 };
 
 type ReklamacioTableColumnId =
@@ -2331,6 +2338,17 @@ const ATVETEL_DETAILS_TABLE = "atvetel_adat";
 const ATVETEL_SOURCE_STATION = "Szereles";
 const REKLAMACIO_TABLE = "reklamacio_adat";
 const REKLAMACIO_DRAWING_BUCKET = "reklamacio-rajzok";
+const REKLAMACIO_DRAWINGS_TABLE = "reklamacio_rajzok";
+type ReklamacioDrawingTextBox = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  fontSize: number;
+  bold: boolean;
+};
 const REKLAMACIO_STATIONS: Record<Exclude<ReklamacioWorkshop, "">, Array<{ stationName: string; label: string }>> = {
   Asztalos: [
     { stationName: "Asztalos", label: "Asztalos" },
@@ -9246,21 +9264,30 @@ export default function Page() {
   const reklamacioRealtimeRefreshTimerRef = useRef<number | null>(null);
   const [reklamacioDrawingRowKey, setReklamacioDrawingRowKey] = useState("");
   const [reklamacioDrawingSource, setReklamacioDrawingSource] = useState("");
-  const [reklamacioDrawingMode, setReklamacioDrawingMode] = useState<ReklamacioDrawingMode>("draw");
-  const [reklamacioTextBoxes, setReklamacioTextBoxes] = useState<ReklamacioTextBox[]>([]);
+  const [reklamacioDrawingMode, setReklamacioDrawingMode] = useState<"draw" | "erase" | "text" | "line">("draw");
+  const [reklamacioDrawingEditKey, setReklamacioDrawingEditKey] = useState("");
+  const [reklamacioDrawingName, setReklamacioDrawingName] = useState("");
+  const [reklamacioDrawingSaving, setReklamacioDrawingSaving] = useState(false);
+  const [reklamacioLineActive, setReklamacioLineActive] = useState(false);
+  const [reklamacioDrawingTextBoxes, setReklamacioDrawingTextBoxes] = useState<ReklamacioDrawingTextBox[]>([]);
   const [reklamacioSelectedTextBoxId, setReklamacioSelectedTextBoxId] = useState("");
   const [reklamacioTextFontSize, setReklamacioTextFontSize] = useState(24);
   const [reklamacioTextBold, setReklamacioTextBold] = useState(false);
   const reklamacioCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const reklamacioDrawingActiveRef = useRef(false);
   const reklamacioDrawingLastPointRef = useRef<{ x: number; y: number } | null>(null);
-  const reklamacioTextInteractionRef = useRef<{
-    kind: "create" | "move" | "resize";
-    textBoxId: string;
-    pointerId: number;
-    startPoint: { x: number; y: number };
-    initialBox: ReklamacioTextBox;
-    handle?: ReklamacioTextResizeHandle;
+  const reklamacioLineAnchorRef = useRef<{ x: number; y: number } | null>(null);
+  const reklamacioLineBaseImageRef = useRef<ImageData | null>(null);
+  const reklamacioTextBoxCreationRef = useRef<{ id: string; x: number; y: number } | null>(null);
+  const reklamacioTextBoxInteractionRef = useRef<{
+    id: string;
+    kind: "move" | "resize";
+    clientX: number;
+    clientY: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
   } | null>(null);
 
   useEffect(() => {
@@ -9307,6 +9334,19 @@ export default function Page() {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [reklamacioDrawingRowKey, reklamacioDrawingSource]);
+
+  useEffect(() => {
+    if (!reklamacioDrawingRowKey || typeof window === "undefined") return;
+    const handleDrawingEscape = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      if (reklamacioDrawingMode === "line" && reklamacioLineAnchorRef.current) {
+        event.preventDefault();
+        cancelReklamacioLineChain();
+      }
+    };
+    window.addEventListener("keydown", handleDrawingEscape);
+    return () => window.removeEventListener("keydown", handleDrawingEscape);
+  }, [reklamacioDrawingRowKey, reklamacioDrawingMode]);
 
   const [productionCardDate, setProductionCardDate] = useState(getLocalDateKey(new Date()));
   const [productionCardAdminStation, setProductionCardAdminStation] = useState("");
@@ -24067,6 +24107,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       gyartandoTetelek: row.gyartandoTetelek,
       kertDatum: row.kertDatum,
       rajzDataUrl: "",
+      pendingDrawings: [],
       dirty: false,
     };
   }
@@ -24080,6 +24121,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         gyartandoTetelek: row?.gyartandoTetelek || "",
         kertDatum: row?.kertDatum || "",
         rajzDataUrl: "",
+        pendingDrawings: [],
         dirty: false,
       };
       return { ...previous, [rowKey]: { ...current, ...patch, dirty: true } };
@@ -24098,6 +24140,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       gyartandoTetelek: "",
       kertDatum: "",
       rajzUrl: "",
+      drawings: [],
       mentesDatum: "",
       keszDatum: "",
       lezart: false,
@@ -24109,7 +24152,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     setReklamacioRows((previous) => [row, ...previous]);
     setReklamacioDrafts((previous) => ({
       ...previous,
-      [key]: { rendelesszam: "", muhely: "", gyartandoTetelek: "", kertDatum: "", rajzDataUrl: "", dirty: true },
+      [key]: { rendelesszam: "", muhely: "", gyartandoTetelek: "", kertDatum: "", rajzDataUrl: "", pendingDrawings: [], dirty: true },
     }));
   }
 
@@ -24154,6 +24197,37 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         .limit(10000);
       if (response.error) throw response.error;
       const dbRows = (response.data || []) as ReklamacioDbRow[];
+      const drawingsByReklamacioId = new Map<string, ReklamacioSavedDrawing[]>();
+      const reklamacioIds = dbRows.map((row) => String(row.id || "")).filter(Boolean);
+      for (let index = 0; index < reklamacioIds.length; index += 100) {
+        const chunk = reklamacioIds.slice(index, index + 100);
+        const drawingResponse = await supabase
+          .from(REKLAMACIO_DRAWINGS_TABLE)
+          .select("id, reklamacio_id, rendelesszam, nev, rajz_url, storage_path, sorrend, created_at, updated_at")
+          .in("reklamacio_id", chunk)
+          .order("sorrend", { ascending: true })
+          .order("created_at", { ascending: true });
+        if (drawingResponse.error) {
+          console.warn("A több rajzot kezelő tábla még nem érhető el:", drawingResponse.error);
+          break;
+        }
+        ((drawingResponse.data || []) as Array<Record<string, unknown>>).forEach((drawing) => {
+          const reklamacioId = String(drawing.reklamacio_id || "");
+          if (!reklamacioId) return;
+          const item: ReklamacioSavedDrawing = {
+            id: String(drawing.id || ""),
+            reklamacioId,
+            rendelesszam: String(drawing.rendelesszam || ""),
+            name: String(drawing.nev || "Rajz"),
+            url: String(drawing.rajz_url || ""),
+            storagePath: String(drawing.storage_path || ""),
+            orderIndex: Number(drawing.sorrend || 0),
+            createdAt: String(drawing.created_at || ""),
+            updatedAt: String(drawing.updated_at || ""),
+          };
+          drawingsByReklamacioId.set(reklamacioId, [...(drawingsByReklamacioId.get(reklamacioId) || []), item]);
+        });
+      }
       const orderNumbers = Array.from(new Set(dbRows.map((row) => String(row.rendelesszam || "").trim()).filter(Boolean)));
       const planPresence = await fetchReklamacioPlanPresence(orderNumbers);
 
@@ -24188,6 +24262,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       const nextRows: ReklamacioViewRow[] = dbRows.map((dbRow) => {
         const orderNumber = String(dbRow.rendelesszam || "").trim();
+        const savedDrawings = drawingsByReklamacioId.get(String(dbRow.id)) || [];
+        const legacyDrawingUrl = String(dbRow.rajz_url || "");
+        const drawings = savedDrawings.length > 0 || !legacyDrawingUrl ? savedDrawings : [{
+          id: `legacy-${String(dbRow.id)}`,
+          reklamacioId: String(dbRow.id),
+          rendelesszam: orderNumber,
+          name: "Rajz 1",
+          url: legacyDrawingUrl,
+          storagePath: "",
+          orderIndex: 0,
+          createdAt: String(dbRow.created_at || ""),
+          updatedAt: String(dbRow.updated_at || ""),
+          isLegacy: true,
+        }];
         const workshop: ReklamacioWorkshop = dbRow.muhely === "Asztalos" || dbRow.muhely === "Lakatos" ? dbRow.muhely : "";
         const required = workshop ? REKLAMACIO_STATIONS[workshop] : [];
         const orderLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(orderNumber));
@@ -24215,6 +24303,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           gyartandoTetelek: String(dbRow.gyartando_tetelek || ""),
           kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
           rajzUrl: String(dbRow.rajz_url || ""),
+          drawings,
           mentesDatum: String(dbRow.mentes_datum || ""),
           keszDatum: String(dbRow.kesz_datum || ""),
           lezart: Boolean(dbRow.lezart),
@@ -24263,6 +24352,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             gyartandoTetelek: row.gyartandoTetelek,
             kertDatum: row.kertDatum,
             rajzDataUrl: "",
+            pendingDrawings: [],
             dirty: false,
           };
         });
@@ -24277,8 +24367,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
-  async function uploadReklamacioDrawing(dataUrl: string, orderNumber: string): Promise<string> {
-    if (!supabase || !dataUrl.startsWith("data:image/")) return "";
+  async function uploadReklamacioDrawing(dataUrl: string, orderNumber: string): Promise<{ url: string; path: string }> {
+    if (!supabase || !dataUrl.startsWith("data:image/")) return { url: "", path: "" };
     const blob = await fetch(dataUrl).then((response) => response.blob());
     const safeOrder = orderNumber.replace(/[^A-Za-z0-9_-]/g, "_");
     const unique = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -24286,7 +24376,42 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const upload = await supabase.storage.from(REKLAMACIO_DRAWING_BUCKET).upload(path, blob, { contentType: "image/png", upsert: false });
     if (upload.error) throw upload.error;
     const publicResult = supabase.storage.from(REKLAMACIO_DRAWING_BUCKET).getPublicUrl(path);
-    return publicResult.data.publicUrl || "";
+    return { url: publicResult.data.publicUrl || "", path };
+  }
+
+  async function persistPendingReklamacioDrawings(
+    reklamacioId: string,
+    orderNumber: string,
+    pendingDrawings: ReklamacioPendingDrawing[]
+  ): Promise<string[]> {
+    if (!supabase || !reklamacioId || pendingDrawings.length === 0) return [];
+    const workerIdNumber = Number(activeWorker?.id);
+    const workerId = Number.isFinite(workerIdNumber) ? workerIdNumber : null;
+    const workerName = activeWorker?.["Teljes nev"] || null;
+    const urls: string[] = [];
+    for (let index = 0; index < pendingDrawings.length; index += 1) {
+      const drawing = pendingDrawings[index];
+      const uploaded = await uploadReklamacioDrawing(drawing.dataUrl, orderNumber);
+      if (!uploaded.url) continue;
+      const insertResponse = await supabase.from(REKLAMACIO_DRAWINGS_TABLE).insert({
+        reklamacio_id: reklamacioId,
+        rendelesszam: orderNumber,
+        nev: drawing.name.trim() || `Rajz ${index + 1}`,
+        rajz_url: uploaded.url,
+        storage_path: uploaded.path,
+        sorrend: index,
+        created_by_worker_id: workerId,
+        created_by_worker_name: workerName,
+        updated_by_worker_id: workerId,
+        updated_by_worker_name: workerName,
+      });
+      if (insertResponse.error) {
+        await supabase.storage.from(REKLAMACIO_DRAWING_BUCKET).remove([uploaded.path]);
+        throw insertResponse.error;
+      }
+      urls.push(uploaded.url);
+    }
+    return urls;
   }
 
   async function saveReklamacioRow(row: ReklamacioViewRow, closeAfterSave = false): Promise<void> {
@@ -24331,8 +24456,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     setReklamacioSavingKey(row.key);
     try {
       const fullOrderNumber = row.isNew ? `${rawBase}_REK` : row.rendelesszam;
-      let drawingUrl = row.rajzUrl || "";
-      if (draft.rajzDataUrl) drawingUrl = await uploadReklamacioDrawing(draft.rajzDataUrl, fullOrderNumber);
       const nowIso = new Date().toISOString();
       const workerIdNumber = Number(activeWorker?.id);
       const workerId = Number.isFinite(workerIdNumber) ? workerIdNumber : null;
@@ -24343,7 +24466,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         muhely: draft.muhely,
         gyartando_tetelek: draft.gyartandoTetelek.trim(),
         kert_datum: draft.kertDatum,
-        rajz_url: drawingUrl || null,
+        rajz_url: row.rajzUrl || null,
         mentes_datum: nowIso,
         lezart: closeAfterSave,
         kesz_datum: closeAfterSave ? nowIso : (row.keszDatum || null),
@@ -24351,23 +24474,34 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         updated_by_worker_name: workerName,
         updated_at: nowIso,
       };
-      let response;
+      let savedReklamacioId = row.id || "";
       if (row.isNew) {
-        response = await supabase.from(REKLAMACIO_TABLE).insert({
+        const response = await supabase.from(REKLAMACIO_TABLE).insert({
           ...payload,
           created_by_worker_id: workerId,
           created_by_worker_name: workerName,
           created_at: nowIso,
-        });
+        }).select("id").single();
+        if (response.error) throw response.error;
+        savedReklamacioId = String(response.data?.id || "");
       } else {
-        response = await supabase.from(REKLAMACIO_TABLE).update(payload).eq("id", row.id as string);
+        const response = await supabase.from(REKLAMACIO_TABLE).update(payload).eq("id", row.id as string);
+        if (response.error) throw response.error;
       }
-      if (response.error) throw response.error;
+      const pendingDrawings = [
+        ...draft.pendingDrawings,
+        ...(draft.rajzDataUrl ? [{ key: `legacy-draft-${Date.now()}`, name: `Rajz ${draft.pendingDrawings.length + 1}`, dataUrl: draft.rajzDataUrl }] : []),
+      ];
+      const newDrawingUrls = await persistPendingReklamacioDrawings(savedReklamacioId, fullOrderNumber, pendingDrawings);
+      if (!row.rajzUrl && newDrawingUrls[0]) {
+        const drawingLinkResponse = await supabase.from(REKLAMACIO_TABLE).update({ rajz_url: newDrawingUrls[0] }).eq("id", savedReklamacioId);
+        if (drawingLinkResponse.error) throw drawingLinkResponse.error;
+      }
       if (row.isNew) {
         setReklamacioRows((previous) => previous.filter((item) => item.key !== row.key));
         setReklamacioDrafts((previous) => { const next = { ...previous }; delete next[row.key]; return next; });
       } else {
-        setReklamacioDrafts((previous) => ({ ...previous, [row.key]: { ...draft, rajzDataUrl: "", dirty: false } }));
+        setReklamacioDrafts((previous) => ({ ...previous, [row.key]: { ...draft, rajzDataUrl: "", pendingDrawings: [], dirty: false } }));
       }
       setMessage({ type: "success", text: closeAfterSave ? `Reklamáció lezárva: ${fullOrderNumber}` : `Reklamáció mentve: ${fullOrderNumber}` });
       await loadReklamacioRows({ quiet: true });
@@ -24458,155 +24592,166 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
   }
 
-  function openReklamacioDrawing(row: ReklamacioViewRow): void {
+  function openReklamacioDrawing(
+    row: ReklamacioViewRow,
+    drawing?: { key: string; name: string; source: string }
+  ): void {
     const draft = getReklamacioDraft(row);
-    reklamacioTextInteractionRef.current = null;
     setReklamacioDrawingMode("draw");
-    setReklamacioDrawingSource(draft.rajzDataUrl || row.rajzUrl || "");
-    setReklamacioTextBoxes([]);
+    setReklamacioDrawingEditKey(drawing?.key || `new-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    setReklamacioDrawingName(drawing?.name || `Rajz ${row.drawings.length + draft.pendingDrawings.length + 1}`);
+    setReklamacioDrawingSaving(false);
+    setReklamacioLineActive(false);
+    reklamacioLineAnchorRef.current = null;
+    reklamacioLineBaseImageRef.current = null;
+    setReklamacioDrawingTextBoxes([]);
     setReklamacioSelectedTextBoxId("");
     setReklamacioTextFontSize(24);
     setReklamacioTextBold(false);
+    setReklamacioDrawingSource(drawing?.source || "");
     setReklamacioDrawingRowKey(row.key);
   }
 
   function closeReklamacioDrawing(): void {
-    reklamacioTextInteractionRef.current = null;
-    reklamacioDrawingActiveRef.current = false;
-    reklamacioDrawingLastPointRef.current = null;
-    setReklamacioDrawingMode("draw");
-    setReklamacioTextBoxes([]);
-    setReklamacioSelectedTextBoxId("");
-    setReklamacioTextFontSize(24);
-    setReklamacioTextBold(false);
+    cancelReklamacioLineChain();
     setReklamacioDrawingRowKey("");
     setReklamacioDrawingSource("");
+    setReklamacioDrawingEditKey("");
+    setReklamacioDrawingName("");
+    setReklamacioDrawingTextBoxes([]);
+    setReklamacioSelectedTextBoxId("");
+  }
+
+  function activateReklamacioDrawingMode(mode: "draw" | "erase" | "text" | "line"): void {
+    if (reklamacioDrawingMode === "line" && mode !== "line") cancelReklamacioLineChain();
+    setReklamacioDrawingMode(mode);
+  }
+
+  function snapReklamacioLinePoint(anchor: { x: number; y: number }, point: { x: number; y: number }): { x: number; y: number } {
+    const dx = point.x - anchor.x;
+    const dy = point.y - anchor.y;
+    const length = Math.hypot(dx, dy);
+    if (length < 0.001) return anchor;
+    const step = Math.PI / 12;
+    const angle = Math.round(Math.atan2(dy, dx) / step) * step;
+    return { x: anchor.x + Math.cos(angle) * length, y: anchor.y + Math.sin(angle) * length };
+  }
+
+  function drawReklamacioStraightLine(context: CanvasRenderingContext2D, start: { x: number; y: number }, end: { x: number; y: number }): void {
+    context.save();
+    context.globalCompositeOperation = "source-over";
+    context.strokeStyle = "#111827";
+    context.lineWidth = 4;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.beginPath();
+    context.moveTo(start.x, start.y);
+    context.lineTo(end.x, end.y);
+    context.stroke();
+    context.restore();
+  }
+
+  function cancelReklamacioLineChain(): void {
+    const canvas = reklamacioCanvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (context && reklamacioLineBaseImageRef.current) context.putImageData(reklamacioLineBaseImageRef.current, 0, 0);
+    reklamacioLineAnchorRef.current = null;
+    reklamacioLineBaseImageRef.current = null;
+    setReklamacioLineActive(false);
   }
 
   function clearReklamacioCanvas(): void {
+    cancelReklamacioLineChain();
     const canvas = reklamacioCanvasRef.current;
     const context = canvas?.getContext("2d");
     if (!canvas || !context) return;
     context.globalCompositeOperation = "source-over";
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, canvas.width, canvas.height);
-    reklamacioTextInteractionRef.current = null;
-    setReklamacioTextBoxes([]);
+    setReklamacioDrawingTextBoxes([]);
     setReklamacioSelectedTextBoxId("");
   }
 
-  function getReklamacioCanvasPointFromClient(clientX: number, clientY: number): { x: number; y: number } {
-    const canvas = reklamacioCanvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
+  function getReklamacioCanvasPoint(event: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } {
+    const canvas = event.currentTarget;
     const rect = canvas.getBoundingClientRect();
     return {
-      x: (clientX - rect.left) * (canvas.width / Math.max(rect.width, 1)),
-      y: (clientY - rect.top) * (canvas.height / Math.max(rect.height, 1)),
+      x: (event.clientX - rect.left) * (canvas.width / Math.max(rect.width, 1)),
+      y: (event.clientY - rect.top) * (canvas.height / Math.max(rect.height, 1)),
     };
-  }
-
-  function getReklamacioCanvasPoint(event: React.PointerEvent<Element>): { x: number; y: number } {
-    return getReklamacioCanvasPointFromClient(event.clientX, event.clientY);
-  }
-
-  function clampReklamacioCanvasPoint(point: { x: number; y: number }): { x: number; y: number } {
-    const canvas = reklamacioCanvasRef.current;
-    const maxX = canvas?.width || 1100;
-    const maxY = canvas?.height || 650;
-    return {
-      x: Math.min(maxX, Math.max(0, point.x)),
-      y: Math.min(maxY, Math.max(0, point.y)),
-    };
-  }
-
-  function clampReklamacioTextBox(box: ReklamacioTextBox): ReklamacioTextBox {
-    const canvas = reklamacioCanvasRef.current;
-    const canvasWidth = canvas?.width || 1100;
-    const canvasHeight = canvas?.height || 650;
-    const width = Math.min(Math.max(80, box.width), canvasWidth);
-    const height = Math.min(Math.max(44, box.height), canvasHeight);
-    return {
-      ...box,
-      width,
-      height,
-      x: Math.min(Math.max(0, box.x), Math.max(0, canvasWidth - width)),
-      y: Math.min(Math.max(0, box.y), Math.max(0, canvasHeight - height)),
-    };
-  }
-
-  function updateReklamacioTextBox(textBoxId: string, updater: (current: ReklamacioTextBox) => ReklamacioTextBox): void {
-    setReklamacioTextBoxes((current) => current.map((item) => item.id === textBoxId ? clampReklamacioTextBox(updater(item)) : item));
-  }
-
-  function activateReklamacioTextBox(textBoxId: string, editing = true): void {
-    setReklamacioSelectedTextBoxId(textBoxId);
-    setReklamacioTextBoxes((current) => current.map((item) => item.id === textBoxId ? { ...item, editing } : { ...item, editing: false }));
-    const active = reklamacioTextBoxes.find((item) => item.id === textBoxId);
-    if (active) {
-      setReklamacioTextFontSize(active.fontSize);
-      setReklamacioTextBold(active.bold);
-    }
-  }
-
-  function applyReklamacioTextStyle(update: { fontSize?: number; bold?: boolean }): void {
-    if (update.fontSize !== undefined) setReklamacioTextFontSize(update.fontSize);
-    if (update.bold !== undefined) setReklamacioTextBold(update.bold);
-    if (!reklamacioSelectedTextBoxId) return;
-    updateReklamacioTextBox(reklamacioSelectedTextBoxId, (current) => ({
-      ...current,
-      fontSize: update.fontSize ?? current.fontSize,
-      bold: update.bold ?? current.bold,
-    }));
   }
 
   function handleReklamacioCanvasPointerDown(event: React.PointerEvent<HTMLCanvasElement>): void {
     event.preventDefault();
+    if (reklamacioDrawingMode === "line") {
+      if (event.button === 2) {
+        cancelReklamacioLineChain();
+        return;
+      }
+      const canvas = event.currentTarget;
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      const point = getReklamacioCanvasPoint(event);
+      const anchor = reklamacioLineAnchorRef.current;
+      if (!anchor) {
+        reklamacioLineAnchorRef.current = point;
+        reklamacioLineBaseImageRef.current = context.getImageData(0, 0, canvas.width, canvas.height);
+        setReklamacioLineActive(true);
+        return;
+      }
+      if (reklamacioLineBaseImageRef.current) context.putImageData(reklamacioLineBaseImageRef.current, 0, 0);
+      const snapped = snapReklamacioLinePoint(anchor, point);
+      drawReklamacioStraightLine(context, anchor, snapped);
+      reklamacioLineAnchorRef.current = snapped;
+      reklamacioLineBaseImageRef.current = context.getImageData(0, 0, canvas.width, canvas.height);
+      setReklamacioLineActive(true);
+      return;
+    }
     if (reklamacioDrawingMode === "text") {
-      const startPoint = clampReklamacioCanvasPoint(getReklamacioCanvasPoint(event));
-      const textBoxId = `reklamacio-text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const newTextBox: ReklamacioTextBox = {
-        id: textBoxId,
-        x: startPoint.x,
-        y: startPoint.y,
-        width: 140,
-        height: Math.max(72, reklamacioTextFontSize * 3),
+      const point = getReklamacioCanvasPoint(event);
+      const id = `reklamacio-text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const nextTextBox: ReklamacioDrawingTextBox = {
+        id,
+        x: point.x,
+        y: point.y,
+        width: 260,
+        height: 100,
         text: "",
         fontSize: reklamacioTextFontSize,
         bold: reklamacioTextBold,
-        editing: true,
       };
-      reklamacioTextInteractionRef.current = {
-        kind: "create",
-        textBoxId,
-        pointerId: event.pointerId,
-        startPoint,
-        initialBox: newTextBox,
-      };
-      setReklamacioTextBoxes((current) => [...current.map((item) => ({ ...item, editing: false })), newTextBox]);
-      setReklamacioSelectedTextBoxId(textBoxId);
+      reklamacioTextBoxCreationRef.current = { id, x: point.x, y: point.y };
+      setReklamacioDrawingTextBoxes((current) => [...current, nextTextBox]);
+      setReklamacioSelectedTextBoxId(id);
       event.currentTarget.setPointerCapture?.(event.pointerId);
       return;
     }
-    reklamacioTextInteractionRef.current = null;
-    setReklamacioSelectedTextBoxId("");
-    setReklamacioTextBoxes((current) => current.map((item) => ({ ...item, editing: false })));
     reklamacioDrawingActiveRef.current = true;
     reklamacioDrawingLastPointRef.current = getReklamacioCanvasPoint(event);
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }
 
   function handleReklamacioCanvasPointerMove(event: React.PointerEvent<HTMLCanvasElement>): void {
-    const textInteraction = reklamacioTextInteractionRef.current;
-    if (textInteraction?.kind === "create") {
-      const point = clampReklamacioCanvasPoint(getReklamacioCanvasPoint(event));
-      const start = textInteraction.startPoint;
-      updateReklamacioTextBox(textInteraction.textBoxId, (current) => ({
-        ...current,
-        x: Math.min(start.x, point.x),
-        y: Math.min(start.y, point.y),
-        width: Math.max(140, Math.abs(point.x - start.x)),
-        height: Math.max(Math.max(72, current.fontSize * 3), Math.abs(point.y - start.y)),
-      }));
+    if (reklamacioDrawingMode === "line") {
+      const canvas = event.currentTarget;
+      const context = canvas.getContext("2d");
+      const anchor = reklamacioLineAnchorRef.current;
+      const baseImage = reklamacioLineBaseImageRef.current;
+      if (!context || !anchor || !baseImage) return;
+      context.putImageData(baseImage, 0, 0);
+      drawReklamacioStraightLine(context, anchor, snapReklamacioLinePoint(anchor, getReklamacioCanvasPoint(event)));
+      return;
+    }
+    const textCreation = reklamacioTextBoxCreationRef.current;
+    if (reklamacioDrawingMode === "text" && textCreation) {
+      const point = getReklamacioCanvasPoint(event);
+      const x = Math.min(textCreation.x, point.x);
+      const y = Math.min(textCreation.y, point.y);
+      const width = Math.max(120, Math.abs(point.x - textCreation.x));
+      const height = Math.max(54, Math.abs(point.y - textCreation.y));
+      setReklamacioDrawingTextBoxes((current) => current.map((item) =>
+        item.id === textCreation.id ? { ...item, x, y, width, height } : item
+      ));
       return;
     }
     if (!reklamacioDrawingActiveRef.current) return;
@@ -24630,135 +24775,231 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function handleReklamacioCanvasPointerUp(event: React.PointerEvent<HTMLCanvasElement>): void {
-    const textInteraction = reklamacioTextInteractionRef.current;
-    if (textInteraction?.kind === "create" && textInteraction.pointerId === event.pointerId) {
-      reklamacioTextInteractionRef.current = null;
-      activateReklamacioTextBox(textInteraction.textBoxId, true);
-      try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch {}
-      return;
-    }
+    if (reklamacioDrawingMode === "line") return;
+    const createdTextBoxId = reklamacioTextBoxCreationRef.current?.id || "";
+    reklamacioTextBoxCreationRef.current = null;
     reklamacioDrawingActiveRef.current = false;
     reklamacioDrawingLastPointRef.current = null;
     try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch {}
+    if (createdTextBoxId && typeof window !== "undefined") {
+      window.setTimeout(() => document.getElementById(`${createdTextBoxId}-input`)?.focus(), 0);
+    }
+  }
+
+  function updateReklamacioDrawingTextBox(id: string, patch: Partial<ReklamacioDrawingTextBox>): void {
+    setReklamacioDrawingTextBoxes((current) => current.map((item) => item.id === id ? { ...item, ...patch } : item));
+  }
+
+  function selectReklamacioDrawingTextBox(item: ReklamacioDrawingTextBox): void {
+    setReklamacioSelectedTextBoxId(item.id);
+    setReklamacioTextFontSize(item.fontSize);
+    setReklamacioTextBold(item.bold);
+  }
+
+  function updateSelectedReklamacioTextStyle(patch: { fontSize?: number; bold?: boolean }): void {
+    if (typeof patch.fontSize === "number") setReklamacioTextFontSize(patch.fontSize);
+    if (typeof patch.bold === "boolean") setReklamacioTextBold(patch.bold);
+    if (!reklamacioSelectedTextBoxId) return;
+    updateReklamacioDrawingTextBox(reklamacioSelectedTextBoxId, patch);
   }
 
   function beginReklamacioTextBoxInteraction(
     event: React.PointerEvent<HTMLElement>,
-    textBoxId: string,
-    kind: "move" | "resize",
-    handle?: ReklamacioTextResizeHandle,
+    item: ReklamacioDrawingTextBox,
+    kind: "move" | "resize"
   ): void {
     event.preventDefault();
     event.stopPropagation();
-    const currentTextBox = reklamacioTextBoxes.find((item) => item.id === textBoxId);
-    if (!currentTextBox) return;
-    reklamacioTextInteractionRef.current = {
+    selectReklamacioDrawingTextBox(item);
+    reklamacioTextBoxInteractionRef.current = {
+      id: item.id,
       kind,
-      textBoxId,
-      pointerId: event.pointerId,
-      startPoint: clampReklamacioCanvasPoint(getReklamacioCanvasPoint(event)),
-      initialBox: currentTextBox,
-      handle,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      x: item.x,
+      y: item.y,
+      width: item.width,
+      height: item.height,
     };
-    activateReklamacioTextBox(textBoxId, true);
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }
 
-  function handleReklamacioTextBoxPointerMove(event: React.PointerEvent<HTMLElement>): void {
-    const interaction = reklamacioTextInteractionRef.current;
-    if (!interaction || interaction.pointerId !== event.pointerId || interaction.kind === "create") return;
-    const point = clampReklamacioCanvasPoint(getReklamacioCanvasPoint(event));
+  function moveOrResizeReklamacioTextBox(event: React.PointerEvent<HTMLElement>): void {
+    const interaction = reklamacioTextBoxInteractionRef.current;
+    const canvas = reklamacioCanvasRef.current;
+    if (!interaction || !canvas) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = canvas.getBoundingClientRect();
+    const dx = (event.clientX - interaction.clientX) * (canvas.width / Math.max(rect.width, 1));
+    const dy = (event.clientY - interaction.clientY) * (canvas.height / Math.max(rect.height, 1));
     if (interaction.kind === "move") {
-      const dx = point.x - interaction.startPoint.x;
-      const dy = point.y - interaction.startPoint.y;
-      updateReklamacioTextBox(interaction.textBoxId, (current) => ({
-        ...current,
-        x: interaction.initialBox.x + dx,
-        y: interaction.initialBox.y + dy,
-      }));
+      updateReklamacioDrawingTextBox(interaction.id, {
+        x: Math.max(0, Math.min(canvas.width - interaction.width, interaction.x + dx)),
+        y: Math.max(0, Math.min(canvas.height - interaction.height, interaction.y + dy)),
+      });
       return;
     }
-    const handle = interaction.handle || "se";
-    const minimumWidth = 80;
-    const minimumHeight = 44;
-    let left = interaction.initialBox.x;
-    let top = interaction.initialBox.y;
-    let right = interaction.initialBox.x + interaction.initialBox.width;
-    let bottom = interaction.initialBox.y + interaction.initialBox.height;
-    if (handle.includes("w")) left = Math.min(point.x, right - minimumWidth);
-    if (handle.includes("e")) right = Math.max(point.x, left + minimumWidth);
-    if (handle.includes("n")) top = Math.min(point.y, bottom - minimumHeight);
-    if (handle.includes("s")) bottom = Math.max(point.y, top + minimumHeight);
-    updateReklamacioTextBox(interaction.textBoxId, (current) => ({
-      ...current,
-      x: left,
-      y: top,
-      width: right - left,
-      height: bottom - top,
-    }));
-  }
-
-  function handleReklamacioTextBoxPointerUp(event: React.PointerEvent<HTMLElement>): void {
-    const interaction = reklamacioTextInteractionRef.current;
-    if (!interaction || interaction.pointerId !== event.pointerId || interaction.kind === "create") return;
-    reklamacioTextInteractionRef.current = null;
-    try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch {}
-  }
-
-  function renderReklamacioTextBoxesToCanvas(context: CanvasRenderingContext2D): void {
-    reklamacioTextBoxes.forEach((textBox) => {
-      const content = String(textBox.text || "");
-      if (!content.trim()) return;
-      const padding = 8;
-      const lineHeight = Math.max(20, Math.round(textBox.fontSize * 1.35));
-      const maxWidth = Math.max(10, textBox.width - padding * 2);
-      const paragraphs = content.replace(/\r/g, "").split("\n");
-      const lines: string[] = [];
-      context.save();
-      context.beginPath();
-      context.rect(textBox.x, textBox.y, textBox.width, textBox.height);
-      context.clip();
-      context.fillStyle = "#111827";
-      context.textBaseline = "top";
-      context.font = `${textBox.bold ? 700 : 400} ${textBox.fontSize}px Segoe UI, Arial, sans-serif`;
-      paragraphs.forEach((paragraph) => {
-        if (!paragraph) {
-          lines.push("");
-          return;
-        }
-        const words = paragraph.split(/\s+/).filter(Boolean);
-        if (words.length === 0) {
-          lines.push("");
-          return;
-        }
-        let currentLine = words[0];
-        for (let index = 1; index < words.length; index += 1) {
-          const nextLine = `${currentLine} ${words[index]}`;
-          if (context.measureText(nextLine).width <= maxWidth) currentLine = nextLine;
-          else {
-            lines.push(currentLine);
-            currentLine = words[index];
-          }
-        }
-        lines.push(currentLine);
-      });
-      let y = textBox.y + padding;
-      for (const line of lines) {
-        if (y + lineHeight > textBox.y + textBox.height + 0.5) break;
-        context.fillText(line, textBox.x + padding, y, maxWidth);
-        y += lineHeight;
-      }
-      context.restore();
+    updateReklamacioDrawingTextBox(interaction.id, {
+      width: Math.max(120, Math.min(canvas.width - interaction.x, interaction.width + dx)),
+      height: Math.max(54, Math.min(canvas.height - interaction.y, interaction.height + dy)),
     });
   }
 
-  function saveReklamacioCanvasToDraft(): void {
+  function endReklamacioTextBoxInteraction(event: React.PointerEvent<HTMLElement>): void {
+    reklamacioTextBoxInteractionRef.current = null;
+    try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch {}
+  }
+
+  function drawReklamacioTextBoxes(context: CanvasRenderingContext2D): void {
+    context.save();
+    context.globalCompositeOperation = "source-over";
+    context.fillStyle = "#111827";
+    context.textBaseline = "top";
+    reklamacioDrawingTextBoxes.forEach((item) => {
+      if (!item.text.trim()) return;
+      context.font = `${item.bold ? "700" : "400"} ${item.fontSize}px Arial, sans-serif`;
+      const lineHeight = item.fontSize * 1.22;
+      const maxWidth = Math.max(20, item.width - 16);
+      const maxY = item.y + item.height - 8;
+      let y = item.y + 8;
+      const paragraphs = item.text.replace(/\r/g, "").split("\n");
+      for (const paragraph of paragraphs) {
+        const words = paragraph.split(/\s+/).filter(Boolean);
+        const lines: string[] = [];
+        let line = "";
+        if (words.length === 0) lines.push("");
+        for (const word of words) {
+          const candidate = line ? `${line} ${word}` : word;
+          if (line && context.measureText(candidate).width > maxWidth) {
+            lines.push(line);
+            line = word;
+          } else {
+            line = candidate;
+          }
+        }
+        if (line) lines.push(line);
+        for (const wrappedLine of lines) {
+          if (y + lineHeight > maxY) break;
+          context.fillText(wrappedLine, item.x + 8, y, maxWidth);
+          y += lineHeight;
+        }
+        if (y + lineHeight > maxY) break;
+      }
+    });
+    context.restore();
+  }
+
+  async function saveReklamacioCanvasToDraft(): Promise<void> {
     const canvas = reklamacioCanvasRef.current;
-    const context = canvas?.getContext("2d");
-    if (!canvas || !context || !reklamacioDrawingRowKey) return;
-    renderReklamacioTextBoxesToCanvas(context);
-    updateReklamacioDraft(reklamacioDrawingRowKey, { rajzDataUrl: canvas.toDataURL("image/png") });
-    closeReklamacioDrawing();
+    if (!canvas || !reklamacioDrawingRowKey) return;
+    const name = reklamacioDrawingName.trim();
+    if (!name) {
+      setMessage({ type: "error", text: "A rajz elnevezése kötelező." });
+      return;
+    }
+    cancelReklamacioLineChain();
+    const exportCanvas = document.createElement("canvas");
+    exportCanvas.width = canvas.width;
+    exportCanvas.height = canvas.height;
+    const exportContext = exportCanvas.getContext("2d");
+    if (!exportContext) return;
+    exportContext.fillStyle = "#ffffff";
+    exportContext.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+    exportContext.drawImage(canvas, 0, 0);
+    drawReklamacioTextBoxes(exportContext);
+    const dataUrl = exportCanvas.toDataURL("image/png");
+    const row = reklamacioRows.find((item) => item.key === reklamacioDrawingRowKey);
+    if (!row) return;
+    if (!row.id) {
+      const draft = getReklamacioDraft(row);
+      const nextDrawing: ReklamacioPendingDrawing = { key: reklamacioDrawingEditKey, name, dataUrl };
+      updateReklamacioDraft(row.key, {
+        pendingDrawings: draft.pendingDrawings.some((item) => item.key === nextDrawing.key)
+          ? draft.pendingDrawings.map((item) => item.key === nextDrawing.key ? nextDrawing : item)
+          : [...draft.pendingDrawings, nextDrawing],
+      });
+      closeReklamacioDrawing();
+      setMessage({ type: "success", text: "A rajz elkészült. A reklamáció Mentés gombjával kerül a Power BI-ból is elérhető tárhelyre." });
+      return;
+    }
+
+    if (!supabase) return;
+    setReklamacioDrawingSaving(true);
+    try {
+      const uploaded = await uploadReklamacioDrawing(dataUrl, row.rendelesszam);
+      if (!uploaded.url) throw new Error("A rajz feltöltése nem adott vissza publikus URL-t.");
+      const existing = row.drawings.find((item) => item.id === reklamacioDrawingEditKey && !item.isLegacy);
+      const workerIdNumber = Number(activeWorker?.id);
+      const workerId = Number.isFinite(workerIdNumber) ? workerIdNumber : null;
+      const workerName = activeWorker?.["Teljes nev"] || null;
+      const payload = {
+        reklamacio_id: row.id,
+        rendelesszam: row.rendelesszam,
+        nev: name,
+        rajz_url: uploaded.url,
+        storage_path: uploaded.path,
+        sorrend: existing?.orderIndex ?? row.drawings.length,
+        updated_by_worker_id: workerId,
+        updated_by_worker_name: workerName,
+        updated_at: new Date().toISOString(),
+      };
+      const drawingResponse = existing
+        ? await supabase.from(REKLAMACIO_DRAWINGS_TABLE).update(payload).eq("id", existing.id)
+        : await supabase.from(REKLAMACIO_DRAWINGS_TABLE).insert({
+            ...payload,
+            created_by_worker_id: workerId,
+            created_by_worker_name: workerName,
+          });
+      if (drawingResponse.error) {
+        await supabase.storage.from(REKLAMACIO_DRAWING_BUCKET).remove([uploaded.path]);
+        throw drawingResponse.error;
+      }
+      const shouldUpdateMainUrl = !row.rajzUrl || Boolean(existing && row.rajzUrl === existing.url) || reklamacioDrawingEditKey.startsWith("legacy-");
+      if (shouldUpdateMainUrl) {
+        const mainUrlResponse = await supabase.from(REKLAMACIO_TABLE).update({ rajz_url: uploaded.url }).eq("id", row.id);
+        if (mainUrlResponse.error) throw mainUrlResponse.error;
+      }
+      if (existing?.storagePath) await supabase.storage.from(REKLAMACIO_DRAWING_BUCKET).remove([existing.storagePath]);
+      closeReklamacioDrawing();
+      setMessage({ type: "success", text: `Rajz elmentve: ${name}. A publikus URL Power BI-ban használható.` });
+      await loadReklamacioRows({ quiet: true });
+    } catch (error) {
+      console.error("REKLAMÁCIÓS RAJZ MENTÉSI HIBA:", error);
+      setMessage({ type: "error", text: `A rajz mentése sikertelen. Futtasd le a mellékelt több-rajzos SQL-t. Részletek: ${normalizeError(error)}` });
+    } finally {
+      setReklamacioDrawingSaving(false);
+    }
+  }
+
+  async function deleteReklamacioDrawing(row: ReklamacioViewRow, drawing: { key: string; name: string; saved?: ReklamacioSavedDrawing }): Promise<void> {
+    if (typeof window !== "undefined" && !window.confirm(`Biztosan törlöd ezt a rajzot: ${drawing.name}?`)) return;
+    if (!drawing.saved) {
+      const draft = getReklamacioDraft(row);
+      updateReklamacioDraft(row.key, { pendingDrawings: draft.pendingDrawings.filter((item) => item.key !== drawing.key) });
+      return;
+    }
+    if (!supabase || !row.id) return;
+    setReklamacioSavingKey(row.key);
+    try {
+      if (drawing.saved.isLegacy) {
+        const legacyResponse = await supabase.from(REKLAMACIO_TABLE).update({ rajz_url: null }).eq("id", row.id);
+        if (legacyResponse.error) throw legacyResponse.error;
+      } else {
+        const deleteResponse = await supabase.from(REKLAMACIO_DRAWINGS_TABLE).delete().eq("id", drawing.saved.id);
+        if (deleteResponse.error) throw deleteResponse.error;
+        if (drawing.saved.storagePath) await supabase.storage.from(REKLAMACIO_DRAWING_BUCKET).remove([drawing.saved.storagePath]);
+        const nextDrawing = row.drawings.find((item) => item.id !== drawing.saved?.id && !item.isLegacy);
+        const mainUrlResponse = await supabase.from(REKLAMACIO_TABLE).update({ rajz_url: nextDrawing?.url || null }).eq("id", row.id);
+        if (mainUrlResponse.error) throw mainUrlResponse.error;
+      }
+      setMessage({ type: "success", text: `Rajz törölve: ${drawing.name}` });
+      await loadReklamacioRows({ quiet: true });
+    } catch (error) {
+      setMessage({ type: "error", text: `A rajz törlése sikertelen: ${normalizeError(error)}` });
+    } finally {
+      setReklamacioSavingKey("");
+    }
   }
 
   function AtvetelAdmin(): React.JSX.Element {
@@ -25448,13 +25689,24 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const visibleColumns = reklamacioTableColumns.filter((column) => column.visible);
     const totalTableWidth = Math.max(1000, visibleColumns.reduce((sum, column) => sum + column.width, 0));
 
+    const getReklamacioDrawingItems = (row: ReklamacioViewRow): Array<{ key: string; name: string; source: string; saved?: ReklamacioSavedDrawing }> => {
+      const draft = getReklamacioDraft(row);
+      return [
+        ...row.drawings.map((drawing) => ({ key: drawing.id, name: drawing.name, source: drawing.url, saved: drawing })),
+        ...draft.pendingDrawings.map((drawing) => ({ key: drawing.key, name: drawing.name, source: drawing.dataUrl })),
+      ];
+    };
+
     const getCellText = (row: ReklamacioViewRow, columnId: ReklamacioTableColumnId): string => {
       const draft = getReklamacioDraft(row);
       if (columnId === "rendelesszam") return row.isNew ? draft.rendelesszam : row.rendelesszam;
       if (columnId === "muhely") return draft.muhely || "—";
       if (columnId === "gyartandoTetelek") return draft.gyartandoTetelek || "—";
       if (columnId === "kertDatum") return draft.kertDatum || "—";
-      if (columnId === "rajz") return draft.rajzDataUrl || row.rajzUrl ? "Van rajz" : "Nincs rajz";
+      if (columnId === "rajz") {
+        const drawingCount = getReklamacioDrawingItems(row).length;
+        return drawingCount > 0 ? `${drawingCount} rajz` : "Nincs rajz";
+      }
       if (columnId === "munkaallomasAllapot") return row.stationStates.length ? row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join(" | ") : "—";
       if (columnId === "mentesDatum") return row.mentesDatum ? formatDateTimeMinute(row.mentesDatum) : "—";
       if (columnId === "keszDatum") return row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "—";
@@ -25515,7 +25767,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       } else if (column.id === "kertDatum") {
         content = <input type="date" value={draft.kertDatum} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { kertDatum: event.target.value })} style={{ ...fieldStyle, colorScheme: "dark" }} />;
       } else if (column.id === "rajz") {
-        content = <div style={{ display: "flex", gap: 5, alignItems: "center", justifyContent: "center", flexWrap: "wrap" }}><button type="button" disabled={disabled} onClick={() => openReklamacioDrawing(row)} style={{ ...buttonSecondary, padding: "6px 9px" }}>Rajz készítése</button>{row.rajzUrl && <a href={row.rajzUrl} target="_blank" rel="noreferrer" style={{ color: officeTheme.accentColor, fontWeight: 900 }}>Megnyitás</a>}{draft.rajzDataUrl && <span style={{ color: "#22c55e", fontWeight: 900 }}>Új rajz</span>}</div>;
+        const drawings = getReklamacioDrawingItems(row);
+        content = <div style={{ display: "grid", gap: 6 }}>
+          <button type="button" onClick={() => openReklamacioDrawing(row)} style={{ ...buttonSecondary, padding: "6px 9px" }}>+ Új rajz</button>
+          {drawings.map((drawing, index) => <div key={drawing.key} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto auto auto", gap: 4, alignItems: "center", padding: 4, borderRadius: 6, background: officeTheme.panelAltBackground }}>
+            <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}>{index + 1}. {drawing.name}</strong>
+            <a href={drawing.source} target="_blank" rel="noreferrer" style={{ color: officeTheme.accentColor, fontWeight: 900 }}>Megnyitás</a>
+            <button type="button" onClick={() => openReklamacioDrawing(row, drawing)} style={{ ...buttonSecondary, padding: "4px 7px" }}>Szerkesztés</button>
+            <button type="button" disabled={reklamacioSavingKey === row.key} onClick={() => void deleteReklamacioDrawing(row, drawing)} style={{ ...buttonSecondary, padding: "4px 7px", color: "#fca5a5" }}>Törlés</button>
+          </div>)}
+          {drawings.length > 0 && <span style={{ color: officeTheme.mutedText, fontSize: 10 }}>{drawings.length} külön PNG · Power BI publikus URL</span>}
+        </div>;
       } else if (column.id === "munkaallomasAllapot") {
         content = renderStationStates(row);
       } else if (column.id === "mentesDatum") {
@@ -25598,142 +25860,98 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         {reklamacioDrawingRowKey && <div style={{ position: "fixed", inset: 0, zIndex: 30000, background: "rgba(2,6,23,0.82)", display: "grid", placeItems: "center", padding: 18 }}>
           <div data-office-window="reklamacio:drawing" style={{ width: "min(1180px, 96vw)", maxHeight: "94vh", overflow: "auto", padding: 14, borderRadius: 14, background: officeTheme.panelBackground, border: `2px solid ${officeTheme.accentColor}`, color: officeTheme.textColor, boxShadow: "0 24px 70px rgba(0,0,0,0.65)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-              <div>
-                <strong style={{ fontSize: 20 }}>Reklamációs rajz</strong>
-                <div style={{ color: officeTheme.mutedText, fontSize: 11 }}>A mentett PNG a Supabase Storage-ba kerül, a publikus URL Power BI-ban képként használható.</div>
-              </div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
-                <button type="button" onClick={() => setReklamacioDrawingMode("draw")} style={reklamacioDrawingMode === "draw" ? buttonPrimary : buttonSecondary}>Rajzolás</button>
-                <button type="button" onClick={() => setReklamacioDrawingMode("erase")} style={reklamacioDrawingMode === "erase" ? buttonPrimary : buttonSecondary}>Radír</button>
-                <button type="button" onClick={() => setReklamacioDrawingMode("text")} style={reklamacioDrawingMode === "text" ? buttonPrimary : buttonSecondary}>Szöveg</button>
-                <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderRadius: 10, border: `1px solid ${officeTheme.borderColor}`, background: officeTheme.panelAltBackground, color: officeTheme.textColor, fontSize: 12, fontWeight: 800 }}>
-                  Betűméret
-                  <input
-                    type="number"
-                    min={12}
-                    max={72}
-                    step={1}
-                    value={reklamacioTextFontSize}
-                    onChange={(event) => {
-                      const next = Math.min(72, Math.max(12, Number(event.target.value) || 24));
-                      applyReklamacioTextStyle({ fontSize: next });
-                    }}
-                    style={{ width: 72, padding: "6px 8px", borderRadius: 8, border: `1px solid ${officeTheme.borderColor}`, background: officeTheme.inputBackground, color: officeTheme.inputText, fontWeight: 700 }}
-                  />
-                </label>
-                <button type="button" onClick={() => applyReklamacioTextStyle({ bold: !reklamacioTextBold })} style={reklamacioTextBold ? buttonPrimary : buttonSecondary}>Félkövér</button>
+              <div style={{ display: "grid", gap: 5 }}><strong style={{ fontSize: 20 }}>Reklamációs rajz</strong><div style={{ color: officeTheme.mutedText, fontSize: 11 }}>Minden rajz külön PNG-ként kerül a Supabase Storage-ba, a publikus URL Power BI-ban képként használható.</div><input value={reklamacioDrawingName} maxLength={100} onChange={(event) => setReklamacioDrawingName(event.target.value)} placeholder="Rajz neve" style={{ ...fieldStyle, width: 280, minHeight: 36, padding: "5px 8px" }} /></div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                <button type="button" onClick={() => activateReklamacioDrawingMode("draw")} style={reklamacioDrawingMode === "draw" ? buttonPrimary : buttonSecondary}>Rajzolás</button>
+                <button type="button" onClick={() => activateReklamacioDrawingMode("line")} style={reklamacioDrawingMode === "line" ? buttonPrimary : buttonSecondary}>Egyenes</button>
+                <button type="button" onClick={() => activateReklamacioDrawingMode("erase")} style={reklamacioDrawingMode === "erase" ? buttonPrimary : buttonSecondary}>Radír</button>
+                <button type="button" onClick={() => activateReklamacioDrawingMode("text")} style={reklamacioDrawingMode === "text" ? buttonPrimary : buttonSecondary}>Szöveg</button>
+                {reklamacioDrawingMode === "text" && <>
+                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, fontWeight: 800 }}>
+                    Méret
+                    <input
+                      type="number"
+                      min={12}
+                      max={72}
+                      value={reklamacioTextFontSize}
+                      onChange={(event) => updateSelectedReklamacioTextStyle({ fontSize: Math.max(12, Math.min(72, Number(event.target.value) || 24)) })}
+                      style={{ ...fieldStyle, width: 68, minHeight: 38, padding: "5px 7px" }}
+                    />
+                  </label>
+                  <button type="button" onClick={() => updateSelectedReklamacioTextStyle({ bold: !reklamacioTextBold })} style={reklamacioTextBold ? buttonPrimary : buttonSecondary}>Félkövér</button>
+                </>}
                 <button type="button" onClick={clearReklamacioCanvas} style={buttonSecondary}>Törlés</button>
-                <button type="button" onClick={saveReklamacioCanvasToDraft} style={buttonPrimary}>Rajz mentése</button>
-                <button type="button" onClick={closeReklamacioDrawing} style={buttonSecondary}>Bezárás</button>
+                <button type="button" disabled={reklamacioDrawingSaving} onClick={() => void saveReklamacioCanvasToDraft()} style={buttonPrimary}>{reklamacioDrawingSaving ? "Mentés..." : "Rajz mentése"}</button>
+                <button type="button" disabled={reklamacioDrawingSaving} onClick={closeReklamacioDrawing} style={buttonSecondary}>Bezárás</button>
               </div>
             </div>
-            <div style={{ background: "#ffffff", borderRadius: 8, overflow: "hidden", border: "1px solid #94a3b8", touchAction: "none", position: "relative" }}>
-              <canvas ref={reklamacioCanvasRef} width={1100} height={650} onPointerDown={handleReklamacioCanvasPointerDown} onPointerMove={handleReklamacioCanvasPointerMove} onPointerUp={handleReklamacioCanvasPointerUp} onPointerCancel={handleReklamacioCanvasPointerUp} style={{ display: "block", width: "100%", height: "auto", cursor: reklamacioDrawingMode === "erase" ? "cell" : reklamacioDrawingMode === "text" ? "text" : "crosshair", touchAction: "none" }} />
+            {reklamacioDrawingMode === "text" && <div style={{ marginBottom: 8, color: officeTheme.mutedText, fontSize: 12 }}>Húzz ki egy szövegdobozt a fehér területen, majd írj bele. A felső fogantyúval mozgatható, a jobb alsó sarokkal átméretezhető.</div>}
+            {reklamacioDrawingMode === "line" && <div style={{ marginBottom: 8, color: reklamacioLineActive ? "#86efac" : officeTheme.mutedText, fontSize: 12, fontWeight: 800 }}>{reklamacioLineActive ? "A vonallánc aktív: a következő kattintás újabb, 15°-ra igazított szakaszt rögzít. Befejezés: Esc vagy jobb kattintás." : "Kattints a kezdőpontra, majd a következő pontokra. A vonal mindig a legközelebbi 15°-os irányra ugrik."}</div>}
+            <div style={{ position: "relative", background: "#ffffff", borderRadius: 8, overflow: "hidden", border: "1px solid #94a3b8", touchAction: "none" }}>
+              <canvas
+                ref={reklamacioCanvasRef}
+                width={1100}
+                height={650}
+                onPointerDown={handleReklamacioCanvasPointerDown}
+                onPointerMove={handleReklamacioCanvasPointerMove}
+                onPointerUp={handleReklamacioCanvasPointerUp}
+                onPointerCancel={handleReklamacioCanvasPointerUp}
+                onContextMenu={(event) => { event.preventDefault(); if (reklamacioDrawingMode === "line") cancelReklamacioLineChain(); }}
+                style={{ display: "block", width: "100%", height: "auto", cursor: reklamacioDrawingMode === "erase" ? "cell" : "crosshair", touchAction: "none" }}
+              />
               <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
-                {reklamacioTextBoxes.map((textBox) => {
-                  const isSelected = reklamacioSelectedTextBoxId === textBox.id;
-                  const left = `${(textBox.x / 1100) * 100}%`;
-                  const top = `${(textBox.y / 650) * 100}%`;
-                  const width = `${(textBox.width / 1100) * 100}%`;
-                  const height = `${(textBox.height / 650) * 100}%`;
-                  const borderColor = isSelected ? officeTheme.accentColor : "rgba(15,23,42,0.45)";
-                  const handleStyle = (cursor: string, extra: React.CSSProperties = {}): React.CSSProperties => ({
-                    position: "absolute",
-                    width: 12,
-                    height: 12,
-                    borderRadius: 999,
-                    background: officeTheme.accentColor,
-                    border: "2px solid #ffffff",
-                    boxShadow: "0 1px 6px rgba(0,0,0,0.28)",
-                    cursor,
-                    pointerEvents: "auto",
-                    ...extra,
-                  });
-                  return (
-                    <div
-                      key={textBox.id}
-                      onPointerDown={(event) => beginReklamacioTextBoxInteraction(event, textBox.id, "move")}
-                      onPointerMove={handleReklamacioTextBoxPointerMove}
-                      onPointerUp={handleReklamacioTextBoxPointerUp}
-                      onPointerCancel={handleReklamacioTextBoxPointerUp}
-                      style={{
-                        position: "absolute",
-                        left,
-                        top,
-                        width,
-                        height,
-                        pointerEvents: "auto",
-                        border: `2px dashed ${borderColor}`,
-                        borderRadius: 6,
-                        background: textBox.editing ? "rgba(255,255,255,0.16)" : "transparent",
-                        boxSizing: "border-box",
-                        padding: 4,
-                        overflow: "hidden",
-                        userSelect: "none",
-                      }}
-                    >
-                      {textBox.editing ? (
-                        <textarea
-                          value={textBox.text}
-                          onChange={(event) => updateReklamacioTextBox(textBox.id, (current) => ({ ...current, text: event.target.value }))}
-                          onPointerDown={(event) => { event.stopPropagation(); activateReklamacioTextBox(textBox.id, true); }}
-                          onFocus={() => activateReklamacioTextBox(textBox.id, true)}
-                          spellCheck={false}
-                          placeholder="Írj ide..."
-                          style={{
-                            width: "100%",
-                            height: "100%",
-                            resize: "none",
-                            border: "none",
-                            outline: "none",
-                            background: "rgba(255,255,255,0.72)",
-                            color: "#111827",
-                            fontSize: textBox.fontSize,
-                            fontWeight: textBox.bold ? 700 : 400,
-                            lineHeight: 1.35,
-                            padding: 8,
-                            boxSizing: "border-box",
-                            borderRadius: 4,
-                            fontFamily: "Segoe UI, Arial, sans-serif",
-                          }}
-                        />
-                      ) : (
-                        <div
-                          onClick={(event) => { event.stopPropagation(); activateReklamacioTextBox(textBox.id, true); }}
-                          style={{
-                            width: "100%",
-                            height: "100%",
-                            color: "#111827",
-                            fontSize: textBox.fontSize,
-                            fontWeight: textBox.bold ? 700 : 400,
-                            lineHeight: 1.35,
-                            whiteSpace: "pre-wrap",
-                            overflow: "hidden",
-                            padding: 8,
-                            boxSizing: "border-box",
-                            fontFamily: "Segoe UI, Arial, sans-serif",
-                          }}
-                        >
-                          {textBox.text || " "}
-                        </div>
-                      )}
-                      {isSelected && ([
-                        { handle: "nw", cursor: "nwse-resize", style: { left: -6, top: -6 } },
-                        { handle: "ne", cursor: "nesw-resize", style: { right: -6, top: -6 } },
-                        { handle: "sw", cursor: "nesw-resize", style: { left: -6, bottom: -6 } },
-                        { handle: "se", cursor: "nwse-resize", style: { right: -6, bottom: -6 } },
-                      ] as Array<{ handle: ReklamacioTextResizeHandle; cursor: string; style: React.CSSProperties }>).map((handle) => (
-                        <div
-                          key={handle.handle}
-                          onPointerDown={(event) => beginReklamacioTextBoxInteraction(event, textBox.id, "resize", handle.handle)}
-                          onPointerMove={handleReklamacioTextBoxPointerMove}
-                          onPointerUp={handleReklamacioTextBoxPointerUp}
-                          onPointerCancel={handleReklamacioTextBoxPointerUp}
-                          style={handleStyle(handle.cursor, handle.style)}
-                        />
-                      ))}
-                    </div>
-                  );
+                {reklamacioDrawingTextBoxes.map((item) => {
+                  const selected = reklamacioSelectedTextBoxId === item.id;
+                  return <div
+                    key={item.id}
+                    onPointerDown={() => selectReklamacioDrawingTextBox(item)}
+                    style={{
+                      position: "absolute",
+                      left: `${(item.x / 1100) * 100}%`,
+                      top: `${(item.y / 650) * 100}%`,
+                      width: `${(item.width / 1100) * 100}%`,
+                      height: `${(item.height / 650) * 100}%`,
+                      minWidth: 58,
+                      minHeight: 34,
+                      pointerEvents: "auto",
+                      border: `2px ${selected ? "solid #2563eb" : "dashed #64748b"}`,
+                      background: "rgba(255,255,255,0.9)",
+                      boxSizing: "border-box",
+                    }}
+                  >
+                    <textarea
+                      id={`${item.id}-input`}
+                      value={item.text}
+                      onFocus={() => selectReklamacioDrawingTextBox(item)}
+                      onChange={(event) => updateReklamacioDrawingTextBox(item.id, { text: event.target.value })}
+                      placeholder="Írj ide..."
+                      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", resize: "none", border: 0, outline: 0, padding: "22px 8px 8px", boxSizing: "border-box", overflow: "hidden", color: "#111827", background: "transparent", fontFamily: "Arial, sans-serif", fontSize: item.fontSize, fontWeight: item.bold ? 700 : 400, lineHeight: 1.22 }}
+                    />
+                    <button
+                      type="button"
+                      aria-label="Szövegdoboz mozgatása"
+                      onPointerDown={(event) => beginReklamacioTextBoxInteraction(event, item, "move")}
+                      onPointerMove={moveOrResizeReklamacioTextBox}
+                      onPointerUp={endReklamacioTextBoxInteraction}
+                      onPointerCancel={endReklamacioTextBoxInteraction}
+                      style={{ position: "absolute", left: 3, top: 3, zIndex: 2, border: 0, borderRadius: 3, padding: "1px 6px", background: "#2563eb", color: "#ffffff", fontSize: 10, fontWeight: 900, cursor: "move", touchAction: "none" }}
+                    >Mozgatás</button>
+                    <button
+                      type="button"
+                      aria-label="Szövegdoboz törlése"
+                      onClick={(event) => { event.stopPropagation(); setReklamacioDrawingTextBoxes((current) => current.filter((box) => box.id !== item.id)); if (reklamacioSelectedTextBoxId === item.id) setReklamacioSelectedTextBoxId(""); }}
+                      style={{ position: "absolute", right: 3, top: 3, zIndex: 2, width: 20, height: 20, border: 0, borderRadius: 3, padding: 0, background: "#dc2626", color: "#ffffff", fontSize: 12, fontWeight: 900, cursor: "pointer" }}
+                    >×</button>
+                    <button
+                      type="button"
+                      aria-label="Szövegdoboz átméretezése"
+                      onPointerDown={(event) => beginReklamacioTextBoxInteraction(event, item, "resize")}
+                      onPointerMove={moveOrResizeReklamacioTextBox}
+                      onPointerUp={endReklamacioTextBoxInteraction}
+                      onPointerCancel={endReklamacioTextBoxInteraction}
+                      style={{ position: "absolute", right: 0, bottom: 0, zIndex: 2, width: 22, height: 22, border: 0, padding: 0, background: "#2563eb", color: "#ffffff", fontSize: 14, fontWeight: 900, cursor: "nwse-resize", touchAction: "none" }}
+                    >↘</button>
+                  </div>;
                 })}
               </div>
             </div>
