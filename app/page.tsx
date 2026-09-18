@@ -1305,6 +1305,20 @@ type ReklamacioDraft = {
   dirty: boolean;
 };
 
+type ReklamacioDrawingMode = "draw" | "erase" | "text";
+type ReklamacioTextResizeHandle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+type ReklamacioTextBox = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text: string;
+  fontSize: number;
+  bold: boolean;
+  editing: boolean;
+};
+
 type ReklamacioTableColumnId =
   | "rendelesszam"
   | "muhely"
@@ -9232,10 +9246,22 @@ export default function Page() {
   const reklamacioRealtimeRefreshTimerRef = useRef<number | null>(null);
   const [reklamacioDrawingRowKey, setReklamacioDrawingRowKey] = useState("");
   const [reklamacioDrawingSource, setReklamacioDrawingSource] = useState("");
-  const [reklamacioDrawingMode, setReklamacioDrawingMode] = useState<"draw" | "erase">("draw");
+  const [reklamacioDrawingMode, setReklamacioDrawingMode] = useState<ReklamacioDrawingMode>("draw");
+  const [reklamacioTextBoxes, setReklamacioTextBoxes] = useState<ReklamacioTextBox[]>([]);
+  const [reklamacioSelectedTextBoxId, setReklamacioSelectedTextBoxId] = useState("");
+  const [reklamacioTextFontSize, setReklamacioTextFontSize] = useState(24);
+  const [reklamacioTextBold, setReklamacioTextBold] = useState(false);
   const reklamacioCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const reklamacioDrawingActiveRef = useRef(false);
   const reklamacioDrawingLastPointRef = useRef<{ x: number; y: number } | null>(null);
+  const reklamacioTextInteractionRef = useRef<{
+    kind: "create" | "move" | "resize";
+    textBoxId: string;
+    pointerId: number;
+    startPoint: { x: number; y: number };
+    initialBox: ReklamacioTextBox;
+    handle?: ReklamacioTextResizeHandle;
+  } | null>(null);
 
   useEffect(() => {
     if (!reklamacioFilterMenu || typeof document === "undefined") return;
@@ -24434,9 +24460,27 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   function openReklamacioDrawing(row: ReklamacioViewRow): void {
     const draft = getReklamacioDraft(row);
+    reklamacioTextInteractionRef.current = null;
     setReklamacioDrawingMode("draw");
     setReklamacioDrawingSource(draft.rajzDataUrl || row.rajzUrl || "");
+    setReklamacioTextBoxes([]);
+    setReklamacioSelectedTextBoxId("");
+    setReklamacioTextFontSize(24);
+    setReklamacioTextBold(false);
     setReklamacioDrawingRowKey(row.key);
+  }
+
+  function closeReklamacioDrawing(): void {
+    reklamacioTextInteractionRef.current = null;
+    reklamacioDrawingActiveRef.current = false;
+    reklamacioDrawingLastPointRef.current = null;
+    setReklamacioDrawingMode("draw");
+    setReklamacioTextBoxes([]);
+    setReklamacioSelectedTextBoxId("");
+    setReklamacioTextFontSize(24);
+    setReklamacioTextBold(false);
+    setReklamacioDrawingRowKey("");
+    setReklamacioDrawingSource("");
   }
 
   function clearReklamacioCanvas(): void {
@@ -24446,25 +24490,125 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     context.globalCompositeOperation = "source-over";
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, canvas.width, canvas.height);
+    reklamacioTextInteractionRef.current = null;
+    setReklamacioTextBoxes([]);
+    setReklamacioSelectedTextBoxId("");
   }
 
-  function getReklamacioCanvasPoint(event: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } {
-    const canvas = event.currentTarget;
+  function getReklamacioCanvasPointFromClient(clientX: number, clientY: number): { x: number; y: number } {
+    const canvas = reklamacioCanvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
     return {
-      x: (event.clientX - rect.left) * (canvas.width / Math.max(rect.width, 1)),
-      y: (event.clientY - rect.top) * (canvas.height / Math.max(rect.height, 1)),
+      x: (clientX - rect.left) * (canvas.width / Math.max(rect.width, 1)),
+      y: (clientY - rect.top) * (canvas.height / Math.max(rect.height, 1)),
     };
+  }
+
+  function getReklamacioCanvasPoint(event: React.PointerEvent<Element>): { x: number; y: number } {
+    return getReklamacioCanvasPointFromClient(event.clientX, event.clientY);
+  }
+
+  function clampReklamacioCanvasPoint(point: { x: number; y: number }): { x: number; y: number } {
+    const canvas = reklamacioCanvasRef.current;
+    const maxX = canvas?.width || 1100;
+    const maxY = canvas?.height || 650;
+    return {
+      x: Math.min(maxX, Math.max(0, point.x)),
+      y: Math.min(maxY, Math.max(0, point.y)),
+    };
+  }
+
+  function clampReklamacioTextBox(box: ReklamacioTextBox): ReklamacioTextBox {
+    const canvas = reklamacioCanvasRef.current;
+    const canvasWidth = canvas?.width || 1100;
+    const canvasHeight = canvas?.height || 650;
+    const width = Math.min(Math.max(80, box.width), canvasWidth);
+    const height = Math.min(Math.max(44, box.height), canvasHeight);
+    return {
+      ...box,
+      width,
+      height,
+      x: Math.min(Math.max(0, box.x), Math.max(0, canvasWidth - width)),
+      y: Math.min(Math.max(0, box.y), Math.max(0, canvasHeight - height)),
+    };
+  }
+
+  function updateReklamacioTextBox(textBoxId: string, updater: (current: ReklamacioTextBox) => ReklamacioTextBox): void {
+    setReklamacioTextBoxes((current) => current.map((item) => item.id === textBoxId ? clampReklamacioTextBox(updater(item)) : item));
+  }
+
+  function activateReklamacioTextBox(textBoxId: string, editing = true): void {
+    setReklamacioSelectedTextBoxId(textBoxId);
+    setReklamacioTextBoxes((current) => current.map((item) => item.id === textBoxId ? { ...item, editing } : { ...item, editing: false }));
+    const active = reklamacioTextBoxes.find((item) => item.id === textBoxId);
+    if (active) {
+      setReklamacioTextFontSize(active.fontSize);
+      setReklamacioTextBold(active.bold);
+    }
+  }
+
+  function applyReklamacioTextStyle(update: { fontSize?: number; bold?: boolean }): void {
+    if (update.fontSize !== undefined) setReklamacioTextFontSize(update.fontSize);
+    if (update.bold !== undefined) setReklamacioTextBold(update.bold);
+    if (!reklamacioSelectedTextBoxId) return;
+    updateReklamacioTextBox(reklamacioSelectedTextBoxId, (current) => ({
+      ...current,
+      fontSize: update.fontSize ?? current.fontSize,
+      bold: update.bold ?? current.bold,
+    }));
   }
 
   function handleReklamacioCanvasPointerDown(event: React.PointerEvent<HTMLCanvasElement>): void {
     event.preventDefault();
+    if (reklamacioDrawingMode === "text") {
+      const startPoint = clampReklamacioCanvasPoint(getReklamacioCanvasPoint(event));
+      const textBoxId = `reklamacio-text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const newTextBox: ReklamacioTextBox = {
+        id: textBoxId,
+        x: startPoint.x,
+        y: startPoint.y,
+        width: 140,
+        height: Math.max(72, reklamacioTextFontSize * 3),
+        text: "",
+        fontSize: reklamacioTextFontSize,
+        bold: reklamacioTextBold,
+        editing: true,
+      };
+      reklamacioTextInteractionRef.current = {
+        kind: "create",
+        textBoxId,
+        pointerId: event.pointerId,
+        startPoint,
+        initialBox: newTextBox,
+      };
+      setReklamacioTextBoxes((current) => [...current.map((item) => ({ ...item, editing: false })), newTextBox]);
+      setReklamacioSelectedTextBoxId(textBoxId);
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      return;
+    }
+    reklamacioTextInteractionRef.current = null;
+    setReklamacioSelectedTextBoxId("");
+    setReklamacioTextBoxes((current) => current.map((item) => ({ ...item, editing: false })));
     reklamacioDrawingActiveRef.current = true;
     reklamacioDrawingLastPointRef.current = getReklamacioCanvasPoint(event);
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }
 
   function handleReklamacioCanvasPointerMove(event: React.PointerEvent<HTMLCanvasElement>): void {
+    const textInteraction = reklamacioTextInteractionRef.current;
+    if (textInteraction?.kind === "create") {
+      const point = clampReklamacioCanvasPoint(getReklamacioCanvasPoint(event));
+      const start = textInteraction.startPoint;
+      updateReklamacioTextBox(textInteraction.textBoxId, (current) => ({
+        ...current,
+        x: Math.min(start.x, point.x),
+        y: Math.min(start.y, point.y),
+        width: Math.max(140, Math.abs(point.x - start.x)),
+        height: Math.max(Math.max(72, current.fontSize * 3), Math.abs(point.y - start.y)),
+      }));
+      return;
+    }
     if (!reklamacioDrawingActiveRef.current) return;
     const canvas = event.currentTarget;
     const context = canvas.getContext("2d");
@@ -24486,17 +24630,135 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   function handleReklamacioCanvasPointerUp(event: React.PointerEvent<HTMLCanvasElement>): void {
+    const textInteraction = reklamacioTextInteractionRef.current;
+    if (textInteraction?.kind === "create" && textInteraction.pointerId === event.pointerId) {
+      reklamacioTextInteractionRef.current = null;
+      activateReklamacioTextBox(textInteraction.textBoxId, true);
+      try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch {}
+      return;
+    }
     reklamacioDrawingActiveRef.current = false;
     reklamacioDrawingLastPointRef.current = null;
     try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch {}
   }
 
+  function beginReklamacioTextBoxInteraction(
+    event: React.PointerEvent<HTMLElement>,
+    textBoxId: string,
+    kind: "move" | "resize",
+    handle?: ReklamacioTextResizeHandle,
+  ): void {
+    event.preventDefault();
+    event.stopPropagation();
+    const currentTextBox = reklamacioTextBoxes.find((item) => item.id === textBoxId);
+    if (!currentTextBox) return;
+    reklamacioTextInteractionRef.current = {
+      kind,
+      textBoxId,
+      pointerId: event.pointerId,
+      startPoint: clampReklamacioCanvasPoint(getReklamacioCanvasPoint(event)),
+      initialBox: currentTextBox,
+      handle,
+    };
+    activateReklamacioTextBox(textBoxId, true);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function handleReklamacioTextBoxPointerMove(event: React.PointerEvent<HTMLElement>): void {
+    const interaction = reklamacioTextInteractionRef.current;
+    if (!interaction || interaction.pointerId !== event.pointerId || interaction.kind === "create") return;
+    const point = clampReklamacioCanvasPoint(getReklamacioCanvasPoint(event));
+    if (interaction.kind === "move") {
+      const dx = point.x - interaction.startPoint.x;
+      const dy = point.y - interaction.startPoint.y;
+      updateReklamacioTextBox(interaction.textBoxId, (current) => ({
+        ...current,
+        x: interaction.initialBox.x + dx,
+        y: interaction.initialBox.y + dy,
+      }));
+      return;
+    }
+    const handle = interaction.handle || "se";
+    const minimumWidth = 80;
+    const minimumHeight = 44;
+    let left = interaction.initialBox.x;
+    let top = interaction.initialBox.y;
+    let right = interaction.initialBox.x + interaction.initialBox.width;
+    let bottom = interaction.initialBox.y + interaction.initialBox.height;
+    if (handle.includes("w")) left = Math.min(point.x, right - minimumWidth);
+    if (handle.includes("e")) right = Math.max(point.x, left + minimumWidth);
+    if (handle.includes("n")) top = Math.min(point.y, bottom - minimumHeight);
+    if (handle.includes("s")) bottom = Math.max(point.y, top + minimumHeight);
+    updateReklamacioTextBox(interaction.textBoxId, (current) => ({
+      ...current,
+      x: left,
+      y: top,
+      width: right - left,
+      height: bottom - top,
+    }));
+  }
+
+  function handleReklamacioTextBoxPointerUp(event: React.PointerEvent<HTMLElement>): void {
+    const interaction = reklamacioTextInteractionRef.current;
+    if (!interaction || interaction.pointerId !== event.pointerId || interaction.kind === "create") return;
+    reklamacioTextInteractionRef.current = null;
+    try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch {}
+  }
+
+  function renderReklamacioTextBoxesToCanvas(context: CanvasRenderingContext2D): void {
+    reklamacioTextBoxes.forEach((textBox) => {
+      const content = String(textBox.text || "");
+      if (!content.trim()) return;
+      const padding = 8;
+      const lineHeight = Math.max(20, Math.round(textBox.fontSize * 1.35));
+      const maxWidth = Math.max(10, textBox.width - padding * 2);
+      const paragraphs = content.replace(/\r/g, "").split("\n");
+      const lines: string[] = [];
+      context.save();
+      context.beginPath();
+      context.rect(textBox.x, textBox.y, textBox.width, textBox.height);
+      context.clip();
+      context.fillStyle = "#111827";
+      context.textBaseline = "top";
+      context.font = `${textBox.bold ? 700 : 400} ${textBox.fontSize}px Segoe UI, Arial, sans-serif`;
+      paragraphs.forEach((paragraph) => {
+        if (!paragraph) {
+          lines.push("");
+          return;
+        }
+        const words = paragraph.split(/\s+/).filter(Boolean);
+        if (words.length === 0) {
+          lines.push("");
+          return;
+        }
+        let currentLine = words[0];
+        for (let index = 1; index < words.length; index += 1) {
+          const nextLine = `${currentLine} ${words[index]}`;
+          if (context.measureText(nextLine).width <= maxWidth) currentLine = nextLine;
+          else {
+            lines.push(currentLine);
+            currentLine = words[index];
+          }
+        }
+        lines.push(currentLine);
+      });
+      let y = textBox.y + padding;
+      for (const line of lines) {
+        if (y + lineHeight > textBox.y + textBox.height + 0.5) break;
+        context.fillText(line, textBox.x + padding, y, maxWidth);
+        y += lineHeight;
+      }
+      context.restore();
+    });
+  }
+
   function saveReklamacioCanvasToDraft(): void {
     const canvas = reklamacioCanvasRef.current;
-    if (!canvas || !reklamacioDrawingRowKey) return;
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context || !reklamacioDrawingRowKey) return;
+    renderReklamacioTextBoxesToCanvas(context);
     updateReklamacioDraft(reklamacioDrawingRowKey, { rajzDataUrl: canvas.toDataURL("image/png") });
-    setReklamacioDrawingRowKey("");
-    setReklamacioDrawingSource("");
+    closeReklamacioDrawing();
   }
 
   function AtvetelAdmin(): React.JSX.Element {
@@ -25335,8 +25597,146 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
         {reklamacioDrawingRowKey && <div style={{ position: "fixed", inset: 0, zIndex: 30000, background: "rgba(2,6,23,0.82)", display: "grid", placeItems: "center", padding: 18 }}>
           <div data-office-window="reklamacio:drawing" style={{ width: "min(1180px, 96vw)", maxHeight: "94vh", overflow: "auto", padding: 14, borderRadius: 14, background: officeTheme.panelBackground, border: `2px solid ${officeTheme.accentColor}`, color: officeTheme.textColor, boxShadow: "0 24px 70px rgba(0,0,0,0.65)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}><div><strong style={{ fontSize: 20 }}>Reklamációs rajz</strong><div style={{ color: officeTheme.mutedText, fontSize: 11 }}>A mentett PNG a Supabase Storage-ba kerül, a publikus URL Power BI-ban képként használható.</div></div><div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}><button type="button" onClick={() => setReklamacioDrawingMode("draw")} style={reklamacioDrawingMode === "draw" ? buttonPrimary : buttonSecondary}>Rajzolás</button><button type="button" onClick={() => setReklamacioDrawingMode("erase")} style={reklamacioDrawingMode === "erase" ? buttonPrimary : buttonSecondary}>Radír</button><button type="button" onClick={clearReklamacioCanvas} style={buttonSecondary}>Törlés</button><button type="button" onClick={saveReklamacioCanvasToDraft} style={buttonPrimary}>Rajz mentése</button><button type="button" onClick={() => { setReklamacioDrawingRowKey(""); setReklamacioDrawingSource(""); }} style={buttonSecondary}>Bezárás</button></div></div>
-            <div style={{ background: "#ffffff", borderRadius: 8, overflow: "hidden", border: "1px solid #94a3b8", touchAction: "none" }}><canvas ref={reklamacioCanvasRef} width={1100} height={650} onPointerDown={handleReklamacioCanvasPointerDown} onPointerMove={handleReklamacioCanvasPointerMove} onPointerUp={handleReklamacioCanvasPointerUp} onPointerCancel={handleReklamacioCanvasPointerUp} style={{ display: "block", width: "100%", height: "auto", cursor: reklamacioDrawingMode === "erase" ? "cell" : "crosshair", touchAction: "none" }} /></div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+              <div>
+                <strong style={{ fontSize: 20 }}>Reklamációs rajz</strong>
+                <div style={{ color: officeTheme.mutedText, fontSize: 11 }}>A mentett PNG a Supabase Storage-ba kerül, a publikus URL Power BI-ban képként használható.</div>
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
+                <button type="button" onClick={() => setReklamacioDrawingMode("draw")} style={reklamacioDrawingMode === "draw" ? buttonPrimary : buttonSecondary}>Rajzolás</button>
+                <button type="button" onClick={() => setReklamacioDrawingMode("erase")} style={reklamacioDrawingMode === "erase" ? buttonPrimary : buttonSecondary}>Radír</button>
+                <button type="button" onClick={() => setReklamacioDrawingMode("text")} style={reklamacioDrawingMode === "text" ? buttonPrimary : buttonSecondary}>Szöveg</button>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderRadius: 10, border: `1px solid ${officeTheme.borderColor}`, background: officeTheme.panelAltBackground, color: officeTheme.textColor, fontSize: 12, fontWeight: 800 }}>
+                  Betűméret
+                  <input
+                    type="number"
+                    min={12}
+                    max={72}
+                    step={1}
+                    value={reklamacioTextFontSize}
+                    onChange={(event) => {
+                      const next = Math.min(72, Math.max(12, Number(event.target.value) || 24));
+                      applyReklamacioTextStyle({ fontSize: next });
+                    }}
+                    style={{ width: 72, padding: "6px 8px", borderRadius: 8, border: `1px solid ${officeTheme.borderColor}`, background: officeTheme.inputBackground, color: officeTheme.inputText, fontWeight: 700 }}
+                  />
+                </label>
+                <button type="button" onClick={() => applyReklamacioTextStyle({ bold: !reklamacioTextBold })} style={reklamacioTextBold ? buttonPrimary : buttonSecondary}>Félkövér</button>
+                <button type="button" onClick={clearReklamacioCanvas} style={buttonSecondary}>Törlés</button>
+                <button type="button" onClick={saveReklamacioCanvasToDraft} style={buttonPrimary}>Rajz mentése</button>
+                <button type="button" onClick={closeReklamacioDrawing} style={buttonSecondary}>Bezárás</button>
+              </div>
+            </div>
+            <div style={{ background: "#ffffff", borderRadius: 8, overflow: "hidden", border: "1px solid #94a3b8", touchAction: "none", position: "relative" }}>
+              <canvas ref={reklamacioCanvasRef} width={1100} height={650} onPointerDown={handleReklamacioCanvasPointerDown} onPointerMove={handleReklamacioCanvasPointerMove} onPointerUp={handleReklamacioCanvasPointerUp} onPointerCancel={handleReklamacioCanvasPointerUp} style={{ display: "block", width: "100%", height: "auto", cursor: reklamacioDrawingMode === "erase" ? "cell" : reklamacioDrawingMode === "text" ? "text" : "crosshair", touchAction: "none" }} />
+              <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+                {reklamacioTextBoxes.map((textBox) => {
+                  const isSelected = reklamacioSelectedTextBoxId === textBox.id;
+                  const left = `${(textBox.x / 1100) * 100}%`;
+                  const top = `${(textBox.y / 650) * 100}%`;
+                  const width = `${(textBox.width / 1100) * 100}%`;
+                  const height = `${(textBox.height / 650) * 100}%`;
+                  const borderColor = isSelected ? officeTheme.accentColor : "rgba(15,23,42,0.45)";
+                  const handleStyle = (cursor: string, extra: React.CSSProperties = {}): React.CSSProperties => ({
+                    position: "absolute",
+                    width: 12,
+                    height: 12,
+                    borderRadius: 999,
+                    background: officeTheme.accentColor,
+                    border: "2px solid #ffffff",
+                    boxShadow: "0 1px 6px rgba(0,0,0,0.28)",
+                    cursor,
+                    pointerEvents: "auto",
+                    ...extra,
+                  });
+                  return (
+                    <div
+                      key={textBox.id}
+                      onPointerDown={(event) => beginReklamacioTextBoxInteraction(event, textBox.id, "move")}
+                      onPointerMove={handleReklamacioTextBoxPointerMove}
+                      onPointerUp={handleReklamacioTextBoxPointerUp}
+                      onPointerCancel={handleReklamacioTextBoxPointerUp}
+                      style={{
+                        position: "absolute",
+                        left,
+                        top,
+                        width,
+                        height,
+                        pointerEvents: "auto",
+                        border: `2px dashed ${borderColor}`,
+                        borderRadius: 6,
+                        background: textBox.editing ? "rgba(255,255,255,0.16)" : "transparent",
+                        boxSizing: "border-box",
+                        padding: 4,
+                        overflow: "hidden",
+                        userSelect: "none",
+                      }}
+                    >
+                      {textBox.editing ? (
+                        <textarea
+                          value={textBox.text}
+                          onChange={(event) => updateReklamacioTextBox(textBox.id, (current) => ({ ...current, text: event.target.value }))}
+                          onPointerDown={(event) => { event.stopPropagation(); activateReklamacioTextBox(textBox.id, true); }}
+                          onFocus={() => activateReklamacioTextBox(textBox.id, true)}
+                          spellCheck={false}
+                          placeholder="Írj ide..."
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            resize: "none",
+                            border: "none",
+                            outline: "none",
+                            background: "rgba(255,255,255,0.72)",
+                            color: "#111827",
+                            fontSize: textBox.fontSize,
+                            fontWeight: textBox.bold ? 700 : 400,
+                            lineHeight: 1.35,
+                            padding: 8,
+                            boxSizing: "border-box",
+                            borderRadius: 4,
+                            fontFamily: "Segoe UI, Arial, sans-serif",
+                          }}
+                        />
+                      ) : (
+                        <div
+                          onClick={(event) => { event.stopPropagation(); activateReklamacioTextBox(textBox.id, true); }}
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            color: "#111827",
+                            fontSize: textBox.fontSize,
+                            fontWeight: textBox.bold ? 700 : 400,
+                            lineHeight: 1.35,
+                            whiteSpace: "pre-wrap",
+                            overflow: "hidden",
+                            padding: 8,
+                            boxSizing: "border-box",
+                            fontFamily: "Segoe UI, Arial, sans-serif",
+                          }}
+                        >
+                          {textBox.text || " "}
+                        </div>
+                      )}
+                      {isSelected && ([
+                        { handle: "nw", cursor: "nwse-resize", style: { left: -6, top: -6 } },
+                        { handle: "ne", cursor: "nesw-resize", style: { right: -6, top: -6 } },
+                        { handle: "sw", cursor: "nesw-resize", style: { left: -6, bottom: -6 } },
+                        { handle: "se", cursor: "nwse-resize", style: { right: -6, bottom: -6 } },
+                      ] as Array<{ handle: ReklamacioTextResizeHandle; cursor: string; style: React.CSSProperties }>).map((handle) => (
+                        <div
+                          key={handle.handle}
+                          onPointerDown={(event) => beginReklamacioTextBoxInteraction(event, textBox.id, "resize", handle.handle)}
+                          onPointerMove={handleReklamacioTextBoxPointerMove}
+                          onPointerUp={handleReklamacioTextBoxPointerUp}
+                          onPointerCancel={handleReklamacioTextBoxPointerUp}
+                          style={handleStyle(handle.cursor, handle.style)}
+                        />
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>}
       </div>
