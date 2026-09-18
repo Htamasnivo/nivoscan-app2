@@ -1317,6 +1317,10 @@ type ReklamacioViewRow = {
   canClose: boolean;
 };
 
+type ReklamacioReportRow = ReklamacioViewRow & {
+  createdByWorkerName: string;
+};
+
 type ReklamacioDraft = {
   rendelesszam: string;
   muhely: ReklamacioWorkshop;
@@ -11676,24 +11680,45 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   async function fetchReklamacioReportRows(
     profile: ReportDeliveryProfile,
-    range: { startIso: string; endIso: string }
-  ): Promise<ReklamacioViewRow[]> {
+    range: { startIso: string; endIso: string },
+    scope: "range" | "open-and-today-completed" = "range"
+  ): Promise<ReklamacioReportRow[]> {
     if (!supabase) return [];
-    const response = await supabase
-      .from(REKLAMACIO_TABLE)
-      .select("id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
-      .gte("created_at", range.startIso)
-      .lt("created_at", range.endIso)
-      .order("created_at", { ascending: true })
-      .limit(10000);
-    if (response.error) throw response.error;
+    const reklamacioSelectColumns = "id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at";
+    let sourceRows: ReklamacioDbRow[] = [];
+    if (scope === "open-and-today-completed") {
+      const todayKey = getSafeReportDeliveryTodayKey();
+      const todayRange = getDashboardDateRange("custom", todayKey, todayKey);
+      const [openResponse, completedTodayResponse] = await Promise.all([
+        supabase.from(REKLAMACIO_TABLE).select(reklamacioSelectColumns).or("lezart.eq.false,lezart.is.null").order("created_at", { ascending: true }).limit(10000),
+        supabase.from(REKLAMACIO_TABLE).select(reklamacioSelectColumns).gte("kesz_datum", todayRange.startIso).lt("kesz_datum", todayRange.endIso).order("created_at", { ascending: true }).limit(10000),
+      ]);
+      if (openResponse.error) throw openResponse.error;
+      if (completedTodayResponse.error) throw completedTodayResponse.error;
+      const uniqueRows = new Map<string, ReklamacioDbRow>();
+      [...((openResponse.data || []) as ReklamacioDbRow[]), ...((completedTodayResponse.data || []) as ReklamacioDbRow[])].forEach((row) => {
+        const key = String(row.id || row.rendelesszam || "");
+        if (key) uniqueRows.set(key, row);
+      });
+      sourceRows = Array.from(uniqueRows.values()).sort((left, right) => String(left.created_at || "").localeCompare(String(right.created_at || "")));
+    } else {
+      const response = await supabase
+        .from(REKLAMACIO_TABLE)
+        .select(reklamacioSelectColumns)
+        .gte("created_at", range.startIso)
+        .lt("created_at", range.endIso)
+        .order("created_at", { ascending: true })
+        .limit(10000);
+      if (response.error) throw response.error;
+      sourceRows = (response.data || []) as ReklamacioDbRow[];
+    }
 
     const orderFilters = parseReportDeliveryOrderFilters(profile.orderFilter);
-    const dbRows = ((response.data || []) as ReklamacioDbRow[]).filter((row) => {
+    const dbRows = sourceRows.filter((row) => {
       const orderNumber = String(row.rendelesszam || "").trim();
       if (!orderNumber) return false;
-      if (orderFilters.length > 0 && !matchesDashboardOrderFilters(orderNumber, orderFilters)) return false;
-      if (profile.workerFilter !== "all" && normalizeLooseText(String(row.created_by_worker_name || "")) !== normalizeLooseText(profile.workerFilter)) return false;
+      if (scope === "range" && orderFilters.length > 0 && !matchesDashboardOrderFilters(orderNumber, orderFilters)) return false;
+      if (scope === "range" && profile.workerFilter !== "all" && normalizeLooseText(String(row.created_by_worker_name || "")) !== normalizeLooseText(profile.workerFilter)) return false;
       return true;
     });
 
@@ -11785,7 +11810,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         gyartandoTetelek: String(dbRow.gyartando_tetelek || ""), kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
         rajzUrl: legacyDrawingUrl, drawings, mentesDatum: String(dbRow.mentes_datum || ""), gyartasbaTerveDatum,
         keszDatum: String(dbRow.kesz_datum || ""), lezart: Boolean(dbRow.lezart), createdAt: String(dbRow.created_at || ""),
-        updatedAt: String(dbRow.updated_at || ""), stationStates,
+        updatedAt: String(dbRow.updated_at || ""), createdByWorkerName: String(dbRow.created_by_worker_name || "").trim(), stationStates,
         canClose: presentStates.length > 0 && presentStates.every((state) => state.status === "done"),
       };
     });
@@ -11939,7 +11964,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       doc.setFont(PDF_FONT_FAMILY, "normal");
       doc.setFontSize(6.7);
       doc.text(profile.reportType === "reklamacio"
-        ? "Az időszakban felvett reklamációk nyomtatható összesítője, gyártási állapotokkal és rajzhivatkozásokkal."
+        ? "Az időszakban felvett reklamációk, valamint a nyitott és a mai napon elkészült reklamációk nyomtatható összesítője."
         : "A mentett profil szűrése alapján automatikusan generált termelési riport.", marginX + 108, 137, { maxWidth: contentWidth - 120 });
       return 166;
     };
@@ -11963,6 +11988,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     const ensureSpace = (needed = 100): void => {
       if (y + needed <= footerY - 10) return;
+      pdf.addPage("a4", "portrait");
+      y = drawHeader(true);
+    };
+
+    const startNewReportPage = (): void => {
       pdf.addPage("a4", "portrait");
       y = drawHeader(true);
     };
@@ -12130,53 +12160,49 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     };
 
     const addReklamacioReport = async (): Promise<void> => {
-      const rows = await fetchReklamacioReportRows(profile, range);
+      const [rows, statusRows] = await Promise.all([
+        fetchReklamacioReportRows(profile, range, "range"),
+        fetchReklamacioReportRows(profile, range, "open-and-today-completed"),
+      ]);
       const openCount = rows.filter((row) => !row.lezart).length;
       const closedCount = rows.filter((row) => row.lezart).length;
-      const drawingCount = rows.reduce((sum, row) => sum + row.drawings.length, 0);
 
       addSection(
         "Reklamációs összesítő",
-        [["Időszak", "Felvett reklamáció", "Nyitott", "Lezárt", "Rajzok száma"]],
-        [[range.label, rows.length, openCount, closedCount, drawingCount]]
+        [["Időszak", "Felvett reklamáció", "Nyitott", "Lezárt"]],
+        [[range.label, rows.length, openCount, closedCount]]
       );
 
+      startNewReportPage();
       addSection(
         "Az adott időszakban felvett reklamációk",
-        [["Rendelésszám", "Műhely", "Gyártandó tételek", "Kért dátum", "Felvétel", "Mentés"]],
+        [["Rendelésszám", "Műhely", "Gyártandó tételek", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"]],
         rows.map((row) => [
           row.rendelesszam || "-",
           row.muhely || "-",
           row.gyartandoTetelek || "-",
           row.kertDatum || "-",
           row.createdAt ? formatDateTimeMinute(row.createdAt) : "-",
+          row.createdByWorkerName || "-",
           row.mentesDatum ? formatDateTimeMinute(row.mentesDatum) : "-",
         ])
       );
 
+      startNewReportPage();
       addSection(
         "Gyártási és munkaállomás állapotok",
-        [["Rendelésszám", "Munkaállomások állapota", "Gyártásba téve", "Kész dátum", "Állapot"]],
-        rows.map((row) => [
+        [["Rendelésszám", "Munkaállomások állapota", "Felvétel", "Kért dátum", "Gyártásba téve", "Kész dátum", "Állapot"]],
+        statusRows.map((row) => [
           row.rendelesszam || "-",
           row.stationStates.length > 0
             ? row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join("\n")
             : "-",
+          row.createdAt ? formatDateTimeMinute(row.createdAt) : "-",
+          row.kertDatum || "-",
           row.gyartasbaTerveDatum ? formatDateOnly(row.gyartasbaTerveDatum) : "-",
           row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "-",
-          row.lezart ? "Lezárva" : "Nyitott",
+          row.lezart ? "Kész" : "Nyitott",
         ])
-      );
-
-      const drawingRows = rows.flatMap((row) => row.drawings.map((drawing, index) => [
-        row.rendelesszam || "-",
-        `${index + 1}. ${drawing.name || "Rajz"}`,
-        drawing.url || "-",
-      ]));
-      addSection(
-        "Reklamációs rajzok – Power BI URL-ek",
-        [["Rendelésszám", "Rajz neve", "Publikus URL"]],
-        drawingRows
       );
     };
 
