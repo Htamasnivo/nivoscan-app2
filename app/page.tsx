@@ -5487,7 +5487,7 @@ async function fetchMachineIdRowsDirectly(): Promise<MachineIdRow[]> {
 
   for (const endpoint of endpoints) {
     try {
-      const response = await fetch(endpoint, {
+      const response = await nivoGuardedSupabaseFetch(endpoint, {
         method: "GET",
         headers: {
           apikey: SUPABASE_ANON_KEY,
@@ -5738,12 +5738,148 @@ const buttonSecondary: React.CSSProperties = {
   lineHeight: 1.25,
 };
 
+const NIVO_SUPABASE_REQUEST_TIMEOUT_MS = 15_000;
+const nivoSupabaseReadRequests = new Map<string, Promise<Response>>();
+
+type NivoFetchInput = Parameters<typeof fetch>[0];
+type NivoFetchInit = Parameters<typeof fetch>[1];
+
+function nivoSupabaseReadRequestKey(input: NivoFetchInput, init?: NivoFetchInit): string | null {
+  const request = typeof Request !== "undefined" && input instanceof Request ? input : null;
+  const method = String(init?.method || request?.method || "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") return null;
+
+  const url = typeof input === "string"
+    ? input
+    : (typeof URL !== "undefined" && input instanceof URL ? input.toString() : request?.url || String(input));
+  const headers = new Headers(request?.headers);
+  if (init?.headers) {
+    new Headers(init.headers).forEach((value, name) => headers.set(name, value));
+  }
+  const headerKey = Array.from(headers.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, value]) => `${name}:${value}`)
+    .join("|");
+
+  return `${method}:${url}:${headerKey}`;
+}
+
+async function nivoFetchWithTimeout(input: NivoFetchInput, init?: NivoFetchInit): Promise<Response> {
+  const timeoutController = new AbortController();
+  const request = typeof Request !== "undefined" && input instanceof Request ? input : null;
+  const sourceSignal = init?.signal || request?.signal;
+  const forwardAbort = (): void => timeoutController.abort();
+
+  if (sourceSignal?.aborted) {
+    timeoutController.abort();
+  } else {
+    sourceSignal?.addEventListener("abort", forwardAbort, { once: true });
+  }
+
+  const timeoutId = setTimeout(() => timeoutController.abort(), NIVO_SUPABASE_REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(input, { ...init, signal: timeoutController.signal });
+  } finally {
+    clearTimeout(timeoutId);
+    sourceSignal?.removeEventListener("abort", forwardAbort);
+  }
+}
+
+function nivoGuardedSupabaseFetch(input: NivoFetchInput, init?: NivoFetchInit): Promise<Response> {
+  const requestKey = nivoSupabaseReadRequestKey(input, init);
+  // Az írási műveletek működését változatlanul hagyjuk; a védelem kizárólag
+  // az automatikusan ismétlődő GET/HEAD lekérdezésekre vonatkozik.
+  if (!requestKey) return fetch(input, init);
+
+  const existingRequest = nivoSupabaseReadRequests.get(requestKey);
+  if (existingRequest) return existingRequest.then((response) => response.clone());
+
+  let requestPromise: Promise<Response>;
+  requestPromise = nivoFetchWithTimeout(input, init).finally(() => {
+    if (nivoSupabaseReadRequests.get(requestKey) === requestPromise) {
+      nivoSupabaseReadRequests.delete(requestKey);
+    }
+  });
+  nivoSupabaseReadRequests.set(requestKey, requestPromise);
+  return requestPromise.then((response) => response.clone());
+}
+
+let nivoRefreshWarningTimer: ReturnType<typeof setTimeout> | null = null;
+
+function showNivoRefreshBlockedWarning(): void {
+  if (typeof document === "undefined") return;
+  const noticeId = "nivo-manual-refresh-blocked-warning";
+  let notice = document.getElementById(noticeId);
+  if (!notice) {
+    notice = document.createElement("div");
+    notice.id = noticeId;
+    notice.setAttribute("role", "status");
+    notice.setAttribute("aria-live", "polite");
+    Object.assign(notice.style, {
+      position: "fixed",
+      top: "18px",
+      left: "50%",
+      transform: "translateX(-50%)",
+      zIndex: "2147483647",
+      maxWidth: "min(92vw, 720px)",
+      padding: "14px 18px",
+      borderRadius: "12px",
+      border: "1px solid #f59e0b",
+      background: "#451a03",
+      color: "#fef3c7",
+      boxShadow: "0 18px 48px rgba(0,0,0,0.45)",
+      fontFamily: "Arial, sans-serif",
+      fontSize: "15px",
+      fontWeight: "800",
+      textAlign: "center",
+      pointerEvents: "none",
+    });
+    document.body.appendChild(notice);
+  }
+  notice.textContent = "A kézi oldalfrissítés le van tiltva a rendszer stabilitása érdekében. Az automatikus frissítés továbbra is működik.";
+
+  if (nivoRefreshWarningTimer !== null) clearTimeout(nivoRefreshWarningTimer);
+  nivoRefreshWarningTimer = setTimeout(() => {
+    document.getElementById(noticeId)?.remove();
+    nivoRefreshWarningTimer = null;
+  }, 3_500);
+}
+
+function installNivoManualRefreshGuard(): () => void {
+  if (typeof window === "undefined") return () => undefined;
+
+  const handleKeyDown = (event: KeyboardEvent): void => {
+    const key = String(event.key || "").toLowerCase();
+    const isF5 = event.key === "F5" || event.code === "F5";
+    const isKeyboardRefresh = (event.ctrlKey || event.metaKey) && key === "r";
+    if (!isF5 && !isKeyboardRefresh) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    if (!event.repeat) showNivoRefreshBlockedWarning();
+  };
+
+  window.addEventListener("keydown", handleKeyDown, true);
+  return () => {
+    window.removeEventListener("keydown", handleKeyDown, true);
+    if (nivoRefreshWarningTimer !== null) {
+      clearTimeout(nivoRefreshWarningTimer);
+      nivoRefreshWarningTimer = null;
+    }
+    document.getElementById("nivo-manual-refresh-blocked-warning")?.remove();
+  };
+}
+
 const supabase: SupabaseClient | null =
   SUPABASE_URL.startsWith("https://") && !!SUPABASE_ANON_KEY
     ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
         auth: {
           persistSession: false,
           autoRefreshToken: false,
+        },
+        global: {
+          fetch: nivoGuardedSupabaseFetch,
         },
       })
     : null;
@@ -9151,6 +9287,8 @@ export default function Page() {
   const [step, setStepState] = useState<1 | 2 | 3 | 4 | 5 | 6 | 7>(1);
   const [stepHistory, setStepHistory] = useState<number[]>([]);
   const stepRef = useRef<1 | 2 | 3 | 4 | 5 | 6 | 7>(1);
+
+  useEffect(() => installNivoManualRefreshGuard(), []);
 
   function setStep(nextStep: 1 | 2 | 3 | 4 | 5 | 6 | 7): void {
     const currentStep = stepRef.current;
