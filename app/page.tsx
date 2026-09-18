@@ -586,7 +586,7 @@ type DashboardData = {
 };
 
 type DashboardFilterMode = "daily" | "weekly" | "monthly" | "custom";
-type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "pause-report" | "reproduction-report" | "atvetel" | "label-printer" | "executive-report" | "report-delivery" | "data-upload";
+type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "pause-report" | "reproduction-report" | "atvetel" | "reklamacio" | "label-printer" | "executive-report" | "report-delivery" | "data-upload";
 type OfficePageKey = ManagementSection;
 
 type PausedSzerelesRow = {
@@ -838,11 +838,11 @@ function createDefaultOfficeThemeMap(): Record<OfficePageKey, OfficeThemeConfig>
   const base = OFFICE_THEME_PRESETS["industrial-night"].theme;
   return {
     dashboard: cloneOfficeTheme(base), "production-plan": cloneOfficeTheme(base), "production-monitor": cloneOfficeTheme(base),
-    "production-card": cloneOfficeTheme(base), "pause-report": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "atvetel": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "executive-report": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base), "data-upload": cloneOfficeTheme(base),
+    "production-card": cloneOfficeTheme(base), "pause-report": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "atvetel": cloneOfficeTheme(base), "reklamacio": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "executive-report": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base), "data-upload": cloneOfficeTheme(base),
   };
 }
 function createDefaultOfficeThemePresetMap(): Record<OfficePageKey, OfficeThemePresetId> {
-  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "pause-report":"industrial-night", "reproduction-report":"industrial-night", "atvetel":"industrial-night", "label-printer":"industrial-night", "executive-report":"industrial-night", "report-delivery":"industrial-night", "data-upload":"industrial-night" };
+  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "pause-report":"industrial-night", "reproduction-report":"industrial-night", "atvetel":"industrial-night", "reklamacio":"industrial-night", "label-printer":"industrial-night", "executive-report":"industrial-night", "report-delivery":"industrial-night", "data-upload":"industrial-night" };
 }
 
 const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]> = {
@@ -873,6 +873,12 @@ const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]>
     { id:"navigation", label:"Felső menüsor" },
     { id:"header", label:"Átvétel fejléc és szűrők" },
     { id:"table", label:"Átvételi monitor" },
+  ],
+  "reklamacio": [
+    { id:"navigation", label:"Felső menüsor" },
+    { id:"header", label:"Reklamáció fejléc" },
+    { id:"table", label:"Reklamációs Excel tábla" },
+    { id:"drawing", label:"Reklamációs rajzoló" },
   ],
   "label-printer": [
     { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Címkenyomtató fejléc" }, { id:"station", label:"Munkaállomás választó" }, { id:"printer", label:"Nyomtató és kalibráció" },
@@ -1240,6 +1246,128 @@ const DEFAULT_ATVETEL_TABLE_COLUMNS: AtvetelTableColumnConfig[] = [
 
 function createDefaultAtvetelTableColumns(): AtvetelTableColumnConfig[] {
   return DEFAULT_ATVETEL_TABLE_COLUMNS.map((column) => ({ ...column }));
+}
+
+
+type ReklamacioWorkshop = "" | "Asztalos" | "Lakatos";
+
+type ReklamacioDbRow = {
+  id: string;
+  rendelesszam: string;
+  alap_rendelesszam: string;
+  muhely: "Asztalos" | "Lakatos";
+  gyartando_tetelek: string;
+  kert_datum: string;
+  rajz_url?: string | null;
+  mentes_datum?: string | null;
+  kesz_datum?: string | null;
+  lezart?: boolean | null;
+  created_by_worker_id?: number | string | null;
+  created_by_worker_name?: string | null;
+  updated_by_worker_id?: number | string | null;
+  updated_by_worker_name?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+type ReklamacioStationState = {
+  stationName: string;
+  label: string;
+  status: ProductionMonitorStatus;
+  statusLabel: string;
+};
+
+type ReklamacioViewRow = {
+  key: string;
+  id: string | null;
+  isNew: boolean;
+  rendelesszam: string;
+  alapRendelesszam: string;
+  muhely: ReklamacioWorkshop;
+  gyartandoTetelek: string;
+  kertDatum: string;
+  rajzUrl: string;
+  mentesDatum: string;
+  keszDatum: string;
+  lezart: boolean;
+  createdAt: string;
+  updatedAt: string;
+  stationStates: ReklamacioStationState[];
+  canClose: boolean;
+};
+
+type ReklamacioDraft = {
+  rendelesszam: string;
+  muhely: ReklamacioWorkshop;
+  gyartandoTetelek: string;
+  kertDatum: string;
+  rajzDataUrl: string;
+  dirty: boolean;
+};
+
+type ReklamacioTableColumnId =
+  | "rendelesszam"
+  | "muhely"
+  | "gyartandoTetelek"
+  | "kertDatum"
+  | "rajz"
+  | "munkaallomasAllapot"
+  | "mentesDatum"
+  | "keszDatum"
+  | "actions";
+
+type ReklamacioTableColumnConfig = {
+  id: ReklamacioTableColumnId;
+  label: string;
+  width: number;
+  visible: boolean;
+  align: "left" | "center" | "right";
+};
+
+type ReklamacioColumnFilter = { text: string; selectedValues: string[] | null };
+type ReklamacioSortState = { columnId: ReklamacioTableColumnId; direction: "asc" | "desc" } | null;
+type ReklamacioFilterMenuState = { columnId: ReklamacioTableColumnId; x: number; y: number } | null;
+
+const REKLAMACIO_TABLE_CONFIG_PAGE_KEY = "__reklamacio_table_config_v1__";
+const DEFAULT_REKLAMACIO_TABLE_COLUMNS: ReklamacioTableColumnConfig[] = [
+  { id: "rendelesszam", label: "Rendelésszám", width: 185, visible: true, align: "left" },
+  { id: "muhely", label: "Műhely", width: 145, visible: true, align: "left" },
+  { id: "gyartandoTetelek", label: "Gyártandó tételek", width: 300, visible: true, align: "left" },
+  { id: "kertDatum", label: "Kért Dátum", width: 165, visible: true, align: "left" },
+  { id: "rajz", label: "Rajz", width: 185, visible: true, align: "center" },
+  { id: "munkaallomasAllapot", label: "Munkaállomások állapota", width: 430, visible: true, align: "left" },
+  { id: "mentesDatum", label: "Mentés Dátuma", width: 185, visible: true, align: "left" },
+  { id: "keszDatum", label: "Kész Dátum", width: 185, visible: true, align: "left" },
+  { id: "actions", label: "Mentés / Lezárás", width: 240, visible: true, align: "right" },
+];
+
+function createDefaultReklamacioTableColumns(): ReklamacioTableColumnConfig[] {
+  return DEFAULT_REKLAMACIO_TABLE_COLUMNS.map((column) => ({ ...column }));
+}
+
+function normalizeReklamacioTableColumns(value: unknown): ReklamacioTableColumnConfig[] {
+  const defaults = createDefaultReklamacioTableColumns();
+  if (!Array.isArray(value)) return defaults;
+  const byId = new Map(defaults.map((column) => [column.id, column]));
+  const seen = new Set<ReklamacioTableColumnId>();
+  const normalized: ReklamacioTableColumnConfig[] = [];
+  value.forEach((raw) => {
+    if (!raw || typeof raw !== "object") return;
+    const item = raw as Partial<ReklamacioTableColumnConfig>;
+    const id = String(item.id || "") as ReklamacioTableColumnId;
+    const fallback = byId.get(id);
+    if (!fallback || seen.has(id)) return;
+    seen.add(id);
+    const numericWidth = Number(item.width);
+    normalized.push({
+      ...fallback,
+      width: Number.isFinite(numericWidth) ? Math.max(70, Math.min(760, Math.round(numericWidth))) : fallback.width,
+      visible: item.visible !== false,
+      align: item.align === "center" || item.align === "right" || item.align === "left" ? item.align : fallback.align,
+    });
+  });
+  defaults.forEach((column) => { if (!seen.has(column.id)) normalized.push(column); });
+  return normalized;
 }
 
 function normalizeAtvetelTableColumns(value: unknown): AtvetelTableColumnConfig[] {
@@ -2187,6 +2315,19 @@ const ATVETEL_LOG_TABLE = "ugyfel_atvette_log";
 const ATVETEL_SOURCE_TABLE = "szereles_terv";
 const ATVETEL_DETAILS_TABLE = "atvetel_adat";
 const ATVETEL_SOURCE_STATION = "Szereles";
+const REKLAMACIO_TABLE = "reklamacio_adat";
+const REKLAMACIO_DRAWING_BUCKET = "reklamacio-rajzok";
+const REKLAMACIO_STATIONS: Record<Exclude<ReklamacioWorkshop, "">, Array<{ stationName: string; label: string }>> = {
+  Asztalos: [
+    { stationName: "Asztalos", label: "Asztalos" },
+    { stationName: "Fenyezo", label: "Fényező" },
+    { stationName: "Foliazo", label: "Fóliázó" },
+  ],
+  Lakatos: [
+    { stationName: "Lakatos", label: "Lakatos" },
+    { stationName: "Kézi szinter", label: "Kézi szinter" },
+  ],
+};
 const PRODUCTION_CARD_ORDER_FIELD_ID = "__card_order_number__";
 const PRODUCTION_CARD_PRODUCT_FIELD_ID = "__card_product_name__";
 const PRODUCTION_CARD_QUANTITY_FIELD_ID = "__card_quantity__";
@@ -9074,6 +9215,72 @@ export default function Page() {
   }, [atvetelFilterMenu]);
   const atvetelTableSettingsSaveTimerRef = useRef<number | null>(null);
 
+  // Reklamáció – Excel-szerű nyilvántartás + rajz + automatikus munkaállomás állapotok.
+  const [reklamacioRows, setReklamacioRows] = useState<ReklamacioViewRow[]>([]);
+  const [reklamacioDrafts, setReklamacioDrafts] = useState<Record<string, ReklamacioDraft>>({});
+  const [reklamacioLoading, setReklamacioLoading] = useState(false);
+  const [reklamacioSavingKey, setReklamacioSavingKey] = useState("");
+  const [reklamacioLastUpdatedAt, setReklamacioLastUpdatedAt] = useState("");
+  const [reklamacioTableEditMode, setReklamacioTableEditMode] = useState(false);
+  const [reklamacioTableColumns, setReklamacioTableColumns] = useState<ReklamacioTableColumnConfig[]>(createDefaultReklamacioTableColumns());
+  const [reklamacioColumnFilters, setReklamacioColumnFilters] = useState<Partial<Record<ReklamacioTableColumnId, ReklamacioColumnFilter>>>({});
+  const [reklamacioSortState, setReklamacioSortState] = useState<ReklamacioSortState>(null);
+  const [reklamacioFilterMenu, setReklamacioFilterMenu] = useState<ReklamacioFilterMenuState>(null);
+  const reklamacioDraggedColumnIdRef = useRef<ReklamacioTableColumnId | null>(null);
+  const reklamacioFilterMenuRef = useRef<HTMLDivElement | null>(null);
+  const reklamacioTableSettingsSaveTimerRef = useRef<number | null>(null);
+  const reklamacioRealtimeRefreshTimerRef = useRef<number | null>(null);
+  const [reklamacioDrawingRowKey, setReklamacioDrawingRowKey] = useState("");
+  const [reklamacioDrawingSource, setReklamacioDrawingSource] = useState("");
+  const [reklamacioDrawingMode, setReklamacioDrawingMode] = useState<"draw" | "erase">("draw");
+  const reklamacioCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const reklamacioDrawingActiveRef = useRef(false);
+  const reklamacioDrawingLastPointRef = useRef<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!reklamacioFilterMenu || typeof document === "undefined") return;
+    const handleOutside = (event: MouseEvent): void => {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      if (reklamacioFilterMenuRef.current?.contains(target)) return;
+      if (target.closest('[data-reklamacio-filter-trigger="true"]')) return;
+      setReklamacioFilterMenu(null);
+    };
+    document.addEventListener("mousedown", handleOutside, true);
+    return () => document.removeEventListener("mousedown", handleOutside, true);
+  }, [reklamacioFilterMenu]);
+
+  useEffect(() => {
+    if (!reklamacioDrawingRowKey || typeof window === "undefined") return;
+    const timer = window.setTimeout(() => {
+      const canvas = reklamacioCanvasRef.current;
+      if (!canvas) return;
+      const context = canvas.getContext("2d");
+      if (!context) return;
+      context.save();
+      context.globalCompositeOperation = "source-over";
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.restore();
+      if (!reklamacioDrawingSource) return;
+      const image = new Image();
+      image.crossOrigin = "anonymous";
+      image.onload = () => {
+        const activeCanvas = reklamacioCanvasRef.current;
+        if (!activeCanvas) return;
+        const ctx = activeCanvas.getContext("2d");
+        if (!ctx) return;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, activeCanvas.width, activeCanvas.height);
+        const scale = Math.min(activeCanvas.width / image.width, activeCanvas.height / image.height);
+        const width = image.width * scale;
+        const height = image.height * scale;
+        ctx.drawImage(image, (activeCanvas.width - width) / 2, (activeCanvas.height - height) / 2, width, height);
+      };
+      image.src = reklamacioDrawingSource;
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [reklamacioDrawingRowKey, reklamacioDrawingSource]);
 
   const [productionCardDate, setProductionCardDate] = useState(getLocalDateKey(new Date()));
   const [productionCardAdminStation, setProductionCardAdminStation] = useState("");
@@ -13118,7 +13325,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function ManagementNavigation(): React.JSX.Element {
     const allItems: Array<{ id: ManagementSection; label: string }> = [
       { id:"dashboard", label:"Vezetői műszerfal" }, { id:"production-plan", label:"Termelés tervezése" }, { id:"production-monitor", label:"Termelési monitor" },
-      { id:"production-card", label:"Termelési kártya" }, { id:"pause-report", label:"Szüneteltetés" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" }, { id:"data-upload", label:"Adat feltöltés" },
+      { id:"production-card", label:"Termelési kártya" }, { id:"pause-report", label:"Szüneteltetés" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"reklamacio", label:"Reklamáció" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" }, { id:"data-upload", label:"Adat feltöltés" },
     ];
 
     // Esemeny_Koteg = 9: csak ez a két irodai menüpont látható.
@@ -13190,6 +13397,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 // Nem lezárt / Lezárt / Összes között.
                 setAtvetelClosureFilter("all");
                 void loadAtvetelMonitor(atvetelDateFrom, atvetelDateTo);
+              }
+              else if (item.id === "reklamacio") {
+                void loadReklamacioRows();
+                void loadReklamacioTableSettings();
               }
               else if (item.id === "label-printer") { const stations = getOrderedDashboardStations(); const preferred = stations.find((station) => normalizeLooseText(station) === normalizeLooseText("Asztalos")) || officeLabelPrinterStation || stations[0] || "Asztalos"; setOfficeLabelPrinterStation(preferred); setCarpenterPrinterTab("printer"); void loadCarpenterPrinterSettings(preferred); }
               else if (item.id === "executive-report") {
@@ -23819,6 +24030,471 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
   }
 
+  function getReklamacioDraft(row: ReklamacioViewRow): ReklamacioDraft {
+    return reklamacioDrafts[row.key] || {
+      rendelesszam: row.isNew ? row.alapRendelesszam : row.rendelesszam,
+      muhely: row.muhely,
+      gyartandoTetelek: row.gyartandoTetelek,
+      kertDatum: row.kertDatum,
+      rajzDataUrl: "",
+      dirty: false,
+    };
+  }
+
+  function updateReklamacioDraft(rowKey: string, patch: Partial<Omit<ReklamacioDraft, "dirty">>): void {
+    setReklamacioDrafts((previous) => {
+      const row = reklamacioRows.find((item) => item.key === rowKey);
+      const current = previous[rowKey] || {
+        rendelesszam: row?.isNew ? (row.alapRendelesszam || "") : (row?.rendelesszam || ""),
+        muhely: row?.muhely || "",
+        gyartandoTetelek: row?.gyartandoTetelek || "",
+        kertDatum: row?.kertDatum || "",
+        rajzDataUrl: "",
+        dirty: false,
+      };
+      return { ...previous, [rowKey]: { ...current, ...patch, dirty: true } };
+    });
+  }
+
+  function addNewReklamacioRow(): void {
+    const key = `new-reklamacio-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const row: ReklamacioViewRow = {
+      key,
+      id: null,
+      isNew: true,
+      rendelesszam: "",
+      alapRendelesszam: "",
+      muhely: "",
+      gyartandoTetelek: "",
+      kertDatum: "",
+      rajzUrl: "",
+      mentesDatum: "",
+      keszDatum: "",
+      lezart: false,
+      createdAt: "",
+      updatedAt: "",
+      stationStates: [],
+      canClose: false,
+    };
+    setReklamacioRows((previous) => [row, ...previous]);
+    setReklamacioDrafts((previous) => ({
+      ...previous,
+      [key]: { rendelesszam: "", muhely: "", gyartandoTetelek: "", kertDatum: "", rajzDataUrl: "", dirty: true },
+    }));
+  }
+
+  async function fetchReklamacioPlanPresence(orderNumbers: string[]): Promise<Map<string, Set<string>>> {
+    const result = new Map<string, Set<string>>();
+    const allStations = Array.from(new Map(
+      Object.values(REKLAMACIO_STATIONS).flat().map((item) => [getStationPlanIdentityKey(item.stationName), item])
+    ).values());
+    allStations.forEach((station) => result.set(getStationPlanIdentityKey(station.stationName), new Set<string>()));
+    if (!supabase || orderNumbers.length === 0) return result;
+
+    await Promise.all(allStations.map(async (station) => {
+      const stationKey = getStationPlanIdentityKey(station.stationName);
+      const tableName = buildStationPlanTableName(station.stationName);
+      const found = result.get(stationKey) || new Set<string>();
+      for (let index = 0; index < orderNumbers.length; index += 100) {
+        const chunk = orderNumbers.slice(index, index + 100);
+        const response = await supabase.from(tableName).select("sorszam").in("sorszam", chunk).limit(10000);
+        if (response.error) {
+          console.warn(`Reklamáció tervkapcsolat nem olvasható (${tableName}):`, response.error);
+          continue;
+        }
+        ((response.data || []) as Array<{ sorszam?: unknown }>).forEach((item) => {
+          const order = String(item.sorszam ?? "").trim();
+          if (order) found.add(normalizeLooseText(order));
+        });
+      }
+      result.set(stationKey, found);
+    }));
+    return result;
+  }
+
+  async function loadReklamacioRows(options?: { quiet?: boolean }): Promise<void> {
+    if (!supabase) return;
+    const quiet = Boolean(options?.quiet);
+    if (!quiet) setReklamacioLoading(true);
+    try {
+      const response = await supabase
+        .from(REKLAMACIO_TABLE)
+        .select("id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
+        .order("created_at", { ascending: false })
+        .limit(10000);
+      if (response.error) throw response.error;
+      const dbRows = (response.data || []) as ReklamacioDbRow[];
+      const orderNumbers = Array.from(new Set(dbRows.map((row) => String(row.rendelesszam || "").trim()).filter(Boolean)));
+      const planPresence = await fetchReklamacioPlanPresence(orderNumbers);
+
+      const logs: WorkLogRow[] = [];
+      const selectColumns = "worker_id, worker_name, order_number, action, created_at, note, scrap_qty, darab, szal, batch_code, event_name, event_code, start_timestamp, end_timestamp, start_time, end_time, machine_id, ujragyartas, ujragyartas_sorszam, gyartas_tipus, gyartasi_kor, szereles_start_reszek, szereles_resz, szereles_ciklus_id, szereles_alap_allapot, szereles_teljes_perc, operation_code, kulso_lap_selejt, belso_lap_selejt, toklec_selejt, tok_kesz, nyilo_kesz, reszleges_keszultseg, tok_kesz_worker_name, tok_kesz_at, nyilo_kesz_worker_name, nyilo_kesz_at, ajtolapok_kesz, toklec_kesz, ajtolapok_kesz_worker_name, ajtolapok_kesz_at, toklec_kesz_worker_name, toklec_kesz_at, kulso_lap_kesz, belso_lap_kesz, lap_toklec_kesz, kulso_lap_kesz_worker_name, kulso_lap_kesz_at, belso_lap_kesz_worker_name, belso_lap_kesz_at, lap_toklec_kesz_worker_name, lap_toklec_kesz_at, szuneteltetes, szuneteltetes_oka, szuneteltetes_sorszam, selejt_megjegyzes, selejt_potlas, selejt_forras_munkaallomas";
+      for (let index = 0; index < orderNumbers.length; index += 100) {
+        const chunk = orderNumbers.slice(index, index + 100);
+        let logResponse = await supabase.from("work_logs").select(selectColumns).in("order_number", chunk).order("created_at", { ascending: true }).limit(10000);
+        if (logResponse.error) {
+          logResponse = await supabase.from("work_log").select(selectColumns).in("order_number", chunk).order("created_at", { ascending: true }).limit(10000);
+        }
+        if (logResponse.error) throw logResponse.error;
+        logs.push(...(((logResponse.data as WorkLogRow[]) || []).map((log) => ({
+          ...log,
+          worker_name: log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || null,
+        }))));
+      }
+
+      const batchStarts: ProductionBatchRow[] = [];
+      if (orderNumbers.length > 0) {
+        const batchResponse = await supabase
+          .from("production_batches")
+          .select("id, batch_code, created_at, start_time, machine_id, order_ids, worker_name, production_meta, operation_code, operation_status")
+          .not("start_time", "is", null)
+          .limit(10000);
+        if (batchResponse.error) throw batchResponse.error;
+        const wanted = new Set(orderNumbers.map((value) => normalizeLooseText(value)));
+        batchStarts.push(...(((batchResponse.data as ProductionBatchRow[]) || []).filter((batch) =>
+          Array.isArray(batch.order_ids) && batch.order_ids.some((orderId) => wanted.has(normalizeLooseText(String(orderId))))
+        )));
+      }
+
+      const nextRows: ReklamacioViewRow[] = dbRows.map((dbRow) => {
+        const orderNumber = String(dbRow.rendelesszam || "").trim();
+        const workshop: ReklamacioWorkshop = dbRow.muhely === "Asztalos" || dbRow.muhely === "Lakatos" ? dbRow.muhely : "";
+        const required = workshop ? REKLAMACIO_STATIONS[workshop] : [];
+        const orderLogs = logs.filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(orderNumber));
+        const stationStates: ReklamacioStationState[] = required.map((station) => {
+          const stationKey = getStationPlanIdentityKey(station.stationName);
+          const isPlanned = Boolean(planPresence.get(stationKey)?.has(normalizeLooseText(orderNumber)));
+          if (!isPlanned) return { stationName: station.stationName, label: station.label, status: "not-required", statusLabel: "–" };
+          const wantedStationKey = getProductionCardStationMatchKey(station.stationName);
+          const stationLogs = orderLogs.filter((log) => getProductionCardStationMatchKey(resolveLogStation(log, workers)) === wantedStationKey);
+          const stationBatches = batchStarts.filter((batch) =>
+            getProductionCardStationMatchKey(batch.machine_id) === wantedStationKey
+            && Array.isArray(batch.order_ids)
+            && batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizeLooseText(orderNumber))
+          );
+          const cell = getMonitorCellFromLogs(stationLogs, stationBatches, orderNumber);
+          return { stationName: station.stationName, label: station.label, status: cell.status, statusLabel: cell.label };
+        });
+        const presentStates = stationStates.filter((state) => state.status !== "not-required");
+        const canClose = presentStates.length > 0 && presentStates.every((state) => state.status === "done");
+        return {
+          key: String(dbRow.id), id: String(dbRow.id), isNew: false,
+          rendelesszam: orderNumber,
+          alapRendelesszam: String(dbRow.alap_rendelesszam || "").trim(),
+          muhely: workshop,
+          gyartandoTetelek: String(dbRow.gyartando_tetelek || ""),
+          kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
+          rajzUrl: String(dbRow.rajz_url || ""),
+          mentesDatum: String(dbRow.mentes_datum || ""),
+          keszDatum: String(dbRow.kesz_datum || ""),
+          lezart: Boolean(dbRow.lezart),
+          createdAt: String(dbRow.created_at || ""),
+          updatedAt: String(dbRow.updated_at || ""),
+          stationStates,
+          canClose,
+        };
+      });
+
+      // Amint az adott műhelyhez tartozó összes, tervben ténylegesen szereplő állomás Kész,
+      // a reklamáció automatikusan lezáródik. A tervből hiányzó állomás „–” és nem blokkol.
+      const autoCloseRows = nextRows.filter((row) => !row.lezart && row.canClose && row.id);
+      for (const row of autoCloseRows) {
+        const nowIso = new Date().toISOString();
+        const workerIdNumber = Number(activeWorker?.id);
+        const closeResponse = await supabase.from(REKLAMACIO_TABLE).update({
+          lezart: true,
+          kesz_datum: nowIso,
+          mentes_datum: nowIso,
+          updated_at: nowIso,
+          updated_by_worker_id: Number.isFinite(workerIdNumber) ? workerIdNumber : null,
+          updated_by_worker_name: activeWorker?.["Teljes nev"] || "Automatikus rendszer",
+        }).eq("id", row.id as string).eq("lezart", false);
+        if (closeResponse.error) {
+          console.warn(`Reklamáció automatikus lezárása sikertelen (${row.rendelesszam}):`, closeResponse.error);
+          continue;
+        }
+        row.lezart = true;
+        row.keszDatum = nowIso;
+        row.mentesDatum = nowIso;
+        row.updatedAt = nowIso;
+      }
+
+      setReklamacioRows((previous) => [
+        ...previous.filter((row) => row.isNew),
+        ...nextRows,
+      ]);
+      setReklamacioDrafts((previous) => {
+        const next = { ...previous };
+        nextRows.forEach((row) => {
+          if (previous[row.key]?.dirty) return;
+          next[row.key] = {
+            rendelesszam: row.rendelesszam,
+            muhely: row.muhely,
+            gyartandoTetelek: row.gyartandoTetelek,
+            kertDatum: row.kertDatum,
+            rajzDataUrl: "",
+            dirty: false,
+          };
+        });
+        return next;
+      });
+      setReklamacioLastUpdatedAt(new Date().toISOString());
+    } catch (error) {
+      console.error("REKLAMÁCIÓ BETÖLTÉSI HIBA:", error);
+      if (!quiet) setMessage({ type: "error", text: `A Reklamáció adatok betöltése sikertelen. Előbb futtasd le a reklamációs SQL-t. Részletek: ${normalizeError(error)}` });
+    } finally {
+      if (!quiet) setReklamacioLoading(false);
+    }
+  }
+
+  async function uploadReklamacioDrawing(dataUrl: string, orderNumber: string): Promise<string> {
+    if (!supabase || !dataUrl.startsWith("data:image/")) return "";
+    const blob = await fetch(dataUrl).then((response) => response.blob());
+    const safeOrder = orderNumber.replace(/[^A-Za-z0-9_-]/g, "_");
+    const unique = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const path = `${safeOrder}/${new Date().toISOString().replace(/[:.]/g, "-")}-${unique}.png`;
+    const upload = await supabase.storage.from(REKLAMACIO_DRAWING_BUCKET).upload(path, blob, { contentType: "image/png", upsert: false });
+    if (upload.error) throw upload.error;
+    const publicResult = supabase.storage.from(REKLAMACIO_DRAWING_BUCKET).getPublicUrl(path);
+    return publicResult.data.publicUrl || "";
+  }
+
+  async function saveReklamacioRow(row: ReklamacioViewRow, closeAfterSave = false): Promise<void> {
+    if (!supabase) return;
+    if (row.lezart) {
+      setMessage({ type: "error", text: "A lezárt reklamáció már nem módosítható." });
+      return;
+    }
+    const draft = getReklamacioDraft(row);
+    const rawBase = row.isNew ? draft.rendelesszam.trim().toUpperCase() : row.alapRendelesszam;
+    if (!/^R\d{9}$/.test(rawBase)) {
+      setMessage({ type: "error", text: "A Rendelésszám formátuma kötelezően: nagy R + pontosan 9 számjegy (pl. R260918123)." });
+      return;
+    }
+    if (draft.muhely !== "Asztalos" && draft.muhely !== "Lakatos") {
+      setMessage({ type: "error", text: "A Műhely mezőben válaszd ki az Asztalos vagy Lakatos értéket." });
+      return;
+    }
+    if (!draft.gyartandoTetelek.trim()) {
+      setMessage({ type: "error", text: "A Gyártandó tételek mező kitöltése kötelező." });
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.kertDatum)) {
+      setMessage({ type: "error", text: "A Kért Dátum kitöltése kötelező." });
+      return;
+    }
+    if (closeAfterSave) {
+      if (row.isNew) {
+        setMessage({ type: "error", text: "Az új reklamációt előbb mentsd el." });
+        return;
+      }
+      if (draft.muhely !== row.muhely) {
+        setMessage({ type: "error", text: "A Műhely módosítását előbb mentsd el, utána zárható le a reklamáció." });
+        return;
+      }
+      if (!row.canClose) {
+        setMessage({ type: "error", text: "A reklamáció csak akkor zárható le, ha minden tervben szereplő szükséges munkaállomás Kész." });
+        return;
+      }
+    }
+
+    setReklamacioSavingKey(row.key);
+    try {
+      const fullOrderNumber = row.isNew ? `${rawBase}_REK` : row.rendelesszam;
+      let drawingUrl = row.rajzUrl || "";
+      if (draft.rajzDataUrl) drawingUrl = await uploadReklamacioDrawing(draft.rajzDataUrl, fullOrderNumber);
+      const nowIso = new Date().toISOString();
+      const workerIdNumber = Number(activeWorker?.id);
+      const workerId = Number.isFinite(workerIdNumber) ? workerIdNumber : null;
+      const workerName = activeWorker?.["Teljes nev"] || null;
+      const payload: Record<string, unknown> = {
+        rendelesszam: fullOrderNumber,
+        alap_rendelesszam: rawBase,
+        muhely: draft.muhely,
+        gyartando_tetelek: draft.gyartandoTetelek.trim(),
+        kert_datum: draft.kertDatum,
+        rajz_url: drawingUrl || null,
+        mentes_datum: nowIso,
+        lezart: closeAfterSave,
+        kesz_datum: closeAfterSave ? nowIso : (row.keszDatum || null),
+        updated_by_worker_id: workerId,
+        updated_by_worker_name: workerName,
+        updated_at: nowIso,
+      };
+      let response;
+      if (row.isNew) {
+        response = await supabase.from(REKLAMACIO_TABLE).insert({
+          ...payload,
+          created_by_worker_id: workerId,
+          created_by_worker_name: workerName,
+          created_at: nowIso,
+        });
+      } else {
+        response = await supabase.from(REKLAMACIO_TABLE).update(payload).eq("id", row.id as string);
+      }
+      if (response.error) throw response.error;
+      if (row.isNew) {
+        setReklamacioRows((previous) => previous.filter((item) => item.key !== row.key));
+        setReklamacioDrafts((previous) => { const next = { ...previous }; delete next[row.key]; return next; });
+      } else {
+        setReklamacioDrafts((previous) => ({ ...previous, [row.key]: { ...draft, rajzDataUrl: "", dirty: false } }));
+      }
+      setMessage({ type: "success", text: closeAfterSave ? `Reklamáció lezárva: ${fullOrderNumber}` : `Reklamáció mentve: ${fullOrderNumber}` });
+      await loadReklamacioRows({ quiet: true });
+    } catch (error) {
+      console.error("REKLAMÁCIÓ MENTÉSI HIBA:", error);
+      setMessage({ type: "error", text: `A reklamáció mentése sikertelen: ${normalizeError(error)}` });
+    } finally {
+      setReklamacioSavingKey("");
+    }
+  }
+
+  async function loadReklamacioTableSettings(): Promise<void> {
+    const workerName = String(activeWorker?.["Teljes nev"] || "").trim();
+    const localKey = `nivo-reklamacio-table-config:${workerName || "default"}`;
+    try {
+      if (typeof window !== "undefined") {
+        const cached = window.localStorage.getItem(localKey);
+        if (cached) {
+          const parsed = JSON.parse(cached) as { columns?: unknown };
+          if (parsed.columns) setReklamacioTableColumns(normalizeReklamacioTableColumns(parsed.columns));
+        }
+      }
+    } catch {}
+    if (!supabase || !activeWorker || !workerName) return;
+    try {
+      const response = await supabase.from("user_ui_preferences").select("theme_json").eq("worker_name", workerName).eq("page_key", REKLAMACIO_TABLE_CONFIG_PAGE_KEY).limit(1);
+      if (response.error) throw response.error;
+      const row = (response.data || [])[0] as { theme_json?: Record<string, unknown> | null } | undefined;
+      if (row?.theme_json?.columns) {
+        const normalized = normalizeReklamacioTableColumns(row.theme_json.columns);
+        setReklamacioTableColumns(normalized);
+        if (typeof window !== "undefined") window.localStorage.setItem(localKey, JSON.stringify({ columns: normalized }));
+      }
+    } catch (error) { console.warn("Reklamáció táblázatbeállítás betöltési hiba:", error); }
+  }
+
+  function queueReklamacioTableSettingsSave(columns: ReklamacioTableColumnConfig[]): void {
+    const normalized = normalizeReklamacioTableColumns(columns);
+    const workerName = String(activeWorker?.["Teljes nev"] || "").trim();
+    const localKey = `nivo-reklamacio-table-config:${workerName || "default"}`;
+    try { if (typeof window !== "undefined") window.localStorage.setItem(localKey, JSON.stringify({ columns: normalized })); } catch {}
+    if (typeof window === "undefined") return;
+    if (reklamacioTableSettingsSaveTimerRef.current !== null) window.clearTimeout(reklamacioTableSettingsSaveTimerRef.current);
+    reklamacioTableSettingsSaveTimerRef.current = window.setTimeout(() => {
+      reklamacioTableSettingsSaveTimerRef.current = null;
+      if (!supabase || !activeWorker || !workerName) return;
+      void supabase.from("user_ui_preferences").upsert({
+        worker_name: workerName,
+        worker_id: activeWorker.id,
+        page_key: REKLAMACIO_TABLE_CONFIG_PAGE_KEY,
+        theme_preset: "custom",
+        theme_json: { columns: normalized },
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "worker_name,page_key" }).then(({ error }) => { if (error) console.warn("Reklamáció táblázatbeállítás mentési hiba:", error); });
+    }, 500);
+  }
+
+  function updateReklamacioTableColumns(updater: (current: ReklamacioTableColumnConfig[]) => ReklamacioTableColumnConfig[]): void {
+    setReklamacioTableColumns((current) => {
+      const next = normalizeReklamacioTableColumns(updater(current.map((item) => ({ ...item }))));
+      queueReklamacioTableSettingsSave(next);
+      return next;
+    });
+  }
+
+  function moveReklamacioTableColumn(columnId: ReklamacioTableColumnId, direction: -1 | 1): void {
+    updateReklamacioTableColumns((current) => {
+      const index = current.findIndex((item) => item.id === columnId);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.length) return current;
+      const next = [...current];
+      const [moved] = next.splice(index, 1);
+      next.splice(target, 0, moved);
+      return next;
+    });
+  }
+
+  function reorderReklamacioTableColumn(sourceId: ReklamacioTableColumnId, targetId: ReklamacioTableColumnId): void {
+    if (sourceId === targetId) return;
+    updateReklamacioTableColumns((current) => {
+      const sourceIndex = current.findIndex((item) => item.id === sourceId);
+      const targetIndex = current.findIndex((item) => item.id === targetId);
+      if (sourceIndex < 0 || targetIndex < 0) return current;
+      const next = [...current];
+      const [moved] = next.splice(sourceIndex, 1);
+      next.splice(targetIndex, 0, moved);
+      return next;
+    });
+  }
+
+  function openReklamacioDrawing(row: ReklamacioViewRow): void {
+    const draft = getReklamacioDraft(row);
+    setReklamacioDrawingMode("draw");
+    setReklamacioDrawingSource(draft.rajzDataUrl || row.rajzUrl || "");
+    setReklamacioDrawingRowKey(row.key);
+  }
+
+  function clearReklamacioCanvas(): void {
+    const canvas = reklamacioCanvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context) return;
+    context.globalCompositeOperation = "source-over";
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  function getReklamacioCanvasPoint(event: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } {
+    const canvas = event.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (event.clientX - rect.left) * (canvas.width / Math.max(rect.width, 1)),
+      y: (event.clientY - rect.top) * (canvas.height / Math.max(rect.height, 1)),
+    };
+  }
+
+  function handleReklamacioCanvasPointerDown(event: React.PointerEvent<HTMLCanvasElement>): void {
+    event.preventDefault();
+    reklamacioDrawingActiveRef.current = true;
+    reklamacioDrawingLastPointRef.current = getReklamacioCanvasPoint(event);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function handleReklamacioCanvasPointerMove(event: React.PointerEvent<HTMLCanvasElement>): void {
+    if (!reklamacioDrawingActiveRef.current) return;
+    const canvas = event.currentTarget;
+    const context = canvas.getContext("2d");
+    const previous = reklamacioDrawingLastPointRef.current;
+    const point = getReklamacioCanvasPoint(event);
+    if (!context || !previous) return;
+    context.save();
+    context.globalCompositeOperation = "source-over";
+    context.strokeStyle = reklamacioDrawingMode === "erase" ? "#ffffff" : "#111827";
+    context.lineWidth = reklamacioDrawingMode === "erase" ? 26 : 4;
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    context.beginPath();
+    context.moveTo(previous.x, previous.y);
+    context.lineTo(point.x, point.y);
+    context.stroke();
+    context.restore();
+    reklamacioDrawingLastPointRef.current = point;
+  }
+
+  function handleReklamacioCanvasPointerUp(event: React.PointerEvent<HTMLCanvasElement>): void {
+    reklamacioDrawingActiveRef.current = false;
+    reklamacioDrawingLastPointRef.current = null;
+    try { event.currentTarget.releasePointerCapture?.(event.pointerId); } catch {}
+  }
+
+  function saveReklamacioCanvasToDraft(): void {
+    const canvas = reklamacioCanvasRef.current;
+    if (!canvas || !reklamacioDrawingRowKey) return;
+    updateReklamacioDraft(reklamacioDrawingRowKey, { rajzDataUrl: canvas.toDataURL("image/png") });
+    setReklamacioDrawingRowKey("");
+    setReklamacioDrawingSource("");
+  }
+
   function AtvetelAdmin(): React.JSX.Element {
     const officeTheme = getOfficeTheme("atvetel");
     const normalizedSearch = normalizeDashboardOrderSearch(atvetelCommittedSearch);
@@ -24497,6 +25173,172 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
   }
 
+  function ReklamacioAdmin(): React.JSX.Element {
+    const officeTheme = getOfficeTheme("reklamacio");
+    const pagePanel: React.CSSProperties = { background: officeTheme.panelBackground, border: `${officeTheme.borderWidth}px solid ${officeTheme.borderColor}`, borderRadius: officeTheme.borderRadius, boxShadow: `0 10px ${officeTheme.shadowBlur}px rgba(0,0,0,${officeTheme.shadowOpacity})` };
+    const fieldStyle: React.CSSProperties = { minHeight: officeTheme.fieldHeight, width: "100%", background: officeTheme.inputBackground, color: officeTheme.inputText, border: `${officeTheme.borderWidth}px solid ${officeTheme.borderColor}`, borderRadius: Math.max(4, officeTheme.borderRadius - 5), padding: "7px 9px", boxSizing: "border-box", fontFamily: officeTheme.fontFamily, fontSize: officeTheme.baseFontSize };
+    const tableHeaderStyle: React.CSSProperties = { padding: "7px 7px", borderRight: `1px solid ${officeTheme.borderColor}`, borderBottom: `1px solid ${officeTheme.borderColor}`, background: officeTheme.headerBackground, color: officeTheme.textColor, fontSize: 12, fontWeight: 900, position: "sticky", top: 0, zIndex: 3 };
+    const tableCellStyle: React.CSSProperties = { padding: "6px 7px", borderRight: `1px solid ${officeTheme.borderColor}`, borderBottom: `1px solid ${officeTheme.borderColor}`, color: officeTheme.textColor, fontSize: 12, verticalAlign: "middle", overflowWrap: "anywhere" };
+    const visibleColumns = reklamacioTableColumns.filter((column) => column.visible);
+    const totalTableWidth = Math.max(1000, visibleColumns.reduce((sum, column) => sum + column.width, 0));
+
+    const getCellText = (row: ReklamacioViewRow, columnId: ReklamacioTableColumnId): string => {
+      const draft = getReklamacioDraft(row);
+      if (columnId === "rendelesszam") return row.isNew ? draft.rendelesszam : row.rendelesszam;
+      if (columnId === "muhely") return draft.muhely || "—";
+      if (columnId === "gyartandoTetelek") return draft.gyartandoTetelek || "—";
+      if (columnId === "kertDatum") return draft.kertDatum || "—";
+      if (columnId === "rajz") return draft.rajzDataUrl || row.rajzUrl ? "Van rajz" : "Nincs rajz";
+      if (columnId === "munkaallomasAllapot") return row.stationStates.length ? row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join(" | ") : "—";
+      if (columnId === "mentesDatum") return row.mentesDatum ? formatDateTimeMinute(row.mentesDatum) : "—";
+      if (columnId === "keszDatum") return row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "—";
+      if (columnId === "actions") return row.lezart ? "Lezárt" : row.canClose ? "Lezárható" : "Aktív";
+      return "";
+    };
+
+    const updateColumnFilter = (columnId: ReklamacioTableColumnId, patch: Partial<ReklamacioColumnFilter>): void => {
+      setReklamacioColumnFilters((current) => {
+        const previous = current[columnId] || { text: "", selectedValues: null };
+        return { ...current, [columnId]: { ...previous, ...patch } };
+      });
+    };
+    const hasActiveFilter = (columnId: ReklamacioTableColumnId): boolean => {
+      const filter = reklamacioColumnFilters[columnId];
+      return Boolean(filter?.text.trim()) || filter?.selectedValues !== null && filter?.selectedValues !== undefined;
+    };
+    const baseRows = reklamacioRows.filter((row) => {
+      for (const column of reklamacioTableColumns) {
+        const filter = reklamacioColumnFilters[column.id];
+        if (!filter) continue;
+        const text = getCellText(row, column.id);
+        if (filter.text.trim() && !normalizeLooseText(text).includes(normalizeLooseText(filter.text))) return false;
+        if (filter.selectedValues !== null && filter.selectedValues !== undefined && !filter.selectedValues.includes(text)) return false;
+      }
+      return true;
+    });
+    const visibleRows = [...baseRows].sort((left, right) => {
+      if (!reklamacioSortState) return 0;
+      const leftValue = getCellText(left, reklamacioSortState.columnId);
+      const rightValue = getCellText(right, reklamacioSortState.columnId);
+      const result = leftValue.localeCompare(rightValue, "hu", { numeric: true, sensitivity: "base" });
+      return reklamacioSortState.direction === "asc" ? result : -result;
+    });
+    const uniqueValues = (columnId: ReklamacioTableColumnId): string[] => Array.from(new Set<string>(reklamacioRows.map((row) => getCellText(row, columnId)))).sort((a, b) => a.localeCompare(b, "hu", { numeric: true }));
+    const cycleSort = (columnId: ReklamacioTableColumnId): void => setReklamacioSortState((current) => current?.columnId !== columnId ? { columnId, direction: "asc" } : current.direction === "asc" ? { columnId, direction: "desc" } : null);
+
+    const renderStationStates = (row: ReklamacioViewRow): React.JSX.Element => (
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+        {row.stationStates.length === 0 ? <span>–</span> : row.stationStates.map((state) => {
+          const background = state.status === "done" ? "#16a34a" : state.status === "in-progress" ? "#f59e0b" : state.status === "waiting" ? "#475569" : "#111827";
+          const color = state.status === "in-progress" ? "#111827" : "#ffffff";
+          return <span key={`${row.key}-${state.stationName}`} style={{ display: "inline-flex", gap: 4, alignItems: "center", padding: "5px 8px", borderRadius: 999, background, color, fontWeight: 900, whiteSpace: "nowrap" }}><span>{state.label}</span><span>·</span><span>{state.statusLabel}</span></span>;
+        })}
+      </div>
+    );
+
+    const renderCell = (row: ReklamacioViewRow, column: ReklamacioTableColumnConfig): React.JSX.Element => {
+      const draft = getReklamacioDraft(row);
+      const disabled = row.lezart || reklamacioSavingKey === row.key;
+      let content: React.ReactNode = null;
+      if (column.id === "rendelesszam") {
+        content = row.isNew ? <input value={draft.rendelesszam} maxLength={10} placeholder="R + 9 számjegy" onChange={(event) => updateReklamacioDraft(row.key, { rendelesszam: event.target.value.toUpperCase().replace(/[^R0-9]/g, "").slice(0, 10) })} style={fieldStyle} /> : <strong>{row.rendelesszam}</strong>;
+      } else if (column.id === "muhely") {
+        content = <select value={draft.muhely} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { muhely: event.target.value as ReklamacioWorkshop })} style={fieldStyle}><option value="">Válassz...</option><option value="Asztalos">Asztalos</option><option value="Lakatos">Lakatos</option></select>;
+      } else if (column.id === "gyartandoTetelek") {
+        content = <textarea value={draft.gyartandoTetelek} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { gyartandoTetelek: event.target.value })} rows={2} placeholder="Gyártandó tételek" style={{ ...fieldStyle, resize: "vertical", minHeight: 56 }} />;
+      } else if (column.id === "kertDatum") {
+        content = <input type="date" value={draft.kertDatum} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { kertDatum: event.target.value })} style={{ ...fieldStyle, colorScheme: "dark" }} />;
+      } else if (column.id === "rajz") {
+        content = <div style={{ display: "flex", gap: 5, alignItems: "center", justifyContent: "center", flexWrap: "wrap" }}><button type="button" disabled={disabled} onClick={() => openReklamacioDrawing(row)} style={{ ...buttonSecondary, padding: "6px 9px" }}>Rajz készítése</button>{row.rajzUrl && <a href={row.rajzUrl} target="_blank" rel="noreferrer" style={{ color: officeTheme.accentColor, fontWeight: 900 }}>Megnyitás</a>}{draft.rajzDataUrl && <span style={{ color: "#22c55e", fontWeight: 900 }}>Új rajz</span>}</div>;
+      } else if (column.id === "munkaallomasAllapot") {
+        content = renderStationStates(row);
+      } else if (column.id === "mentesDatum") {
+        content = row.mentesDatum ? formatDateTimeMinute(row.mentesDatum) : "–";
+      } else if (column.id === "keszDatum") {
+        content = row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "–";
+      } else if (column.id === "actions") {
+        const saving = reklamacioSavingKey === row.key;
+        content = row.lezart ? <span style={{ display: "inline-flex", padding: "7px 10px", borderRadius: 8, background: "#166534", color: "white", fontWeight: 900 }}>Lezárva</span> : <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}><button type="button" disabled={saving || row.isNew || !row.canClose} onClick={() => void saveReklamacioRow(row, true)} style={{ ...buttonSecondary, padding: "7px 10px" }}>Lezárás</button><button type="button" disabled={saving} onClick={() => void saveReklamacioRow(row, false)} style={{ ...buttonPrimary, padding: "7px 12px" }}>{saving ? "Mentés..." : "Mentés"}</button></div>;
+      }
+      return <td key={column.id} style={{ ...tableCellStyle, width: column.width, minWidth: column.width, maxWidth: column.width, textAlign: column.align }}>{content}</td>;
+    };
+
+    return (
+      <div style={{ minHeight: "100vh", padding: 14, background: officeTheme.pageBackground, color: officeTheme.textColor, fontFamily: officeTheme.fontFamily }}>
+        <ManagementNavigation />
+        <section data-office-window="reklamacio:header" style={{ ...pagePanel, padding: 16, marginBottom: 14, display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 1000, letterSpacing: ".08em", color: officeTheme.accentColor }}>NÍVÓ REKLAMÁCIÓ</div>
+            <h2 style={{ margin: "4px 0", fontSize: 28 }}>Reklamáció</h2>
+            <div style={{ color: officeTheme.mutedText, fontSize: 12 }}>Supabase: <strong>reklamacio_adat</strong> · A mentett R + 9 számjegyes rendelés automatikusan <strong>_REK</strong> utótagot kap.</div>
+            <div style={{ color: officeTheme.mutedText, fontSize: 11, marginTop: 4 }}>Utolsó frissítés: {reklamacioLastUpdatedAt ? formatDateTime(reklamacioLastUpdatedAt) : "–"}</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <button type="button" onClick={addNewReklamacioRow} style={buttonPrimary}>+ Új reklamáció</button>
+            <button type="button" onClick={() => void loadReklamacioRows()} disabled={reklamacioLoading} style={buttonSecondary}>{reklamacioLoading ? "Frissítés..." : "Frissítés"}</button>
+          </div>
+        </section>
+
+        <section data-office-window="reklamacio:table" style={{ ...pagePanel, padding: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+            <div><h3 style={{ margin: 0, fontSize: 21 }}>Reklamációs sorok</h3><div style={{ color: officeTheme.mutedText, fontSize: 11 }}>{visibleRows.length} megjelenített sor · Excel-szerű szűrés és rendezés</div></div>
+            <button type="button" onClick={() => setReklamacioTableEditMode((value) => !value)} style={reklamacioTableEditMode ? buttonPrimary : buttonSecondary}>{reklamacioTableEditMode ? "Profi szerkesztő bezárása" : "Profi szerkesztő"}</button>
+          </div>
+
+          {reklamacioTableEditMode && (
+            <div style={{ marginBottom: 12, padding: 12, border: `1px solid ${officeTheme.borderColor}`, borderRadius: 9, background: officeTheme.panelAltBackground }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 9 }}><strong>Reklamációs táblázat Profi szerkesztő</strong><button type="button" onClick={() => updateReklamacioTableColumns(() => createDefaultReklamacioTableColumns())} style={buttonSecondary}>Alapbeállítás</button></div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 8 }}>
+                {reklamacioTableColumns.map((column, index) => <div key={column.id} draggable onDragStart={() => { reklamacioDraggedColumnIdRef.current = column.id; }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const source = reklamacioDraggedColumnIdRef.current; reklamacioDraggedColumnIdRef.current = null; if (source) reorderReklamacioTableColumn(source, column.id); }} onDragEnd={() => { reklamacioDraggedColumnIdRef.current = null; }} style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) 86px 104px auto", gap: 7, alignItems: "center", padding: 8, border: `1px solid ${officeTheme.borderColor}`, borderRadius: 8, background: officeTheme.sectionBackground, cursor: "grab" }}>
+                  <input type="checkbox" checked={column.visible} onChange={(event) => updateReklamacioTableColumns((current) => current.map((item) => item.id === column.id ? { ...item, visible: event.target.checked } : item))} />
+                  <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{column.label}</strong>
+                  <input type="number" min={70} max={760} value={column.width} onChange={(event) => updateReklamacioTableColumns((current) => current.map((item) => item.id === column.id ? { ...item, width: Number(event.target.value) || item.width } : item))} style={{ ...fieldStyle, minHeight: 34, padding: "5px 7px" }} />
+                  <select value={column.align} onChange={(event) => updateReklamacioTableColumns((current) => current.map((item) => item.id === column.id ? { ...item, align: event.target.value as "left" | "center" | "right" } : item))} style={{ ...fieldStyle, minHeight: 34, padding: "5px 7px" }}><option value="left">Bal</option><option value="center">Közép</option><option value="right">Jobb</option></select>
+                  <div style={{ display: "flex", gap: 3 }}><button type="button" disabled={index === 0} onClick={() => moveReklamacioTableColumn(column.id, -1)} style={{ ...buttonSecondary, padding: "5px 7px" }}>←</button><button type="button" disabled={index === reklamacioTableColumns.length - 1} onClick={() => moveReklamacioTableColumn(column.id, 1)} style={{ ...buttonSecondary, padding: "5px 7px" }}>→</button></div>
+                </div>)}
+              </div>
+            </div>
+          )}
+
+          {visibleColumns.length === 0 ? <div style={{ padding: 30, textAlign: "center", color: officeTheme.mutedText }}>Minden oszlop el van rejtve.</div> : <div data-nivo-scroll-region="reklamacio-table" style={{ overflow: "auto", maxHeight: "calc(100vh - 250px)", border: `1px solid ${officeTheme.borderColor}`, borderRadius: 8 }}>
+            <table style={{ width: totalTableWidth, minWidth: "100%", borderCollapse: "collapse", tableLayout: "fixed", background: officeTheme.sectionBackground }}>
+              <colgroup>{visibleColumns.map((column) => <col key={column.id} style={{ width: column.width }} />)}</colgroup>
+              <thead><tr>{visibleColumns.map((column) => {
+                const sortMark = reklamacioSortState?.columnId === column.id ? (reklamacioSortState.direction === "asc" ? " ▲" : " ▼") : "";
+                const filterActive = hasActiveFilter(column.id);
+                return <th key={column.id} style={{ ...tableHeaderStyle, textAlign: column.align, width: column.width }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 4 }}><button type="button" data-preserve-action-color="true" onClick={() => cycleSort(column.id)} style={{ flex: 1, minWidth: 0, border: 0, background: "transparent", color: officeTheme.textColor, fontWeight: 900, cursor: "pointer", textAlign: column.align, padding: 0 }}>{column.label}{sortMark}</button><button type="button" data-preserve-action-color="true" data-reklamacio-filter-trigger="true" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setReklamacioFilterMenu((current) => current?.columnId === column.id ? null : { columnId: column.id, x: rect.left, y: rect.bottom + 5 }); }} style={{ border: `1px solid ${filterActive ? officeTheme.accentColor : officeTheme.borderColor}`, background: filterActive ? officeTheme.navActiveBackground : officeTheme.panelAltBackground, color: officeTheme.textColor, borderRadius: 4, padding: "1px 5px", cursor: "pointer", fontWeight: 900 }}>▾</button></div></th>;
+              })}</tr></thead>
+              <tbody>{visibleRows.length === 0 ? <tr><td colSpan={visibleColumns.length} style={{ ...tableCellStyle, textAlign: "center", padding: 30, color: officeTheme.mutedText }}>{reklamacioLoading ? "Reklamációk betöltése..." : "Nincs megjeleníthető reklamáció."}</td></tr> : visibleRows.map((row, index) => <tr key={row.key} style={{ background: row.lezart ? "rgba(22,163,74,0.18)" : index % 2 === 0 ? officeTheme.panelAltBackground : officeTheme.sectionBackground }}>{visibleColumns.map((column) => renderCell(row, column))}</tr>)}</tbody>
+            </table>
+          </div>}
+        </section>
+
+        {reklamacioFilterMenu && (() => {
+          const column = reklamacioTableColumns.find((item) => item.id === reklamacioFilterMenu.columnId);
+          if (!column) return null;
+          const values = uniqueValues(column.id);
+          const filter = reklamacioColumnFilters[column.id] || { text: "", selectedValues: null };
+          const maxX = typeof window !== "undefined" ? Math.max(8, window.innerWidth - 350) : reklamacioFilterMenu.x;
+          const maxY = typeof window !== "undefined" ? Math.max(8, window.innerHeight - 480) : reklamacioFilterMenu.y;
+          return <div ref={reklamacioFilterMenuRef} style={{ position: "fixed", left: Math.min(reklamacioFilterMenu.x, maxX), top: Math.min(reklamacioFilterMenu.y, maxY), zIndex: 20000, width: 330, maxHeight: 460, overflow: "auto", padding: 12, borderRadius: 9, border: `2px solid ${officeTheme.borderColor}`, background: officeTheme.panelBackground, color: officeTheme.textColor, boxShadow: "0 18px 44px rgba(0,0,0,0.5)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", marginBottom: 8 }}><strong>{column.label} szűrő</strong><button type="button" onClick={() => setReklamacioFilterMenu(null)} style={{ ...buttonSecondary, padding: "4px 8px" }}>✕</button></div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 8 }}><button type="button" onClick={() => setReklamacioSortState({ columnId: column.id, direction: "asc" })} style={buttonSecondary}>A → Z / növekvő</button><button type="button" onClick={() => setReklamacioSortState({ columnId: column.id, direction: "desc" })} style={buttonSecondary}>Z → A / csökkenő</button></div>
+            <input value={filter.text} onChange={(event) => updateColumnFilter(column.id, { text: event.target.value })} placeholder="Szöveges keresés" style={{ ...fieldStyle, marginBottom: 8 }} />
+            <div style={{ display: "flex", gap: 6, marginBottom: 7 }}><button type="button" onClick={() => updateColumnFilter(column.id, { selectedValues: [...values] })} style={{ ...buttonSecondary, padding: "5px 8px" }}>Összes</button><button type="button" onClick={() => updateColumnFilter(column.id, { selectedValues: [] })} style={{ ...buttonSecondary, padding: "5px 8px" }}>Egyik sem</button><button type="button" onClick={() => { setReklamacioColumnFilters((current) => { const next = { ...current }; delete next[column.id]; return next; }); if (reklamacioSortState?.columnId === column.id) setReklamacioSortState(null); }} style={{ ...buttonSecondary, padding: "5px 8px" }}>Szűrő törlése</button></div>
+            <div style={{ display: "grid", gap: 4 }}>{values.map((value) => { const checked = filter.selectedValues === null || filter.selectedValues === undefined ? true : filter.selectedValues.includes(value); return <label key={value} style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 7, alignItems: "center", padding: "4px 3px" }}><input type="checkbox" checked={checked} onChange={(event) => { const currentSelected = filter.selectedValues === null || filter.selectedValues === undefined ? [...values] : [...filter.selectedValues]; updateColumnFilter(column.id, { selectedValues: event.target.checked ? Array.from(new Set([...currentSelected, value])) : currentSelected.filter((item) => item !== value) }); }} /><span style={{ overflowWrap: "anywhere" }}>{value}</span></label>; })}</div>
+          </div>;
+        })()}
+
+        {reklamacioDrawingRowKey && <div style={{ position: "fixed", inset: 0, zIndex: 30000, background: "rgba(2,6,23,0.82)", display: "grid", placeItems: "center", padding: 18 }}>
+          <div data-office-window="reklamacio:drawing" style={{ width: "min(1180px, 96vw)", maxHeight: "94vh", overflow: "auto", padding: 14, borderRadius: 14, background: officeTheme.panelBackground, border: `2px solid ${officeTheme.accentColor}`, color: officeTheme.textColor, boxShadow: "0 24px 70px rgba(0,0,0,0.65)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}><div><strong style={{ fontSize: 20 }}>Reklamációs rajz</strong><div style={{ color: officeTheme.mutedText, fontSize: 11 }}>A mentett PNG a Supabase Storage-ba kerül, a publikus URL Power BI-ban képként használható.</div></div><div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}><button type="button" onClick={() => setReklamacioDrawingMode("draw")} style={reklamacioDrawingMode === "draw" ? buttonPrimary : buttonSecondary}>Rajzolás</button><button type="button" onClick={() => setReklamacioDrawingMode("erase")} style={reklamacioDrawingMode === "erase" ? buttonPrimary : buttonSecondary}>Radír</button><button type="button" onClick={clearReklamacioCanvas} style={buttonSecondary}>Törlés</button><button type="button" onClick={saveReklamacioCanvasToDraft} style={buttonPrimary}>Rajz mentése</button><button type="button" onClick={() => { setReklamacioDrawingRowKey(""); setReklamacioDrawingSource(""); }} style={buttonSecondary}>Bezárás</button></div></div>
+            <div style={{ background: "#ffffff", borderRadius: 8, overflow: "hidden", border: "1px solid #94a3b8", touchAction: "none" }}><canvas ref={reklamacioCanvasRef} width={1100} height={650} onPointerDown={handleReklamacioCanvasPointerDown} onPointerMove={handleReklamacioCanvasPointerMove} onPointerUp={handleReklamacioCanvasPointerUp} onPointerCancel={handleReklamacioCanvasPointerUp} style={{ display: "block", width: "100%", height: "auto", cursor: reklamacioDrawingMode === "erase" ? "cell" : "crosshair", touchAction: "none" }} /></div>
+          </div>
+        </div>}
+      </div>
+    );
+  }
+
   async function loadPausedSzerelesRows(): Promise<void> {
     if (!supabase) return;
     setLoadingPausedSzerelesRows(true);
@@ -24994,6 +25836,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (managementSection === "pause-report") return PausedSzerelesAdmin();
     if (managementSection === "reproduction-report") return ReproductionReportAdmin();
     if (managementSection === "atvetel") return AtvetelAdmin();
+    if (managementSection === "reklamacio") return ReklamacioAdmin();
     if (managementSection === "label-printer") return OfficeLabelPrinterAdmin();
     if (managementSection === "executive-report") return ExecutiveReportAdmin();
     if (managementSection === "report-delivery") return ReportDeliveryAdmin();
@@ -27745,6 +28588,50 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     atvetelCommittedSearch,
     atvetelClosureFilter,
   ]);
+
+  useEffect(() => {
+    if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
+    if (terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "reklamacio") return;
+    void loadReklamacioTableSettings();
+    void loadReklamacioRows();
+    return () => {
+      if (typeof window !== "undefined" && reklamacioTableSettingsSaveTimerRef.current !== null) {
+        window.clearTimeout(reklamacioTableSettingsSaveTimerRef.current);
+        reklamacioTableSettingsSaveTimerRef.current = null;
+      }
+      if (typeof window !== "undefined" && reklamacioRealtimeRefreshTimerRef.current !== null) {
+        window.clearTimeout(reklamacioRealtimeRefreshTimerRef.current);
+        reklamacioRealtimeRefreshTimerRef.current = null;
+      }
+      setReklamacioFilterMenu(null);
+      setReklamacioDrawingRowKey("");
+      setReklamacioDrawingSource("");
+    };
+  }, [activeWorker?.id, terminalView, flowStage, managementSection, workers.length]);
+
+  useEffect(() => {
+    if (!supabase || managementSection !== "reklamacio") return;
+    const scheduleRefresh = () => {
+      if (typeof window === "undefined") return;
+      if (reklamacioRealtimeRefreshTimerRef.current !== null) window.clearTimeout(reklamacioRealtimeRefreshTimerRef.current);
+      reklamacioRealtimeRefreshTimerRef.current = window.setTimeout(() => {
+        reklamacioRealtimeRefreshTimerRef.current = null;
+        void runNivoBackgroundRefresh(() => loadReklamacioRows({ quiet: true }));
+      }, 300);
+    };
+    let channel = supabase.channel("reklamacio-live");
+    [REKLAMACIO_TABLE, "work_logs", "work_log", "production_batches", "asztalos_terv", "fenyezo_terv", "foliazo_terv", "lakatos_terv", "kezi_szinter_terv"].forEach((table) => {
+      channel = channel.on("postgres_changes", { event: "*", schema: "public", table }, scheduleRefresh);
+    });
+    channel.subscribe();
+    return () => {
+      if (typeof window !== "undefined" && reklamacioRealtimeRefreshTimerRef.current !== null) {
+        window.clearTimeout(reklamacioRealtimeRefreshTimerRef.current);
+        reklamacioRealtimeRefreshTimerRef.current = null;
+      }
+      void supabase.removeChannel(channel);
+    };
+  }, [supabase, managementSection, activeWorker?.id, workers.length]);
 
   useEffect(() => {
     if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
