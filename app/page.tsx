@@ -10658,6 +10658,17 @@ ${selector} input:not([type="color"]), ${selector} select, ${selector} textarea 
   font-family: ${theme.fontFamily} !important;
   font-size: ${theme.baseFontSize}px !important;
 }
+${selector} textarea[data-reklamacio-drawing-text-input="true"] {
+  background: transparent !important;
+  background-color: transparent !important;
+  color: #111827 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  min-height: 0 !important;
+  font-family: Arial, sans-serif !important;
+  font-size: inherit !important;
+  box-shadow: none !important;
+}
 ${selector} button {
   font-family: ${theme.fontFamily} !important;
   border-radius: ${Math.max(4, theme.borderRadius - 5)}px !important;
@@ -26574,16 +26585,29 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       border: selected ? "2px solid #2563eb" : "2px solid transparent",
                       background: "transparent",
                       boxSizing: "border-box",
+                      fontSize: item.fontSize,
                     }}
                   >
                     <textarea
                       id={`${item.id}-input`}
+                      data-reklamacio-drawing-text-input="true"
                       value={item.text}
+                      readOnly={!selected}
                       onFocus={() => selectReklamacioDrawingTextBox(item)}
                       onBlur={() => finalizeReklamacioDrawingTextBox(item.id)}
                       onChange={(event) => updateReklamacioDrawingTextBox(item.id, { text: event.target.value })}
+                      onPointerDown={(event) => {
+                        if (selected) {
+                          event.stopPropagation();
+                          return;
+                        }
+                        beginReklamacioTextBoxInteraction(event, item, "move");
+                      }}
+                      onPointerMove={moveOrResizeReklamacioTextBox}
+                      onPointerUp={endReklamacioTextBoxInteraction}
+                      onPointerCancel={endReklamacioTextBoxInteraction}
                       placeholder={selected ? "Írj ide..." : ""}
-                      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", resize: "none", border: 0, outline: 0, padding: selected ? "22px 8px 8px" : "8px", boxSizing: "border-box", overflow: "hidden", color: "#111827", background: "transparent", fontFamily: "Arial, sans-serif", fontSize: item.fontSize, fontWeight: item.bold ? 700 : 400, lineHeight: 1.22 }}
+                      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", resize: "none", border: 0, outline: 0, padding: selected ? "22px 8px 8px" : "8px", boxSizing: "border-box", overflow: "hidden", color: "#111827", background: "transparent", backgroundColor: "transparent", fontFamily: "Arial, sans-serif", fontSize: item.fontSize, fontWeight: item.bold ? 700 : 400, lineHeight: 1.22, cursor: selected ? "text" : "move", touchAction: selected ? "auto" : "none" }}
                     />
                     {selected && <button
                       type="button"
