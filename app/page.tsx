@@ -2433,6 +2433,7 @@ const ATVETEL_SOURCE_STATION = "Szereles";
 const REKLAMACIO_TABLE = "reklamacio_adat";
 const REKLAMACIO_DRAWING_BUCKET = "reklamacio-rajzok";
 const REKLAMACIO_DRAWINGS_TABLE = "reklamacio_rajzok";
+const MAX_REKLAMACIO_DRAWINGS = 2;
 type ReklamacioDrawingTextBox = {
   id: string;
   x: number;
@@ -25170,6 +25171,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     drawing?: { key: string; name: string; source: string }
   ): void {
     const draft = getReklamacioDraft(row);
+    const drawingCount = row.drawings.length + draft.pendingDrawings.length;
+    if (!drawing && drawingCount >= MAX_REKLAMACIO_DRAWINGS) {
+      setMessage({ type: "error", text: `Maximum ${MAX_REKLAMACIO_DRAWINGS} rajz készíthető egy reklamációhoz.` });
+      return;
+    }
     setReklamacioDrawingMode("draw");
     setReklamacioDrawingEditKey(drawing?.key || `new-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
     setReklamacioDrawingName(drawing?.name || `Rajz ${row.drawings.length + draft.pendingDrawings.length + 1}`);
@@ -25281,6 +25287,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       return;
     }
     if (reklamacioDrawingMode === "text") {
+      if (reklamacioSelectedTextBoxId) {
+        finalizeReklamacioDrawingTextBox(reklamacioSelectedTextBoxId);
+        return;
+      }
       const point = getReklamacioCanvasPoint(event);
       const id = `reklamacio-text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const nextTextBox: ReklamacioDrawingTextBox = {
@@ -25367,6 +25377,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     setReklamacioSelectedTextBoxId(item.id);
     setReklamacioTextFontSize(item.fontSize);
     setReklamacioTextBold(item.bold);
+  }
+
+  function finalizeReklamacioDrawingTextBox(id = reklamacioSelectedTextBoxId): void {
+    if (!id) return;
+    setReklamacioDrawingTextBoxes((current) => {
+      const selected = current.find((item) => item.id === id);
+      if (!selected || selected.text.trim()) return current;
+      return current.filter((item) => item.id !== id);
+    });
+    setReklamacioSelectedTextBoxId((current) => current === id ? "" : current);
   }
 
   function updateSelectedReklamacioTextStyle(patch: { fontSize?: number; bold?: boolean }): void {
@@ -25486,6 +25506,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!row) return;
     if (!row.id) {
       const draft = getReklamacioDraft(row);
+      const editingPendingDrawing = draft.pendingDrawings.some((item) => item.key === reklamacioDrawingEditKey);
+      if (!editingPendingDrawing && row.drawings.length + draft.pendingDrawings.length >= MAX_REKLAMACIO_DRAWINGS) {
+        setMessage({ type: "error", text: `Maximum ${MAX_REKLAMACIO_DRAWINGS} rajz készíthető egy reklamációhoz.` });
+        return;
+      }
       const nextDrawing: ReklamacioPendingDrawing = { key: reklamacioDrawingEditKey, name, dataUrl };
       updateReklamacioDraft(row.key, {
         pendingDrawings: draft.pendingDrawings.some((item) => item.key === nextDrawing.key)
@@ -25498,11 +25523,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
 
     if (!supabase) return;
+    const existing = row.drawings.find((item) => item.id === reklamacioDrawingEditKey && !item.isLegacy);
+    if (!existing && row.drawings.length >= MAX_REKLAMACIO_DRAWINGS) {
+      setMessage({ type: "error", text: `Maximum ${MAX_REKLAMACIO_DRAWINGS} rajz készíthető egy reklamációhoz.` });
+      return;
+    }
     setReklamacioDrawingSaving(true);
     try {
       const uploaded = await uploadReklamacioDrawing(dataUrl, row.rendelesszam);
       if (!uploaded.url) throw new Error("A rajz feltöltése nem adott vissza publikus URL-t.");
-      const existing = row.drawings.find((item) => item.id === reklamacioDrawingEditKey && !item.isLegacy);
       const workerIdNumber = Number(activeWorker?.id);
       const workerId = Number.isFinite(workerIdNumber) ? workerIdNumber : null;
       const workerName = activeWorker?.["Teljes nev"] || null;
@@ -26362,8 +26391,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         content = <input type="date" value={draft.kertDatum} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { kertDatum: event.target.value })} style={{ ...tableInputStyle, colorScheme: "dark" }} />;
       } else if (column.id === "rajz") {
         const drawings = getReklamacioDrawingItems(row);
+        const canAddDrawing = drawings.length < MAX_REKLAMACIO_DRAWINGS;
         content = <div style={{ display: "grid", gap: 6 }}>
-          <button type="button" onClick={() => openReklamacioDrawing(row)} style={{ ...buttonSecondary, padding: "6px 9px" }}>+ Új rajz</button>
+          <button
+            type="button"
+            disabled={!canAddDrawing}
+            onClick={() => openReklamacioDrawing(row)}
+            title={canAddDrawing ? "+ Új rajz" : `Maximum ${MAX_REKLAMACIO_DRAWINGS} rajz készíthető`}
+            style={{ ...buttonSecondary, padding: "6px 9px", opacity: canAddDrawing ? 1 : 0.65, cursor: canAddDrawing ? "pointer" : "not-allowed" }}
+          >{canAddDrawing ? "+ Új rajz" : `Maximum ${MAX_REKLAMACIO_DRAWINGS} rajz készíthető`}</button>
           {drawings.map((drawing, index) => <div key={drawing.key} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto auto auto", gap: 4, alignItems: "center", padding: 4, borderRadius: 6, background: officeTheme.panelAltBackground }}>
             <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}>{index + 1}. {drawing.name}</strong>
             <a href={drawing.source} target="_blank" rel="noreferrer" style={{ color: officeTheme.accentColor, fontWeight: 900 }}>Megnyitás</a>
@@ -26505,7 +26541,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                 <button type="button" disabled={reklamacioDrawingSaving} onClick={closeReklamacioDrawing} style={buttonSecondary}>Bezárás</button>
               </div>
             </div>
-            {reklamacioDrawingMode === "text" && <div style={{ marginBottom: 8, color: officeTheme.mutedText, fontSize: 12 }}>Húzz ki egy szövegdobozt a fehér területen, majd írj bele. A felső fogantyúval mozgatható, a jobb alsó sarokkal átméretezhető.</div>}
+            {reklamacioDrawingMode === "text" && <div style={{ marginBottom: 8, color: officeTheme.mutedText, fontSize: 12 }}>Húzz ki egy szövegdobozt a fehér területen, majd írj bele. Kívülre kattintva a szöveg rögzül; utána a szövegre kattintva továbbra is kijelölhető, mozgatható és törölhető. A háttér átlátszó marad.</div>}
             {reklamacioDrawingMode === "line" && <div style={{ marginBottom: 8, color: reklamacioLineActive ? "#86efac" : officeTheme.mutedText, fontSize: 12, fontWeight: 800 }}>{reklamacioLineActive ? "A vonallánc aktív: a következő kattintás újabb, 15°-ra igazított szakaszt rögzít. Befejezés: Esc vagy jobb kattintás." : "Kattints a kezdőpontra, majd a következő pontokra. A vonal mindig a legközelebbi 15°-os irányra ugrik."}</div>}
             <div style={{ position: "relative", background: "#ffffff", borderRadius: 8, overflow: "hidden", border: "1px solid #94a3b8", touchAction: "none" }}>
               <canvas
@@ -26524,7 +26560,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   const selected = reklamacioSelectedTextBoxId === item.id;
                   return <div
                     key={item.id}
-                    onPointerDown={() => selectReklamacioDrawingTextBox(item)}
+                    data-reklamacio-text-box-id={item.id}
+                    onPointerDown={(event) => { event.stopPropagation(); selectReklamacioDrawingTextBox(item); }}
                     style={{
                       position: "absolute",
                       left: `${(item.x / 1100) * 100}%`,
@@ -26534,8 +26571,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       minWidth: 58,
                       minHeight: 34,
                       pointerEvents: "auto",
-                      border: `2px ${selected ? "solid #2563eb" : "dashed #64748b"}`,
-                      background: "rgba(255,255,255,0.9)",
+                      border: selected ? "2px solid #2563eb" : "2px solid transparent",
+                      background: "transparent",
                       boxSizing: "border-box",
                     }}
                   >
@@ -26543,11 +26580,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       id={`${item.id}-input`}
                       value={item.text}
                       onFocus={() => selectReklamacioDrawingTextBox(item)}
+                      onBlur={() => finalizeReklamacioDrawingTextBox(item.id)}
                       onChange={(event) => updateReklamacioDrawingTextBox(item.id, { text: event.target.value })}
-                      placeholder="Írj ide..."
-                      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", resize: "none", border: 0, outline: 0, padding: "22px 8px 8px", boxSizing: "border-box", overflow: "hidden", color: "#111827", background: "transparent", fontFamily: "Arial, sans-serif", fontSize: item.fontSize, fontWeight: item.bold ? 700 : 400, lineHeight: 1.22 }}
+                      placeholder={selected ? "Írj ide..." : ""}
+                      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", resize: "none", border: 0, outline: 0, padding: selected ? "22px 8px 8px" : "8px", boxSizing: "border-box", overflow: "hidden", color: "#111827", background: "transparent", fontFamily: "Arial, sans-serif", fontSize: item.fontSize, fontWeight: item.bold ? 700 : 400, lineHeight: 1.22 }}
                     />
-                    <button
+                    {selected && <button
                       type="button"
                       aria-label="Szövegdoboz mozgatása"
                       onPointerDown={(event) => beginReklamacioTextBoxInteraction(event, item, "move")}
@@ -26555,14 +26593,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       onPointerUp={endReklamacioTextBoxInteraction}
                       onPointerCancel={endReklamacioTextBoxInteraction}
                       style={{ position: "absolute", left: 3, top: 3, zIndex: 2, border: 0, borderRadius: 3, padding: "1px 6px", background: "#2563eb", color: "#ffffff", fontSize: 10, fontWeight: 900, cursor: "move", touchAction: "none" }}
-                    >Mozgatás</button>
-                    <button
+                    >Mozgatás</button>}
+                    {selected && <button
                       type="button"
                       aria-label="Szövegdoboz törlése"
-                      onClick={(event) => { event.stopPropagation(); setReklamacioDrawingTextBoxes((current) => current.filter((box) => box.id !== item.id)); if (reklamacioSelectedTextBoxId === item.id) setReklamacioSelectedTextBoxId(""); }}
+                      onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                      onClick={(event) => { event.stopPropagation(); setReklamacioDrawingTextBoxes((current) => current.filter((box) => box.id !== item.id)); setReklamacioSelectedTextBoxId((current) => current === item.id ? "" : current); }}
                       style={{ position: "absolute", right: 3, top: 3, zIndex: 2, width: 20, height: 20, border: 0, borderRadius: 3, padding: 0, background: "#dc2626", color: "#ffffff", fontSize: 12, fontWeight: 900, cursor: "pointer" }}
-                    >×</button>
-                    <button
+                    >×</button>}
+                    {selected && <button
                       type="button"
                       aria-label="Szövegdoboz átméretezése"
                       onPointerDown={(event) => beginReklamacioTextBoxInteraction(event, item, "resize")}
@@ -26570,7 +26609,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                       onPointerUp={endReklamacioTextBoxInteraction}
                       onPointerCancel={endReklamacioTextBoxInteraction}
                       style={{ position: "absolute", right: 0, bottom: 0, zIndex: 2, width: 22, height: 22, border: 0, padding: 0, background: "#2563eb", color: "#ffffff", fontSize: 14, fontWeight: 900, cursor: "nwse-resize", touchAction: "none" }}
-                    >↘</button>
+                    >↘</button>}
                   </div>;
                 })}
               </div>
