@@ -5742,6 +5742,16 @@ const buttonSecondary: React.CSSProperties = {
 const NIVO_SUPABASE_REQUEST_TIMEOUT_MS = 15_000;
 const nivoSupabaseReadRequests = new Map<string, Promise<Response>>();
 
+// A termelési kártyák által sűrűn hívott, csak olvasó RPC-k célzott védelme.
+// - nivo_plan_columns: egy adott tervtábla sémája oldalbetöltésenként egyszer elég.
+// - nivo_recurring_read: állomásonként 10 másodperces snapshot cache.
+// Az azonos, már futó RPC-kéréshez a következő hívás csatlakozik, nem indít új POST-ot.
+const NIVO_RECURRING_SNAPSHOT_CACHE_MS = 10_000;
+const nivoStationPlanSchemaLoaded = new Set<string>();
+const nivoStationPlanSchemaRequests = new Map<string, Promise<void>>();
+const nivoRecurringCardSnapshotCache = new Map<string, { expiresAt: number; value: RecurringCardSnapshot }>();
+const nivoRecurringCardSnapshotRequests = new Map<string, Promise<RecurringCardSnapshot>>();
+
 type NivoFetchInput = Parameters<typeof fetch>[0];
 type NivoFetchInit = Parameters<typeof fetch>[1];
 
@@ -14843,14 +14853,47 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
   // Visszatérő munkák: a konkrét terv-/prioritási sor saját állapota.
   async function readRecurringCardSnapshot(stationName: string): Promise<RecurringCardSnapshot> {
-    if (!supabase) return {names:new Set<string>(),instances:new Map<string,RecurringInstance>()};
-    try {
-      const data = await recurringRead(supabase,stationName);
-      return recurringCardSnapshot(data);
-    } catch(error) {
-      if((error as {code?:string})?.code==="PGRST202")return {names:new Set<string>(),instances:new Map<string,RecurringInstance>()};
-      throw error;
-    }
+    const emptySnapshot = (): RecurringCardSnapshot => ({names:new Set<string>(),instances:new Map<string,RecurringInstance>()});
+    if (!supabase) return emptySnapshot();
+
+    const cacheKey = String(stationName || "").trim().toLowerCase();
+    if (!cacheKey) return emptySnapshot();
+
+    const cached = nivoRecurringCardSnapshotCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+    const existingRequest = nivoRecurringCardSnapshotRequests.get(cacheKey);
+    if (existingRequest) return existingRequest;
+
+    let requestPromise: Promise<RecurringCardSnapshot>;
+    requestPromise = (async () => {
+      try {
+        const data = await recurringRead(supabase, stationName);
+        const snapshot = recurringCardSnapshot(data);
+        nivoRecurringCardSnapshotCache.set(cacheKey, {
+          expiresAt: Date.now() + NIVO_RECURRING_SNAPSHOT_CACHE_MS,
+          value: snapshot,
+        });
+        return snapshot;
+      } catch(error) {
+        if((error as {code?:string})?.code === "PGRST202") {
+          const snapshot = emptySnapshot();
+          nivoRecurringCardSnapshotCache.set(cacheKey, {
+            expiresAt: Date.now() + NIVO_RECURRING_SNAPSHOT_CACHE_MS,
+            value: snapshot,
+          });
+          return snapshot;
+        }
+        throw error;
+      }
+    })().finally(() => {
+      if (nivoRecurringCardSnapshotRequests.get(cacheKey) === requestPromise) {
+        nivoRecurringCardSnapshotRequests.delete(cacheKey);
+      }
+    });
+
+    nivoRecurringCardSnapshotRequests.set(cacheKey, requestPromise);
+    return requestPromise;
   }
 
   function recurringCardDisplayStatus(snapshot:RecurringCardSnapshot, kind:"plan"|"backlog"|"priority", sourceId:string, name:string) {
@@ -14909,6 +14952,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         ? `END elmentve: ${selected?.name||""}. A konkrét sor kész.`
         : `END elmentve: ${selected?.name||""}. A sor folyamatban marad${remaining!==null&&remaining!==undefined?`, még ${remaining} db szükséges`:""}.`});
     if(selected){
+      nivoRecurringCardSnapshotCache.delete(String(selected.station || "").trim().toLowerCase());
       void runNivoBackgroundRefresh(()=>loadProductionCardData(selected.station,getLocalDateKey(new Date())));
     }
   }
@@ -16781,22 +16825,47 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   async function loadStationPlanSchemaForStation(stationName: string): Promise<void> {
     if (!supabase || !stationName) return;
     const tableName = buildStationPlanTableName(stationName);
-    const { data, error } = await supabase.rpc("nivo_plan_columns", { p_table_name: tableName });
-    if (error) {
-      console.warn(`A(z) ${tableName} teljes mezőlistája nem olvasható; az ismert mezők megmaradnak:`, error);
+    const schemaKey = String(tableName || "").trim().toLowerCase();
+    if (!schemaKey) return;
+
+    // A tervtábla oszlopsémája normál használat közben nem változik, ezért
+    // ugyanazon oldalbetöltés alatt egy sikeres lekérés után nem RPC-zünk újra.
+    if (nivoStationPlanSchemaLoaded.has(schemaKey)) return;
+
+    // Ha ugyanaz az RPC már fut, várjuk meg azt ahelyett, hogy új POST-ot indítanánk.
+    const existingRequest = nivoStationPlanSchemaRequests.get(schemaKey);
+    if (existingRequest) {
+      await existingRequest;
       return;
     }
-    const definitions: StationPlanFieldDefinition[] = ((data || []) as Array<{ column_name: string; data_type: string }>).map((column) => {
-      const type = String(column.data_type || "").toLowerCase();
-      const dataType: StationPlanFieldDataType = type.includes("boolean") ? "boolean"
-        : type.includes("date") || type.includes("timestamp") ? "date"
-        : type.includes("integer") || type.includes("numeric") || type.includes("double precision") ? "integer" : "text";
-      return { key: column.column_name, label: column.column_name === "sos" ? "SOS" : column.column_name.replace(/_/g, " "), dataType };
+
+    let requestPromise: Promise<void>;
+    requestPromise = (async () => {
+      const { data, error } = await supabase.rpc("nivo_plan_columns", { p_table_name: tableName });
+      if (error) {
+        console.warn(`A(z) ${tableName} teljes mezőlistája nem olvasható; az ismert mezők megmaradnak:`, error);
+        return;
+      }
+      const definitions: StationPlanFieldDefinition[] = ((data || []) as Array<{ column_name: string; data_type: string }>).map((column) => {
+        const type = String(column.data_type || "").toLowerCase();
+        const dataType: StationPlanFieldDataType = type.includes("boolean") ? "boolean"
+          : type.includes("date") || type.includes("timestamp") ? "date"
+          : type.includes("integer") || type.includes("numeric") || type.includes("double precision") ? "integer" : "text";
+        return { key: column.column_name, label: column.column_name === "sos" ? "SOS" : column.column_name.replace(/_/g, " "), dataType };
+      });
+      const stationKey = getStationPlanIdentityKey(stationName);
+      const existing = new Map((STATION_PLAN_DISCOVERED_FIELDS.get(stationKey) || []).map((field) => [field.key, field]));
+      definitions.forEach((field) => existing.set(field.key, field));
+      STATION_PLAN_DISCOVERED_FIELDS.set(stationKey, Array.from(existing.values()));
+      nivoStationPlanSchemaLoaded.add(schemaKey);
+    })().finally(() => {
+      if (nivoStationPlanSchemaRequests.get(schemaKey) === requestPromise) {
+        nivoStationPlanSchemaRequests.delete(schemaKey);
+      }
     });
-    const stationKey = getStationPlanIdentityKey(stationName);
-    const existing = new Map((STATION_PLAN_DISCOVERED_FIELDS.get(stationKey) || []).map((field) => [field.key, field]));
-    definitions.forEach((field) => existing.set(field.key, field));
-    STATION_PLAN_DISCOVERED_FIELDS.set(stationKey, Array.from(existing.values()));
+
+    nivoStationPlanSchemaRequests.set(schemaKey, requestPromise);
+    await requestPromise;
   }
 
   async function fetchProductionCardProfileForStation(
