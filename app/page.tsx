@@ -13372,6 +13372,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const onlineCount = machineNames.filter((name) => getNivoAdminMachineStatus(activityByMachine.get(nivoNormalizeEmergencyMachineKey(name)) || null, name).label === "Online").length;
     const disabledCount = machineNames.filter((name) => nivoEmergencyControl.globalStop || nivoIsMachineDisabledByControl(nivoEmergencyControl, name)).length;
     const activeRequestCount = nivoAdminActivityRows.reduce((sum, row) => sum + (Array.isArray(row.active_requests) ? row.active_requests.length : 0), 0);
+    const totalRequestCount1m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_1m || 0), 0);
+    const totalRequestCount5m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_5m || 0), 0);
+    const totalRequestCount1h = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_1h || 0), 0);
+    const totalErrorCount1m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.error_count_1m || 0), 0);
+    const totalRequestCount = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_total || 0), 0);
 
     return (
       <div style={{ minHeight: "100vh", background: theme.pageBackground, color: theme.textColor, padding: 22, fontFamily: theme.fontFamily, boxSizing: "border-box" }}>
@@ -13427,10 +13432,29 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           {nivoEmergencyControl.globalStop && <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: "#7f1d1d", color: "#fee2e2", fontWeight: 900 }}>⚠ GLOBÁLIS VÉSZLEÁLLÍTÁS AKTÍV – a kliensek csak a Vercel vészcsatornát figyelik.</div>}
         </div>
 
-        <div data-office-window="admin:summary" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, marginBottom: 14 }}>
+        <div data-office-window="admin:summary" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, marginBottom: 10 }}>
           {[
             ["Gépek", machineNames.length], ["Online", onlineCount], ["Letiltva", disabledCount], ["Futó lekérdezések", activeRequestCount],
           ].map(([label, value]) => <div key={String(label)} style={{ ...panel, padding: 14 }}><div style={{ color: theme.mutedText, fontSize: 12 }}>{label}</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 3 }}>{value}</div></div>)}
+        </div>
+
+        <div style={{ ...panel, padding: 14, marginBottom: 14 }}>
+          <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 10 }}>Összes gép lekérdezési aktivitása</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 8 }}>
+            {[
+              ["1 perc", totalRequestCount1m],
+              ["5 perc", totalRequestCount5m],
+              ["1 óra", totalRequestCount1h],
+              ["Futó", activeRequestCount],
+              ["Hiba / 1 perc", totalErrorCount1m],
+              ["Összes kérés", totalRequestCount],
+            ].map(([label, value]) => (
+              <div key={String(label)} style={{ padding: 10, borderRadius: 10, background: theme.panelAltBackground }}>
+                <div style={{ color: theme.mutedText, fontSize: 11 }}>{label}</div>
+                <strong style={{ fontSize: 18 }}>{value}</strong>
+              </div>
+            ))}
+          </div>
         </div>
 
         <div data-office-window="admin:machines" style={{ display: "grid", gap: 12 }}>
