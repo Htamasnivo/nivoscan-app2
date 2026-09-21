@@ -6561,14 +6561,32 @@ function isLimitedOfficeWorker(worker: Worker | null | undefined): boolean {
   return Number(worker.Esemeny_Koteg ?? worker.esemeny_koteg ?? -1) === 9;
 }
 
+function isEventElevenOfficeWorker(worker: Worker | null | undefined): boolean {
+  if (!worker) return false;
+  return Number(worker.Esemeny_Koteg ?? worker.esemeny_koteg ?? -1) === 11;
+}
+
 function getDefaultManagementSectionForWorker(worker: Worker | null | undefined): ManagementSection {
-  return isLimitedOfficeWorker(worker) ? "atvetel" : "dashboard";
+  if (isLimitedOfficeWorker(worker)) return "atvetel";
+  if (isEventElevenOfficeWorker(worker)) return "dashboard";
+  return "dashboard";
 }
 
 function canWorkerAccessManagementSection(
   worker: Worker | null | undefined,
   section: ManagementSection
 ): boolean {
+  if (isEventElevenOfficeWorker(worker)) {
+    return section === "dashboard"
+      || section === "production-plan"
+      || section === "production-monitor"
+      || section === "production-card"
+      || section === "pause-report"
+      || section === "reproduction-report"
+      || section === "atvetel"
+      || section === "reklamacio"
+      || section === "executive-report";
+  }
   if (section === "admin") return isAdmin(worker || null);
   if (!isLimitedOfficeWorker(worker)) return true;
   return section === "atvetel" || section === "production-monitor" || section === "reklamacio";
@@ -6583,6 +6601,10 @@ function isManagementDashboardWorker(worker: Worker | null): boolean {
   // Ehhez nem kell külön irodai munkakör/jogosultság: maga a 9-es érték
   // határozza meg a butított irodai felületet.
   if (eventKoteg === 9) return true;
+
+  // A 11-es esemény_köteg külön irodai profil. A számára elérhető menüpontokat
+  // a canWorkerAccessManagementSection és a felső navigáció szűri.
+  if (eventKoteg === 11) return true;
 
   // A normál teljes irodai / tervezői műszerfal továbbra is a 0-s mód.
   // Minden más esemény_köteg dolgozói lejelentő mód marad.
@@ -14582,14 +14604,26 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     ];
 
     // Esemeny_Koteg = 9: csak ez a három irodai menüpont látható.
-    // A Megjelenés/Profi szerkesztő funkciók nem kerülnek letiltásra,
-    // mert a két engedélyezett oldalon mindent ugyanúgy állíthat.
+    // Esemeny_Koteg = 11: a külön irodai profil kizárólag a kért 9 funkciót látja.
+    // A Megjelenés/Profi szerkesztő funkció mindkét korlátozott irodai profilnál megmarad.
     const permittedItems = allItems.filter((item) => item.id !== "admin" || isAdmin(activeWorker));
     const items = isLimitedOfficeWorker(activeWorker)
       ? permittedItems.filter(
           (item) => item.id === "atvetel" || item.id === "production-monitor" || item.id === "reklamacio"
         )
-      : permittedItems;
+      : isEventElevenOfficeWorker(activeWorker)
+        ? permittedItems.filter((item) =>
+            item.id === "dashboard"
+            || item.id === "production-plan"
+            || item.id === "production-monitor"
+            || item.id === "production-card"
+            || item.id === "pause-report"
+            || item.id === "reproduction-report"
+            || item.id === "atvetel"
+            || item.id === "reklamacio"
+            || item.id === "executive-report"
+          )
+        : permittedItems;
     const currentTheme = getOfficeTheme(managementSection);
     const selectedWindowKey = officeThemeScope === "__page__" ? null : officeThemeScope;
     const selectedTheme = selectedWindowKey ? getOfficeWindowTheme(managementSection, selectedWindowKey) : currentTheme;
