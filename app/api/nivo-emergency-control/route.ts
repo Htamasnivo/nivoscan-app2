@@ -84,21 +84,93 @@ async function readControl(): Promise<{ configured: boolean; value: EmergencyCon
   }
 }
 
+async function vercelApiRequest(
+  path: string,
+  init: RequestInit,
+  teamId = ""
+): Promise<Response> {
+  const settings = env();
+  const query = teamId ? `${path.includes("?") ? "&" : "?"}teamId=${encodeURIComponent(teamId)}` : "";
+  return fetch(`https://api.vercel.com${path}${query}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${settings.vercelToken}`,
+      ...(init.headers || {}),
+    },
+    cache: "no-store",
+  });
+}
+
+async function resolveEdgeConfigTeamId(): Promise<string> {
+  const settings = env();
+  const candidates: string[] = [];
+  if (settings.teamId) candidates.push(settings.teamId);
+
+  const canAccessConfig = async (teamId: string): Promise<boolean> => {
+    const response = await vercelApiRequest(
+      `/v1/edge-config/${encodeURIComponent(settings.configId)}`,
+      { method: "GET" },
+      teamId
+    );
+    return response.ok;
+  };
+
+  for (const candidate of candidates) {
+    try {
+      if (await canAccessConfig(candidate)) return candidate;
+    } catch {
+      // Következő lehetséges scope.
+    }
+  }
+
+  // Ha a megadott TEAM_ID hibás vagy régi, próbáljuk meg az access tokenhez
+  // elérhető teameket automatikusan. Ez csak vészvezérlési íráskor fut.
+  try {
+    const teamsResponse = await fetch("https://api.vercel.com/v2/teams?limit=100", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${settings.vercelToken}` },
+      cache: "no-store",
+    });
+    if (teamsResponse.ok) {
+      const json = await teamsResponse.json().catch(() => ({})) as { teams?: Array<{ id?: string }> };
+      for (const team of json.teams || []) {
+        const id = String(team.id || "").trim();
+        if (!id || candidates.includes(id)) continue;
+        try {
+          if (await canAccessConfig(id)) return id;
+        } catch {
+          // Következő team.
+        }
+      }
+    }
+  } catch {
+    // A személyes scope próbája még hátravan.
+  }
+
+  // Személyes/account scope.
+  try {
+    if (await canAccessConfig("")) return "";
+  } catch {
+    // Alább részletes hibát adunk.
+  }
+
+  throw new Error(
+    "A Vercel access token nem éri el a megadott Global Configot. Ellenőrizd a VERCEL_ACCESS_TOKEN scope-ját és a VERCEL_TEAM_ID értékét."
+  );
+}
+
 async function writeControl(value: EmergencyControl): Promise<void> {
   const settings = env();
   if (!settings.configId || !settings.vercelToken) {
     throw new Error("A Global Config írás nincs beállítva (NIVO_GLOBAL_CONFIG_ID / VERCEL_ACCESS_TOKEN).");
   }
 
-  const query = settings.teamId ? `?teamId=${encodeURIComponent(settings.teamId)}` : "";
-  const response = await fetch(
-    `https://api.vercel.com/v1/edge-config/${encodeURIComponent(settings.configId)}/items${query}`,
+  const resolvedTeamId = await resolveEdgeConfigTeamId();
+  const response = await vercelApiRequest(
+    `/v1/edge-config/${encodeURIComponent(settings.configId)}/items`,
     {
       method: "PATCH",
-      headers: {
-        Authorization: `Bearer ${settings.vercelToken}`,
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         items: [
           {
@@ -108,8 +180,8 @@ async function writeControl(value: EmergencyControl): Promise<void> {
           },
         ],
       }),
-      cache: "no-store",
-    }
+    },
+    resolvedTeamId
   );
 
   if (!response.ok) {
@@ -153,6 +225,10 @@ export async function POST(request: NextRequest) {
 
   if (String(body.pin || "") !== settings.adminPin) {
     return NextResponse.json({ error: "Hibás admin PIN." }, { status: 401 });
+  }
+
+  if (String(body.action || "") === "verify-pin") {
+    return NextResponse.json({ ok: true }, { status: 200, headers: { "Cache-Control": "no-store" } });
   }
 
   const current = await readControl();
