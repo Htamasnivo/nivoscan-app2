@@ -586,7 +586,7 @@ type DashboardData = {
 };
 
 type DashboardFilterMode = "daily" | "weekly" | "monthly" | "custom";
-type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "pause-report" | "reproduction-report" | "atvetel" | "reklamacio" | "label-printer" | "executive-report" | "report-delivery" | "data-upload";
+type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "pause-report" | "reproduction-report" | "atvetel" | "reklamacio" | "label-printer" | "executive-report" | "report-delivery" | "data-upload" | "admin";
 type OfficePageKey = ManagementSection;
 
 type PausedSzerelesRow = {
@@ -659,6 +659,54 @@ type DataUploadAgentRow = {
   last_seen_at: string;
   current_run_id: string | null;
   last_error: string;
+};
+
+type NivoQueryActivityItem = {
+  id: string;
+  method: string;
+  kind: string;
+  target: string;
+  startedAt: string;
+  finishedAt?: string;
+  status?: number;
+  durationMs?: number;
+  ok?: boolean;
+  error?: string;
+};
+
+type NivoMachineActivityRow = {
+  machine_id: string;
+  client_id: string | null;
+  last_seen_at: string | null;
+  online_since: string | null;
+  user_name: string | null;
+  page_url: string | null;
+  user_agent: string | null;
+  is_visible: boolean | null;
+  request_count_total: number | null;
+  request_count_1m: number | null;
+  request_count_5m: number | null;
+  request_count_1h: number | null;
+  error_count_1m: number | null;
+  last_request_at: string | null;
+  last_success_at: string | null;
+  last_error_at: string | null;
+  last_error: string | null;
+  active_requests: NivoQueryActivityItem[] | null;
+  recent_requests: NivoQueryActivityItem[] | null;
+  gateway_backoff_until: string | null;
+  gateway_failure_count: number | null;
+  app_version: string | null;
+  updated_at: string | null;
+};
+
+type NivoEmergencyControlState = {
+  configured: boolean;
+  globalStop: boolean;
+  disabledMachines: Record<string, boolean>;
+  updatedAt: string;
+  updatedBy: string;
+  error?: string;
 };
 type OfficeThemePresetGroup = "base" | "neon" | "matte";
 type OfficeThemePresetId =
@@ -838,11 +886,11 @@ function createDefaultOfficeThemeMap(): Record<OfficePageKey, OfficeThemeConfig>
   const base = OFFICE_THEME_PRESETS["industrial-night"].theme;
   return {
     dashboard: cloneOfficeTheme(base), "production-plan": cloneOfficeTheme(base), "production-monitor": cloneOfficeTheme(base),
-    "production-card": cloneOfficeTheme(base), "pause-report": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "atvetel": cloneOfficeTheme(base), "reklamacio": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "executive-report": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base), "data-upload": cloneOfficeTheme(base),
+    "production-card": cloneOfficeTheme(base), "pause-report": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "atvetel": cloneOfficeTheme(base), "reklamacio": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "executive-report": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base), "data-upload": cloneOfficeTheme(base), "admin": cloneOfficeTheme(base),
   };
 }
 function createDefaultOfficeThemePresetMap(): Record<OfficePageKey, OfficeThemePresetId> {
-  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "pause-report":"industrial-night", "reproduction-report":"industrial-night", "atvetel":"industrial-night", "reklamacio":"industrial-night", "label-printer":"industrial-night", "executive-report":"industrial-night", "report-delivery":"industrial-night", "data-upload":"industrial-night" };
+  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "pause-report":"industrial-night", "reproduction-report":"industrial-night", "atvetel":"industrial-night", "reklamacio":"industrial-night", "label-printer":"industrial-night", "executive-report":"industrial-night", "report-delivery":"industrial-night", "data-upload":"industrial-night", "admin":"industrial-night" };
 }
 
 const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]> = {
@@ -896,6 +944,10 @@ const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]>
   "data-upload": [
     { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Adatfeltöltési fejléc" }, { id:"agent", label:"Windows feltöltő agent állapot" },
     { id:"blocks", label:"Adatfeltöltési blokkok" }, { id:"footer-info", label:"Alsó információs panel" },
+  ],
+  "admin": [
+    { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Admin gépfelügyelet fejléc" }, { id:"summary", label:"Aktivitás összesítő" },
+    { id:"machines", label:"Gépek aktivitása" }, { id:"emergency", label:"Vészleállítás" },
   ],
 };
 
@@ -2375,6 +2427,12 @@ const SUPABASE_URL = "https://hghvhsrjfwvaafkfhiyj.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_Gdq5SHUVJpLRs6sDNqLXrw_23wBl3O8";
 const ADMIN_RESET_PIN = "4826";
 const MACHINE_ID_STORAGE_KEY = "nivoscan-machine-id-v1";
+const NIVO_CLIENT_ID_STORAGE_KEY = "nivoscan-client-id-v1";
+const NIVO_MACHINE_ACTIVITY_TABLE = "nivo_machine_activity";
+const NIVO_EMERGENCY_CONTROL_URL = "/api/nivo-emergency-control";
+const NIVO_EMERGENCY_CONTROL_POLL_MS = 5_000;
+const NIVO_MACHINE_ACTIVITY_HEARTBEAT_MS = 10_000;
+const NIVO_CLIENT_VERSION = "2026-09-21-admin-monitor-v1";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
 const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
@@ -5766,6 +5824,175 @@ const nivoRecurringCardSnapshotRequests = new Map<string, Promise<RecurringCardS
 type NivoFetchInput = Parameters<typeof fetch>[0];
 type NivoFetchInit = Parameters<typeof fetch>[1];
 
+let nivoEmergencyRuntimeBlocked = false;
+let nivoEmergencyRuntimeReason = "";
+const nivoActivityOnlineSince = new Date().toISOString();
+const nivoActivityActiveRequests = new Map<string, NivoQueryActivityItem>();
+const nivoActivityRecentRequests: NivoQueryActivityItem[] = [];
+const nivoActivityRequestTimes: number[] = [];
+const nivoActivityErrorTimes: number[] = [];
+let nivoActivityRequestTotal = 0;
+let nivoActivityLastRequestAt = "";
+let nivoActivityLastSuccessAt = "";
+let nivoActivityLastErrorAt = "";
+let nivoActivityLastError = "";
+let nivoActivitySequence = 0;
+
+function nivoGetClientId(): string {
+  if (typeof window === "undefined") return "server";
+  try {
+    const existing = String(window.localStorage.getItem(NIVO_CLIENT_ID_STORAGE_KEY) || "").trim();
+    if (existing) return existing;
+    const next = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `client-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    window.localStorage.setItem(NIVO_CLIENT_ID_STORAGE_KEY, next);
+    return next;
+  } catch {
+    return `client-${Date.now()}`;
+  }
+}
+
+function nivoSetEmergencyRuntimeBlock(blocked: boolean, reason = ""): void {
+  nivoEmergencyRuntimeBlocked = blocked;
+  nivoEmergencyRuntimeReason = blocked ? (reason || "A gépet az adminisztrátor letiltotta.") : "";
+}
+
+function nivoNormalizeEmergencyMachineKey(value: unknown): string {
+  return String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+}
+
+function nivoIsMachineDisabledByControl(state: NivoEmergencyControlState, machineId: string): boolean {
+  const wanted = nivoNormalizeEmergencyMachineKey(machineId);
+  if (!wanted) return false;
+  return Object.entries(state.disabledMachines || {}).some(([name, disabled]) =>
+    Boolean(disabled) && nivoNormalizeEmergencyMachineKey(name) === wanted
+  );
+}
+
+function nivoDescribeSupabaseRequest(url: string, method: string): { kind: string; target: string } {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname;
+    const rpc = path.match(/\/rest\/v1\/rpc\/([^/?]+)/i);
+    if (rpc) return { kind: "RPC", target: decodeURIComponent(rpc[1]) };
+    const table = path.match(/\/rest\/v1\/([^/?]+)/i);
+    if (table) return { kind: method.toUpperCase(), target: decodeURIComponent(table[1]) };
+    return { kind: method.toUpperCase(), target: path || url };
+  } catch {
+    return { kind: method.toUpperCase(), target: url };
+  }
+}
+
+function nivoShouldTrackSupabaseRequest(url: string): boolean {
+  if (!url.startsWith(SUPABASE_URL)) return false;
+  return !url.includes(`/rest/v1/${NIVO_MACHINE_ACTIVITY_TABLE}`);
+}
+
+function nivoPruneActivityWindows(now = Date.now()): void {
+  const cutoff = now - 60 * 60 * 1000;
+  while (nivoActivityRequestTimes.length && nivoActivityRequestTimes[0] < cutoff) nivoActivityRequestTimes.shift();
+  while (nivoActivityErrorTimes.length && nivoActivityErrorTimes[0] < cutoff) nivoActivityErrorTimes.shift();
+}
+
+function nivoActivityCountSince(values: number[], since: number): number {
+  let count = 0;
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    if (values[index] < since) break;
+    count += 1;
+  }
+  return count;
+}
+
+async function nivoTrackActualSupabaseRequest(
+  input: NivoFetchInput,
+  init: NivoFetchInit | undefined,
+  runner: () => Promise<Response>
+): Promise<Response> {
+  const request = typeof Request !== "undefined" && input instanceof Request ? input : null;
+  const method = String(init?.method || request?.method || "GET").toUpperCase();
+  const url = nivoSupabaseFetchUrl(input);
+  if (!nivoShouldTrackSupabaseRequest(url)) return runner();
+
+  const descriptor = nivoDescribeSupabaseRequest(url, method);
+  const startedMs = Date.now();
+  const item: NivoQueryActivityItem = {
+    id: `q-${startedMs}-${++nivoActivitySequence}`,
+    method,
+    kind: descriptor.kind,
+    target: descriptor.target,
+    startedAt: new Date(startedMs).toISOString(),
+  };
+  nivoActivityActiveRequests.set(item.id, item);
+  nivoActivityRequestTimes.push(startedMs);
+  nivoActivityRequestTotal += 1;
+  nivoActivityLastRequestAt = item.startedAt;
+  nivoPruneActivityWindows(startedMs);
+
+  try {
+    const response = await runner();
+    const finishedMs = Date.now();
+    item.finishedAt = new Date(finishedMs).toISOString();
+    item.status = response.status;
+    item.durationMs = Math.max(0, finishedMs - startedMs);
+    item.ok = response.ok;
+    if (response.ok) {
+      nivoActivityLastSuccessAt = item.finishedAt;
+    } else {
+      nivoActivityErrorTimes.push(finishedMs);
+      nivoActivityLastErrorAt = item.finishedAt;
+      nivoActivityLastError = `${descriptor.kind} ${descriptor.target}: HTTP ${response.status}`;
+      item.error = nivoActivityLastError;
+    }
+    return response;
+  } catch (error) {
+    const finishedMs = Date.now();
+    item.finishedAt = new Date(finishedMs).toISOString();
+    item.durationMs = Math.max(0, finishedMs - startedMs);
+    item.ok = false;
+    item.error = error instanceof Error ? error.message : String(error);
+    nivoActivityErrorTimes.push(finishedMs);
+    nivoActivityLastErrorAt = item.finishedAt;
+    nivoActivityLastError = item.error;
+    throw error;
+  } finally {
+    nivoActivityActiveRequests.delete(item.id);
+    nivoActivityRecentRequests.unshift({ ...item });
+    if (nivoActivityRecentRequests.length > 20) nivoActivityRecentRequests.length = 20;
+    nivoPruneActivityWindows();
+  }
+}
+
+function nivoBuildMachineActivityPayload(machineId: string, userName: string): Record<string, unknown> {
+  const now = Date.now();
+  nivoPruneActivityWindows(now);
+  return {
+    machine_id: String(machineId || DEFAULT_MACHINE_ID).trim() || DEFAULT_MACHINE_ID,
+    client_id: nivoGetClientId(),
+    last_seen_at: new Date(now).toISOString(),
+    online_since: nivoActivityOnlineSince,
+    user_name: String(userName || "").trim() || null,
+    page_url: typeof window !== "undefined" ? window.location.href.slice(0, 1000) : null,
+    user_agent: typeof navigator !== "undefined" ? navigator.userAgent.slice(0, 1000) : null,
+    is_visible: typeof document !== "undefined" ? document.visibilityState === "visible" : true,
+    request_count_total: nivoActivityRequestTotal,
+    request_count_1m: nivoActivityCountSince(nivoActivityRequestTimes, now - 60_000),
+    request_count_5m: nivoActivityCountSince(nivoActivityRequestTimes, now - 5 * 60_000),
+    request_count_1h: nivoActivityCountSince(nivoActivityRequestTimes, now - 60 * 60_000),
+    error_count_1m: nivoActivityCountSince(nivoActivityErrorTimes, now - 60_000),
+    last_request_at: nivoActivityLastRequestAt || null,
+    last_success_at: nivoActivityLastSuccessAt || null,
+    last_error_at: nivoActivityLastErrorAt || null,
+    last_error: nivoActivityLastError || null,
+    active_requests: Array.from(nivoActivityActiveRequests.values()).slice(0, 20),
+    recent_requests: nivoActivityRecentRequests.slice(0, 20),
+    gateway_backoff_until: nivoSupabaseReadBackoffUntil > now ? new Date(nivoSupabaseReadBackoffUntil).toISOString() : null,
+    gateway_failure_count: nivoSupabaseGatewayFailureCount,
+    app_version: NIVO_CLIENT_VERSION,
+    updated_at: new Date(now).toISOString(),
+  };
+}
+
 function nivoSupabaseFetchUrl(input: NivoFetchInput): string {
   const request = typeof Request !== "undefined" && input instanceof Request ? input : null;
   return typeof input === "string"
@@ -5876,7 +6103,7 @@ async function nivoRunGuardedSupabaseRead(input: NivoFetchInput, init?: NivoFetc
       throw new Error(`Supabase átmeneti API Gateway védelem aktív (${waitSeconds} mp).`);
     }
 
-    const response = await nivoFetchWithTimeout(input, init);
+    const response = await nivoTrackActualSupabaseRequest(input, init, () => nivoFetchWithTimeout(input, init));
     if (nivoIsGatewayTransientStatus(response.status)) nivoMarkSupabaseGatewayFailure();
     else nivoMarkSupabaseGatewayHealthy();
     return response;
@@ -5892,10 +6119,15 @@ async function nivoRunGuardedSupabaseRead(input: NivoFetchInput, init?: NivoFetc
 }
 
 function nivoGuardedSupabaseFetch(input: NivoFetchInput, init?: NivoFetchInit): Promise<Response> {
+  const url = nivoSupabaseFetchUrl(input);
+  if (url.startsWith(SUPABASE_URL) && nivoEmergencyRuntimeBlocked) {
+    return Promise.reject(new Error(nivoEmergencyRuntimeReason || "A gépet az adminisztrátor letiltotta."));
+  }
+
   const requestKey = nivoSupabaseReadRequestKey(input, init);
-  // A valódi írások (INSERT/UPDATE/DELETE és nem olvasó RPC-k) változatlanul,
-  // közvetlenül mennek. Csak a GET/HEAD és a két olvasó RPC kap védelmet.
-  if (!requestKey) return fetch(input, init);
+  // A valódi írások (INSERT/UPDATE/DELETE és nem olvasó RPC-k) továbbra is közvetlenül mennek,
+  // de az aktivitásmérés ezeket is naplózza. Csak a GET/HEAD és a két olvasó RPC kap deduplikációt/backoffot.
+  if (!requestKey) return nivoTrackActualSupabaseRequest(input, init, () => fetch(input, init));
 
   const existingRequest = nivoSupabaseReadRequests.get(requestKey);
   if (existingRequest) return existingRequest.then((response) => response.clone());
@@ -6337,6 +6569,7 @@ function canWorkerAccessManagementSection(
   worker: Worker | null | undefined,
   section: ManagementSection
 ): boolean {
+  if (section === "admin") return isAdmin(worker || null);
   if (!isLimitedOfficeWorker(worker)) return true;
   return section === "atvetel" || section === "production-monitor" || section === "reklamacio";
 }
@@ -9458,6 +9691,20 @@ export default function Page() {
   const [terminalView, setTerminalView] = useState<"scanner" | "management">("scanner");
   const [managementSelection, setManagementSelection] = useState<EventCard | null>(null);
   const [managementSection, setManagementSection] = useState<ManagementSection>("dashboard");
+
+  // Admin gépfelügyelet + Supabase-tól független Vercel vészleállítás.
+  const [nivoAdminActivityRows, setNivoAdminActivityRows] = useState<NivoMachineActivityRow[]>([]);
+  const [nivoAdminActivityLoading, setNivoAdminActivityLoading] = useState(false);
+  const [nivoAdminActivityError, setNivoAdminActivityError] = useState("");
+  const [nivoAdminControlPin, setNivoAdminControlPin] = useState("");
+  const [nivoAdminControlBusy, setNivoAdminControlBusy] = useState(false);
+  const [nivoEmergencyAdminOpen, setNivoEmergencyAdminOpen] = useState(false);
+  const [nivoRuntimeBlocked, setNivoRuntimeBlocked] = useState(false);
+  const [nivoRuntimeBlockReason, setNivoRuntimeBlockReason] = useState("");
+  const [nivoEmergencyControl, setNivoEmergencyControl] = useState<NivoEmergencyControlState>({
+    configured: false, globalStop: false, disabledMachines: {}, updatedAt: "", updatedBy: "",
+  });
+  const nivoRuntimeBlockedRef = useRef(false);
 
   // Adat feltöltés – irodai webes konfiguráció.
   // A tényleges Windows/local hálózati Excel fájlt a külön Windows agent olvassa,
@@ -12935,6 +13182,259 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     });
   }
 
+  async function loadNivoEmergencyControlState(): Promise<NivoEmergencyControlState> {
+    const response = await fetch(NIVO_EMERGENCY_CONTROL_URL, { method: "GET", cache: "no-store" });
+    const body = await response.json().catch(() => ({})) as Partial<NivoEmergencyControlState>;
+    if (!response.ok) throw new Error(String(body.error || `Vészvezérlés HTTP ${response.status}`));
+    return {
+      configured: Boolean(body.configured),
+      globalStop: Boolean(body.globalStop),
+      disabledMachines: body.disabledMachines && typeof body.disabledMachines === "object" ? body.disabledMachines as Record<string, boolean> : {},
+      updatedAt: String(body.updatedAt || ""),
+      updatedBy: String(body.updatedBy || ""),
+      ...(body.error ? { error: String(body.error) } : {}),
+    };
+  }
+
+  async function loadNivoAdminActivity(options?: { quiet?: boolean }): Promise<void> {
+    if (!options?.quiet) setNivoAdminActivityLoading(true);
+    let nextError = "";
+    try {
+      const control = await loadNivoEmergencyControlState();
+      setNivoEmergencyControl(control);
+    } catch (error) {
+      nextError = `Vészvezérlés: ${normalizeError(error)}`;
+    }
+
+    if (supabase && !nivoEmergencyRuntimeBlocked) {
+      try {
+        const response = await supabase
+          .from(NIVO_MACHINE_ACTIVITY_TABLE)
+          .select("*")
+          .order("last_seen_at", { ascending: false });
+        if (response.error) throw response.error;
+        setNivoAdminActivityRows((response.data || []) as NivoMachineActivityRow[]);
+      } catch (error) {
+        const detail = `Aktivitás: ${normalizeError(error)}`;
+        nextError = nextError ? `${nextError} | ${detail}` : detail;
+      }
+    } else if (!supabase) {
+      const detail = "Aktivitás: nincs Supabase kapcsolat.";
+      nextError = nextError ? `${nextError} | ${detail}` : detail;
+    }
+
+    setNivoAdminActivityError(nextError);
+    if (!options?.quiet) setNivoAdminActivityLoading(false);
+  }
+
+  async function updateNivoEmergencyControl(
+    action: "set-global-stop" | "set-machine-stop",
+    value: boolean,
+    machineIdValue?: string
+  ): Promise<boolean> {
+    if (!nivoAdminControlPin.trim()) {
+      setMessage({ type: "error", text: "Add meg a vészvezérlés admin PIN-jét." });
+      return false;
+    }
+    setNivoAdminControlBusy(true);
+    try {
+      const response = await fetch(NIVO_EMERGENCY_CONTROL_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pin: nivoAdminControlPin,
+          action,
+          value,
+          machineId: machineIdValue || "",
+          updatedBy: nivoEmergencyAdminOpen
+            ? "Vészhelyzeti Admin"
+            : String(activeWorker?.["Teljes nev"] || "Admin").trim() || "Admin",
+        }),
+      });
+      const body = await response.json().catch(() => ({})) as Partial<NivoEmergencyControlState> & { error?: string };
+      if (!response.ok) throw new Error(String(body.error || `Vészvezérlés HTTP ${response.status}`));
+      const next: NivoEmergencyControlState = {
+        configured: Boolean(body.configured),
+        globalStop: Boolean(body.globalStop),
+        disabledMachines: body.disabledMachines && typeof body.disabledMachines === "object" ? body.disabledMachines as Record<string, boolean> : {},
+        updatedAt: String(body.updatedAt || ""),
+        updatedBy: String(body.updatedBy || ""),
+      };
+      setNivoEmergencyControl(next);
+      setMessage({
+        type: "success",
+        text: action === "set-global-stop"
+          ? (value ? "VÉSZLEÁLLÍTÁS aktiválva. A kliensek legfeljebb 5 másodpercen belül leállítják a Supabase aktivitást." : "Globális leállítás feloldva.")
+          : `${machineIdValue || "Gép"}: ${value ? "letiltva" : "engedélyezve"}.`,
+      });
+      return true;
+    } catch (error) {
+      setMessage({ type: "error", text: `Vészvezérlés sikertelen: ${normalizeError(error)}` });
+      return false;
+    } finally {
+      setNivoAdminControlBusy(false);
+    }
+  }
+
+  function getNivoAdminMachineStatus(row: NivoMachineActivityRow | null, machineName: string): { label: string; color: string; background: string } {
+    if (nivoEmergencyControl.globalStop || nivoIsMachineDisabledByControl(nivoEmergencyControl, machineName)) {
+      return { label: "Letiltva", color: "#fecaca", background: "#7f1d1d" };
+    }
+    if (!row?.last_seen_at) return { label: "Inaktív", color: "#cbd5e1", background: "#334155" };
+    const age = Date.now() - new Date(row.last_seen_at).getTime();
+    if (age <= 15_000) {
+      if (row.error_count_1m && row.error_count_1m > 0 && row.last_error_at && (!row.last_success_at || new Date(row.last_error_at).getTime() >= new Date(row.last_success_at).getTime())) {
+        return { label: "Kapcsolati hiba", color: "#fed7aa", background: "#9a3412" };
+      }
+      return { label: "Online", color: "#bbf7d0", background: "#166534" };
+    }
+    if (age <= 60_000) return { label: "Inaktív", color: "#fde68a", background: "#854d0e" };
+    return { label: "Offline", color: "#cbd5e1", background: "#334155" };
+  }
+
+  function NivoAdminActivityAdmin(options?: { emergencyMode?: boolean }): React.JSX.Element {
+    const emergencyMode = Boolean(options?.emergencyMode);
+    const theme = getOfficeTheme("admin");
+    const panel: React.CSSProperties = {
+      border: `${theme.borderWidth}px solid ${theme.borderColor}`,
+      borderRadius: theme.borderRadius,
+      background: theme.panelBackground,
+      color: theme.textColor,
+      boxShadow: `0 10px ${theme.shadowBlur}px rgba(0,0,0,${theme.shadowOpacity})`,
+    };
+    const activityByMachine = new Map<string, NivoMachineActivityRow>();
+    nivoAdminActivityRows.forEach((row) => activityByMachine.set(nivoNormalizeEmergencyMachineKey(row.machine_id), row));
+    const machineNames = Array.from(new Set([
+      ...machineOptions,
+      ...nivoAdminActivityRows.map((row) => String(row.machine_id || "").trim()).filter(Boolean),
+    ])).sort((a, b) => a.localeCompare(b, "hu"));
+    const onlineCount = machineNames.filter((name) => getNivoAdminMachineStatus(activityByMachine.get(nivoNormalizeEmergencyMachineKey(name)) || null, name).label === "Online").length;
+    const disabledCount = machineNames.filter((name) => nivoEmergencyControl.globalStop || nivoIsMachineDisabledByControl(nivoEmergencyControl, name)).length;
+    const activeRequestCount = nivoAdminActivityRows.reduce((sum, row) => sum + (Array.isArray(row.active_requests) ? row.active_requests.length : 0), 0);
+
+    return (
+      <div style={{ minHeight: "100vh", background: theme.pageBackground, color: theme.textColor, padding: 22, fontFamily: theme.fontFamily, boxSizing: "border-box" }}>
+        {!emergencyMode && ManagementNavigation()}
+        <div data-office-window="admin:header" style={{ ...panel, padding: 18, marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+            <div>
+              <div style={{ color: theme.accentColor, fontWeight: 900, fontSize: 12, letterSpacing: .7 }}>GÉPFELÜGYELET ÉS VÉSZVEZÉRLÉS</div>
+              <h2 style={{ margin: "5px 0", fontSize: theme.titleFontSize }}>Admin</h2>
+              <div style={{ color: theme.mutedText, maxWidth: 920 }}>
+                Gépenkénti aktivitás, futó és legutóbbi Supabase-lekérdezések, hibák és távoli letiltás. A piros vészleállítás a Vercel külön vezérlőcsatornáján működik, ezért Supabase-kieséskor is használható.
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button type="button" onClick={() => void loadNivoAdminActivity()} disabled={nivoAdminActivityLoading} style={{ ...buttonSecondary, background: theme.secondaryButtonBackground, color: theme.buttonText, borderColor: theme.borderColor }}>
+                {nivoAdminActivityLoading ? "Frissítés..." : "↻ Frissítés"}
+              </button>
+              {emergencyMode && (
+                <button type="button" onClick={() => { setNivoEmergencyAdminOpen(false); if (!nivoEmergencyRuntimeBlocked && typeof window !== "undefined") window.location.reload(); }} style={buttonSecondary}>Vissza a belépéshez</button>
+              )}
+            </div>
+          </div>
+          {nivoAdminActivityError && (
+            <div style={{ marginTop: 12, padding: 10, borderRadius: 10, background: "#451a03", border: "1px solid #f59e0b", color: "#fde68a", fontWeight: 700 }}>{nivoAdminActivityError}</div>
+          )}
+        </div>
+
+        <div data-office-window="admin:emergency" style={{ ...panel, padding: 16, marginBottom: 14, borderColor: nivoEmergencyControl.globalStop ? "#ef4444" : theme.borderColor }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 900 }}>Vészleállítás</div>
+              <div style={{ marginTop: 4, color: theme.mutedText }}>
+                Vészcsatorna: <strong style={{ color: nivoEmergencyControl.configured ? theme.activeColor : theme.errorColor }}>{nivoEmergencyControl.configured ? "beállítva" : "nincs beállítva"}</strong>
+                {nivoEmergencyControl.updatedAt ? ` · Utolsó módosítás: ${formatDateTime(nivoEmergencyControl.updatedAt)}${nivoEmergencyControl.updatedBy ? ` · ${nivoEmergencyControl.updatedBy}` : ""}` : ""}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input type="password" value={nivoAdminControlPin} onChange={(event) => setNivoAdminControlPin(event.target.value)} placeholder="Admin PIN" style={{ ...fieldStyle, width: 140, margin: 0 }} />
+              <button
+                type="button"
+                disabled={nivoAdminControlBusy || !nivoEmergencyControl.configured}
+                onClick={() => { if (typeof window !== "undefined" && !window.confirm("Biztosan leállítod az ÖSSZES gép Supabase aktivitását?")) return; void updateNivoEmergencyControl("set-global-stop", true); }}
+                style={{ ...buttonPrimary, background: "#b91c1c", borderColor: "#ef4444" }}
+              >ÖSSZES GÉP LEÁLLÍTÁSA</button>
+              <button
+                type="button"
+                disabled={nivoAdminControlBusy || !nivoEmergencyControl.configured}
+                onClick={() => void updateNivoEmergencyControl("set-global-stop", false)}
+                style={{ ...buttonPrimary, background: "#166534", borderColor: "#22c55e" }}
+              >Összes gép engedélyezése</button>
+            </div>
+          </div>
+          {nivoEmergencyControl.globalStop && <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: "#7f1d1d", color: "#fee2e2", fontWeight: 900 }}>⚠ GLOBÁLIS VÉSZLEÁLLÍTÁS AKTÍV – a kliensek csak a Vercel vészcsatornát figyelik.</div>}
+        </div>
+
+        <div data-office-window="admin:summary" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, marginBottom: 14 }}>
+          {[
+            ["Gépek", machineNames.length], ["Online", onlineCount], ["Letiltva", disabledCount], ["Futó lekérdezések", activeRequestCount],
+          ].map(([label, value]) => <div key={String(label)} style={{ ...panel, padding: 14 }}><div style={{ color: theme.mutedText, fontSize: 12 }}>{label}</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 3 }}>{value}</div></div>)}
+        </div>
+
+        <div data-office-window="admin:machines" style={{ display: "grid", gap: 12 }}>
+          {machineNames.length === 0 && <div style={{ ...panel, padding: 20, color: theme.mutedText }}>Még nincs gépaktivitási adat. Futtasd az SQL telepítést, majd várj legalább 5 másodpercet a kliensek heartbeatjére.</div>}
+          {machineNames.map((machineName) => {
+            const row = activityByMachine.get(nivoNormalizeEmergencyMachineKey(machineName)) || null;
+            const status = getNivoAdminMachineStatus(row, machineName);
+            const disabled = nivoEmergencyControl.globalStop || nivoIsMachineDisabledByControl(nivoEmergencyControl, machineName);
+            const recent = Array.isArray(row?.recent_requests) ? row!.recent_requests! : [];
+            const active = Array.isArray(row?.active_requests) ? row!.active_requests! : [];
+            return (
+              <section key={machineName} style={{ ...panel, padding: 14, borderWidth: 2, borderColor: disabled ? "#ef4444" : theme.borderColor }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <strong style={{ fontSize: 20 }}>{machineName}</strong>
+                      <span style={{ padding: "5px 9px", borderRadius: 999, background: status.background, color: status.color, fontSize: 12, fontWeight: 900 }}>{status.label}</span>
+                    </div>
+                    <div style={{ marginTop: 5, color: theme.mutedText, fontSize: 12 }}>
+                      Utolsó aktivitás: {row?.last_seen_at ? formatDateTime(row.last_seen_at) : "–"} · Dolgozó: {row?.user_name || "–"} · Kliens: {row?.client_id ? row.client_id.slice(0, 12) : "–"}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={nivoAdminControlBusy || nivoEmergencyControl.globalStop || !nivoEmergencyControl.configured}
+                    onClick={() => void updateNivoEmergencyControl("set-machine-stop", !disabled, machineName)}
+                    style={{ ...buttonPrimary, background: disabled ? "#166534" : "#b91c1c", borderColor: disabled ? "#22c55e" : "#ef4444" }}
+                  >{disabled ? "Gép visszakapcsolása" : "Gép letiltása"}</button>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 8, marginTop: 12 }}>
+                  {[
+                    ["1 perc", row?.request_count_1m ?? 0], ["5 perc", row?.request_count_5m ?? 0], ["1 óra", row?.request_count_1h ?? 0],
+                    ["Futó", active.length], ["Hiba / 1 perc", row?.error_count_1m ?? 0], ["Összes kérés", row?.request_count_total ?? 0],
+                  ].map(([label, value]) => <div key={String(label)} style={{ padding: 10, borderRadius: 10, background: theme.panelAltBackground }}><div style={{ color: theme.mutedText, fontSize: 11 }}>{label}</div><strong style={{ fontSize: 18 }}>{value}</strong></div>)}
+                </div>
+
+                {row?.last_error && <div style={{ marginTop: 10, padding: 9, borderRadius: 9, background: "#451a03", color: "#fed7aa", fontSize: 12 }}><strong>Utolsó hiba:</strong> {row.last_error}</div>}
+
+                <div style={{ marginTop: 12, overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead><tr>{["Állapot", "Típus", "Cél", "HTTP", "Idő", "Mikor"].map((head) => <th key={head} style={{ textAlign: "left", padding: "7px 8px", borderBottom: `1px solid ${theme.borderColor}`, color: theme.mutedText }}>{head}</th>)}</tr></thead>
+                    <tbody>
+                      {[...active.map((item) => ({ ...item, __active: true })), ...recent.slice(0, 10).map((item) => ({ ...item, __active: false }))].map((item: NivoQueryActivityItem & { __active: boolean }, index) => (
+                        <tr key={`${item.id}-${index}`}>
+                          <td style={{ padding: "7px 8px", borderBottom: `1px solid ${theme.borderColor}` }}>{item.__active ? "Fut" : item.ok === false ? "Hiba" : "Kész"}</td>
+                          <td style={{ padding: "7px 8px", borderBottom: `1px solid ${theme.borderColor}` }}>{item.kind || item.method}</td>
+                          <td style={{ padding: "7px 8px", borderBottom: `1px solid ${theme.borderColor}`, fontWeight: 800 }}>{item.target}</td>
+                          <td style={{ padding: "7px 8px", borderBottom: `1px solid ${theme.borderColor}` }}>{item.status ?? "–"}</td>
+                          <td style={{ padding: "7px 8px", borderBottom: `1px solid ${theme.borderColor}` }}>{item.durationMs != null ? `${item.durationMs} ms` : "–"}</td>
+                          <td style={{ padding: "7px 8px", borderBottom: `1px solid ${theme.borderColor}` }}>{formatDateTime(item.finishedAt || item.startedAt)}</td>
+                        </tr>
+                      ))}
+                      {active.length === 0 && recent.length === 0 && <tr><td colSpan={6} style={{ padding: 10, color: theme.mutedText }}>Nincs még mért lekérdezés.</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   async function loadDataUploadView(options?: { quiet?: boolean }): Promise<void> {
     if (!supabase) return;
     if (!options?.quiet) setDataUploadLoading(true);
@@ -14039,17 +14539,18 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   function ManagementNavigation(): React.JSX.Element {
     const allItems: Array<{ id: ManagementSection; label: string }> = [
       { id:"dashboard", label:"Vezetői műszerfal" }, { id:"production-plan", label:"Termelés tervezése" }, { id:"production-monitor", label:"Termelési monitor" },
-      { id:"production-card", label:"Termelési kártya" }, { id:"pause-report", label:"Szüneteltetés" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"reklamacio", label:"Reklamáció" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" }, { id:"data-upload", label:"Adat feltöltés" },
+      { id:"production-card", label:"Termelési kártya" }, { id:"pause-report", label:"Szüneteltetés" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"reklamacio", label:"Reklamáció" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" }, { id:"data-upload", label:"Adat feltöltés" }, { id:"admin", label:"Admin" },
     ];
 
     // Esemeny_Koteg = 9: csak ez a három irodai menüpont látható.
     // A Megjelenés/Profi szerkesztő funkciók nem kerülnek letiltásra,
     // mert a két engedélyezett oldalon mindent ugyanúgy állíthat.
+    const permittedItems = allItems.filter((item) => item.id !== "admin" || isAdmin(activeWorker));
     const items = isLimitedOfficeWorker(activeWorker)
-      ? allItems.filter(
+      ? permittedItems.filter(
           (item) => item.id === "atvetel" || item.id === "production-monitor" || item.id === "reklamacio"
         )
-      : allItems;
+      : permittedItems;
     const currentTheme = getOfficeTheme(managementSection);
     const selectedWindowKey = officeThemeScope === "__page__" ? null : officeThemeScope;
     const selectedTheme = selectedWindowKey ? getOfficeWindowTheme(managementSection, selectedWindowKey) : currentTheme;
@@ -14125,6 +14626,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               }
               else if (item.id === "report-delivery") void loadReportDeliveryProfiles();
               else if (item.id === "data-upload") void loadDataUploadView();
+              else if (item.id === "admin") void loadNivoAdminActivity();
             }} style={{ border:active ? `1px solid ${currentTheme.accentColor}` : "1px solid transparent", background:active ? currentTheme.navActiveBackground : "transparent", color:active ? currentTheme.textColor : currentTheme.navText, borderRadius:Math.max(4,currentTheme.borderRadius-5), padding:"10px 14px", fontWeight:800, cursor:"pointer", fontFamily:currentTheme.fontFamily }}>{item.label}</button>;
           })}
           <button
@@ -27359,6 +27861,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (managementSection === "executive-report") return ExecutiveReportAdmin();
     if (managementSection === "report-delivery") return ReportDeliveryAdmin();
     if (managementSection === "data-upload") return DataUploadAdmin();
+    if (managementSection === "admin") return isAdmin(activeWorker) ? NivoAdminActivityAdmin() : AtvetelAdmin();
 
     const dashboardRange = getDashboardDateRange("custom", dashboardDate, dashboardDateTo);
     const hasDashboardOrderSearch = dashboardOrderFilters.some(
@@ -28928,6 +29431,72 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     flowStage,
     reportDeliveryProfilesLoaded,
   ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let lastBlocked = nivoRuntimeBlockedRef.current;
+
+    const refreshEmergencyControl = async (): Promise<void> => {
+      try {
+        const control = await loadNivoEmergencyControlState();
+        if (cancelled) return;
+        setNivoEmergencyControl(control);
+        const currentMachine = readMachineIdFromStorage();
+        const blocked = control.globalStop || nivoIsMachineDisabledByControl(control, currentMachine);
+        const reason = control.globalStop
+          ? "A rendszer globális vészleállítás alatt van."
+          : blocked
+            ? `A(z) ${currentMachine} gépet az adminisztrátor letiltotta.`
+            : "";
+        nivoSetEmergencyRuntimeBlock(blocked, reason);
+        nivoRuntimeBlockedRef.current = blocked;
+        setNivoRuntimeBlocked(blocked);
+        setNivoRuntimeBlockReason(reason);
+        if (blocked && supabase) {
+          void supabase.removeAllChannels().catch(() => undefined);
+        }
+        if (lastBlocked && !blocked && !nivoEmergencyAdminOpen && typeof window !== "undefined") {
+          window.setTimeout(() => window.location.reload(), 250);
+        }
+        lastBlocked = blocked;
+      } catch {
+        // A vészcsatorna átmeneti hibája nem állít le működő gépet. Ha viszont
+        // a legutóbbi ismert állapot STOP volt, azt változatlanul megtartjuk.
+      }
+    };
+
+    void refreshEmergencyControl();
+    const intervalId = window.setInterval(() => void refreshEmergencyControl(), NIVO_EMERGENCY_CONTROL_POLL_MS);
+    return () => { cancelled = true; window.clearInterval(intervalId); };
+  }, [supabase, nivoEmergencyAdminOpen]);
+
+  useEffect(() => {
+    if (!supabase) return;
+    let cancelled = false;
+    const sendHeartbeat = async (): Promise<void> => {
+      if (cancelled || nivoEmergencyRuntimeBlocked) return;
+      try {
+        const payload = nivoBuildMachineActivityPayload(machineId, String(activeWorker?.["Teljes nev"] || ""));
+        const response = await supabase.from(NIVO_MACHINE_ACTIVITY_TABLE).upsert(payload, { onConflict: "machine_id" });
+        if (response.error && !String(response.error.message || "").includes("nivo_machine_activity")) {
+          console.warn("NÍVÓ gépaktivitás heartbeat hiba:", response.error);
+        }
+      } catch {
+        // A heartbeat soha nem zavarhatja a termelési működést.
+      }
+    };
+    void sendHeartbeat();
+    const intervalId = window.setInterval(() => void sendHeartbeat(), NIVO_MACHINE_ACTIVITY_HEARTBEAT_MS);
+    return () => { cancelled = true; window.clearInterval(intervalId); };
+  }, [supabase, machineId, activeWorker?.id]);
+
+  useEffect(() => {
+    const normalAdminOpen = Boolean(activeWorker && isAdmin(activeWorker) && terminalView === "management" && flowStage === "dashboard" && managementSection === "admin");
+    if (!normalAdminOpen && !nivoEmergencyAdminOpen) return;
+    void loadNivoAdminActivity({ quiet: true });
+    const intervalId = window.setInterval(() => void loadNivoAdminActivity({ quiet: true }), 5_000);
+    return () => window.clearInterval(intervalId);
+  }, [activeWorker?.id, terminalView, flowStage, managementSection, nivoEmergencyAdminOpen, supabase]);
 
   useEffect(() => {
     if (!supabase || !activeWorker || !isManagementDashboardWorker(activeWorker)) return;
@@ -48336,6 +48905,24 @@ body {
     );
   }
 
+  if (nivoEmergencyAdminOpen) {
+    return NivoAdminActivityAdmin({ emergencyMode: true });
+  }
+
+  if (nivoRuntimeBlocked) {
+    return (
+      <main style={{ minHeight: "100vh", background: "#020617", color: "#f8fafc", display: "grid", placeItems: "center", padding: 24, fontFamily: "Arial, sans-serif" }}>
+        <div style={{ width: "min(760px, 96vw)", border: "2px solid #ef4444", borderRadius: 18, background: "#1f0a0a", padding: 28, textAlign: "center", boxShadow: "0 24px 70px rgba(0,0,0,.5)" }}>
+          <div style={{ fontSize: 48, marginBottom: 10 }}>⛔</div>
+          <h1 style={{ margin: "0 0 10px", fontSize: 30 }}>A gép aktivitása leállítva</h1>
+          <div style={{ color: "#fecaca", fontSize: 17, fontWeight: 800 }}>{nivoRuntimeBlockReason || "A gépet az adminisztrátor letiltotta."}</div>
+          <div style={{ color: "#cbd5e1", marginTop: 12, lineHeight: 1.5 }}>A kliens nem küld Supabase lekérdezést vagy mentést. A Vercel vészcsatornát 5 másodpercenként ellenőrzi, ezért a feloldás után automatikusan újraindul.</div>
+          <button type="button" onClick={() => { setNivoEmergencyAdminOpen(true); void loadNivoAdminActivity({ quiet: true }); }} style={{ ...buttonSecondary, marginTop: 18, borderColor: "#f59e0b", color: "#fde68a", background: "#451a03" }}>🛡 Vészhelyzeti Admin</button>
+        </div>
+      </main>
+    );
+  }
+
   if (standaloneProductionMonitor) {
     return ProductionPlanMonitor({ standalone: true });
   }
@@ -48812,6 +49399,13 @@ body {
                 </button>
                 <button onClick={() => void refreshWorkers()} disabled={loadingWorkers} style={buttonSecondary}>
                   {loadingWorkers ? "Betöltés..." : "Dolgozói lista frissítése"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setNivoEmergencyAdminOpen(true); void loadNivoAdminActivity({ quiet: true }); }}
+                  style={{ ...buttonSecondary, borderColor: "#ef4444", color: "#fecaca", background: "#450a0a" }}
+                >
+                  🛡 Vészhelyzeti Admin
                 </button>
               </div>
             </div>
