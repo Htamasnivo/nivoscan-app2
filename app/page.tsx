@@ -5487,13 +5487,17 @@ function readMachineIdFromStorage(): MachineIdOption {
   if (typeof window === "undefined") return DEFAULT_MACHINE_ID;
   try {
     const stored = window.localStorage.getItem(MACHINE_ID_STORAGE_KEY);
-    const normalized = normalizeMachineId(stored);
-    if (!stored) {
-      window.localStorage.setItem(MACHINE_ID_STORAGE_KEY, normalized);
+    if (stored && stored.trim()) {
+      return normalizeMachineId(stored);
     }
-    return normalized;
+
+    // Első megnyitás ezen a böngészőn/gépen: alapértelmezett munkaállomás az iroda.
+    // A már korábban elmentett gépazonosítóhoz nem nyúlunk.
+    const firstMachineId: MachineIdOption = "iroda";
+    window.localStorage.setItem(MACHINE_ID_STORAGE_KEY, firstMachineId);
+    return firstMachineId;
   } catch {
-    return DEFAULT_MACHINE_ID;
+    return "iroda";
   }
 }
 
