@@ -5740,29 +5740,51 @@ const buttonSecondary: React.CSSProperties = {
 };
 
 const NIVO_SUPABASE_REQUEST_TIMEOUT_MS = 15_000;
+const NIVO_SUPABASE_READ_MAX_CONCURRENCY = 2;
+const NIVO_SUPABASE_GATEWAY_BACKOFF_BASE_MS = 10_000;
+const NIVO_SUPABASE_GATEWAY_BACKOFF_MAX_MS = 30_000;
 const nivoSupabaseReadRequests = new Map<string, Promise<Response>>();
+let nivoSupabaseReadActiveCount = 0;
+const nivoSupabaseReadQueue: Array<() => void> = [];
+let nivoSupabaseGatewayFailureCount = 0;
+let nivoSupabaseReadBackoffUntil = 0;
 
 // A termelési kártyák által sűrűn hívott, csak olvasó RPC-k célzott védelme.
 // - nivo_plan_columns: egy adott tervtábla sémája oldalbetöltésenként egyszer elég.
 // - nivo_recurring_read: állomásonként 10 másodperces snapshot cache.
-// Az azonos, már futó RPC-kéréshez a következő hívás csatlakozik, nem indít új POST-ot.
+// Az azonos, már futó kéréshez a következő hívás csatlakozik, nem indít új hálózati kérést.
+// 502/503/504/429 esetén közös backoff védi a Supabase API Gateway-t a kérésvihartól.
 const NIVO_RECURRING_SNAPSHOT_CACHE_MS = 10_000;
+const NIVO_RECURRING_SNAPSHOT_ERROR_FALLBACK_MS = 30_000;
+const NIVO_PLAN_SCHEMA_ERROR_RETRY_MS = 60_000;
 const nivoStationPlanSchemaLoaded = new Set<string>();
 const nivoStationPlanSchemaRequests = new Map<string, Promise<void>>();
+const nivoStationPlanSchemaRetryAfter = new Map<string, number>();
 const nivoRecurringCardSnapshotCache = new Map<string, { expiresAt: number; value: RecurringCardSnapshot }>();
 const nivoRecurringCardSnapshotRequests = new Map<string, Promise<RecurringCardSnapshot>>();
 
 type NivoFetchInput = Parameters<typeof fetch>[0];
 type NivoFetchInit = Parameters<typeof fetch>[1];
 
+function nivoSupabaseFetchUrl(input: NivoFetchInput): string {
+  const request = typeof Request !== "undefined" && input instanceof Request ? input : null;
+  return typeof input === "string"
+    ? input
+    : (typeof URL !== "undefined" && input instanceof URL ? input.toString() : request?.url || String(input));
+}
+
+function nivoIsReadOnlyRpcUrl(url: string): boolean {
+  return url.includes("/rest/v1/rpc/nivo_plan_columns") || url.includes("/rest/v1/rpc/nivo_recurring_read");
+}
+
 function nivoSupabaseReadRequestKey(input: NivoFetchInput, init?: NivoFetchInit): string | null {
   const request = typeof Request !== "undefined" && input instanceof Request ? input : null;
   const method = String(init?.method || request?.method || "GET").toUpperCase();
-  if (method !== "GET" && method !== "HEAD") return null;
+  const url = nivoSupabaseFetchUrl(input);
+  const isNormalRead = method === "GET" || method === "HEAD";
+  const isReadOnlyRpc = method === "POST" && nivoIsReadOnlyRpcUrl(url);
+  if (!isNormalRead && !isReadOnlyRpc) return null;
 
-  const url = typeof input === "string"
-    ? input
-    : (typeof URL !== "undefined" && input instanceof URL ? input.toString() : request?.url || String(input));
   const headers = new Headers(request?.headers);
   if (init?.headers) {
     new Headers(init.headers).forEach((value, name) => headers.set(name, value));
@@ -5771,8 +5793,52 @@ function nivoSupabaseReadRequestKey(input: NivoFetchInput, init?: NivoFetchInit)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([name, value]) => `${name}:${value}`)
     .join("|");
+  const bodyKey = isReadOnlyRpc
+    ? (typeof init?.body === "string" ? init.body : init?.body ? String(init.body) : "")
+    : "";
 
-  return `${method}:${url}:${headerKey}`;
+  return `${method}:${url}:${headerKey}:${bodyKey}`;
+}
+
+function nivoIsGatewayTransientStatus(status: number): boolean {
+  return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function nivoMarkSupabaseGatewayFailure(): void {
+  nivoSupabaseGatewayFailureCount = Math.min(nivoSupabaseGatewayFailureCount + 1, 6);
+  const delay = Math.min(
+    NIVO_SUPABASE_GATEWAY_BACKOFF_MAX_MS,
+    NIVO_SUPABASE_GATEWAY_BACKOFF_BASE_MS * (2 ** Math.max(0, nivoSupabaseGatewayFailureCount - 1))
+  );
+  nivoSupabaseReadBackoffUntil = Math.max(nivoSupabaseReadBackoffUntil, Date.now() + delay);
+}
+
+function nivoMarkSupabaseGatewayHealthy(): void {
+  // Egy már elindult párhuzamos kérés sikere ne oldja fel azonnal a 503 miatt
+  // éppen aktivált védelmet. A következő, cooldown utáni siker nullázza a számlálót.
+  if (Date.now() >= nivoSupabaseReadBackoffUntil) {
+    nivoSupabaseGatewayFailureCount = 0;
+    nivoSupabaseReadBackoffUntil = 0;
+  }
+}
+
+function nivoAcquireSupabaseReadSlot(): Promise<void> {
+  if (nivoSupabaseReadActiveCount < NIVO_SUPABASE_READ_MAX_CONCURRENCY) {
+    nivoSupabaseReadActiveCount += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    nivoSupabaseReadQueue.push(() => {
+      nivoSupabaseReadActiveCount += 1;
+      resolve();
+    });
+  });
+}
+
+function nivoReleaseSupabaseReadSlot(): void {
+  nivoSupabaseReadActiveCount = Math.max(0, nivoSupabaseReadActiveCount - 1);
+  const next = nivoSupabaseReadQueue.shift();
+  if (next) next();
 }
 
 async function nivoFetchWithTimeout(input: NivoFetchInput, init?: NivoFetchInit): Promise<Response> {
@@ -5796,17 +5862,46 @@ async function nivoFetchWithTimeout(input: NivoFetchInput, init?: NivoFetchInit)
   }
 }
 
+async function nivoRunGuardedSupabaseRead(input: NivoFetchInput, init?: NivoFetchInit): Promise<Response> {
+  if (Date.now() < nivoSupabaseReadBackoffUntil) {
+    const waitSeconds = Math.max(1, Math.ceil((nivoSupabaseReadBackoffUntil - Date.now()) / 1000));
+    throw new Error(`Supabase átmeneti API Gateway védelem aktív (${waitSeconds} mp).`);
+  }
+
+  await nivoAcquireSupabaseReadSlot();
+  try {
+    // Amíg a kérés a sorban állt, egy előtte futó kérés 503-at kaphatott.
+    if (Date.now() < nivoSupabaseReadBackoffUntil) {
+      const waitSeconds = Math.max(1, Math.ceil((nivoSupabaseReadBackoffUntil - Date.now()) / 1000));
+      throw new Error(`Supabase átmeneti API Gateway védelem aktív (${waitSeconds} mp).`);
+    }
+
+    const response = await nivoFetchWithTimeout(input, init);
+    if (nivoIsGatewayTransientStatus(response.status)) nivoMarkSupabaseGatewayFailure();
+    else nivoMarkSupabaseGatewayHealthy();
+    return response;
+  } catch (error) {
+    // Hálózati hiba / timeout esetén is tartsunk rövid szünetet, hogy ne induljon kérésvihar.
+    if (!(error instanceof Error && error.message.startsWith("Supabase átmeneti API Gateway védelem aktív"))) {
+      nivoMarkSupabaseGatewayFailure();
+    }
+    throw error;
+  } finally {
+    nivoReleaseSupabaseReadSlot();
+  }
+}
+
 function nivoGuardedSupabaseFetch(input: NivoFetchInput, init?: NivoFetchInit): Promise<Response> {
   const requestKey = nivoSupabaseReadRequestKey(input, init);
-  // Az írási műveletek működését változatlanul hagyjuk; a védelem kizárólag
-  // az automatikusan ismétlődő GET/HEAD lekérdezésekre vonatkozik.
+  // A valódi írások (INSERT/UPDATE/DELETE és nem olvasó RPC-k) változatlanul,
+  // közvetlenül mennek. Csak a GET/HEAD és a két olvasó RPC kap védelmet.
   if (!requestKey) return fetch(input, init);
 
   const existingRequest = nivoSupabaseReadRequests.get(requestKey);
   if (existingRequest) return existingRequest.then((response) => response.clone());
 
   let requestPromise: Promise<Response>;
-  requestPromise = nivoFetchWithTimeout(input, init).finally(() => {
+  requestPromise = nivoRunGuardedSupabaseRead(input, init).finally(() => {
     if (nivoSupabaseReadRequests.get(requestKey) === requestPromise) {
       nivoSupabaseReadRequests.delete(requestKey);
     }
@@ -9631,6 +9726,8 @@ export default function Page() {
   const productionCardDataLoadSequenceRef = useRef(0);
   const productionCardSettingsLoadSequenceRef = useRef(0);
   const terminalProductionCardLoadSequenceRef = useRef(0);
+  const terminalProductionCardSettingsLoadedRef = useRef<Set<string>>(new Set());
+  const terminalProductionCardSettingsRetryAfterRef = useRef<Map<string, number>>(new Map());
   const executiveReportLoadSequenceRef = useRef(0);
 
   // Mindig az AKTUÁLISAN kiválasztott állomást/dátumot tárolják.
@@ -14884,6 +14981,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           });
           return snapshot;
         }
+
+        // Átmeneti 502/503/504 vagy hálózati hiba esetén ne dobjuk el a már
+        // ismert visszatérő-munka állapotot. Rövid ideig a legutóbbi snapshot marad,
+        // így a kártya nem villan üresre és közben nem bombázzuk új RPC-kkel a Gateway-t.
+        if (cached) {
+          nivoRecurringCardSnapshotCache.set(cacheKey, {
+            expiresAt: Date.now() + NIVO_RECURRING_SNAPSHOT_ERROR_FALLBACK_MS,
+            value: cached.value,
+          });
+          return cached.value;
+        }
         throw error;
       }
     })().finally(() => {
@@ -16832,6 +16940,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     // ugyanazon oldalbetöltés alatt egy sikeres lekérés után nem RPC-zünk újra.
     if (nivoStationPlanSchemaLoaded.has(schemaKey)) return;
 
+    // Ha a Gateway épp hibázott, ugyanazt a séma-RPC-t ne próbáljuk újra minden
+    // 10 másodperces képernyőfrissítéskor. Az ismert mezőkkel a kártya tovább működik.
+    const retryAfter = nivoStationPlanSchemaRetryAfter.get(schemaKey) || 0;
+    if (retryAfter > Date.now()) return;
+
     // Ha ugyanaz az RPC már fut, várjuk meg azt ahelyett, hogy új POST-ot indítanánk.
     const existingRequest = nivoStationPlanSchemaRequests.get(schemaKey);
     if (existingRequest) {
@@ -16841,23 +16954,30 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     let requestPromise: Promise<void>;
     requestPromise = (async () => {
-      const { data, error } = await supabase.rpc("nivo_plan_columns", { p_table_name: tableName });
-      if (error) {
-        console.warn(`A(z) ${tableName} teljes mezőlistája nem olvasható; az ismert mezők megmaradnak:`, error);
-        return;
+      try {
+        const { data, error } = await supabase.rpc("nivo_plan_columns", { p_table_name: tableName });
+        if (error) {
+          nivoStationPlanSchemaRetryAfter.set(schemaKey, Date.now() + NIVO_PLAN_SCHEMA_ERROR_RETRY_MS);
+          console.warn(`A(z) ${tableName} teljes mezőlistája nem olvasható; az ismert mezők megmaradnak:`, error);
+          return;
+        }
+        const definitions: StationPlanFieldDefinition[] = ((data || []) as Array<{ column_name: string; data_type: string }>).map((column) => {
+          const type = String(column.data_type || "").toLowerCase();
+          const dataType: StationPlanFieldDataType = type.includes("boolean") ? "boolean"
+            : type.includes("date") || type.includes("timestamp") ? "date"
+            : type.includes("integer") || type.includes("numeric") || type.includes("double precision") ? "integer" : "text";
+          return { key: column.column_name, label: column.column_name === "sos" ? "SOS" : column.column_name.replace(/_/g, " "), dataType };
+        });
+        const stationKey = getStationPlanIdentityKey(stationName);
+        const existing = new Map((STATION_PLAN_DISCOVERED_FIELDS.get(stationKey) || []).map((field) => [field.key, field]));
+        definitions.forEach((field) => existing.set(field.key, field));
+        STATION_PLAN_DISCOVERED_FIELDS.set(stationKey, Array.from(existing.values()));
+        nivoStationPlanSchemaRetryAfter.delete(schemaKey);
+        nivoStationPlanSchemaLoaded.add(schemaKey);
+      } catch (error) {
+        nivoStationPlanSchemaRetryAfter.set(schemaKey, Date.now() + NIVO_PLAN_SCHEMA_ERROR_RETRY_MS);
+        console.warn(`A(z) ${tableName} teljes mezőlistája átmenetileg nem olvasható; az ismert mezők megmaradnak:`, error);
       }
-      const definitions: StationPlanFieldDefinition[] = ((data || []) as Array<{ column_name: string; data_type: string }>).map((column) => {
-        const type = String(column.data_type || "").toLowerCase();
-        const dataType: StationPlanFieldDataType = type.includes("boolean") ? "boolean"
-          : type.includes("date") || type.includes("timestamp") ? "date"
-          : type.includes("integer") || type.includes("numeric") || type.includes("double precision") ? "integer" : "text";
-        return { key: column.column_name, label: column.column_name === "sos" ? "SOS" : column.column_name.replace(/_/g, " "), dataType };
-      });
-      const stationKey = getStationPlanIdentityKey(stationName);
-      const existing = new Map((STATION_PLAN_DISCOVERED_FIELDS.get(stationKey) || []).map((field) => [field.key, field]));
-      definitions.forEach((field) => existing.set(field.key, field));
-      STATION_PLAN_DISCOVERED_FIELDS.set(stationKey, Array.from(existing.values()));
-      nivoStationPlanSchemaLoaded.add(schemaKey);
     })().finally(() => {
       if (nivoStationPlanSchemaRequests.get(schemaKey) === requestPromise) {
         nivoStationPlanSchemaRequests.delete(schemaKey);
@@ -18754,19 +18874,44 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
   }
 
-  async function loadTerminalProductionCard(stationName = machineId): Promise<void> {
+  async function loadTerminalProductionCard(
+    stationName = machineId,
+    forceSettingsRefresh = false
+  ): Promise<void> {
     const cleanStationName = String(stationName || "").trim();
     if (!isUsableProductionCardStation(cleanStationName)) return;
 
     const requestSequence = ++terminalProductionCardLoadSequenceRef.current;
     const today = getLocalDateKey(new Date());
     const backgroundRefresh = isNivoBackgroundRefreshRunning();
+    const stationKey = getStationPlanIdentityKey(cleanStationName) || normalizeLooseText(cleanStationName);
+    const settingsRetryAfter = terminalProductionCardSettingsRetryAfterRef.current.get(stationKey) || 0;
+    const shouldLoadSettings = forceSettingsRefresh
+      || (!terminalProductionCardSettingsLoadedRef.current.has(stationKey) && settingsRetryAfter <= Date.now());
 
     if (!backgroundRefresh) setLoadingTerminalProductionCard(true);
 
     try {
+      const settingsPromise: Promise<{ profile: ProductionMonitorProfile; updatedAt: string } | null> = shouldLoadSettings
+        ? fetchProductionCardProfileForStation(cleanStationName)
+            .then((result) => {
+              terminalProductionCardSettingsLoadedRef.current.add(stationKey);
+              terminalProductionCardSettingsRetryAfterRef.current.delete(stationKey);
+              return result;
+            })
+            .catch((error) => {
+              // A kártya elrendezése ritkán változik. Gateway-hiba esetén ne kérjük
+              // újra 10 másodpercenként: a már betöltött/default profil marad, az
+              // adatállapot viszont tovább frissülhet.
+              terminalProductionCardSettingsLoadedRef.current.delete(stationKey);
+              terminalProductionCardSettingsRetryAfterRef.current.set(stationKey, Date.now() + 60_000);
+              console.warn(`A(z) ${cleanStationName} termelési kártya beállítása átmenetileg nem olvasható:`, error);
+              return null;
+            })
+        : Promise.resolve(null);
+
       const [settingsResult, dataResult] = await Promise.all([
-        fetchProductionCardProfileForStation(cleanStationName),
+        settingsPromise,
         fetchProductionCardData(cleanStationName, today),
       ]);
 
@@ -18777,7 +18922,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       if (!stillCurrent) return;
 
-      setTerminalProductionCardProfile(settingsResult.profile);
+      if (settingsResult) setTerminalProductionCardProfile(settingsResult.profile);
       setTerminalProductionCardData(dataResult);
     } catch (error) {
       const stillCurrent =
@@ -18789,7 +18934,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       console.error("A munkaállomási termelési kártya betöltése sikertelen:", error);
       if (!backgroundRefresh) {
-        setTerminalProductionCardProfile(createDefaultProductionCardProfile(cleanStationName));
         setTerminalProductionCardData({
           stationName: cleanStationName,
           dateKey: today,
@@ -29127,9 +29271,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }, [managementSection, supabase]);
 
   useEffect(() => {
-    if (!supabase) return;
+    // Ez karbantartási feladat, ezért nem kell minden dolgozói terminálnak
+    // induláskor a teljes production_card_station_settings táblát lekérnie.
+    if (!supabase || !activeWorker || !isManagementDashboardWorker(activeWorker)) return;
     void cleanupStoredProductionCardPriorityDuplicates();
-  }, [supabase]);
+  }, [supabase, activeWorker?.id]);
 
   useEffect(() => {
     if (!supabase) return;
@@ -29238,6 +29384,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const today = getLocalDateKey(new Date());
     const tableName = getExactProductionCardPlanTableName(machineId);
     const refreshData = () => void runNivoBackgroundRefresh(() => loadTerminalProductionCard(machineId), "production-card-terminal");
+    const refreshSettings = () => {
+      const stationKey = getStationPlanIdentityKey(machineId) || normalizeLooseText(machineId);
+      terminalProductionCardSettingsLoadedRef.current.delete(stationKey);
+      terminalProductionCardSettingsRetryAfterRef.current.delete(stationKey);
+      void runNivoBackgroundRefresh(() => loadTerminalProductionCard(machineId, true), "production-card-terminal");
+    };
     const channel = supabase
       .channel(`production-card-terminal-${normalizeLooseText(machineId)}-${today}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refreshData)
@@ -29246,7 +29398,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, refreshData)
       .on("postgres_changes", { event: "*", schema: "public", table: CARPENTER_SCRAP_REPLACEMENT_TABLE }, refreshData)
       .on("postgres_changes", { event: "*", schema: "public", table: tableName }, refreshData)
-      .on("postgres_changes", { event: "*", schema: "public", table: PRODUCTION_CARD_SETTINGS_TABLE }, refreshData)
+      .on("postgres_changes", { event: "*", schema: "public", table: PRODUCTION_CARD_SETTINGS_TABLE, filter: `station_name=eq.${machineId}` }, refreshSettings)
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
   }, [supabase, machineId, activeWorker?.id]);
@@ -30069,7 +30221,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (!supabase) return;
     setLoadingWorkers(true);
     try {
-      await testConnection();
       let workerResponse = await supabase
         .from("workers")
         .select(`
@@ -30126,12 +30277,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       if (workerResponse.error) throw workerResponse.error;
       const rows = ((workerResponse.data as Worker[]) || []);
       rows.sort((a, b) => (a["Teljes nev"] || "").localeCompare(b["Teljes nev"] || "", "hu"));
+      setConnectionOk(true);
       setWorkers(rows);
       if (!message || message.type === "error") {
         setMessage({ type: "info", text: "Kapcsolat rendben. A dolgozói lista betöltve." });
       }
     } catch (error) {
       console.error("SUPABASE HIBA refreshWorkers:", error);
+      setConnectionOk(false);
       setMessage({ type: "error", text: normalizeError(error) });
     } finally {
       setLoadingWorkers(false);
@@ -30150,32 +30303,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         .select("*")
         .order("id", { ascending: true });
 
-      if (primaryResponse.error) {
-        console.error("SUPABASE HIBA machine_id első lekérés:", primaryResponse.error);
-      } else {
-        rows = (primaryResponse.data as MachineIdRow[]) || [];
-      }
+      // Gateway/kapcsolati hibánál ne indítsunk ugyanarra a táblára azonnal újabb
+      // fallback lekéréseket. Ez korábban egyetlen 503-ból több egymás utáni GET-et csinált.
+      if (primaryResponse.error) throw primaryResponse.error;
+      rows = (primaryResponse.data as MachineIdRow[]) || [];
 
       let options = buildMachineOptions(rows);
 
-      if (options.length === 0) {
-        const fallbackResponse = await supabase
-          .from("machine_id")
-          .select("*")
-          .order("id", { ascending: true });
-
-        if (fallbackResponse.error) {
-          console.error("SUPABASE HIBA machine_id teljes lekérés:", fallbackResponse.error);
-        } else {
-          rows = (fallbackResponse.data as MachineIdRow[]) || [];
-          options = buildMachineOptions(rows);
-        }
-      }
-
+      // A közvetlen REST fallback csak akkor indokolt, ha a normál lekérés sikeres volt,
+      // de a visszaadott séma/adat miatt nem tudtunk egyetlen gépnevet sem felépíteni.
       if (options.length === 0) {
         const directRows = await fetchMachineIdRowsDirectly();
-        rows = directRows;
-        options = buildMachineOptions(directRows);
+        if (directRows.length > 0) {
+          rows = directRows;
+          options = buildMachineOptions(directRows);
+        }
       }
 
       setMachineIdRows(rows);
@@ -30198,8 +30340,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       setMachineDraftId(normalizedStoredMachineId === DEFAULT_MACHINE_ID ? options[0] : normalizedStoredMachineId);
     } catch (error) {
       console.error("SUPABASE HIBA refreshMachineOptions:", error);
-      setMachineIdRows([]);
-      setMachineOptions([]);
+      // Átmeneti 503/504 esetén a localStorage-ban már ismert gépet megtartjuk,
+      // és nem indítunk azonnali további fallback-kéréseket.
       const storedMachineId = readMachineIdFromStorage();
       setMachineId(storedMachineId || DEFAULT_MACHINE_ID);
       setMachineDraftId(storedMachineId || DEFAULT_MACHINE_ID);
