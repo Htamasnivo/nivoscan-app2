@@ -9699,6 +9699,10 @@ export default function Page() {
   const [nivoAdminControlPin, setNivoAdminControlPin] = useState("");
   const [nivoAdminControlBusy, setNivoAdminControlBusy] = useState(false);
   const [nivoEmergencyAdminOpen, setNivoEmergencyAdminOpen] = useState(false);
+  const [nivoEmergencyLoginOpen, setNivoEmergencyLoginOpen] = useState(false);
+  const [nivoEmergencyLoginPin, setNivoEmergencyLoginPin] = useState("");
+  const [nivoEmergencyLoginError, setNivoEmergencyLoginError] = useState("");
+  const [nivoEmergencyLoginBusy, setNivoEmergencyLoginBusy] = useState(false);
   const [nivoRuntimeBlocked, setNivoRuntimeBlocked] = useState(false);
   const [nivoRuntimeBlockReason, setNivoRuntimeBlockReason] = useState("");
   const [nivoEmergencyControl, setNivoEmergencyControl] = useState<NivoEmergencyControlState>({
@@ -13225,6 +13229,41 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     setNivoAdminActivityError(nextError);
     if (!options?.quiet) setNivoAdminActivityLoading(false);
+  }
+
+  function openNivoEmergencyAdminLogin(): void {
+    setNivoEmergencyLoginPin("");
+    setNivoEmergencyLoginError("");
+    setNivoEmergencyLoginOpen(true);
+  }
+
+  async function verifyNivoEmergencyAdminLogin(): Promise<void> {
+    const pin = nivoEmergencyLoginPin.trim();
+    if (!pin) {
+      setNivoEmergencyLoginError("Add meg az admin PIN-t.");
+      return;
+    }
+
+    setNivoEmergencyLoginBusy(true);
+    setNivoEmergencyLoginError("");
+    try {
+      const response = await fetch(NIVO_EMERGENCY_CONTROL_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin, action: "verify-pin" }),
+      });
+      const body = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(String(body.error || `Admin hitelesítés HTTP ${response.status}`));
+
+      setNivoAdminControlPin(pin);
+      setNivoEmergencyLoginOpen(false);
+      setNivoEmergencyAdminOpen(true);
+      void loadNivoAdminActivity({ quiet: true });
+    } catch (error) {
+      setNivoEmergencyLoginError(normalizeError(error));
+    } finally {
+      setNivoEmergencyLoginBusy(false);
+    }
   }
 
   async function updateNivoEmergencyControl(
@@ -48905,6 +48944,40 @@ body {
     );
   }
 
+  if (nivoEmergencyLoginOpen) {
+    return (
+      <main style={{ minHeight: "100vh", background: "#020617", color: "#f8fafc", display: "grid", placeItems: "center", padding: 24, fontFamily: "Arial, sans-serif" }}>
+        <div style={{ width: "min(460px, 96vw)", border: "1px solid #ef4444", borderRadius: 18, background: "#0f172a", padding: 26, boxShadow: "0 24px 70px rgba(0,0,0,.5)" }}>
+          <div style={{ fontSize: 13, fontWeight: 900, color: "#fca5a5", letterSpacing: .7, textTransform: "uppercase" }}>Vészhelyzeti Admin</div>
+          <h1 style={{ margin: "6px 0 8px", fontSize: 26 }}>Admin PIN szükséges</h1>
+          <div style={{ color: "#94a3b8", lineHeight: 1.45, marginBottom: 18 }}>A vészhelyzeti felület jelszó nélkül nem nyitható meg.</div>
+          <input
+            autoFocus
+            type="password"
+            value={nivoEmergencyLoginPin}
+            onChange={(event) => { setNivoEmergencyLoginPin(event.target.value); setNivoEmergencyLoginError(""); }}
+            onKeyDown={(event) => { if (event.key === "Enter") void verifyNivoEmergencyAdminLogin(); }}
+            placeholder="Admin PIN"
+            style={{ ...fieldStyle, width: "100%", margin: 0 }}
+          />
+          {nivoEmergencyLoginError && (
+            <div style={{ marginTop: 12, padding: 10, borderRadius: 10, background: "#450a0a", border: "1px solid #ef4444", color: "#fecaca", fontWeight: 800 }}>
+              {nivoEmergencyLoginError}
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
+            <button type="button" onClick={() => void verifyNivoEmergencyAdminLogin()} disabled={nivoEmergencyLoginBusy} style={{ ...buttonPrimary, background: "#b91c1c", borderColor: "#ef4444" }}>
+              {nivoEmergencyLoginBusy ? "Ellenőrzés..." : "Belépés"}
+            </button>
+            <button type="button" onClick={() => { setNivoEmergencyLoginOpen(false); setNivoEmergencyLoginPin(""); setNivoEmergencyLoginError(""); }} disabled={nivoEmergencyLoginBusy} style={buttonSecondary}>
+              Mégse
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   if (nivoEmergencyAdminOpen) {
     return NivoAdminActivityAdmin({ emergencyMode: true });
   }
@@ -48917,7 +48990,7 @@ body {
           <h1 style={{ margin: "0 0 10px", fontSize: 30 }}>A gép aktivitása leállítva</h1>
           <div style={{ color: "#fecaca", fontSize: 17, fontWeight: 800 }}>{nivoRuntimeBlockReason || "A gépet az adminisztrátor letiltotta."}</div>
           <div style={{ color: "#cbd5e1", marginTop: 12, lineHeight: 1.5 }}>A kliens nem küld Supabase lekérdezést vagy mentést. A Vercel vészcsatornát 5 másodpercenként ellenőrzi, ezért a feloldás után automatikusan újraindul.</div>
-          <button type="button" onClick={() => { setNivoEmergencyAdminOpen(true); void loadNivoAdminActivity({ quiet: true }); }} style={{ ...buttonSecondary, marginTop: 18, borderColor: "#f59e0b", color: "#fde68a", background: "#451a03" }}>🛡 Vészhelyzeti Admin</button>
+          <button type="button" onClick={openNivoEmergencyAdminLogin} style={{ ...buttonSecondary, marginTop: 18, borderColor: "#f59e0b", color: "#fde68a", background: "#451a03" }}>🛡 Vészhelyzeti Admin</button>
         </div>
       </main>
     );
@@ -49402,7 +49475,7 @@ body {
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setNivoEmergencyAdminOpen(true); void loadNivoAdminActivity({ quiet: true }); }}
+                  onClick={openNivoEmergencyAdminLogin}
                   style={{ ...buttonSecondary, borderColor: "#ef4444", color: "#fecaca", background: "#450a0a" }}
                 >
                   🛡 Vészhelyzeti Admin
