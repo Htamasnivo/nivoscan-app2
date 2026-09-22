@@ -2452,7 +2452,7 @@ const NIVO_SINGLE_TAB_HEARTBEAT_MS = 1_000;
 const NIVO_SINGLE_TAB_STALE_MS = 6_000;
 const NIVO_SINGLE_TAB_RELOAD_DELAY_MS = 300;
 
-const NIVO_CLIENT_VERSION = "2026-09-22-single-active-tab-v3";
+const NIVO_CLIENT_VERSION = "2026-09-22-quarantine-admin-unlock-v4";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
 const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
@@ -6058,6 +6058,50 @@ function nivoGetActiveAutoProtection(machineIdValue = readMachineIdFromStorage()
   return nivoNormalizeEmergencyMachineKey(state.machineId) === nivoNormalizeEmergencyMachineKey(machineIdValue)
     ? state
     : null;
+}
+
+function nivoClearActiveAutoProtection(machineIdValue = readMachineIdFromStorage()): boolean {
+  if (typeof window === "undefined") return false;
+  const state = nivoReadAutoProtectionState();
+  if (!state) return false;
+  if (nivoNormalizeEmergencyMachineKey(state.machineId) !== nivoNormalizeEmergencyMachineKey(machineIdValue)) return false;
+
+  try {
+    window.localStorage.removeItem(NIVO_AUTO_PROTECTION_STORAGE_KEY);
+  } catch {
+    return false;
+  }
+
+  nivoAutoProtectionHighLoadSince = 0;
+  if (nivoActivityLastError.startsWith("AUTOMATIKUS VÉDELEM:")) {
+    nivoActivityLastError = "";
+    nivoActivityLastErrorAt = "";
+  }
+  return true;
+}
+
+function nivoGetAdminAutoQuarantineFromRow(
+  row: NivoMachineActivityRow | null | undefined
+): { active: boolean; blockedUntil: number; reason: string; requestCount1m: number } | null {
+  if (!row?.last_error || !row.last_error_at) return null;
+  const reason = String(row.last_error || "").trim();
+  if (!reason.startsWith("AUTOMATIKUS VÉDELEM:")) return null;
+
+  const triggeredAt = new Date(row.last_error_at).getTime();
+  if (!Number.isFinite(triggeredAt)) return null;
+
+  const blockedUntil = triggeredAt + NIVO_AUTO_PROTECTION_DURATION_MS;
+  if (blockedUntil <= Date.now()) return null;
+
+  const match = reason.match(/\((\d+)\/perc\)|:\s*(\d+)\s+Supabase kérés\/perc/i);
+  const requestCount1m = Number(match?.[1] || match?.[2] || row.request_count_1m || 0);
+
+  return {
+    active: true,
+    blockedUntil,
+    reason,
+    requestCount1m,
+  };
 }
 
 function nivoActivateAutoProtection(requestCount1m: number, reason: string): NivoAutoProtectionState {
@@ -13729,6 +13773,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (nivoEmergencyControl.globalStop || nivoIsMachineDisabledByControl(nivoEmergencyControl, machineName)) {
       return { label: "Letiltva", color: "#fecaca", background: "#7f1d1d" };
     }
+    if (nivoGetAdminAutoQuarantineFromRow(row)) {
+      return { label: "Karantén", color: "#fef3c7", background: "#92400e" };
+    }
     if (!row?.last_seen_at) return { label: "Inaktív", color: "#cbd5e1", background: "#334155" };
     const age = Date.now() - new Date(row.last_seen_at).getTime();
     if (age <= 15_000) {
@@ -13739,6 +13786,44 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     }
     if (age <= 60_000) return { label: "Inaktív", color: "#fde68a", background: "#854d0e" };
     return { label: "Offline", color: "#cbd5e1", background: "#334155" };
+  }
+
+  function releaseLocalNivoAutoQuarantine(): void {
+    const currentMachine = readMachineIdFromStorage();
+    const autoProtection = nivoGetActiveAutoProtection(currentMachine);
+    if (!autoProtection) {
+      setMessage({ type: "info", text: "Ezen a gépen nincs aktív automatikus karantén." });
+      return;
+    }
+
+    if (typeof window !== "undefined" && !window.confirm(
+      `Feloldod a(z) ${currentMachine} gép 30 perces automatikus karanténját?`
+    )) return;
+
+    const cleared = nivoClearActiveAutoProtection(currentMachine);
+    if (!cleared) {
+      setMessage({ type: "error", text: "A helyi automatikus karantén feloldása nem sikerült." });
+      return;
+    }
+
+    // A kézi karanténfeloldás nem írhatja felül a Vercel vészcsatorna
+    // globális vagy gépenkénti admin letiltását.
+    const remotelyBlocked =
+      nivoEmergencyControl.globalStop
+      || nivoIsMachineDisabledByControl(nivoEmergencyControl, currentMachine);
+
+    if (!remotelyBlocked) {
+      nivoSetEmergencyRuntimeBlock(false, "");
+      nivoRuntimeBlockedRef.current = false;
+      setNivoRuntimeBlocked(false);
+      setNivoRuntimeBlockReason("");
+    }
+
+    setNivoEmergencyAdminOpen(false);
+
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => window.location.reload(), 150);
+    }
   }
 
   function NivoAdminActivityAdmin(options?: { emergencyMode?: boolean }): React.JSX.Element {
@@ -13759,6 +13844,13 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     ])).sort((a, b) => a.localeCompare(b, "hu"));
     const onlineCount = machineNames.filter((name) => getNivoAdminMachineStatus(activityByMachine.get(nivoNormalizeEmergencyMachineKey(name)) || null, name).label === "Online").length;
     const disabledCount = machineNames.filter((name) => nivoEmergencyControl.globalStop || nivoIsMachineDisabledByControl(nivoEmergencyControl, name)).length;
+    const quarantineCount = machineNames.filter((name) => {
+      const row = activityByMachine.get(nivoNormalizeEmergencyMachineKey(name)) || null;
+      return Boolean(nivoGetAdminAutoQuarantineFromRow(row));
+    }).length;
+    const localAutoProtection = emergencyMode
+      ? nivoGetActiveAutoProtection(readMachineIdFromStorage())
+      : null;
     const activeRequestCount = nivoAdminActivityRows.reduce((sum, row) => sum + (Array.isArray(row.active_requests) ? row.active_requests.length : 0), 0);
     const totalRequestCount1m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_1m || 0), 0);
     const totalRequestCount5m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_5m || 0), 0);
@@ -13820,9 +13912,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           {nivoEmergencyControl.globalStop && <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: "#7f1d1d", color: "#fee2e2", fontWeight: 900 }}>⚠ GLOBÁLIS VÉSZLEÁLLÍTÁS AKTÍV – a kliensek csak a Vercel vészcsatornát figyelik.</div>}
         </div>
 
+        {emergencyMode && localAutoProtection && (
+          <div style={{ ...panel, padding: 16, marginBottom: 14, borderWidth: 2, borderColor: "#f59e0b", background: "#2a1605" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 900, color: "#fde68a" }}>Automatikus karantén aktív ezen a gépen</div>
+                <div style={{ marginTop: 5, color: "#fcd34d", fontWeight: 800 }}>
+                  {localAutoProtection.reason}
+                </div>
+                <div style={{ marginTop: 5, color: theme.mutedText, fontSize: 12 }}>
+                  Automatikus feloldás: {formatDateTime(new Date(localAutoProtection.blockedUntil).toISOString())}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={releaseLocalNivoAutoQuarantine}
+                style={{ ...buttonPrimary, background: "#166534", borderColor: "#22c55e" }}
+              >
+                Karantén feloldása most
+              </button>
+            </div>
+          </div>
+        )}
+
         <div data-office-window="admin:summary" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, marginBottom: 10 }}>
           {[
-            ["Gépek", machineNames.length], ["Online", onlineCount], ["Letiltva", disabledCount], ["Futó lekérdezések", activeRequestCount],
+            ["Gépek", machineNames.length], ["Online", onlineCount], ["Letiltva", disabledCount], ["Karantén", quarantineCount], ["Futó lekérdezések", activeRequestCount],
           ].map(([label, value]) => <div key={String(label)} style={{ ...panel, padding: 14 }}><div style={{ color: theme.mutedText, fontSize: 12 }}>{label}</div><div style={{ fontSize: 28, fontWeight: 900, marginTop: 3 }}>{value}</div></div>)}
         </div>
 
@@ -13851,10 +13966,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             const row = activityByMachine.get(nivoNormalizeEmergencyMachineKey(machineName)) || null;
             const status = getNivoAdminMachineStatus(row, machineName);
             const disabled = nivoEmergencyControl.globalStop || nivoIsMachineDisabledByControl(nivoEmergencyControl, machineName);
+            const autoQuarantine = nivoGetAdminAutoQuarantineFromRow(row);
             const recent = Array.isArray(row?.recent_requests) ? row!.recent_requests! : [];
             const active = Array.isArray(row?.active_requests) ? row!.active_requests! : [];
             return (
-              <section key={machineName} style={{ ...panel, padding: 14, borderWidth: 2, borderColor: disabled ? "#ef4444" : theme.borderColor }}>
+              <section key={machineName} style={{ ...panel, padding: 14, borderWidth: 2, borderColor: disabled ? "#ef4444" : autoQuarantine ? "#f59e0b" : theme.borderColor }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -13880,7 +13996,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   ].map(([label, value]) => <div key={String(label)} style={{ padding: 10, borderRadius: 10, background: theme.panelAltBackground }}><div style={{ color: theme.mutedText, fontSize: 11 }}>{label}</div><strong style={{ fontSize: 18 }}>{value}</strong></div>)}
                 </div>
 
-                {row?.last_error && <div style={{ marginTop: 10, padding: 9, borderRadius: 9, background: "#451a03", color: "#fed7aa", fontSize: 12 }}><strong>Utolsó hiba:</strong> {row.last_error}</div>}
+                {autoQuarantine && (
+                  <div style={{ marginTop: 10, padding: 10, borderRadius: 9, background: "#451a03", border: "1px solid #f59e0b", color: "#fde68a", fontSize: 12 }}>
+                    <strong>Automatikus karantén aktív.</strong> Feloldás várható: {formatDateTime(new Date(autoQuarantine.blockedUntil).toISOString())}
+                    {" · "}Kiváltó terhelés: {autoQuarantine.requestCount1m || "–"} kérés/perc.
+                    <div style={{ marginTop: 4, color: "#fed7aa" }}>{autoQuarantine.reason}</div>
+                    <div style={{ marginTop: 4, color: "#fbbf24" }}>Kézi feloldás a karanténba került gép „Vészhelyzeti Admin” gombjával lehetséges.</div>
+                  </div>
+                )}
+
+                {row?.last_error && !autoQuarantine && <div style={{ marginTop: 10, padding: 9, borderRadius: 9, background: "#451a03", color: "#fed7aa", fontSize: 12 }}><strong>Utolsó hiba:</strong> {row.last_error}</div>}
 
                 <div style={{ marginTop: 12, overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -29964,10 +30089,28 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       }
     };
 
-    const handleAutoProtectionChange = (): void => {
+    const handleAutoProtectionChange = async (): Promise<void> => {
       const currentMachine = readMachineIdFromStorage();
       const autoProtection = nivoGetActiveAutoProtection(currentMachine);
       if (!autoProtection) return;
+
+      // A machine_activity kérés nem számít bele a terhelési küszöbbe.
+      // Még a tényleges runtime-blokkolás előtt elmentjük a karantén okát,
+      // így az irodai Admin felület távolról is látja, melyik gép került karanténba.
+      if (supabase) {
+        try {
+          const payload = nivoBuildMachineActivityPayload(
+            currentMachine,
+            String(activeWorker?.["Teljes nev"] || "")
+          );
+          await supabase
+            .from(NIVO_MACHINE_ACTIVITY_TABLE)
+            .upsert(payload, { onConflict: "machine_id" });
+        } catch {
+          // A karantén ettől függetlenül életbe lép.
+        }
+      }
+
       nivoSetEmergencyRuntimeBlock(true, autoProtection.reason);
       nivoRuntimeBlockedRef.current = true;
       setNivoRuntimeBlocked(true);
@@ -29983,7 +30126,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       window.clearInterval(intervalId);
       window.removeEventListener("nivo-auto-protection-change", handleAutoProtectionChange);
     };
-  }, [supabase, nivoEmergencyAdminOpen, nivoDuplicateTabBlocked]);
+  }, [supabase, nivoEmergencyAdminOpen, nivoDuplicateTabBlocked, activeWorker?.id]);
 
   useEffect(() => {
     if (!supabase || nivoDuplicateTabBlocked) return;
