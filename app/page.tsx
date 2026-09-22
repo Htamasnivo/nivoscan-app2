@@ -29576,18 +29576,38 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   useEffect(() => {
     if (!supabase) return;
     let cancelled = false;
+    let heartbeatInFlight = false;
+    let heartbeatBackoffUntil = 0;
+
     const sendHeartbeat = async (): Promise<void> => {
-      if (cancelled || nivoEmergencyRuntimeBlocked) return;
+      if (
+        cancelled ||
+        nivoEmergencyRuntimeBlocked ||
+        heartbeatInFlight ||
+        Date.now() < heartbeatBackoffUntil
+      ) return;
+
+      heartbeatInFlight = true;
       try {
         const payload = nivoBuildMachineActivityPayload(machineId, String(activeWorker?.["Teljes nev"] || ""));
         const response = await supabase.from(NIVO_MACHINE_ACTIVITY_TABLE).upsert(payload, { onConflict: "machine_id" });
-        if (response.error && !String(response.error.message || "").includes("nivo_machine_activity")) {
-          console.warn("NÍVÓ gépaktivitás heartbeat hiba:", response.error);
+
+        if (response.error) {
+          if (nivoIsGatewayTransientStatus(response.status)) {
+            heartbeatBackoffUntil = Date.now() + 60_000;
+          }
+          if (!String(response.error.message || "").includes("nivo_machine_activity")) {
+            console.warn("NÍVÓ gépaktivitás heartbeat hiba:", response.error);
+          }
         }
       } catch {
+        heartbeatBackoffUntil = Date.now() + 60_000;
         // A heartbeat soha nem zavarhatja a termelési működést.
+      } finally {
+        heartbeatInFlight = false;
       }
     };
+
     void sendHeartbeat();
     const intervalId = window.setInterval(() => void sendHeartbeat(), NIVO_MACHINE_ACTIVITY_HEARTBEAT_MS);
     return () => { cancelled = true; window.clearInterval(intervalId); };
