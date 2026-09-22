@@ -8209,6 +8209,10 @@ function restoreNivoScrollSnapshotAfterRender(snapshot: NivoScrollSnapshot): voi
 
 const NIVO_BACKGROUND_REFRESH_MS = 10 * 1000;
 const PRODUCTION_MONITOR_BACKGROUND_REFRESH_MS = 5 * 1000;
+// A dolgozói terminál teljes termelési kártya-betöltése több Supabase olvasást végez.
+// Realtime események továbbra is azonnal frissítenek; ez csak a biztonsági polling ritkítása.
+const TERMINAL_PRODUCTION_CARD_BACKGROUND_REFRESH_MS = 60 * 1000;
+const TERMINAL_PRODUCTION_CARD_REALTIME_DEBOUNCE_MS = 2 * 1000;
 let nivoBackgroundRefreshRunning = false;
 let nivoBackgroundRefreshDepth = 0;
 const nivoBackgroundRefreshPendingTasks = new Map<string, () => void | Promise<void>>();
@@ -10005,6 +10009,7 @@ export default function Page() {
   const productionCardDataLoadSequenceRef = useRef(0);
   const productionCardSettingsLoadSequenceRef = useRef(0);
   const terminalProductionCardLoadSequenceRef = useRef(0);
+  const terminalProductionCardLoadInFlightRef = useRef<Set<string>>(new Set());
   const terminalProductionCardSettingsLoadedRef = useRef<Set<string>>(new Set());
   const terminalProductionCardSettingsRetryAfterRef = useRef<Map<string, number>>(new Map());
   const executiveReportLoadSequenceRef = useRef(0);
@@ -19486,10 +19491,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const cleanStationName = String(stationName || "").trim();
     if (!isUsableProductionCardStation(cleanStationName)) return;
 
+    const stationKey = getStationPlanIdentityKey(cleanStationName) || normalizeLooseText(cleanStationName);
+    const backgroundRefresh = isNivoBackgroundRefreshRunning();
+
+    // Ugyanazon gép teljes kártyabetöltése nem futhat párhuzamosan.
+    // Gateway/backoff alatt a háttérfrissítés nem indít újabb olvasási hullámot.
+    if (terminalProductionCardLoadInFlightRef.current.has(stationKey)) return;
+    if (backgroundRefresh && Date.now() < nivoSupabaseReadBackoffUntil) return;
+
+    terminalProductionCardLoadInFlightRef.current.add(stationKey);
     const requestSequence = ++terminalProductionCardLoadSequenceRef.current;
     const today = getLocalDateKey(new Date());
-    const backgroundRefresh = isNivoBackgroundRefreshRunning();
-    const stationKey = getStationPlanIdentityKey(cleanStationName) || normalizeLooseText(cleanStationName);
     const settingsRetryAfter = terminalProductionCardSettingsRetryAfterRef.current.get(stationKey) || 0;
     const shouldLoadSettings = forceSettingsRefresh
       || (!terminalProductionCardSettingsLoadedRef.current.has(stationKey) && settingsRetryAfter <= Date.now());
@@ -19550,6 +19562,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         });
       }
     } finally {
+      terminalProductionCardLoadInFlightRef.current.delete(stationKey);
       if (
         requestSequence === terminalProductionCardLoadSequenceRef.current
         && getStationPlanIdentityKey(cleanStationName)
@@ -30063,36 +30076,76 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   useEffect(() => {
     if (!isUsableProductionCardStation(machineId)) return;
     if (activeWorker && isManagementDashboardWorker(activeWorker)) return;
-    void loadTerminalProductionCard(machineId);
-    const intervalId = window.setInterval(() => {
+
+    const refreshIfVisible = (): void => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
       void runNivoBackgroundRefresh(() => loadTerminalProductionCard(machineId), "production-card-terminal");
-    }, NIVO_BACKGROUND_REFRESH_MS);
-    return () => window.clearInterval(intervalId);
+    };
+
+    void loadTerminalProductionCard(machineId);
+
+    const intervalId = window.setInterval(
+      refreshIfVisible,
+      TERMINAL_PRODUCTION_CARD_BACKGROUND_REFRESH_MS
+    );
+
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState === "visible") refreshIfVisible();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [machineId, activeWorker?.id, workers.length, supabase]);
 
   useEffect(() => {
     if (!supabase || !isUsableProductionCardStation(machineId)) return;
     if (activeWorker && isManagementDashboardWorker(activeWorker)) return;
+
     const today = getLocalDateKey(new Date());
     const tableName = getExactProductionCardPlanTableName(machineId);
-    const refreshData = () => void runNivoBackgroundRefresh(() => loadTerminalProductionCard(machineId), "production-card-terminal");
+    let refreshTimerId: number | null = null;
+    let forceSettingsRefresh = false;
+
+    const scheduleRefresh = (forceSettings = false): void => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      forceSettingsRefresh = forceSettingsRefresh || forceSettings;
+
+      if (refreshTimerId !== null) window.clearTimeout(refreshTimerId);
+      refreshTimerId = window.setTimeout(() => {
+        refreshTimerId = null;
+        const force = forceSettingsRefresh;
+        forceSettingsRefresh = false;
+        void runNivoBackgroundRefresh(
+          () => loadTerminalProductionCard(machineId, force),
+          "production-card-terminal"
+        );
+      }, TERMINAL_PRODUCTION_CARD_REALTIME_DEBOUNCE_MS);
+    };
+
+    const refreshData = () => scheduleRefresh(false);
     const refreshSettings = () => {
       const stationKey = getStationPlanIdentityKey(machineId) || normalizeLooseText(machineId);
       terminalProductionCardSettingsLoadedRef.current.delete(stationKey);
       terminalProductionCardSettingsRetryAfterRef.current.delete(stationKey);
-      void runNivoBackgroundRefresh(() => loadTerminalProductionCard(machineId, true), "production-card-terminal");
+      scheduleRefresh(true);
     };
+
     const channel = supabase
       .channel(`production-card-terminal-${normalizeLooseText(machineId)}-${today}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refreshData)
       .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, refreshData)
-      .on("postgres_changes", { event: "*", schema: "public", table: "production_plans" }, refreshData)
-      .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, refreshData)
       .on("postgres_changes", { event: "*", schema: "public", table: CARPENTER_SCRAP_REPLACEMENT_TABLE }, refreshData)
       .on("postgres_changes", { event: "*", schema: "public", table: tableName }, refreshData)
       .on("postgres_changes", { event: "*", schema: "public", table: PRODUCTION_CARD_SETTINGS_TABLE, filter: `station_name=eq.${machineId}` }, refreshSettings)
       .subscribe();
-    return () => { void supabase.removeChannel(channel); };
+
+    return () => {
+      if (refreshTimerId !== null) window.clearTimeout(refreshTimerId);
+      void supabase.removeChannel(channel);
+    };
   }, [supabase, machineId, activeWorker?.id]);
 
 
