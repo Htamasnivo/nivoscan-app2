@@ -2443,7 +2443,7 @@ const NIVO_AUTO_PROTECTION_SUSTAINED_REQUESTS_1M = 90;
 const NIVO_AUTO_PROTECTION_HARD_REQUESTS_1M = 160;
 const NIVO_AUTO_PROTECTION_SUSTAIN_MS = 15_000;
 const NIVO_AUTO_PROTECTION_DURATION_MS = 30 * 60 * 1000;
-const NIVO_CLIENT_VERSION = "2026-09-22-auto-machine-protection-v1";
+const NIVO_CLIENT_VERSION = "2026-09-22-monitor-stability-v2";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
 const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
@@ -8328,7 +8328,11 @@ function restoreNivoScrollSnapshot(snapshot: NivoScrollSnapshot): void { nivoScr
 function restoreNivoScrollSnapshotAfterRender(snapshot: NivoScrollSnapshot): void { nivoScrollController.restoreAfterRender(snapshot); }
 
 const NIVO_BACKGROUND_REFRESH_MS = 10 * 1000;
-const PRODUCTION_MONITOR_BACKGROUND_REFRESH_MS = 5 * 1000;
+// A Termelési monitor teljes frissítése sok táblát olvas, ezért nem futhat 5 másodpercenként.
+// A Realtime továbbra is frissít, de legfeljebb 20 másodpercenként indíthat teljes monitor-újratöltést.
+const PRODUCTION_MONITOR_BACKGROUND_REFRESH_MS = 60 * 1000;
+const PRODUCTION_MONITOR_REALTIME_MIN_REFRESH_MS = 20 * 1000;
+const PRODUCTION_MONITOR_REALTIME_DEBOUNCE_MS = 2 * 1000;
 // A dolgozói terminál teljes termelési kártya-betöltése több Supabase olvasást végez.
 // Realtime események továbbra is azonnal frissítenek; ez csak a biztonsági polling ritkítása.
 const TERMINAL_PRODUCTION_CARD_BACKGROUND_REFRESH_MS = 60 * 1000;
@@ -9943,6 +9947,11 @@ export default function Page() {
   const productionMonitorLastSavedPayloadRef = useRef("");
   const productionMonitorProfilesLatestRef = useRef<ProductionMonitorProfile[]>(productionMonitorProfiles);
   const productionMonitorActiveProfileIdLatestRef = useRef(activeProductionMonitorProfileId);
+  // Egy teljes Termelési monitor betöltés egyszerre csak egyszer futhat.
+  // Az azonos paraméterű párhuzamos hívások ugyanahhoz a Promise-hoz csatlakoznak.
+  const productionMonitorLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const productionMonitorLoadKeyRef = useRef("");
+  const productionMonitorLastBackgroundRefreshAtRef = useRef(0);
 
   // Átvétel monitor – az alap dátumszűrés mindig az atvetel_adat.szerelesi_idopont (Kiszállítási dátum) dátumrésze.
   const [atvetelDateFrom, setAtvetelDateFrom] = useState(getLocalDateKey(new Date()));
@@ -29914,12 +29923,25 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       );
     };
 
-    void refreshProductionMonitor();
-    const intervalId = window.setInterval(() => {
-      void runNivoBackgroundRefresh(refreshProductionMonitor);
-    }, PRODUCTION_MONITOR_BACKGROUND_REFRESH_MS);
+    const refreshIfVisible = (): void => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      productionMonitorLastBackgroundRefreshAtRef.current = Date.now();
+      void runNivoBackgroundRefresh(refreshProductionMonitor, "production-monitor");
+    };
 
-    return () => window.clearInterval(intervalId);
+    // Megnyitáskor egyszer azonnal betölt, utána csak ritkított biztonsági polling fut.
+    refreshIfVisible();
+    const intervalId = window.setInterval(refreshIfVisible, PRODUCTION_MONITOR_BACKGROUND_REFRESH_MS);
+
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState === "visible") refreshIfVisible();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [
     standaloneProductionMonitor,
     activeWorker?.id,
@@ -29944,72 +29966,54 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     );
     if (!monitorVisible) return;
 
+    let refreshTimerId: number | null = null;
+
+    const runRealtimeRefresh = (): void => {
+      refreshTimerId = null;
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      productionMonitorLastBackgroundRefreshAtRef.current = Date.now();
+      void runNivoBackgroundRefresh(
+        () => loadProductionMonitor(
+          productionMonitorDate,
+          activeProductionMonitorProfile.planStatusFilter,
+          productionMonitorDateTo,
+          "kiszallitasi_datum"
+        ),
+        "production-monitor"
+      );
+    };
+
+    const scheduleRealtimeRefresh = (): void => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      if (refreshTimerId !== null) return;
+
+      const sinceLastRefresh = Date.now() - productionMonitorLastBackgroundRefreshAtRef.current;
+      const throttleWait = Math.max(0, PRODUCTION_MONITOR_REALTIME_MIN_REFRESH_MS - sinceLastRefresh);
+      const delay = Math.max(PRODUCTION_MONITOR_REALTIME_DEBOUNCE_MS, throttleWait);
+      refreshTimerId = window.setTimeout(runRealtimeRefresh, delay);
+    };
+
     let channel = supabase
       .channel(`production-monitor-${productionMonitorDate}-${productionMonitorDateTo}-${activeProductionMonitorProfile.planStatusFilter}-${activeProductionMonitorProfile.dateBasis}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, () => {
-        void runNivoBackgroundRefresh(() => loadProductionMonitor(
-          productionMonitorDate,
-          activeProductionMonitorProfile.planStatusFilter,
-          productionMonitorDateTo,
-          "kiszallitasi_datum"
-        ));
-      })
-      .on("postgres_changes", { event: "*", schema: "public", table: "production_plans" }, () => {
-        void runNivoBackgroundRefresh(() => loadProductionMonitor(
-          productionMonitorDate,
-          activeProductionMonitorProfile.planStatusFilter,
-          productionMonitorDateTo,
-          "kiszallitasi_datum"
-        ));
-      })
-      .on("postgres_changes", { event: "*", schema: "public", table: "production_plan_items" }, () => {
-        void runNivoBackgroundRefresh(() => loadProductionMonitor(
-          productionMonitorDate,
-          activeProductionMonitorProfile.planStatusFilter,
-          productionMonitorDateTo,
-          "kiszallitasi_datum"
-        ));
-      })
-      .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, () => {
-        void runNivoBackgroundRefresh(() => loadProductionMonitor(
-          productionMonitorDate,
-          activeProductionMonitorProfile.planStatusFilter,
-          productionMonitorDateTo,
-          "kiszallitasi_datum"
-        ));
-      })
-      .on("postgres_changes", { event: "*", schema: "public", table: ATVETEL_DETAILS_TABLE }, () => {
-        void runNivoBackgroundRefresh(() => loadProductionMonitor(
-          productionMonitorDate,
-          activeProductionMonitorProfile.planStatusFilter,
-          productionMonitorDateTo,
-          "kiszallitasi_datum"
-        ));
-      })
-      ;
+      .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, scheduleRealtimeRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, scheduleRealtimeRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: ATVETEL_DETAILS_TABLE }, scheduleRealtimeRefresh);
 
-    // A sorforrás az atvetel_adat, a munkaállomási *_terv táblák pedig azt
-    // döntik el, mely állomások relevánsak az adott rendeléshez. Mindkét
-    // adatforrás változásaira azonnal frissítünk; az 5 mp-es háttérfrissítés
-    // ettől függetlenül biztonsági tartalékként megmarad.
+    // A Termelési monitor sorforrása atvetel_adat, az állomás-relevanciát pedig
+    // a saját *_terv táblák adják. A régi production_plans / production_plan_items
+    // már nem adatforrás, ezért azok változása nem indít felesleges teljes újratöltést.
     getOrderedDashboardStations().forEach((station) => {
       channel = channel.on(
         "postgres_changes",
         { event: "*", schema: "public", table: buildStationPlanTableName(station) },
-        () => {
-          void runNivoBackgroundRefresh(() => loadProductionMonitor(
-            productionMonitorDate,
-            activeProductionMonitorProfile.planStatusFilter,
-            productionMonitorDateTo,
-            "kiszallitasi_datum"
-          ));
-        }
+        scheduleRealtimeRefresh
       );
     });
 
     channel.subscribe();
 
     return () => {
+      if (refreshTimerId !== null) window.clearTimeout(refreshTimerId);
       void supabase.removeChannel(channel);
     };
   }, [
@@ -33762,19 +33766,48 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     dateBasis: ProductionMonitorDateBasis = activeProductionMonitorProfile.dateBasis
   ): Promise<void> {
     if (!supabase || !dateKey || !dateToKey) return;
-    const backgroundRefresh = isNivoBackgroundRefreshRunning();
-    if (!backgroundRefresh) setLoadingProductionMonitor(true);
-    try {
-      const data = await fetchProductionMonitorData(dateKey, planStatusFilter, dateToKey, "kiszallitasi_datum");
-      setProductionMonitorData(data);
-    } catch (error) {
-      console.error("SUPABASE HIBA loadProductionMonitor:", error);
-      if (!backgroundRefresh) {
-        setProductionMonitorData({ plan: null, stations: [], rows: [], logs: [], lastUpdatedAt: new Date().toISOString() });
-        setMessage({ type: "error", text: `A termelési monitor betöltése sikertelen. Futtasd le a mellékelt Supabase SQL-t. Részletek: ${normalizeError(error)}` });
+
+    const loadKey = [dateKey, dateToKey, planStatusFilter, "kiszallitasi_datum"].join("|");
+
+    // Ha ugyanaz a teljes monitorbetöltés már fut, nem indítunk még egy teljes
+    // Supabase-lekérdezési hullámot. Eltérő paraméternél megvárjuk az előzőt,
+    // majd az új nézetet töltjük be. Így egymásra torlódó refresh nem lehetséges.
+    while (productionMonitorLoadPromiseRef.current) {
+      const runningPromise = productionMonitorLoadPromiseRef.current;
+      if (productionMonitorLoadKeyRef.current === loadKey) {
+        await runningPromise;
+        return;
       }
+      await runningPromise;
+    }
+
+    const backgroundRefresh = isNivoBackgroundRefreshRunning();
+    const runPromise = (async (): Promise<void> => {
+      if (!backgroundRefresh) setLoadingProductionMonitor(true);
+      try {
+        const data = await fetchProductionMonitorData(dateKey, planStatusFilter, dateToKey, "kiszallitasi_datum");
+        setProductionMonitorData(data);
+      } catch (error) {
+        console.error("SUPABASE HIBA loadProductionMonitor:", error);
+        if (!backgroundRefresh) {
+          setProductionMonitorData({ plan: null, stations: [], rows: [], logs: [], lastUpdatedAt: new Date().toISOString() });
+          setMessage({ type: "error", text: `A termelési monitor betöltése sikertelen. Futtasd le a mellékelt Supabase SQL-t. Részletek: ${normalizeError(error)}` });
+        }
+      } finally {
+        if (!backgroundRefresh) setLoadingProductionMonitor(false);
+      }
+    })();
+
+    productionMonitorLoadPromiseRef.current = runPromise;
+    productionMonitorLoadKeyRef.current = loadKey;
+
+    try {
+      await runPromise;
     } finally {
-      if (!backgroundRefresh) setLoadingProductionMonitor(false);
+      if (productionMonitorLoadPromiseRef.current === runPromise) {
+        productionMonitorLoadPromiseRef.current = null;
+        productionMonitorLoadKeyRef.current = "";
+      }
     }
   }
 
