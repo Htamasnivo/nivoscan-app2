@@ -2432,7 +2432,18 @@ const NIVO_MACHINE_ACTIVITY_TABLE = "nivo_machine_activity";
 const NIVO_EMERGENCY_CONTROL_URL = "/api/nivo-emergency-control";
 const NIVO_EMERGENCY_CONTROL_POLL_MS = 5_000;
 const NIVO_MACHINE_ACTIVITY_HEARTBEAT_MS = 10_000;
-const NIVO_CLIENT_VERSION = "2026-09-21-admin-monitor-v1";
+
+// Automatikus gép-önvédelem:
+// - normál állapot jelenleg kb. 25–45 tényleges Supabase kérés/perc;
+// - 90 kérés/perc felett 15 másodpercig fennálló terhelés már hibás működésnek számít;
+// - 160 kérés/perc azonnali vész-küszöb;
+// - a hibás gép 30 percre saját magát karanténba teszi, a többi gép változatlanul működik.
+const NIVO_AUTO_PROTECTION_STORAGE_KEY = "nivoscan-auto-protection-v1";
+const NIVO_AUTO_PROTECTION_SUSTAINED_REQUESTS_1M = 90;
+const NIVO_AUTO_PROTECTION_HARD_REQUESTS_1M = 160;
+const NIVO_AUTO_PROTECTION_SUSTAIN_MS = 15_000;
+const NIVO_AUTO_PROTECTION_DURATION_MS = 30 * 60 * 1000;
+const NIVO_CLIENT_VERSION = "2026-09-22-auto-machine-protection-v1";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
 const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
@@ -5843,6 +5854,105 @@ let nivoActivityLastSuccessAt = "";
 let nivoActivityLastErrorAt = "";
 let nivoActivityLastError = "";
 let nivoActivitySequence = 0;
+let nivoAutoProtectionHighLoadSince = 0;
+
+type NivoAutoProtectionState = {
+  machineId: string;
+  triggeredAt: number;
+  blockedUntil: number;
+  reason: string;
+  requestCount1m: number;
+};
+
+function nivoReadAutoProtectionState(): NivoAutoProtectionState | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(NIVO_AUTO_PROTECTION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<NivoAutoProtectionState>;
+    const state: NivoAutoProtectionState = {
+      machineId: String(parsed.machineId || "").trim(),
+      triggeredAt: Number(parsed.triggeredAt) || 0,
+      blockedUntil: Number(parsed.blockedUntil) || 0,
+      reason: String(parsed.reason || "").trim(),
+      requestCount1m: Number(parsed.requestCount1m) || 0,
+    };
+    if (!state.machineId || state.blockedUntil <= Date.now()) {
+      window.localStorage.removeItem(NIVO_AUTO_PROTECTION_STORAGE_KEY);
+      return null;
+    }
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+function nivoGetActiveAutoProtection(machineIdValue = readMachineIdFromStorage()): NivoAutoProtectionState | null {
+  const state = nivoReadAutoProtectionState();
+  if (!state) return null;
+  return nivoNormalizeEmergencyMachineKey(state.machineId) === nivoNormalizeEmergencyMachineKey(machineIdValue)
+    ? state
+    : null;
+}
+
+function nivoActivateAutoProtection(requestCount1m: number, reason: string): NivoAutoProtectionState {
+  const now = Date.now();
+  const machineIdValue = readMachineIdFromStorage();
+  const state: NivoAutoProtectionState = {
+    machineId: machineIdValue,
+    triggeredAt: now,
+    blockedUntil: now + NIVO_AUTO_PROTECTION_DURATION_MS,
+    reason,
+    requestCount1m,
+  };
+
+  nivoActivityLastErrorAt = new Date(now).toISOString();
+  nivoActivityLastError = reason;
+  nivoAutoProtectionHighLoadSince = 0;
+
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(NIVO_AUTO_PROTECTION_STORAGE_KEY, JSON.stringify(state));
+      window.dispatchEvent(new CustomEvent("nivo-auto-protection-change"));
+    } catch {
+      // localStorage hiba esetén az aktuális oldalbetöltésen belüli védelem
+      // továbbra is életbe lép az aktivitásszámláló alapján.
+    }
+  }
+
+  return state;
+}
+
+function nivoMaybeActivateAutoProtection(): NivoAutoProtectionState | null {
+  const existing = nivoGetActiveAutoProtection();
+  if (existing) return existing;
+
+  const now = Date.now();
+  nivoPruneActivityWindows(now);
+  const requestCount1m = nivoActivityCountSince(nivoActivityRequestTimes, now - 60_000);
+
+  if (requestCount1m >= NIVO_AUTO_PROTECTION_HARD_REQUESTS_1M) {
+    return nivoActivateAutoProtection(
+      requestCount1m,
+      `AUTOMATIKUS VÉDELEM: ${requestCount1m} Supabase kérés/perc miatt a gép 30 percre karanténba került.`
+    );
+  }
+
+  if (requestCount1m >= NIVO_AUTO_PROTECTION_SUSTAINED_REQUESTS_1M) {
+    if (!nivoAutoProtectionHighLoadSince) nivoAutoProtectionHighLoadSince = now;
+    if (now - nivoAutoProtectionHighLoadSince >= NIVO_AUTO_PROTECTION_SUSTAIN_MS) {
+      return nivoActivateAutoProtection(
+        requestCount1m,
+        `AUTOMATIKUS VÉDELEM: tartósan magas (${requestCount1m}/perc) Supabase terhelés miatt a gép 30 percre karanténba került.`
+      );
+    }
+  } else if (requestCount1m < Math.floor(NIVO_AUTO_PROTECTION_SUSTAINED_REQUESTS_1M * 0.75)) {
+    // Hiszterézis: rövid, normális indulási csúcs ne tartsa életben a riasztást.
+    nivoAutoProtectionHighLoadSince = 0;
+  }
+
+  return null;
+}
 
 function nivoGetClientId(): string {
   if (typeof window === "undefined") return "server";
@@ -6126,8 +6236,18 @@ async function nivoRunGuardedSupabaseRead(input: NivoFetchInput, init?: NivoFetc
 
 function nivoGuardedSupabaseFetch(input: NivoFetchInput, init?: NivoFetchInit): Promise<Response> {
   const url = nivoSupabaseFetchUrl(input);
-  if (url.startsWith(SUPABASE_URL) && nivoEmergencyRuntimeBlocked) {
+  const isSupabaseRequest = url.startsWith(SUPABASE_URL);
+  const isMachineActivityRequest = url.includes(`/rest/v1/${NIVO_MACHINE_ACTIVITY_TABLE}`);
+
+  if (isSupabaseRequest && nivoEmergencyRuntimeBlocked) {
     return Promise.reject(new Error(nivoEmergencyRuntimeReason || "A gépet az adminisztrátor letiltotta."));
+  }
+
+  if (isSupabaseRequest && !isMachineActivityRequest) {
+    const autoProtection = nivoMaybeActivateAutoProtection();
+    if (autoProtection) {
+      return Promise.reject(new Error(autoProtection.reason));
+    }
   }
 
   const requestKey = nivoSupabaseReadRequestKey(input, init);
@@ -29558,12 +29678,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         if (cancelled) return;
         setNivoEmergencyControl(control);
         const currentMachine = readMachineIdFromStorage();
-        const blocked = control.globalStop || nivoIsMachineDisabledByControl(control, currentMachine);
+        const autoProtection = nivoGetActiveAutoProtection(currentMachine);
+        const remotelyBlocked = control.globalStop || nivoIsMachineDisabledByControl(control, currentMachine);
+        const blocked = remotelyBlocked || Boolean(autoProtection);
         const reason = control.globalStop
           ? "A rendszer globális vészleállítás alatt van."
-          : blocked
+          : nivoIsMachineDisabledByControl(control, currentMachine)
             ? `A(z) ${currentMachine} gépet az adminisztrátor letiltotta.`
-            : "";
+            : autoProtection
+              ? autoProtection.reason
+              : "";
         nivoSetEmergencyRuntimeBlock(blocked, reason);
         nivoRuntimeBlockedRef.current = blocked;
         setNivoRuntimeBlocked(blocked);
@@ -29581,9 +29705,25 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       }
     };
 
+    const handleAutoProtectionChange = (): void => {
+      const currentMachine = readMachineIdFromStorage();
+      const autoProtection = nivoGetActiveAutoProtection(currentMachine);
+      if (!autoProtection) return;
+      nivoSetEmergencyRuntimeBlock(true, autoProtection.reason);
+      nivoRuntimeBlockedRef.current = true;
+      setNivoRuntimeBlocked(true);
+      setNivoRuntimeBlockReason(autoProtection.reason);
+      if (supabase) void supabase.removeAllChannels().catch(() => undefined);
+    };
+
     void refreshEmergencyControl();
+    window.addEventListener("nivo-auto-protection-change", handleAutoProtectionChange);
     const intervalId = window.setInterval(() => void refreshEmergencyControl(), NIVO_EMERGENCY_CONTROL_POLL_MS);
-    return () => { cancelled = true; window.clearInterval(intervalId); };
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("nivo-auto-protection-change", handleAutoProtectionChange);
+    };
   }, [supabase, nivoEmergencyAdminOpen]);
 
   useEffect(() => {
@@ -49126,7 +49266,10 @@ body {
           <div style={{ fontSize: 48, marginBottom: 10 }}>⛔</div>
           <h1 style={{ margin: "0 0 10px", fontSize: 30 }}>A gép aktivitása leállítva</h1>
           <div style={{ color: "#fecaca", fontSize: 17, fontWeight: 800 }}>{nivoRuntimeBlockReason || "A gépet az adminisztrátor letiltotta."}</div>
-          <div style={{ color: "#cbd5e1", marginTop: 12, lineHeight: 1.5 }}>A kliens nem küld Supabase lekérdezést vagy mentést. A Vercel vészcsatornát 5 másodpercenként ellenőrzi, ezért a feloldás után automatikusan újraindul.</div>
+          <div style={{ color: "#cbd5e1", marginTop: 12, lineHeight: 1.5 }}>
+            A kliens nem küld Supabase lekérdezést vagy mentést. Admin letiltásnál a Vercel vészcsatorna feloldása után,
+            automatikus túlterhelés-védelemnél pedig a 30 perces karantén lejárta után a kliens automatikusan újraindul.
+          </div>
           <button type="button" onClick={openNivoEmergencyAdminLogin} style={{ ...buttonSecondary, marginTop: 18, borderColor: "#f59e0b", color: "#fde68a", background: "#451a03" }}>🛡 Vészhelyzeti Admin</button>
         </div>
       </main>
