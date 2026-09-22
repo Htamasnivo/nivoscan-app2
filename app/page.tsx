@@ -2443,7 +2443,16 @@ const NIVO_AUTO_PROTECTION_SUSTAINED_REQUESTS_1M = 90;
 const NIVO_AUTO_PROTECTION_HARD_REQUESTS_1M = 160;
 const NIVO_AUTO_PROTECTION_SUSTAIN_MS = 15_000;
 const NIVO_AUTO_PROTECTION_DURATION_MS = 30 * 60 * 1000;
-const NIVO_CLIENT_VERSION = "2026-09-22-monitor-stability-v2";
+
+// Egy munkaállomáson egyszerre csak egy böngészőfül küldhet hálózati kéréseket.
+// A zárolás kizárólag ugyanazon böngésző/origin localStorage-án belül él,
+// tehát a tipikus "ugyanazon gépen 2-3 Chrome fül" hibát fogja meg.
+const NIVO_SINGLE_TAB_LOCK_PREFIX = "nivoscan-active-tab-lock-v1:";
+const NIVO_SINGLE_TAB_HEARTBEAT_MS = 1_000;
+const NIVO_SINGLE_TAB_STALE_MS = 6_000;
+const NIVO_SINGLE_TAB_RELOAD_DELAY_MS = 300;
+
+const NIVO_CLIENT_VERSION = "2026-09-22-single-active-tab-v3";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
 const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
@@ -5524,6 +5533,156 @@ function writeMachineIdToStorage(value: string): MachineIdOption {
   return normalized;
 }
 
+type NivoSingleTabLease = {
+  tabId: string;
+  machineId: string;
+  heartbeatAt: number;
+  openedAt: number;
+};
+
+function nivoSingleTabMachineKey(machineIdValue: string): string {
+  return String(machineIdValue || DEFAULT_MACHINE_ID).trim().toLocaleLowerCase("hu-HU");
+}
+
+function nivoSingleTabStorageKey(machineIdValue: string): string {
+  return `${NIVO_SINGLE_TAB_LOCK_PREFIX}${encodeURIComponent(nivoSingleTabMachineKey(machineIdValue))}`;
+}
+
+function nivoReadSingleTabLease(machineIdValue: string): NivoSingleTabLease | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(nivoSingleTabStorageKey(machineIdValue));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<NivoSingleTabLease>;
+    const lease: NivoSingleTabLease = {
+      tabId: String(parsed.tabId || "").trim(),
+      machineId: String(parsed.machineId || "").trim(),
+      heartbeatAt: Number(parsed.heartbeatAt) || 0,
+      openedAt: Number(parsed.openedAt) || 0,
+    };
+    return lease.tabId ? lease : null;
+  } catch {
+    return null;
+  }
+}
+
+function nivoSingleTabLeaseIsFresh(lease: NivoSingleTabLease | null, now = Date.now()): boolean {
+  return Boolean(lease && lease.heartbeatAt > 0 && now - lease.heartbeatAt <= NIVO_SINGLE_TAB_STALE_MS);
+}
+
+function nivoSingleTabOwnsLease(machineIdValue: string, now = Date.now()): boolean {
+  const lease = nivoReadSingleTabLease(machineIdValue);
+  return Boolean(
+    lease
+    && lease.tabId === nivoSingleTabRuntimeId
+    && nivoSingleTabLeaseIsFresh(lease, now)
+  );
+}
+
+function nivoTryAcquireSingleTabLease(machineIdValue: string): boolean {
+  if (typeof window === "undefined") return true;
+
+  const machineIdClean = String(machineIdValue || DEFAULT_MACHINE_ID).trim() || DEFAULT_MACHINE_ID;
+  const machineKey = nivoSingleTabMachineKey(machineIdClean);
+  if (nivoSingleTabDeniedMachineKey === machineKey) return false;
+
+  const now = Date.now();
+  const existing = nivoReadSingleTabLease(machineIdClean);
+
+  if (
+    existing
+    && existing.tabId !== nivoSingleTabRuntimeId
+    && nivoSingleTabLeaseIsFresh(existing, now)
+  ) {
+    nivoSingleTabDeniedMachineKey = machineKey;
+    return false;
+  }
+
+  try {
+    const lease: NivoSingleTabLease = {
+      tabId: nivoSingleTabRuntimeId,
+      machineId: machineIdClean,
+      heartbeatAt: now,
+      openedAt: existing?.tabId === nivoSingleTabRuntimeId && existing.openedAt
+        ? existing.openedAt
+        : now,
+    };
+
+    window.localStorage.setItem(
+      nivoSingleTabStorageKey(machineIdClean),
+      JSON.stringify(lease)
+    );
+
+    // Írás után visszaolvassuk. Ha egy másik fül ugyanabban a pillanatban
+    // felülírta a lockot, ez a fül veszít és azonnal passzívvá válik.
+    const verified = nivoReadSingleTabLease(machineIdClean);
+    const acquired = verified?.tabId === nivoSingleTabRuntimeId;
+    if (!acquired) nivoSingleTabDeniedMachineKey = machineKey;
+    return acquired;
+  } catch {
+    // Ha a localStorage nem elérhető, inkább ne engedjünk több fület hálózatra.
+    nivoSingleTabDeniedMachineKey = machineKey;
+    return false;
+  }
+}
+
+function nivoRefreshSingleTabLease(machineIdValue: string): boolean {
+  if (typeof window === "undefined") return true;
+
+  const lease = nivoReadSingleTabLease(machineIdValue);
+  if (!lease || lease.tabId !== nivoSingleTabRuntimeId) return false;
+
+  try {
+    window.localStorage.setItem(
+      nivoSingleTabStorageKey(machineIdValue),
+      JSON.stringify({
+        ...lease,
+        machineId: String(machineIdValue || DEFAULT_MACHINE_ID).trim() || DEFAULT_MACHINE_ID,
+        heartbeatAt: Date.now(),
+      } satisfies NivoSingleTabLease)
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function nivoReleaseSingleTabLease(machineIdValue: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const lease = nivoReadSingleTabLease(machineIdValue);
+    if (lease?.tabId === nivoSingleTabRuntimeId) {
+      window.localStorage.removeItem(nivoSingleTabStorageKey(machineIdValue));
+    }
+  } catch {
+    // A stale timeout akkor is felszabadítja a lockot.
+  }
+}
+
+function nivoSingleTabCanUseSupabase(machineIdValue = readMachineIdFromStorage()): boolean {
+  if (typeof window === "undefined") return true;
+
+  const machineKey = nivoSingleTabMachineKey(machineIdValue);
+  if (nivoSingleTabDeniedMachineKey === machineKey) return false;
+  if (nivoSingleTabOwnsLease(machineIdValue)) return true;
+  return nivoTryAcquireSingleTabLease(machineIdValue);
+}
+
+function nivoSingleTabBlockedByOther(machineIdValue = readMachineIdFromStorage()): boolean {
+  if (typeof window === "undefined") return false;
+
+  const machineKey = nivoSingleTabMachineKey(machineIdValue);
+  const lease = nivoReadSingleTabLease(machineIdValue);
+  return Boolean(
+    nivoSingleTabDeniedMachineKey === machineKey
+    || (
+      lease
+      && lease.tabId !== nivoSingleTabRuntimeId
+      && nivoSingleTabLeaseIsFresh(lease)
+    )
+  );
+}
+
 function normalizeMachineIdFromOptions(value: string | null | undefined, options: string[]): string {
   const cleanValue = String(value || "").trim();
   const normalizedOptions = [DEFAULT_MACHINE_ID, ...options.filter((option) => option.trim())];
@@ -5855,6 +6014,12 @@ let nivoActivityLastErrorAt = "";
 let nivoActivityLastError = "";
 let nivoActivitySequence = 0;
 let nivoAutoProtectionHighLoadSince = 0;
+
+const nivoSingleTabRuntimeId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+  ? crypto.randomUUID()
+  : `tab-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+let nivoSingleTabDeniedMachineKey = "";
+let nivoSingleTabReloadScheduled = false;
 
 type NivoAutoProtectionState = {
   machineId: string;
@@ -6238,6 +6403,12 @@ function nivoGuardedSupabaseFetch(input: NivoFetchInput, init?: NivoFetchInit): 
   const url = nivoSupabaseFetchUrl(input);
   const isSupabaseRequest = url.startsWith(SUPABASE_URL);
   const isMachineActivityRequest = url.includes(`/rest/v1/${NIVO_MACHINE_ACTIVITY_TABLE}`);
+
+  if (isSupabaseRequest && !nivoSingleTabCanUseSupabase()) {
+    return Promise.reject(new Error(
+      `A(z) ${readMachineIdFromStorage()} munkaállomás már aktív egy másik böngészőfülön. Ez a fül nem küld Supabase kéréseket.`
+    ));
+  }
 
   if (isSupabaseRequest && nivoEmergencyRuntimeBlocked) {
     return Promise.reject(new Error(nivoEmergencyRuntimeReason || "A gépet az adminisztrátor letiltotta."));
@@ -10435,6 +10606,9 @@ export default function Page() {
   );
 
   const [machineId, setMachineId] = useState<MachineIdOption>("iroda");
+  const [nivoDuplicateTabBlocked, setNivoDuplicateTabBlocked] = useState(false);
+  const [nivoDuplicateTabMachine, setNivoDuplicateTabMachine] = useState("");
+  const nivoSingleTabPreviousMachineRef = useRef("");
 
   // Vercel/Next.js prerender javítás:
   // machineId csak a deklarációja UTÁN olvasható. A korábbi verzióban
@@ -10483,6 +10657,80 @@ export default function Page() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const currentMachine = readMachineIdFromStorage();
+    const previousMachine = nivoSingleTabPreviousMachineRef.current;
+
+    if (
+      previousMachine
+      && nivoSingleTabMachineKey(previousMachine) !== nivoSingleTabMachineKey(currentMachine)
+    ) {
+      nivoReleaseSingleTabLease(previousMachine);
+    }
+    nivoSingleTabPreviousMachineRef.current = currentMachine;
+
+    const evaluateSingleTabOwnership = (): void => {
+      const runtimeMachine = readMachineIdFromStorage();
+      const runtimeMachineKey = nivoSingleTabMachineKey(runtimeMachine);
+      const lease = nivoReadSingleTabLease(runtimeMachine);
+      const leaseFresh = nivoSingleTabLeaseIsFresh(lease);
+
+      if (lease?.tabId === nivoSingleTabRuntimeId && leaseFresh) {
+        nivoRefreshSingleTabLease(runtimeMachine);
+        setNivoDuplicateTabBlocked(false);
+        setNivoDuplicateTabMachine(runtimeMachine);
+        return;
+      }
+
+      if (
+        lease
+        && lease.tabId !== nivoSingleTabRuntimeId
+        && leaseFresh
+      ) {
+        nivoSingleTabDeniedMachineKey = runtimeMachineKey;
+        setNivoDuplicateTabBlocked(true);
+        setNivoDuplicateTabMachine(runtimeMachine);
+        return;
+      }
+
+      // Ha ez a fül korábban már veszített, nem próbáljuk menet közben
+      // "félig" újraindítani az alkalmazást. Amint a régi aktív fül lockja
+      // megszűnik/stale lesz, tiszta újratöltéssel vesszük át a szerepet.
+      if (nivoSingleTabDeniedMachineKey === runtimeMachineKey) {
+        setNivoDuplicateTabBlocked(true);
+        setNivoDuplicateTabMachine(runtimeMachine);
+        if (!nivoSingleTabReloadScheduled) {
+          nivoSingleTabReloadScheduled = true;
+          window.setTimeout(() => window.location.reload(), NIVO_SINGLE_TAB_RELOAD_DELAY_MS);
+        }
+        return;
+      }
+
+      const acquired = nivoTryAcquireSingleTabLease(runtimeMachine);
+      setNivoDuplicateTabBlocked(!acquired);
+      setNivoDuplicateTabMachine(runtimeMachine);
+    };
+
+    const handleStorage = (event: StorageEvent): void => {
+      if (!event.key || !event.key.startsWith(NIVO_SINGLE_TAB_LOCK_PREFIX)) return;
+      evaluateSingleTabOwnership();
+    };
+
+    evaluateSingleTabOwnership();
+    window.addEventListener("storage", handleStorage);
+    const intervalId = window.setInterval(
+      evaluateSingleTabOwnership,
+      NIVO_SINGLE_TAB_HEARTBEAT_MS
+    );
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [machineId]);
 
   const terminalEntryLayoutStationKey = normalizeLooseText(machineId);
   const terminalEntrySavedLayout = terminalEntryLayoutByStation[terminalEntryLayoutStationKey] || null;
@@ -29678,6 +29926,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   ]);
 
   useEffect(() => {
+    if (nivoDuplicateTabBlocked) return;
+
     let cancelled = false;
     let lastBlocked = nivoRuntimeBlockedRef.current;
 
@@ -29733,10 +29983,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       window.clearInterval(intervalId);
       window.removeEventListener("nivo-auto-protection-change", handleAutoProtectionChange);
     };
-  }, [supabase, nivoEmergencyAdminOpen]);
+  }, [supabase, nivoEmergencyAdminOpen, nivoDuplicateTabBlocked]);
 
   useEffect(() => {
-    if (!supabase) return;
+    if (!supabase || nivoDuplicateTabBlocked) return;
     let cancelled = false;
     let heartbeatInFlight = false;
     let heartbeatBackoffUntil = 0;
@@ -29773,7 +30023,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     void sendHeartbeat();
     const intervalId = window.setInterval(() => void sendHeartbeat(), NIVO_MACHINE_ACTIVITY_HEARTBEAT_MS);
     return () => { cancelled = true; window.clearInterval(intervalId); };
-  }, [supabase, machineId, activeWorker?.id]);
+  }, [supabase, machineId, activeWorker?.id, nivoDuplicateTabBlocked]);
 
   useEffect(() => {
     const normalAdminOpen = Boolean(activeWorker && isAdmin(activeWorker) && terminalView === "management" && flowStage === "dashboard" && managementSection === "admin");
@@ -49282,6 +49532,29 @@ body {
             <button type="button" onClick={() => { setNivoEmergencyLoginOpen(false); setNivoEmergencyLoginPin(""); setNivoEmergencyLoginError(""); }} disabled={nivoEmergencyLoginBusy} style={buttonSecondary}>
               Mégse
             </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (nivoDuplicateTabBlocked) {
+    return (
+      <main style={{ minHeight: "100vh", background: "#020617", color: "#f8fafc", display: "grid", placeItems: "center", padding: 24, fontFamily: "Arial, sans-serif" }}>
+        <div style={{ width: "min(760px, 96vw)", border: "2px solid #f59e0b", borderRadius: 18, background: "#1c1405", padding: 28, textAlign: "center", boxShadow: "0 24px 70px rgba(0,0,0,.5)" }}>
+          <div style={{ fontSize: 48, marginBottom: 10 }}>🛡️</div>
+          <h1 style={{ margin: "0 0 10px", fontSize: 30 }}>Ez a munkaállomás már aktív egy másik fülön</h1>
+          <div style={{ color: "#fde68a", fontSize: 18, fontWeight: 900 }}>
+            Gép: {nivoDuplicateTabMachine || machineId}
+          </div>
+          <div style={{ color: "#cbd5e1", marginTop: 14, lineHeight: 1.6 }}>
+            Ezen a munkaállomáson egyszerre csak egy böngészőfül lehet aktív.
+            Ez a fül nem küld Supabase lekérdezést, heartbeatet vagy termelési adatot,
+            így több megnyitott fül nem tudja megsokszorozni a rendszer terhelését.
+          </div>
+          <div style={{ color: "#94a3b8", marginTop: 12, lineHeight: 1.5 }}>
+            Zárd be a másik aktív fület. Legfeljebb néhány másodpercen belül ez a fül
+            automatikusan újratöltődik és átveszi az aktív szerepet.
           </div>
         </div>
       </main>
