@@ -5517,7 +5517,9 @@ function normalizeMachineIdFromOptions(value: string | null | undefined, options
   const cleanValue = String(value || "").trim();
   const normalizedOptions = [DEFAULT_MACHINE_ID, ...options.filter((option) => option.trim())];
   const matched = normalizedOptions.find((option) => option.toLowerCase() === cleanValue.toLowerCase());
-  return matched || DEFAULT_MACHINE_ID;
+  if (matched) return matched;
+  if (cleanValue.toLowerCase() === "iroda") return "iroda";
+  return DEFAULT_MACHINE_ID;
 }
 
 function buildMachineOptions(rows: MachineIdRow[]): string[] {
@@ -10298,7 +10300,7 @@ export default function Page() {
     [productionCardProfile]
   );
 
-  const [machineId, setMachineId] = useState<MachineIdOption>(DEFAULT_MACHINE_ID);
+  const [machineId, setMachineId] = useState<MachineIdOption>("iroda");
 
   // Vercel/Next.js prerender javítás:
   // machineId csak a deklarációja UTÁN olvasható. A korábbi verzióban
@@ -10312,7 +10314,7 @@ export default function Page() {
   const [machineAdminOpen, setMachineAdminOpen] = useState(false);
   const [machineAdminUnlocked, setMachineAdminUnlocked] = useState(false);
   const [machineAdminPin, setMachineAdminPin] = useState("");
-  const [machineDraftId, setMachineDraftId] = useState<MachineIdOption>(DEFAULT_MACHINE_ID);
+  const [machineDraftId, setMachineDraftId] = useState<MachineIdOption>("iroda");
 
   // Alapképernyő egyedi elrendezés – munkaállomásonként, láthatatlan rácshoz igazítva.
   const [terminalEntryLayoutByStation, setTerminalEntryLayoutByStation] = useState<Record<string, TerminalEntryLayoutConfig>>({});
