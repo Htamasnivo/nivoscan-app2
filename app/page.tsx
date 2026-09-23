@@ -2451,7 +2451,7 @@ const NIVO_SINGLE_TAB_HEARTBEAT_MS = 1_000;
 const NIVO_SINGLE_TAB_STALE_MS = 6_000;
 const NIVO_SINGLE_TAB_RELOAD_DELAY_MS = 300;
 
-const NIVO_CLIENT_VERSION = "2026-09-23-foliazo-query-optimization-v7";
+const NIVO_CLIENT_VERSION = "2026-09-23-szereles-amounts-excel-v8";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
 const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
@@ -2638,8 +2638,16 @@ const PRODUCTION_CARD_FIELD_IDS = [
   PRODUCTION_CARD_LAP_TOKLEC_KESZ_FIELD_ID,
  ] as const;
 
-type StationPlanFieldDataType = "text" | "integer" | "date" | "boolean";
+type StationPlanFieldDataType = "text" | "integer" | "numeric" | "date" | "boolean";
 type StationPlanFieldDefinition = { key: string; label: string; dataType: StationPlanFieldDataType };
+
+// Kizárólag a Szerelés tervminta/import/export két új M–N oszlopa.
+// A termelési kártyák és más felületek mezőlistáját nem bővítjük velük.
+const SZERELES_TERV_EXCEL_PRICE_FIELDS: StationPlanFieldDefinition[] = [
+  { key: "netto_ar", label: "Nettó ár", dataType: "numeric" },
+  { key: "keszletreveteli_ertek", label: "Készletrevételi érték", dataType: "numeric" },
+];
+const SZERELES_TERV_EXCEL_PRICE_KEYS = new Set(SZERELES_TERV_EXCEL_PRICE_FIELDS.map((field) => field.key));
 
 type DashboardPlanFieldOption = StationPlanFieldDefinition & {
   stationNames: string[];
@@ -3114,6 +3122,21 @@ function getStationPlanFieldLookupKeys(fieldKey: string): string[] {
   return Array.from(new Set([fieldKey, ...(STATION_PLAN_FIELD_VALUE_ALIASES[fieldKey] || [])]));
 }
 
+function parseSzerelesPriceValue(value: unknown): number | null {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+
+  const raw = String(value)
+    .trim()
+    .replace(/[\s\u00a0\u202f]/g, "")
+    .replace(/(?:Ft|HUF)$/i, "");
+  // A pontot kizárólag háromjegyű ezres csoportban távolítjuk el.
+  const numericText = raw.replace(/\.(?=\d{3}(?:\D|$))/g, "").replace(",", ".");
+  if (!/^[+-]?\d+(?:\.\d+)?$/.test(numericText)) return null;
+  const parsed = Number(numericText);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function parseStationPlanDateValue(value: unknown): string | null {
   // A mester Excelben a képlettel előállított "nincs dátum" néha 0-ként jelenik meg.
   // Ezt nem szabad 1899-12-30 dátummá alakítani.
@@ -3388,9 +3411,15 @@ function parsePlanSosCell(value: unknown): boolean {
   throw new Error(`Érvénytelen SOS érték: ${String(value)}. Használj Igen/Nem vagy 1/0 értéket.`);
 }
 
-function getStationPlanExcelFieldDefinitions(stationName: string | null | undefined): StationPlanFieldDefinition[] {
+function getStationPlanExcelFieldDefinitions(
+  stationName: string | null | undefined,
+  includeSzerelesPrices = false
+): StationPlanFieldDefinition[] {
   const key = getStationPlanIdentityKey(stationName);
-  const definitions = STATION_PLAN_EXCEL_FIELD_DEFINITIONS[key] || STATION_PLAN_BASE_FIELD_DEFINITIONS;
+  const baseDefinitions = STATION_PLAN_EXCEL_FIELD_DEFINITIONS[key] || STATION_PLAN_BASE_FIELD_DEFINITIONS;
+  const definitions = key === "szereles" && includeSzerelesPrices
+    ? [...baseDefinitions, ...SZERELES_TERV_EXCEL_PRICE_FIELDS]
+    : baseDefinitions;
   if (key === "primapower") return [...definitions];
   return definitions.some((field) => field.key === "sos") ? definitions : [...definitions, STATION_PLAN_SOS_FIELD];
 }
@@ -3425,6 +3454,7 @@ function getStationPlanFieldDefinitions(stationName: string | null | undefined):
 
   (STATION_PLAN_DISCOVERED_FIELDS.get(key) || []).forEach((field) => {
     if (key === "primapower" && PRIMAPOWER_EXACT_FIELD_NAMES.has(field.key)) return;
+    if (key === "szereles" && SZERELES_TERV_EXCEL_PRICE_KEYS.has(field.key)) return;
     if (!definitionsByKey.has(field.key)) definitionsByKey.set(field.key, field);
   });
   if (!definitionsByKey.has("sos")) definitionsByKey.set("sos", STATION_PLAN_SOS_FIELD);
@@ -31803,10 +31833,16 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   ): StationPlanUploadRow[] {
     if (!rawMatrix.length) throw new Error(`${sourceLabel}: a munkafül üres.`);
 
-    const allDefinitions = getStationPlanExcelFieldDefinitions(stationName);
-    const hasSosHeader = (Array.isArray(rawMatrix[0]) ? rawMatrix[0] : []).some((value) => normalizeSpreadsheetHeader(String(value ?? "")) === "sos");
-    const definitions = hasSosHeader ? allDefinitions : allDefinitions.filter((field) => field.key !== "sos");
     const headerRow = Array.isArray(rawMatrix[0]) ? rawMatrix[0] : [];
+    const isSzereles = getStationPlanIdentityKey(stationName) === "szereles";
+    const hasSzerelesPriceHeader = isSzereles && headerRow.some((cell) => {
+      const normalized = normalizeSpreadsheetHeader(String(cell ?? ""));
+      return normalized === normalizeSpreadsheetHeader("Nettó ár")
+        || normalized === normalizeSpreadsheetHeader("Készletrevételi érték");
+    });
+    const allDefinitions = getStationPlanExcelFieldDefinitions(stationName, hasSzerelesPriceHeader);
+    const hasSosHeader = headerRow.some((value) => normalizeSpreadsheetHeader(String(value ?? "")) === "sos");
+    const definitions = hasSosHeader ? allDefinitions : allDefinitions.filter((field) => field.key !== "sos");
     const expectedHeaders = definitions.map((definition) => normalizeSpreadsheetHeader(definition.label));
     const actualHeaders = headerRow.map((value) => normalizeSpreadsheetHeader(String(value ?? "")));
 
@@ -31876,6 +31912,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           normalizedValues[definition.key] = parsePlanSosCell(rawValue);
         } else if (definition.dataType === "integer") {
           normalizedValues[definition.key] = parseSpreadsheetNumber(rawValue);
+        } else if (definition.dataType === "numeric") {
+          const amount = parseSzerelesPriceValue(rawValue);
+          if (amount === null && rawValue !== null && rawValue !== undefined && String(rawValue).trim() !== "") {
+            throw new Error(`${sourceLabel}, ${rowNumber}. sor, ${definition.label}: érvénytelen számérték.`);
+          }
+          normalizedValues[definition.key] = amount;
         } else {
           const isDurationField = normalizePlanColumnName(definition.key).includes("normaido");
           const value = isDurationField
@@ -31929,6 +31971,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         else if (definition?.dataType === "date") adat[key] = rawValue === "" ? null : (parseStationPlanDateValue(rawValue) || rawValue);
         else if (definition?.dataType === "boolean") adat[key] = parsePlanSosCell(rawValue);
         else if (definition?.dataType === "integer") adat[key] = parseSpreadsheetNumber(rawValue);
+        else if (definition?.dataType === "numeric") adat[key] = normalizedValues[key] ?? null;
         else if (rawValue instanceof Date) adat[key] = rawValue.toISOString();
         else adat[key] = rawValue;
       });
@@ -32273,10 +32316,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       }
       if (existing_id === null || existing_id === undefined || existing_id === "") throw new Error(`${stationName}: hiányzik a frissítendő tervsor azonosítója.`);
       if (action === "add") {
+        const szerelesPricePatch: Record<string, unknown> = {};
+        if (getStationPlanIdentityKey(stationName) === "szereles") {
+          for (const field of SZERELES_TERV_EXCEL_PRICE_FIELDS) {
+            if (Object.prototype.hasOwnProperty.call(row, field.key)) {
+              szerelesPricePatch[field.key] = row[field.key] ?? null;
+            }
+          }
+        }
         const { error } = await supabase.from(tableName).update({
           mennyiseg: row.mennyiseg,
           excel_sorrend: row.excel_sorrend ?? null,
           source_file: row.source_file || null,
+          ...szerelesPricePatch,
           updated_at: nowIso,
         }).eq("id", existing_id);
         if (error) throw error;
@@ -32749,6 +32801,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (field.key === "sos") return "Nem";
     if (field.dataType === "date") return getLocalDateKey(new Date());
     if (field.dataType === "integer") return 1;
+    if (field.dataType === "numeric") return "";
     if (key.includes("normaido")) return toExcelDurationSerial("1:30");
     if (key === "sorszam" || key === "gyartasi_szam" || key === "gyartasi_szam_projekt_neve") {
       // Ugyanaz a mintaazonosító minden munkafülön, hogy a többállomásos
@@ -32777,6 +32830,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (definition.dataType === "boolean") return normalizeSosValue(resolved) ? "Igen" : "Nem";
     if (definition.dataType === "integer") {
       const parsed = parseSpreadsheetNumber(resolved);
+      return parsed === null ? "" : parsed;
+    }
+    if (definition.dataType === "numeric") {
+      const parsed = parseSzerelesPriceValue(resolved);
       return parsed === null ? "" : parsed;
     }
 
@@ -32842,7 +32899,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         asztalos: new Set(["ell"]),
         fenyezo: new Set(["ell"]),
         foliazo: new Set(["ell"]),
-        szereles: new Set(["nyilo_normaido", "tok_normaido", "ell"]),
+        szereles: new Set(["nyilo_normaido", "tok_normaido", "ell", "netto_ar", "keszletreveteli_ertek"]),
         raktar: new Set(["ell"]),
         primapower: new Set(["nyitas", "meret", "szin_kivul", "szin_belul", "normaido"]),
       };
@@ -32907,6 +32964,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         };
         if (definition.dataType === "date") worksheet[address].z = "yyyy-mm-dd";
         if (definition.dataType === "integer") worksheet[address].z = "0";
+        if (definition.dataType === "numeric") worksheet[address].z = "#,##0.##";
         if (normalizePlanColumnName(definition.key).includes("normaido") && typeof worksheet[address].v === "number") {
           worksheet[address].z = "[h]:mm";
         }
@@ -32955,7 +33013,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         const workbook = XLSX.utils.book_new();
 
         selectedStations.forEach((stationName, stationIndex) => {
-          const definitions = getStationPlanExcelFieldDefinitions(stationName);
+          const definitions = getStationPlanExcelFieldDefinitions(stationName, true);
           const rows: Array<Array<string | number>> = [
             definitions.map((definition) => definition.label),
             definitions.map((definition) =>
@@ -32992,7 +33050,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       let totalExportedRows = 0;
       for (let stationIndex = 0; stationIndex < selectedStations.length; stationIndex += 1) {
         const stationName = selectedStations[stationIndex];
-        const definitions = getStationPlanExcelFieldDefinitions(stationName);
+        const definitions = getStationPlanExcelFieldDefinitions(stationName, true);
         const dataRows = await fetchAllStationPlanRowsForExport(stationName);
         totalExportedRows += dataRows.length;
 
