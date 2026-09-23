@@ -2199,6 +2199,8 @@ type ReportDeliveryReportType =
   | "closed-orders"
   | "atvetel"
   | "reklamacio"
+  | "keszre-jelentes"
+  | "beepites"
   | "custom";
 
 type ReportDeliveryFrequency = "daily" | "weekly" | "monthly";
@@ -2228,6 +2230,7 @@ type ReportDeliveryProfile = {
   orderFilter: string;
   productTypeFilter: ReportDeliveryProductType;
   reportType: ReportDeliveryReportType;
+  reportFormat: ReportFormat;
   customBlocks: ReportDeliveryBlock[];
   frequency: ReportDeliveryFrequency;
   periodScope: ReportDeliveryPeriodScope;
@@ -2343,6 +2346,8 @@ const REPORT_DELIVERY_REPORT_TYPE_LABELS: Record<ReportDeliveryReportType, strin
   "closed-orders": "Lezárt rendelések",
   atvetel: "Átvétel",
   reklamacio: "Reklamációs riport",
+  "keszre-jelentes": "Készre jelentés",
+  beepites: "Beépítés",
   custom: "Egyedi kombinált riport",
 };
 
@@ -2365,6 +2370,7 @@ const DEFAULT_REPORT_DELIVERY_PROFILE: ReportDeliveryProfile = {
   orderFilter: "",
   productTypeFilter: "all",
   reportType: "worker-analysis",
+  reportFormat: "pdf",
   customBlocks: ["worker-analysis"],
   frequency: "monthly",
   periodScope: "previous",
@@ -2451,7 +2457,7 @@ const NIVO_SINGLE_TAB_HEARTBEAT_MS = 1_000;
 const NIVO_SINGLE_TAB_STALE_MS = 6_000;
 const NIVO_SINGLE_TAB_RELOAD_DELAY_MS = 300;
 
-const NIVO_CLIENT_VERSION = "2026-09-23-szereles-amounts-excel-v8";
+const NIVO_CLIENT_VERSION = "2026-09-23-report-excel-pdf-keszre-beepites-v9";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
 const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
@@ -11947,6 +11953,9 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       reportType: (Object.prototype.hasOwnProperty.call(REPORT_DELIVERY_REPORT_TYPE_LABELS, String(row.report_type || "worker-analysis"))
         ? String(row.report_type || "worker-analysis")
         : "worker-analysis") as ReportDeliveryReportType,
+      reportFormat: (["pdf", "excel", "both"].includes(String(row.report_format || "pdf"))
+        ? String(row.report_format || "pdf")
+        : "pdf") as ReportFormat,
       customBlocks: customBlocks.length ? customBlocks : ["worker-analysis"],
       frequency: (["daily", "weekly", "monthly"].includes(String(row.frequency || "monthly"))
         ? String(row.frequency || "monthly")
@@ -12314,6 +12323,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       order_filter: profile.orderFilter.trim(),
       product_type_filter: profile.productTypeFilter,
       report_type: profile.reportType,
+      report_format: profile.reportFormat || "pdf",
       custom_blocks: profile.customBlocks,
       frequency: profile.frequency,
       period_scope: profile.periodScope,
@@ -12847,6 +12857,200 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         canClose: presentStates.length > 0 && presentStates.every((state) => state.status === "done"),
       };
     });
+  }
+
+  // Az új riportok kizárólag a kért mezőket olvassák, nem indítanak teljes dashboard-újratöltést.
+  type ReportDeliveryKeszreRow = {
+    completedAt: string;
+    orderNumber: string;
+    nettoAr: number | null;
+    keszletreveteliErtek: number | null;
+  };
+  type ReportDeliveryBeepitesRow = { orderNumber: string; installationAt: string };
+  type ReportDeliveryPreparedRows = {
+    keszre?: ReportDeliveryKeszreRow[];
+    beepites?: ReportDeliveryBeepitesRow[];
+  };
+
+  async function fetchReportDeliveryKeszreRows(
+    profile: ReportDeliveryProfile,
+    range: { startIso: string; endIso: string }
+  ): Promise<ReportDeliveryKeszreRow[]> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const orderFilters = parseReportDeliveryOrderFilters(profile.orderFilter);
+
+    // Csak a riport időszakában befejezett szerelési sorokból indulunk ki.
+    // A korábbi részjelentéseket csak a releváns rendeléseknél olvassuk vissza.
+    const candidateOrders = new Map<string, string>();
+    const finishedColumns = "order_number,machine_id,end_time";
+    for (let start = 0; ; start += 1000) {
+      const response = await supabase.from("work_logs")
+        .select(finishedColumns)
+        .in("machine_id", ["Szereles", "Szerelés"])
+        .gte("end_time", range.startIso).lt("end_time", range.endIso)
+        .order("end_time", { ascending: true }).range(start, start + 999);
+      if (response.error) throw response.error;
+      const page = (response.data || []) as Array<Record<string, unknown>>;
+      page.forEach((log) => {
+        const order = String(log.order_number || "").trim();
+        if (order && (orderFilters.length === 0 || matchesDashboardOrderFilters(order, orderFilters))) {
+          const key = normalizeLooseText(order);
+          if (!candidateOrders.has(key)) candidateOrders.set(key, order);
+        }
+      });
+      if (page.length < 1000) break;
+    }
+    if (!candidateOrders.size) return [];
+
+    const orders = Array.from(candidateOrders.values());
+    const grouped = new Map<string, WorkLogRow[]>();
+    const prices = new Map<string, { nettoAr: number | null; keszletreveteliErtek: number | null }>();
+    const historyColumns = "id,order_number,machine_id,worker_id,worker_name,action,created_at,start_time,start_timestamp,end_time,end_timestamp,note,szereles_resz,szereles_ciklus_id,szereles_alap_allapot,szereles_teljes_perc,ujragyartas,ujragyartas_sorszam,szuneteltetes,tok_kesz,nyilo_kesz,tok_kesz_at,nyilo_kesz_at,reszleges_keszultseg";
+
+    for (let i = 0; i < orders.length; i += 100) {
+      const chunk = orders.slice(i, i + 100);
+      for (let start = 0; ; start += 1000) {
+        const response = await supabase.from("work_logs").select(historyColumns)
+          .in("order_number", chunk).lt("created_at", range.endIso)
+          .order("created_at", { ascending: true }).range(start, start + 999);
+        if (response.error) throw response.error;
+        const page = (response.data || []) as WorkLogRow[];
+        page.forEach((log) => {
+          if (getProductionCardStationMatchKey(resolveLogStation(log, workers)) !== "szereles") return;
+          const orderKey = normalizeLooseText(String(log.order_number || ""));
+          if (!orderKey) return;
+          grouped.set(orderKey, [...(grouped.get(orderKey) || []), log]);
+        });
+        if (page.length < 1000) break;
+      }
+
+      for (let priceStart = 0; ; priceStart += 1000) {
+        const priceResponse = await supabase.from("szereles_terv")
+          .select("sorszam,netto_ar,keszletreveteli_ertek")
+          .in("sorszam", chunk).range(priceStart, priceStart + 999);
+        if (priceResponse.error) throw priceResponse.error;
+        const pricePage = (priceResponse.data || []) as Array<Record<string, unknown>>;
+        pricePage.forEach((row) => {
+          const key = normalizeLooseText(String(row.sorszam || ""));
+          if (!key) return;
+          const current = prices.get(key);
+          const nettoAr = parseSzerelesPriceValue(row.netto_ar);
+          const keszletreveteliErtek = parseSzerelesPriceValue(row.keszletreveteli_ertek);
+          prices.set(key, {
+            nettoAr: nettoAr ?? current?.nettoAr ?? null,
+            keszletreveteliErtek: keszletreveteliErtek ?? current?.keszletreveteliErtek ?? null,
+          });
+        });
+        if (pricePage.length < 1000) break;
+      }
+    }
+
+    const result: ReportDeliveryKeszreRow[] = [];
+    for (const order of orders) {
+      const key = normalizeLooseText(order);
+      const logs = grouped.get(key) || [];
+      if (!logs.length) continue;
+      const cycles = new Map<string, WorkLogRow[]>();
+      logs.forEach((log) => {
+        const cycleKey = String(log.szereles_ciklus_id || "").trim()
+          || `legacy:${Number(log.ujragyartas_sorszam || 0)}`;
+        cycles.set(cycleKey, [...(cycles.get(cycleKey) || []), log]);
+      });
+      const completions: string[] = [];
+      for (const cycle of cycles.values()) {
+        const snapshot = resolveDoorCompletionSnapshot(cycle);
+        if (snapshot.isDoorWorkflow && snapshot.completionPercent === 100) {
+          const fullAt = [snapshot.tokKeszAt, snapshot.nyiloKeszAt]
+            .filter((value): value is string => Boolean(value))
+            .sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0];
+          if (fullAt) completions.push(fullAt);
+        } else if (!snapshot.isDoorWorkflow) {
+          // Legacy közös END: csak az eredeti rendszer szerint valódi, teljes END számít.
+          const legacyFull = cycle
+            .filter((log) => Boolean(log.end_time || log.end_timestamp) && isFullyCompletedEndLog(log))
+            .map((log) => log.end_time || log.end_timestamp || "")
+            .filter(Boolean).sort()[0];
+          if (legacyFull) completions.push(legacyFull);
+        }
+      }
+      // Ha ugyanazt a rendelést később újra megmunkálták, az első 100%-os készülés számít.
+      const completedAt = completions.sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0];
+      const timestamp = completedAt ? new Date(completedAt).getTime() : NaN;
+      if (!Number.isFinite(timestamp) || timestamp < Date.parse(range.startIso) || timestamp >= Date.parse(range.endIso)) continue;
+      const amounts = prices.get(key);
+      result.push({ orderNumber: order, completedAt,
+        nettoAr: amounts?.nettoAr ?? null,
+        keszletreveteliErtek: amounts?.keszletreveteliErtek ?? null });
+    }
+    return result.sort((a, b) => a.completedAt.localeCompare(b.completedAt) || a.orderNumber.localeCompare(b.orderNumber, "hu"));
+  }
+
+  async function fetchReportDeliveryBeepitesRows(
+    profile: ReportDeliveryProfile,
+    range: { startIso: string; endIso: string }
+  ): Promise<ReportDeliveryBeepitesRow[]> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const orderFilters = parseReportDeliveryOrderFilters(profile.orderFilter);
+    const latest = new Map<string, { orderNumber: string; timestamp: number; installationAt: string }>();
+    // A legutolsó dátum kiválasztása a teljes atvetel_adat táblán történik;
+    // a dátumszűrőt csak azután alkalmazzuk, hogy minden rendelésből 1 sor maradt.
+    for (let start = 0; ; start += 1000) {
+      const response = await supabase.from("atvetel_adat")
+        .select("rendelesszam,szerelesi_idopont")
+        .not("szerelesi_idopont", "is", null).range(start, start + 999);
+      if (response.error) throw response.error;
+      const page = (response.data || []) as Array<Record<string, unknown>>;
+      page.forEach((row) => {
+        const orderNumber = getAtvetelDetailsOrderNumber(row);
+        if (!orderNumber || (orderFilters.length && !matchesDashboardOrderFilters(orderNumber, orderFilters))) return;
+        const timestamp = getAtvetelDetailsSzerelesTimestampRank(row);
+        if (timestamp === null || !Number.isFinite(timestamp)) return;
+        const key = normalizeLooseText(orderNumber);
+        const previous = latest.get(key);
+        if (!previous || timestamp > previous.timestamp) {
+          latest.set(key, { orderNumber, timestamp, installationAt: new Date(timestamp).toISOString() });
+        }
+      });
+      if (page.length < 1000) break;
+    }
+    const from = Date.parse(range.startIso);
+    const to = Date.parse(range.endIso);
+    return Array.from(latest.values())
+      .filter((row) => row.timestamp >= from && row.timestamp < to)
+      .sort((a, b) => a.timestamp - b.timestamp || a.orderNumber.localeCompare(b.orderNumber, "hu"))
+      .map(({ orderNumber, installationAt }) => ({ orderNumber, installationAt }));
+  }
+
+  function formatReportDeliveryAmount(value: number | null): string {
+    return value == null ? "" : `${value.toLocaleString("hu-HU", { maximumFractionDigits: 2 })} Ft`;
+  }
+
+  async function createSimpleReportDeliveryPdfBlob(
+    title: "Készre jelentés" | "Beépítés",
+    headers: string[],
+    rows: Array<Array<string | number>>,
+    range: { label: string }
+  ): Promise<Blob> {
+    const jsPdfNamespace = await waitForJsPdf();
+    const doc = new jsPdfNamespace.jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
+    registerPdfUnicodeFonts(doc);
+    const pdf = doc as any;
+    doc.setFont(PDF_FONT_FAMILY, "bold");
+    doc.setFontSize(18);
+    doc.text(title, 36, 52);
+    doc.setFont(PDF_FONT_FAMILY, "normal");
+    doc.setFontSize(9);
+    doc.text(`Időszak: ${range.label}`, 36, 73);
+    pdf.autoTable({
+      startY: 92,
+      head: [headers],
+      body: rows.length ? rows : [["Nincs adat", ...headers.slice(1).map(() => "")]],
+      theme: "grid",
+      margin: { left: 30, right: 30, top: 45, bottom: 40 },
+      styles: { font: PDF_FONT_FAMILY, fontSize: 8, cellPadding: 6, overflow: "linebreak" },
+      headStyles: { font: PDF_FONT_FAMILY, fontStyle: "bold", fillColor: [34, 50, 74] },
+    });
+    return doc.output("blob");
   }
 
   async function createGenericReportDeliveryPdfBlob(
@@ -13435,15 +13639,36 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
 
-  async function createReportDeliveryProfilePdfBlob(profile: ReportDeliveryProfile): Promise<Blob> {
+  async function createReportDeliveryProfilePdfBlob(
+    profile: ReportDeliveryProfile,
+    prepared?: ReportDeliveryPreparedRows,
+    sharedDashboard?: DashboardData
+  ): Promise<Blob> {
     const range = getReportDeliveryProfileRange(profile);
+    if (profile.reportType === "keszre-jelentes") {
+      const rows = prepared?.keszre ?? await fetchReportDeliveryKeszreRows(profile, range);
+      return createSimpleReportDeliveryPdfBlob(
+        "Készre jelentés",
+        ["Időpont", "Rendelésszám", "Nettó ár", "Készletrevételi érték"],
+        rows.map((row) => [formatDateTime(row.completedAt), row.orderNumber,
+          formatReportDeliveryAmount(row.nettoAr), formatReportDeliveryAmount(row.keszletreveteliErtek)]),
+        range
+      );
+    }
+    if (profile.reportType === "beepites") {
+      const rows = prepared?.beepites ?? await fetchReportDeliveryBeepitesRows(profile, range);
+      return createSimpleReportDeliveryPdfBlob(
+        "Beépítés", ["Rendelésszám", "Beépítés dátuma"],
+        rows.map((row) => [row.orderNumber, formatDateTime(row.installationAt)]), range
+      );
+    }
     const sourceData: DashboardData = profile.reportType === "reklamacio"
       ? {
           logs: [], availableOrderNumbers: [], orderRows: [], openRows: [], workerRows: [], scrapRows: [], productTypeRows: [],
           exportRows: [], stationEfficiencyRows: [], stationTypePerformanceRows: [], stationWorkerPerformance: [], planOrderEndRows: [],
           totalMinutes: 0, totalScrap: 0, dailyEfficiencyPct: 0, lastUpdatedAt: new Date().toISOString(),
         }
-      : await fetchDashboardData(range, parseReportDeliveryOrderFilters(profile.orderFilter));
+      : sharedDashboard ?? await fetchDashboardData(range, parseReportDeliveryOrderFilters(profile.orderFilter));
     if (profile.reportType === "worker-analysis") {
       return await createProfessionalWorkerAnalysisPdfBlob({
         sourceData,
@@ -13457,6 +13682,158 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       });
     }
     return await createGenericReportDeliveryPdfBlob(profile, sourceData, range);
+  }
+
+  async function createReportDeliveryProfileExcelBlob(
+    profile: ReportDeliveryProfile,
+    prepared?: ReportDeliveryPreparedRows,
+    sharedDashboard?: DashboardData
+  ): Promise<Blob> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const XLSX = await waitForXlsx();
+    const workbook = XLSX.utils.book_new();
+    const range = getReportDeliveryProfileRange(profile);
+    const orderFilters = parseReportDeliveryOrderFilters(profile.orderFilter);
+    let sourceData: DashboardData | null = sharedDashboard ?? null;
+    const getData = async (): Promise<DashboardData> => {
+      if (!sourceData) sourceData = await fetchDashboardData(range, orderFilters);
+      return sourceData;
+    };
+    const addSheet = (name: string, headers: string[], data: Array<Array<string | number>>, moneyColumns: number[] = []): void => {
+      const rows = [headers, ...data];
+      const sheet = XLSX.utils.aoa_to_sheet(rows) as Record<string, any>;
+      const widths = headers.map((head, index) => ({
+        wch: Math.min(48, Math.max(17, head.length + 4,
+          ...data.slice(0, 150).map((row) => Math.min(45, String(row[index] ?? "").length + 2))))
+      }));
+      sheet["!cols"] = widths;
+      moneyColumns.forEach((column) => {
+        const col = String.fromCharCode(65 + column);
+        for (let i = 0; i < data.length; i += 1) {
+          const cell = sheet[`${col}${i + 2}`];
+          if (cell && typeof cell.v === "number") cell.z = '#,##0.00 "Ft"';
+        }
+      });
+      XLSX.utils.book_append_sheet(workbook, sheet, name.slice(0, 31));
+    };
+
+    if (profile.reportType === "keszre-jelentes") {
+      const rows = prepared?.keszre ?? await fetchReportDeliveryKeszreRows(profile, range);
+      addSheet("Készre jelentés", ["Időpont", "Rendelésszám", "Nettó ár", "Készletrevételi érték"],
+        rows.map((row) => [formatDateTime(row.completedAt), row.orderNumber,
+          row.nettoAr ?? "", row.keszletreveteliErtek ?? ""]), [2, 3]);
+    } else if (profile.reportType === "beepites") {
+      const rows = prepared?.beepites ?? await fetchReportDeliveryBeepitesRows(profile, range);
+      addSheet("Beépítés", ["Rendelésszám", "Beépítés dátuma"],
+        rows.map((row) => [row.orderNumber, formatDateTime(row.installationAt)]));
+    } else if (profile.reportType === "atvetel") {
+      const response = await supabase.from(ATVETEL_CURRENT_TABLE)
+        .select("order_number,beepitesi_datum,production_status,folyamatban,atvette,megjegyzes,lezart,lezart_at,lezarta_worker_name")
+        .eq("lezart", true).gte("lezart_at", range.startIso).lt("lezart_at", range.endIso)
+        .order("lezart_at", { ascending: true }).limit(5000);
+      if (response.error) throw response.error;
+      const rows = ((response.data || []) as Array<Record<string, unknown>>).filter((row) => {
+        const order = String(row.order_number || "").trim();
+        return order && (!orderFilters.length || matchesDashboardOrderFilters(order, orderFilters))
+          && (profile.workerFilter === "all" || normalizeLooseText(String(row.lezarta_worker_name || "")) === normalizeLooseText(profile.workerFilter));
+      });
+      addSheet("Átvétel", ["Rendelés", "Beépítési dátum", "Lezárás időpontja", "Lezáró", "Folyamatban", "Átvette", "Megjegyzés"],
+        rows.map((row) => [String(row.order_number || ""), String(row.beepitesi_datum || ""),
+          row.lezart_at ? formatDateTime(String(row.lezart_at)) : "", String(row.lezarta_worker_name || ""),
+          Boolean(row.folyamatban) ? "Igen" : "Nem", Boolean(row.atvette) ? "Igen" : "Nem", String(row.megjegyzes || "")]));
+      const monthly = new Map<string, number>();
+      rows.forEach((row) => { const key = String(row.lezart_at || "").slice(0, 7); if (/^\d{4}-\d{2}$/.test(key)) monthly.set(key, (monthly.get(key) || 0) + 1); });
+      addSheet("Havi lezárások", ["Hónap", "Lezárt rendelések száma"],
+        Array.from(monthly.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => [month, count]));
+    } else if (profile.reportType === "reklamacio") {
+      const [rows, statusRows] = await Promise.all([
+        fetchReklamacioReportRows(profile, range, "range"),
+        fetchReklamacioReportRows(profile, range, "open-and-today-completed"),
+      ]);
+      addSheet("Reklamáció", ["Rendelésszám", "Műhely", "Gyártandó tételek", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"],
+        rows.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.kertDatum,
+          row.createdAt ? formatDateTime(row.createdAt) : "", row.createdByWorkerName, row.mentesDatum ? formatDateTime(row.mentesDatum) : ""]));
+      addSheet("Reklamáció állapotok", ["Rendelésszám", "Munkaállomások állapota", "Felvétel", "Kért dátum", "Gyártásba téve", "Kész dátum", "Állapot"],
+        statusRows.map((row) => [row.rendelesszam, row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join(" | "),
+          row.createdAt ? formatDateTime(row.createdAt) : "", row.kertDatum, row.gyartasbaTerveDatum, row.keszDatum,
+          row.lezart ? "Kész" : "Nyitott"]));
+    } else {
+      const data = await getData();
+      const logs = filterReportDeliveryLogs(data, profile);
+      const completedLogs = logs.filter((log) => String(log.action || "").toUpperCase() === "END" || Boolean(log.end_time || log.end_timestamp));
+      const blocks: ReportDeliveryBlock[] = profile.reportType === "custom"
+        ? profile.customBlocks
+        : [profile.reportType as ReportDeliveryBlock];
+      let analyses: DashboardPdfWorkerAnalysis[] | null = null;
+      const getAnalyses = async (): Promise<DashboardPdfWorkerAnalysis[]> => {
+        if (!analyses) {
+          const planRows = await loadDashboardPdfPlanRows(completedLogs.map((log) => String(log.order_number || "")).filter(Boolean));
+          analyses = buildDashboardPdfWorkerAnalyses(logs, planRows, profile.stationFilter, profile.workerFilter, data);
+          if (profile.productTypeFilter !== "all") {
+            analyses = analyses.map((item) => ({ ...item, completedOrders: item.completedOrders.filter((row) => row.productType === profile.productTypeFilter) }));
+          }
+        }
+        return analyses;
+      };
+      const stationRows = data.stationEfficiencyRows.filter((row) => profile.stationFilter === "all"
+        || normalizeLooseText(row.stationName) === normalizeLooseText(profile.stationFilter));
+      for (const block of blocks) {
+        if (block === "worker-analysis") {
+          const workersSummary = data.workerRows.filter((row) => profile.workerFilter === "all"
+            || normalizeLooseText(row.workerName) === normalizeLooseText(profile.workerFilter));
+          addSheet("Dolgozói elemzés", ["Dolgozó", "Ledolgozott idő", "Ledolgozott perc", "Lezárt tételek", "Aktív napok", "Hatékonyság %"],
+            workersSummary.map((row) => [row.workerName, row.totalDurationLabel, row.totalMinutes,
+              row.closedSegments, row.activeDayCount, row.efficiencyPct ?? ""]));
+          const completed = (await getAnalyses()).flatMap((item) => item.completedOrders.map((row) => [
+            row.orderNumber, row.productType, row.stationName, item.workerName,
+            row.completedAt ? formatDateTime(row.completedAt) : "", row.elapsedLabel,
+          ]));
+          addSheet("Dolgozói lezárások", ["Rendelés", "Típus", "Munkaállomás", "Dolgozó", "Befejezés", "Eltelt"], completed);
+        } else if (block === "worker-comparison") {
+          const comparison = data.workerRows.filter((row) => profile.workerFilter === "all"
+            || normalizeLooseText(row.workerName) === normalizeLooseText(profile.workerFilter))
+            .sort((a, b) => (b.efficiencyPct ?? -1) - (a.efficiencyPct ?? -1));
+          addSheet("Dolgozói összehasonlítás", ["Dolgozó", "Hatékonyság %", "Ledolgozott", "Lezárt tételek"],
+            comparison.map((row) => [row.workerName, row.efficiencyPct ?? "", row.totalDurationLabel, row.closedSegments]));
+        } else if (block === "reproduction") {
+          addSheet("Újragyártás", ["Rendelés", "Munkaállomás", "Dolgozó", "Befejezés", "Újragyártás #"],
+            completedLogs.filter((log) => Boolean(log.ujragyartas)).map((log) => [
+              String(log.order_number || ""), resolveLogStation(log, workers), getDashboardLogWorkerName(log),
+              formatDateTime(getDashboardLogEndAt(log) || getDashboardLogEventAt(log)), String(log.ujragyartas_sorszam || "")
+            ]));
+        } else if (block === "scrap-replacement") {
+          let scrapRows: Array<Array<string | number>> = logs.filter((log) => Boolean(log.selejt_potlas)).map((log) => [
+            String(log.order_number || ""), resolveLogStation(log, workers), getDashboardLogWorkerName(log),
+            formatDateTime(getDashboardLogEventAt(log)), getNoteBeforeContext(log.note) || "",
+          ]);
+          const response = await supabase.from("asztalos_selejt_potlas").select("*")
+            .gte("reported_at", range.startIso).lt("reported_at", range.endIso).order("reported_at", { ascending: false }).limit(2000);
+          if (!response.error && response.data?.length) {
+            scrapRows = ((response.data || []) as Array<Record<string, unknown>>).map((row) => [
+              String(row.sorszam || row.order_number || ""), String(row.selejt_forras_munkaallomas || row.source_station || ""),
+              String(row.end_worker_name || row.worker_name || ""),
+              row.completed_at ? formatDateTime(String(row.completed_at)) : row.reported_at ? formatDateTime(String(row.reported_at)) : "",
+              String(row.megjegyzes || row.note || ""),
+            ]);
+          }
+          addSheet("Selejtpótlás", ["Rendelés", "Forrás", "Dolgozó", "Időpont", "Megjegyzés"], scrapRows);
+        } else if (block === "station-performance" || block === "plan-vs-completed") {
+          addSheet(block === "station-performance" ? "Munkaállomás teljesítmény" : "Terv vs elkészült",
+            ["Munkaállomás", "Tervezett", "Elkészült", "Hátralévő", "Teljesítés %"], stationRows.map((row) => [
+              row.stationName, row.plannedItems, row.completedItems,
+              Math.max(0, row.plannedItems - row.completedItems), row.efficiencyPct ?? ""
+            ]));
+        } else if (block === "closed-orders") {
+          addSheet("Lezárt rendelések", ["Rendelés", "Típus", "Munkaállomás", "Dolgozó", "Befejezés", "Eltelt"],
+            (await getAnalyses()).flatMap((item) => item.completedOrders.map((row) => [
+              row.orderNumber, row.productType, row.stationName, item.workerName,
+              row.completedAt ? formatDateTime(row.completedAt) : "", row.elapsedLabel,
+            ])));
+        }
+      }
+    }
+    const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    return new Blob([output], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   }
 
   async function sendReportDeliveryProfile(profile: ReportDeliveryProfile, testOnly = false): Promise<void> {
@@ -13491,17 +13868,42 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
     let errors: string[] = [];
     try {
-      const pdfBlob = await createReportDeliveryProfilePdfBlob(profile);
+      const requestedFormat = profile.reportFormat || "pdf";
+      // A két csatolmány ugyanazt az előre betöltött adathalmazt használja:
+      // Excel + PDF esetén nem duplázzuk meg a riport adatbázis-lekérdezéseit.
+      const range = getReportDeliveryProfileRange(profile);
+      const prepared: ReportDeliveryPreparedRows = {};
+      if (profile.reportType === "keszre-jelentes") {
+        prepared.keszre = await fetchReportDeliveryKeszreRows(profile, range);
+      } else if (profile.reportType === "beepites") {
+        prepared.beepites = await fetchReportDeliveryBeepitesRows(profile, range);
+      }
+      const sharedDashboard = requestedFormat === "both"
+        && !["keszre-jelentes", "beepites", "reklamacio", "atvetel"].includes(profile.reportType)
+        ? await fetchDashboardData(range, parseReportDeliveryOrderFilters(profile.orderFilter))
+        : undefined;
+      const [pdfBlob, excelBlob] = await Promise.all([
+        requestedFormat === "excel" ? Promise.resolve(null) : createReportDeliveryProfilePdfBlob(profile, prepared, sharedDashboard),
+        requestedFormat === "pdf" ? Promise.resolve(null) : createReportDeliveryProfileExcelBlob(profile, prepared, sharedDashboard),
+      ]);
+      const label = REPORT_DELIVERY_REPORT_TYPE_LABELS[profile.reportType];
+      const filenameBase = (profile.reportType === "keszre-jelentes" || profile.reportType === "beepites")
+        ? label // Az új riportok csatolmányának fájlneve is pontosan a választott riport címe.
+        : profile.name.replace(/[^a-zA-Z0-9_\-]+/g, "_") || "riport";
 
       for (const recipient of profile.recipients) {
         const formData = new FormData();
         formData.append("to", recipient);
-        formData.append("subject", `${testOnly ? "[TESZT] " : ""}${profile.name}`);
         const reportTypeLabel = REPORT_DELIVERY_REPORT_TYPE_LABELS[profile.reportType];
-        formData.append("html", `<p><strong>${profile.name}</strong></p><p>A csatolt PDF automatikusan generált ${escapeHtml(reportTypeLabel.toLowerCase())}.</p>`);
-        formData.append("text", `${profile.name}\nAutomatikusan generált ${reportTypeLabel.toLowerCase()}.`);
-        formData.append("requestedFormat", "pdf");
-        formData.append("pdf", pdfBlob, `${profile.name.replace(/[^a-zA-Z0-9_-]+/g, "_") || "riport"}.pdf`);
+        const reportTitle = profile.reportType === "keszre-jelentes" || profile.reportType === "beepites"
+          ? reportTypeLabel : profile.name;
+        const formatLabel = requestedFormat === "both" ? "Excel és PDF" : requestedFormat === "excel" ? "Excel" : "PDF";
+        formData.append("subject", `${testOnly ? "[TESZT] " : ""}${reportTitle}`);
+        formData.append("html", `<p><strong>${escapeHtml(reportTitle)}</strong></p><p>Csatolt ${formatLabel} riport: ${escapeHtml(reportTypeLabel)}.</p>`);
+        formData.append("text", `${reportTitle}\nCsatolt ${formatLabel} riport.`);
+        formData.append("requestedFormat", requestedFormat);
+        if (pdfBlob) formData.append("pdf", pdfBlob, `${filenameBase}.pdf`);
+        if (excelBlob) formData.append("excel", excelBlob, `${filenameBase}.xlsx`);
 
         try {
           const response = await fetch("/api/send-report", { method: "POST", body: formData });
@@ -14794,6 +15196,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Profil neve<input value={draft.name} onChange={(e) => updateReportDeliveryDraft(profile.id, { name: e.target.value })} style={control} /></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Címzettek (email, vessző/pontosvessző)<textarea value={reportDeliveryRecipientTextById[profile.id] ?? draft.recipients.join("; ")} onChange={(e) => { const value = e.target.value; setReportDeliveryRecipientTextById((current) => ({ ...current, [profile.id]: value })); updateReportDeliveryDraft(profile.id, { recipients: parseReportDeliveryRecipients(value) }); }} style={textareaControl} /></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Riport típusa<select value={draft.reportType} onChange={(e) => { const reportType = e.target.value as ReportDeliveryReportType; updateReportDeliveryDraft(profile.id, reportType === "reklamacio" ? { reportType, frequency: "daily", reportFilterMode: "today" } : { reportType }); }} style={control}>{Object.entries(REPORT_DELIVERY_REPORT_TYPE_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}</select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Küldés formátuma<select value={draft.reportFormat || "pdf"} onChange={(e) => updateReportDeliveryDraft(profile.id, { reportFormat: e.target.value as ReportFormat })} style={control}><option value="pdf">PDF</option><option value="excel">Excel (.xlsx)</option><option value="both">Excel + PDF</option></select></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Munkaállomás<select value={draft.stationFilter} onChange={(e) => updateReportDeliveryDraft(profile.id, { stationFilter: e.target.value })} style={control}><option value="all">Összes munkaállomás</option>{stationOptions.map((station) => <option key={station} value={station}>{station}</option>)}</select></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Dolgozó<select value={draft.workerFilter} onChange={(e) => updateReportDeliveryDraft(profile.id, { workerFilter: e.target.value })} style={control}><option value="all">Összes dolgozó</option>{workerOptions.map((workerName) => <option key={workerName} value={workerName}>{workerName}</option>)}</select></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Rendelésszám / gyorskód<input value={draft.orderFilter} onChange={(e) => updateReportDeliveryDraft(profile.id, { orderFilter: e.target.value })} placeholder="pl. 07178 vagy R260716178" style={control} /></label>
@@ -15029,6 +15432,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             <button type="button" onClick={() => void saveReportDeliveryProfile(draft, false).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={primaryAction}>Mentés</button>
             <button type="button" onClick={() => void saveReportDeliveryProfile(draft, true).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={secondaryAction}>Másolat készítése</button>
             <button type="button" onClick={() => void (async () => { try { const blob = await createReportDeliveryProfilePdfBlob(draft); downloadBlob(`${draft.name.replace(/[^a-zA-Z0-9_-]+/g, "_") || "teszt_riport"}.pdf`, blob, "application/pdf"); } catch (error) { setMessage({ type: "error", text: normalizeError(error) }); } })()} disabled={busy} style={secondaryAction}>Teszt PDF</button>
+            {(draft.reportFormat === "excel" || draft.reportFormat === "both") && <button type="button" onClick={() => void (async () => { try { const blob = await createReportDeliveryProfileExcelBlob(draft); downloadBlob(`${draft.name.replace(/[^a-zA-Z0-9_-]+/g, "_") || "teszt_riport"}.xlsx`, blob, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); } catch (error) { setMessage({ type: "error", text: normalizeError(error) }); } })()} disabled={busy} style={secondaryAction}>Teszt Excel</button>}
             <button type="button" onClick={() => void sendReportDeliveryProfile(draft, true).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={secondaryAction}>Teszt küldés</button>
             <button type="button" onClick={() => void toggleReportDeliveryProfile(draft).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={{ ...secondaryAction, borderColor: profile.active ? "#f59e0b" : style.activeColor }}>{profile.active ? "Kikapcsolás" : "Aktiválás"}</button>
             <button type="button" onClick={() => void deleteReportDeliveryProfile(profile).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={{ ...secondaryAction, borderColor: style.errorColor, color: style.errorColor }}>Törlés</button>
