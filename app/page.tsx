@@ -2435,13 +2435,13 @@ const NIVO_MACHINE_ACTIVITY_HEARTBEAT_MS = 10_000;
 
 // Automatikus gép-önvédelem:
 // - normál állapot jelenleg kb. 25–45 tényleges Supabase kérés/perc;
-// - 90 kérés/perc felett 15 másodpercig fennálló terhelés már hibás működésnek számít;
-// - 160 kérés/perc azonnali vész-küszöb;
+// - 90 kérés/perc feletti terhelésnek 5 percig folyamatosan fenn kell állnia a karanténhoz;
+// - 160 kérés/perc továbbra is azonnali vész-küszöb;
 // - a hibás gép 30 percre saját magát karanténba teszi, a többi gép változatlanul működik.
 const NIVO_AUTO_PROTECTION_STORAGE_KEY = "nivoscan-auto-protection-v1";
 const NIVO_AUTO_PROTECTION_SUSTAINED_REQUESTS_1M = 90;
 const NIVO_AUTO_PROTECTION_HARD_REQUESTS_1M = 160;
-const NIVO_AUTO_PROTECTION_SUSTAIN_MS = 15_000;
+const NIVO_AUTO_PROTECTION_SUSTAIN_MS = 5 * 60 * 1000;
 const NIVO_AUTO_PROTECTION_DURATION_MS = 30 * 60 * 1000;
 
 // Egy munkaállomáson egyszerre csak egy böngészőfül küldhet hálózati kéréseket.
@@ -2452,7 +2452,7 @@ const NIVO_SINGLE_TAB_HEARTBEAT_MS = 1_000;
 const NIVO_SINGLE_TAB_STALE_MS = 6_000;
 const NIVO_SINGLE_TAB_RELOAD_DELAY_MS = 300;
 
-const NIVO_CLIENT_VERSION = "2026-09-22-quarantine-admin-unlock-v4";
+const NIVO_CLIENT_VERSION = "2026-09-23-event2-foliazo6-quarantine-tune-v5";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
 const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
@@ -6152,11 +6152,12 @@ function nivoMaybeActivateAutoProtection(): NivoAutoProtectionState | null {
     if (now - nivoAutoProtectionHighLoadSince >= NIVO_AUTO_PROTECTION_SUSTAIN_MS) {
       return nivoActivateAutoProtection(
         requestCount1m,
-        `AUTOMATIKUS VÉDELEM: tartósan magas (${requestCount1m}/perc) Supabase terhelés miatt a gép 30 percre karanténba került.`
+        `AUTOMATIKUS VÉDELEM: legalább 5 percig tartósan magas (${requestCount1m}/perc) Supabase terhelés miatt a gép 30 percre karanténba került.`
       );
     }
-  } else if (requestCount1m < Math.floor(NIVO_AUTO_PROTECTION_SUSTAINED_REQUESTS_1M * 0.75)) {
-    // Hiszterézis: rövid, normális indulási csúcs ne tartsa életben a riasztást.
+  } else {
+    // Ha az 1 perces terhelés 90 alá visszaesik, az 5 perces tartós időmérés újraindul.
+    // Így egy rövid indulási vagy munkaállomás-váltási csúcs nem okozhat téves karantént.
     nivoAutoProtectionHighLoadSince = 0;
   }
 
@@ -39662,8 +39663,8 @@ body {
     }
     if (koteg === 2) {
       setWorkflowMode("batch");
-      setOrderTypeInput("TYPE-KOTEG");
-      orderTypeLatestValueRef.current = "TYPE-KOTEG";
+      setOrderTypeInput("");
+      orderTypeLatestValueRef.current = "";
     }
     if (koteg === 6 || koteg === 7 || koteg === 8) {
       setWorkflowMode("single");
@@ -39677,7 +39678,9 @@ body {
           ? `Sikeres azonosítás: ${worker["Teljes nev"]}. 8-as Raktár gyorsjelentés aktív. Olvasd be a rendelésszámot; a START és END ugyanazzal az idővel automatikusan mentődik.`
           : koteg === 7
             ? `Sikeres azonosítás: ${worker["Teljes nev"]}. 7-es háromrészes mód aktív: Külső lap + Belső lap + Tokléc. Olvasd be a rendelésszámot.`
-            : `Sikeres azonosítás: ${worker["Teljes nev"]}. 6-os egyedi mód aktív: Ajtólapok + Tokléc külön részjelentéssel. Olvasd be a rendelésszámot.`,
+            : isEventSixFoliazoThreePartWorker(worker)
+              ? `Sikeres azonosítás: ${worker["Teljes nev"]}. 6-os Fóliázó egyedi mód aktív: Külső lap + Belső lap + Tokléc külön részjelentéssel. Olvasd be a rendelésszámot.`
+              : `Sikeres azonosítás: ${worker["Teljes nev"]}. 6-os egyedi mód aktív: Ajtólapok + Tokléc külön részjelentéssel. Olvasd be a rendelésszámot.`,
       });
       if (koteg === 6) {
         window.setTimeout(() => {
@@ -40964,7 +40967,9 @@ body {
         text: workerEventKoteg === 5
           ? "5-ös egyedi mód aktív. Olvasd be a rendelésszámot; az END-nél a Tok és Nyíló külön részjelenthető."
           : workerEventKoteg === 6
-            ? "6-os egyedi mód aktív. Olvasd be a rendelésszámot; az END-nél az Ajtólapok és Tokléc külön részjelenthető."
+            ? isEventSixFoliazoThreePartWorker(activeWorker)
+              ? "6-os Fóliázó egyedi mód aktív. Olvasd be a rendelésszámot; az END-nél a Külső lap, Belső lap és Tokléc külön részjelenthető."
+              : "6-os egyedi mód aktív. Olvasd be a rendelésszámot; az END-nél az Ajtólapok és Tokléc külön részjelenthető."
             : "Egyedi rendelés mód aktív. Olvasd be a rendelésszámot; START nélkül azonnal mentésre kerül.",
       });
       window.setTimeout(() => focusAndSelectInput(orderInputRef), 0);
@@ -41370,12 +41375,25 @@ body {
     return false;
   }
 
+  function isEventSixFoliazoThreePartWorker(worker: Worker | null = activeWorker): boolean {
+    return !!worker
+      && Number(getWorkerEsemenyKotegValue(worker)) === 6
+      && getStationPlanIdentityKey(getCurrentMachineIdForInsert()) === "foliazo";
+  }
+
   function isPanelTwoPartWorker(worker: Worker | null = activeWorker): boolean {
-    return !!worker && Number(getWorkerEsemenyKotegValue(worker)) === 6;
+    // A 6-os eseményköteg Fóliázón már háromrészes:
+    // Külső lap + Belső lap + Tokléc. Más 6-os állomás régi működése változatlan.
+    return !!worker
+      && Number(getWorkerEsemenyKotegValue(worker)) === 6
+      && !isEventSixFoliazoThreePartWorker(worker);
   }
 
   function isThreePartWorker(worker: Worker | null = activeWorker): boolean {
-    return !!worker && Number(getWorkerEsemenyKotegValue(worker)) === 7;
+    return !!worker && (
+      Number(getWorkerEsemenyKotegValue(worker)) === 7
+      || isEventSixFoliazoThreePartWorker(worker)
+    );
   }
 
   function isInstantWarehouseWorker(worker: Worker | null = activeWorker): boolean {
@@ -50559,7 +50577,7 @@ body {
                     )}
                   </div>
 
-                  {!isGroupTwoCodeFreeStart() && <div style={{ marginBottom: 18, background: "#0f172a", border: "1px solid #334155", borderRadius: 14, padding: 16 }}>
+                  <div style={{ marginBottom: 18, background: "#0f172a", border: "1px solid #334155", borderRadius: 14, padding: 16 }}>
                     <div style={{ fontSize: 14, color: "#cbd5e1", marginBottom: 12 }}>
                       Módválasztó vonalkód beolvasása
                     </div>
@@ -50568,7 +50586,7 @@ body {
                         ref={orderTypeInputRef}
                         value={orderTypeInput}
                         onChange={(e) => handleOrderTypeInputChange(e.target.value)}
-                        placeholder="Csippantsd le a TYPE-KOTEG vagy TYPE-RENDELES kódot"
+                        placeholder="Csippantsd le a TYPE-KOTEG, TYPE-RENDELES vagy TYPE-LIST kódot"
                         style={{ ...fieldStyle, flex: "1 1 320px", minWidth: 260, background: "#020617", color: "#f8fafc", border: "1px solid #334155" }}
                         autoComplete="off"
                         onBlur={() => {
@@ -50601,7 +50619,7 @@ body {
                     {!!orderTypeScanError && (
                       <div style={{ marginTop: 10, color: "#fca5a5", fontSize: 13 }}>{orderTypeScanError}</div>
                     )}
-                  </div>}
+                  </div>
 
                   <div
                     style={{
