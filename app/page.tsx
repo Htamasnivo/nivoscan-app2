@@ -700,6 +700,31 @@ type NivoMachineActivityRow = {
   updated_at: string | null;
 };
 
+type NivoQuarantineServerEvent = {
+  id: number;
+  machine_id: string;
+  client_id: string;
+  triggered_at: string;
+  blocked_until: string;
+  reason: string;
+  request_count_1m: number;
+  email_sent_at?: string | null;
+  email_skipped_at?: string | null;
+  email_error?: string | null;
+};
+
+type NivoQuarantineReleasedEvent = {
+  event_key: string;
+  machine_id: string;
+  client_id: string;
+  triggered_at: string;
+};
+
+type NivoQuarantineAlertSettings = {
+  enabled: boolean;
+  recipients: string[];
+};
+
 type NivoEmergencyControlState = {
   configured: boolean;
   globalStop: boolean;
@@ -2436,6 +2461,9 @@ const MACHINE_ID_STORAGE_KEY = "nivoscan-machine-id-v1";
 const NIVO_CLIENT_ID_STORAGE_KEY = "nivoscan-client-id-v1";
 const NIVO_MACHINE_ACTIVITY_TABLE = "nivo_machine_activity";
 const NIVO_EMERGENCY_CONTROL_URL = "/api/nivo-emergency-control";
+const NIVO_QUARANTINE_API_URL = "/api/nivo-quarantine";
+const NIVO_QUARANTINE_REPORT_ACK_PREFIX = "nivoscan-quarantine-event-ack-v1:";
+const NIVO_QUARANTINE_REPORT_RETRY_MS = 20_000;
 const NIVO_EMERGENCY_CONTROL_POLL_MS = 5_000;
 const NIVO_MACHINE_ACTIVITY_HEARTBEAT_MS = 10_000;
 
@@ -2457,7 +2485,7 @@ const NIVO_SINGLE_TAB_HEARTBEAT_MS = 1_000;
 const NIVO_SINGLE_TAB_STALE_MS = 6_000;
 const NIVO_SINGLE_TAB_RELOAD_DELAY_MS = 300;
 
-const NIVO_CLIENT_VERSION = "2026-09-23-report-excel-pdf-keszre-beepites-v9";
+const NIVO_CLIENT_VERSION = "2026-09-23-admin-quarantine-alerts-v10";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
 const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
@@ -6082,6 +6110,8 @@ let nivoActivityLastErrorAt = "";
 let nivoActivityLastError = "";
 let nivoActivitySequence = 0;
 let nivoAutoProtectionHighLoadSince = 0;
+let nivoQuarantineReportInFlight = false;
+const nivoQuarantineReportLastAttempt = new Map<string, number>();
 
 const nivoSingleTabRuntimeId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
   ? crypto.randomUUID()
@@ -6170,6 +6200,51 @@ function nivoGetAdminAutoQuarantineFromRow(
     reason,
     requestCount1m,
   };
+}
+
+function nivoAutoProtectionEventKey(state: NivoAutoProtectionState): string {
+  return `${nivoGetClientId()}:${new Date(state.triggeredAt).toISOString()}`;
+}
+
+async function nivoReportAutoQuarantine(state: NivoAutoProtectionState): Promise<void> {
+  if (typeof window === "undefined" || nivoQuarantineReportInFlight) return;
+  const key = nivoAutoProtectionEventKey(state);
+  const ackKey = `${NIVO_QUARANTINE_REPORT_ACK_PREFIX}${encodeURIComponent(key)}`;
+  try {
+    if (window.localStorage.getItem(ackKey) === "1") return;
+  } catch {
+    // A következő próbálkozás a memóriában mért idő alapján történik.
+  }
+  if (Date.now() - (nivoQuarantineReportLastAttempt.get(key) || 0) < NIVO_QUARANTINE_REPORT_RETRY_MS) return;
+  nivoQuarantineReportLastAttempt.set(key, Date.now());
+  nivoQuarantineReportInFlight = true;
+  try {
+    // A külön Vercel API küld értesítést; nem függ az Admin oldal megnyitásától.
+    const response = await fetch(NIVO_QUARANTINE_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(8_000),
+      body: JSON.stringify({
+        action: "announce",
+        machineId: state.machineId,
+        clientId: nivoGetClientId(),
+        triggeredAt: new Date(state.triggeredAt).toISOString(),
+        blockedUntil: new Date(state.blockedUntil).toISOString(),
+        requestCount1m: state.requestCount1m,
+      }),
+    });
+    const body = await response.json().catch(() => ({})) as { ok?: boolean; error?: string };
+    if (response.ok && body.ok) {
+      try { window.localStorage.setItem(ackKey, "1"); } catch { /* A szerver ugyanazt az eseményt deduplikálja. */ }
+    } else {
+      console.warn("Karanténértesítés újrapróbálkozás szükséges:", body.error || response.status);
+    }
+  } catch (error) {
+    console.warn("Karanténértesítés átmeneti hálózati hiba:", error);
+  } finally {
+    nivoQuarantineReportInFlight = false;
+  }
 }
 
 function nivoActivateAutoProtection(requestCount1m: number, reason: string): NivoAutoProtectionState {
@@ -10127,6 +10202,14 @@ export default function Page() {
 
   // Admin gépfelügyelet + Supabase-tól független Vercel vészleállítás.
   const [nivoAdminActivityRows, setNivoAdminActivityRows] = useState<NivoMachineActivityRow[]>([]);
+  const [nivoAdminQuarantineEvents, setNivoAdminQuarantineEvents] = useState<NivoQuarantineServerEvent[]>([]);
+  const [nivoAdminQuarantineReleased, setNivoAdminQuarantineReleased] = useState<NivoQuarantineReleasedEvent[]>([]);
+  const [nivoAdminQuarantineError, setNivoAdminQuarantineError] = useState("");
+  const [nivoQuarantineAlertSettings, setNivoQuarantineAlertSettings] = useState<NivoQuarantineAlertSettings>({ enabled: false, recipients: [] });
+  const [nivoQuarantineAlertSettingsLoaded, setNivoQuarantineAlertSettingsLoaded] = useState(false);
+  const [nivoQuarantineRecipientDraft, setNivoQuarantineRecipientDraft] = useState("");
+  const [nivoQuarantineAdminBusy, setNivoQuarantineAdminBusy] = useState(false);
+  const [nivoQuarantineActionMessage, setNivoQuarantineActionMessage] = useState("");
   const [nivoAdminActivityLoading, setNivoAdminActivityLoading] = useState(false);
   const [nivoAdminActivityError, setNivoAdminActivityError] = useState("");
   const [nivoAdminControlPin, setNivoAdminControlPin] = useState("");
@@ -14154,6 +14237,21 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       nextError = nextError ? `${nextError} | ${detail}` : detail;
     }
 
+    try {
+      const response = await fetch(`${NIVO_QUARANTINE_API_URL}?scope=active`, { cache: "no-store" });
+      const body = await response.json().catch(() => ({})) as {
+        active?: NivoQuarantineServerEvent[];
+        recentReleased?: NivoQuarantineReleasedEvent[];
+        error?: string;
+      };
+      if (!response.ok) throw new Error(body.error || `Karanténadat HTTP ${response.status}`);
+      setNivoAdminQuarantineEvents(body.active || []);
+      setNivoAdminQuarantineReleased(body.recentReleased || []);
+      setNivoAdminQuarantineError("");
+    } catch (error) {
+      setNivoAdminQuarantineError(normalizeError(error));
+      // Hálózati hiba esetén a legutolsó ismert állapotot tartjuk meg.
+    }
     setNivoAdminActivityError(nextError);
     if (!options?.quiet) setNivoAdminActivityLoading(false);
   }
@@ -14246,7 +14344,12 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     if (nivoEmergencyControl.globalStop || nivoIsMachineDisabledByControl(nivoEmergencyControl, machineName)) {
       return { label: "Letiltva", color: "#fecaca", background: "#7f1d1d" };
     }
-    if (nivoGetAdminAutoQuarantineFromRow(row)) {
+    const fromRow = nivoGetAdminAutoQuarantineFromRow(row);
+    const wasRemotelyReleased = row?.last_error_at && nivoAdminQuarantineReleased.some((item) =>
+      nivoNormalizeEmergencyMachineKey(item.machine_id) === nivoNormalizeEmergencyMachineKey(machineName)
+      && Math.abs(new Date(item.triggered_at).getTime() - new Date(row.last_error_at || "").getTime()) < 1_000
+    );
+    if (fromRow && !wasRemotelyReleased) {
       return { label: "Karantén", color: "#fef3c7", background: "#92400e" };
     }
     if (!row?.last_seen_at) return { label: "Inaktív", color: "#cbd5e1", background: "#334155" };
@@ -14261,7 +14364,96 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     return { label: "Offline", color: "#cbd5e1", background: "#334155" };
   }
 
-  function releaseLocalNivoAutoQuarantine(): void {
+  async function loadNivoQuarantineAlertSettings(): Promise<void> {
+    if (!nivoAdminControlPin.trim()) {
+      setNivoQuarantineActionMessage("Az értesítési beállítások betöltéséhez add meg fent az Admin PIN-t.");
+      return;
+    }
+    setNivoQuarantineAdminBusy(true);
+    setNivoQuarantineActionMessage("");
+    try {
+      const response = await fetch(NIVO_QUARANTINE_API_URL, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "read-settings", pin: nivoAdminControlPin }),
+      });
+      const body = await response.json().catch(() => ({})) as { settings?: NivoQuarantineAlertSettings; error?: string };
+      if (!response.ok || !body.settings) throw new Error(body.error || `HTTP ${response.status}`);
+      setNivoQuarantineAlertSettings({ enabled: Boolean(body.settings.enabled), recipients: body.settings.recipients || [] });
+      setNivoQuarantineAlertSettingsLoaded(true);
+    } catch (error) {
+      setNivoQuarantineActionMessage(`Értesítési beállítások: ${normalizeError(error)}`);
+    } finally {
+      setNivoQuarantineAdminBusy(false);
+    }
+  }
+
+  function addNivoQuarantineRecipient(): void {
+    const next = nivoQuarantineRecipientDraft.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(next)) {
+      setNivoQuarantineActionMessage("Adj meg egy érvényes e-mail-címet.");
+      return;
+    }
+    setNivoQuarantineAlertSettings((current) => ({
+      ...current, recipients: Array.from(new Set([...current.recipients, next])),
+    }));
+    setNivoQuarantineRecipientDraft("");
+    setNivoQuarantineActionMessage("");
+  }
+
+  async function saveNivoQuarantineAlertSettings(): Promise<void> {
+    if (!nivoAdminControlPin.trim()) {
+      setNivoQuarantineActionMessage("A mentéshez add meg fent az Admin PIN-t.");
+      return;
+    }
+    setNivoQuarantineAdminBusy(true);
+    try {
+      const response = await fetch(NIVO_QUARANTINE_API_URL, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save-settings", pin: nivoAdminControlPin,
+          enabled: nivoQuarantineAlertSettings.enabled,
+          recipients: nivoQuarantineAlertSettings.recipients,
+        }),
+      });
+      const body = await response.json().catch(() => ({})) as { settings?: NivoQuarantineAlertSettings; error?: string };
+      if (!response.ok || !body.settings) throw new Error(body.error || `HTTP ${response.status}`);
+      setNivoQuarantineAlertSettings({ enabled: Boolean(body.settings.enabled), recipients: body.settings.recipients || [] });
+      setNivoQuarantineActionMessage("Karanténértesítési beállítások elmentve.");
+    } catch (error) {
+      setNivoQuarantineActionMessage(`Értesítések mentése sikertelen: ${normalizeError(error)}`);
+    } finally {
+      setNivoQuarantineAdminBusy(false);
+    }
+  }
+
+  async function releaseNivoQuarantineRemotely(event: NivoQuarantineServerEvent): Promise<void> {
+    if (!nivoAdminControlPin.trim()) {
+      setNivoQuarantineActionMessage("A távoli karanténfeloldáshoz add meg fent az Admin PIN-t.");
+      return;
+    }
+    if (typeof window !== "undefined" && !window.confirm(`Feloldod a(z) ${event.machine_id} karanténját most?`)) return;
+    setNivoQuarantineAdminBusy(true);
+    try {
+      const response = await fetch(NIVO_QUARANTINE_API_URL, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "release", pin: nivoAdminControlPin, eventId: event.id,
+          updatedBy: String(activeWorker?.["Teljes nev"] || "Admin"),
+        }),
+      });
+      const body = await response.json().catch(() => ({})) as { ok?: boolean; released?: boolean; error?: string };
+      if (!response.ok || !body.released) throw new Error(body.error || "A karantén már feloldódott vagy nem található.");
+      setNivoAdminQuarantineEvents((current) => current.filter((item) => item.id !== event.id));
+      setNivoQuarantineActionMessage(`${event.machine_id}: karantén feloldva. A gép néhány másodpercen belül újraindul.`);
+      void loadNivoAdminActivity({ quiet: true });
+    } catch (error) {
+      setNivoQuarantineActionMessage(`Távoli karanténfeloldás sikertelen: ${normalizeError(error)}`);
+    } finally {
+      setNivoQuarantineAdminBusy(false);
+    }
+  }
+
+  async function releaseLocalNivoAutoQuarantine(): Promise<void> {
     const currentMachine = readMachineIdFromStorage();
     const autoProtection = nivoGetActiveAutoProtection(currentMachine);
     if (!autoProtection) {
@@ -14273,6 +14465,22 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       `Feloldod a(z) ${currentMachine} gép 30 perces automatikus karanténját?`
     )) return;
 
+    // A helyi feloldást a központi eseménynaplóval is egyeztetjük, hogy az
+    // irodai panel ne mutasson már feloldott karantént.
+    if (nivoAdminControlPin.trim()) {
+      try {
+        await fetch(NIVO_QUARANTINE_API_URL, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(2_500),
+          body: JSON.stringify({
+            action: "release-local", pin: nivoAdminControlPin,
+            eventKey: nivoAutoProtectionEventKey(autoProtection), updatedBy: "Vészhelyzeti Admin",
+          }),
+        });
+      } catch {
+        // A helyi vészfeloldás hálózati hiba esetén is használható marad.
+      }
+    }
     const cleared = nivoClearActiveAutoProtection(currentMachine);
     if (!cleared) {
       setMessage({ type: "error", text: "A helyi automatikus karantén feloldása nem sikerült." });
@@ -14319,11 +14527,30 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
     const disabledCount = machineNames.filter((name) => nivoEmergencyControl.globalStop || nivoIsMachineDisabledByControl(nivoEmergencyControl, name)).length;
     const quarantineCount = machineNames.filter((name) => {
       const row = activityByMachine.get(nivoNormalizeEmergencyMachineKey(name)) || null;
-      return Boolean(nivoGetAdminAutoQuarantineFromRow(row));
+      return Boolean(nivoGetAdminAutoQuarantineFromRow(row))
+        && !nivoAdminQuarantineReleased.some((item) =>
+          nivoNormalizeEmergencyMachineKey(item.machine_id) === nivoNormalizeEmergencyMachineKey(name)
+          && row?.last_error_at && Math.abs(new Date(item.triggered_at).getTime() - new Date(row.last_error_at).getTime()) < 1_000
+        );
     }).length;
     const localAutoProtection = emergencyMode
       ? nivoGetActiveAutoProtection(readMachineIdFromStorage())
       : null;
+    const activeQuarantineEvents = nivoAdminQuarantineEvents.filter((event) =>
+      new Date(event.blocked_until).getTime() > Date.now()
+    );
+    const reportedQuarantineMachines = new Set(activeQuarantineEvents.map((event) => nivoNormalizeEmergencyMachineKey(event.machine_id)));
+    const recentlyReleasedKeys = new Set(nivoAdminQuarantineReleased.map((event) =>
+      `${nivoNormalizeEmergencyMachineKey(event.machine_id)}:${new Date(event.triggered_at).getTime()}`
+    ));
+    const pendingQuarantineRows = nivoAdminActivityRows.flatMap((row) => {
+      const quarantine = nivoGetAdminAutoQuarantineFromRow(row);
+      const machineKey = nivoNormalizeEmergencyMachineKey(row.machine_id);
+      const triggeredAt = row.last_error_at ? new Date(row.last_error_at).getTime() : 0;
+      if (!quarantine || reportedQuarantineMachines.has(machineKey)
+        || recentlyReleasedKeys.has(`${machineKey}:${triggeredAt}`)) return [];
+      return [{ machineId: row.machine_id, ...quarantine }];
+    });
     const activeRequestCount = nivoAdminActivityRows.reduce((sum, row) => sum + (Array.isArray(row.active_requests) ? row.active_requests.length : 0), 0);
     const totalRequestCount1m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_1m || 0), 0);
     const totalRequestCount5m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_5m || 0), 0);
@@ -14385,6 +14612,83 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           {nivoEmergencyControl.globalStop && <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: "#7f1d1d", color: "#fee2e2", fontWeight: 900 }}>⚠ GLOBÁLIS VÉSZLEÁLLÍTÁS AKTÍV – a kliensek csak a Vercel vészcsatornát figyelik.</div>}
         </div>
 
+        <div data-office-window="admin:quarantine-alerts" style={{ ...panel, padding: 16, marginBottom: 14, borderWidth: 2, borderColor: activeQuarantineEvents.length || pendingQuarantineRows.length ? "#f59e0b" : "#16a34a" }}>
+          <h3 style={{ fontSize: 18, margin: "0 0 10px", color: activeQuarantineEvents.length || pendingQuarantineRows.length ? "#fbbf24" : "#86efac" }}>
+            Automatikus karanténban lévő gépek ({activeQuarantineEvents.length + pendingQuarantineRows.length})
+          </h3>
+          {nivoQuarantineActionMessage && (
+            <div role="status" style={{ marginBottom: 10, padding: 10, border: "1px solid #eab308", borderRadius: 8, color: "#fde68a" }}>
+              {nivoQuarantineActionMessage}
+            </div>
+          )}
+          {activeQuarantineEvents.length === 0 && pendingQuarantineRows.length === 0 && (
+            <div style={{ color: "#86efac", fontWeight: 800 }}>✓ Minden munkaállomás rendben – nincs ismert aktív karantén.</div>
+          )}
+          {nivoAdminQuarantineError && <div style={{ color: "#fcd34d", marginBottom: 8 }}>A központi karanténnapló nem elérhető: {nivoAdminQuarantineError}. A gépektől származó utolsó állapotot mutatjuk.</div>}
+          <div style={{ display: "grid", gap: 9 }}>
+            {activeQuarantineEvents.map((event) => (
+              <div key={event.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: 12, border: "1px solid #b45309", borderRadius: 10, background: "#422006", flexWrap: "wrap" }}>
+                <div>
+                  <strong style={{ color: "#fde68a", fontSize: 17 }}>{event.machine_id}</strong>
+                  <div style={{ marginTop: 4, fontSize: 13, color: "#fed7aa" }}>Kiváltó terhelés: {event.request_count_1m} kérés/perc · Feloldás: {formatDateTime(event.blocked_until)} · Hátralévő idő: {Math.max(0, Math.ceil((new Date(event.blocked_until).getTime() - Date.now()) / 60_000))} perc</div>
+                  <div style={{ marginTop: 3, color: "#fdba74", fontSize: 12 }}>{event.reason}</div>
+                  <div style={{ color: "#cbd5e1", fontSize: 12 }}>E-mail: {event.email_sent_at ? "elküldve" : event.email_skipped_at ? "kikapcsolva" : event.email_error ? `hiba: ${event.email_error}` : "feldolgozás alatt"}</div>
+                </div>
+                <button type="button" style={{ ...buttonPrimary, background: "#166534", borderColor: "#22c55e" }}
+                  disabled={nivoQuarantineAdminBusy} onClick={() => void releaseNivoQuarantineRemotely(event)}>
+                  Karantén feloldása
+                </button>
+              </div>
+            ))}
+            {pendingQuarantineRows.map((item) => (
+              <div key={`pending-${item.machineId}`} style={{ padding: 12, border: "1px solid #92400e", borderRadius: 10, background: "#422006", color: "#fde68a" }}>
+                <strong>{item.machineId}</strong> · {item.requestCount1m} kérés/perc · Feloldás: {formatDateTime(new Date(item.blockedUntil).toISOString())}
+                <div style={{ fontSize: 12, marginTop: 4 }}>A központi esemény bejegyzésére várunk; a távoli feloldás akkor válik elérhetővé.</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ borderTop: `1px solid ${theme.borderColor}`, marginTop: 14, paddingTop: 12 }}>
+            <h4 style={{ margin: "0 0 8px", fontSize: 16 }}>Karanténértesítések e-mailben</h4>
+            <div style={{ fontSize: 12, color: theme.mutedText, marginBottom: 9 }}>A beállítások közösen a Supabase-ban tárolódnak. Az értesítést a Vercel küldi a karantén megjelenésekor, az Admin oldal megnyitása nélkül is.</div>
+            {!nivoQuarantineAlertSettingsLoaded ? (
+              <button type="button" style={buttonSecondary} disabled={nivoQuarantineAdminBusy} onClick={() => void loadNivoQuarantineAlertSettings()}>
+                {nivoQuarantineAdminBusy ? "Betöltés…" : "Értesítési beállítások betöltése (Admin PIN)"}
+              </button>
+            ) : (
+              <div style={{ display: "grid", gap: 9 }}>
+                <label style={{ display: "flex", gap: 9, alignItems: "center", fontWeight: 800 }}>
+                  <input type="checkbox" checked={nivoQuarantineAlertSettings.enabled}
+                    onChange={(event) => setNivoQuarantineAlertSettings((current) => ({ ...current, enabled: event.target.checked }))} />
+                  Automatikus e-mail-értesítés bekapcsolva
+                </label>
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+                  <input type="email" placeholder="uj.cimzett@ceg.hu" value={nivoQuarantineRecipientDraft}
+                    onChange={(event) => setNivoQuarantineRecipientDraft(event.target.value)}
+                    onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addNivoQuarantineRecipient(); } }}
+                    style={{ ...fieldStyle, width: 300, maxWidth: "100%", margin: 0 }} />
+                  <button type="button" style={buttonSecondary} onClick={addNivoQuarantineRecipient}>+ Címzett hozzáadása</button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {nivoQuarantineAlertSettings.recipients.map((recipient) => (
+                    <span key={recipient} style={{ display: "inline-flex", gap: 8, alignItems: "center", padding: "5px 10px", borderRadius: 8, background: theme.panelAltBackground }}>
+                      {recipient}
+                      <button type="button" style={{ ...buttonSecondary, padding: "2px 6px" }} aria-label={`Címzett törlése: ${recipient}`}
+                        onClick={() => setNivoQuarantineAlertSettings((current) => ({ ...current, recipients: current.recipients.filter((item) => item !== recipient) }))}>×</button>
+                    </span>
+                  ))}
+                  {!nivoQuarantineAlertSettings.recipients.length && <span style={{ color: theme.mutedText, fontSize: 12 }}>Nincs még megadott címzett.</span>}
+                </div>
+                <div>
+                  <button type="button" style={buttonPrimary} disabled={nivoQuarantineAdminBusy}
+                    onClick={() => void saveNivoQuarantineAlertSettings()}>
+                    {nivoQuarantineAdminBusy ? "Mentés…" : "Értesítési beállítások mentése"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
         {emergencyMode && localAutoProtection && (
           <div style={{ ...panel, padding: 16, marginBottom: 14, borderWidth: 2, borderColor: "#f59e0b", background: "#2a1605" }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
@@ -14439,7 +14743,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             const row = activityByMachine.get(nivoNormalizeEmergencyMachineKey(machineName)) || null;
             const status = getNivoAdminMachineStatus(row, machineName);
             const disabled = nivoEmergencyControl.globalStop || nivoIsMachineDisabledByControl(nivoEmergencyControl, machineName);
-            const autoQuarantine = nivoGetAdminAutoQuarantineFromRow(row);
+            const rowQuarantine = nivoGetAdminAutoQuarantineFromRow(row);
+            const autoQuarantine = row?.last_error_at && recentlyReleasedKeys.has(
+              `${nivoNormalizeEmergencyMachineKey(machineName)}:${new Date(row.last_error_at).getTime()}`
+            ) ? null : rowQuarantine;
             const recent = Array.isArray(row?.recent_requests) ? row!.recent_requests! : [];
             const active = Array.isArray(row?.active_requests) ? row!.active_requests! : [];
             return (
@@ -30620,6 +30927,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         }
       }
 
+      // Az Admin felület nyitvatartásától független szerveroldali értesítés.
+      void nivoReportAutoQuarantine(autoProtection);
       nivoSetEmergencyRuntimeBlock(true, autoProtection.reason);
       nivoRuntimeBlockedRef.current = true;
       setNivoRuntimeBlocked(true);
@@ -30636,6 +30945,42 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       window.removeEventListener("nivo-auto-protection-change", handleAutoProtectionChange);
     };
   }, [supabase, nivoEmergencyAdminOpen, nivoDuplicateTabBlocked, activeWorker?.id]);
+
+  // A karanténba került gép is tovább figyeli a Vercel karanténcsatornáját.
+  // A kliens küldi az eseményt akkor is, ha az Admin oldal zárva van;
+  // átmeneti hibánál a szerveroldali levélküldést 20 másodpercenként újrapróbálja.
+  useEffect(() => {
+    if (typeof window === "undefined" || nivoDuplicateTabBlocked) return;
+    let cancelled = false;
+    let checking = false;
+    const checkAutoQuarantine = async (): Promise<void> => {
+      if (checking || cancelled) return;
+      const state = nivoGetActiveAutoProtection(readMachineIdFromStorage());
+      if (!state) return;
+      checking = true;
+      try {
+        void nivoReportAutoQuarantine(state);
+        const params = new URLSearchParams({
+          scope: "release-status", clientId: nivoGetClientId(),
+          triggeredAt: new Date(state.triggeredAt).toISOString(),
+        });
+        const response = await fetch(`${NIVO_QUARANTINE_API_URL}?${params.toString()}`, { cache: "no-store" });
+        if (!response.ok || cancelled) return;
+        const payload = await response.json().catch(() => ({})) as { released?: boolean };
+        if (!payload.released || cancelled) return;
+        if (!nivoClearActiveAutoProtection(state.machineId)) return;
+        // Az automatikus karantén feloldása nem írhatja felül a külön Vercel vészleállítást.
+        window.setTimeout(() => window.location.reload(), 250);
+      } catch {
+        // Hálózati hiba esetén a 30 perces helyi karantén változatlan marad.
+      } finally {
+        checking = false;
+      }
+    };
+    void checkAutoQuarantine();
+    const intervalId = window.setInterval(() => void checkAutoQuarantine(), 5_000);
+    return () => { cancelled = true; window.clearInterval(intervalId); };
+  }, [machineId, nivoDuplicateTabBlocked]);
 
   useEffect(() => {
     if (!supabase || nivoDuplicateTabBlocked) return;
