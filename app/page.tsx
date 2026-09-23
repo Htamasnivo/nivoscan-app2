@@ -2451,7 +2451,7 @@ const NIVO_SINGLE_TAB_HEARTBEAT_MS = 1_000;
 const NIVO_SINGLE_TAB_STALE_MS = 6_000;
 const NIVO_SINGLE_TAB_RELOAD_DELAY_MS = 300;
 
-const NIVO_CLIENT_VERSION = "2026-09-23-office-mobile-multitab-160x5-v6";
+const NIVO_CLIENT_VERSION = "2026-09-23-foliazo-query-optimization-v7";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
 const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
@@ -2597,6 +2597,26 @@ function getProductionCardCrossStationStatusLabel(stationName: string): string {
     (station) => normalizeLooseText(station.stationName) === normalized
   );
   return `${match?.label || stationName} állapot`;
+}
+
+function getVisibleProductionCardCrossStationNames(
+  profile: ProductionMonitorProfile,
+  stationName: string
+): string[] {
+  const visible = new Set<string>();
+
+  for (const table of profile.tables || []) {
+    const hidden = new Set(table.hiddenFieldIds || []);
+    for (const fieldId of table.fieldOrder || []) {
+      if (hidden.has(fieldId) || !isProductionCardCrossStationStatusField(fieldId)) continue;
+      const otherStation = getProductionCardCrossStationNameFromFieldId(fieldId);
+      if (!otherStation) continue;
+      if (normalizeLooseText(otherStation) === normalizeLooseText(stationName)) continue;
+      visible.add(otherStation);
+    }
+  }
+
+  return Array.from(visible);
 }
 
 const PRODUCTION_CARD_FIELD_IDS = [
@@ -10386,6 +10406,8 @@ export default function Page() {
     errorMessage: "",
   });
   const [terminalProductionCardProfile, setTerminalProductionCardProfile] = useState<ProductionMonitorProfile>(() => createDefaultProductionCardProfile());
+  const terminalProductionCardProfileLatestRef = useRef<ProductionMonitorProfile>(terminalProductionCardProfile);
+  terminalProductionCardProfileLatestRef.current = terminalProductionCardProfile;
   const [loadingTerminalProductionCard, setLoadingTerminalProductionCard] = useState(false);
 
   // 10-es eseményköteg: kattintással kiválasztott, konkrét kártyasorok.
@@ -18610,7 +18632,11 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       .filter((row) => row.status !== "done");
   }
 
-  async function fetchProductionCardData(stationName: string, dateKey: string): Promise<ProductionCardData> {
+  async function fetchProductionCardData(
+    stationName: string,
+    dateKey: string,
+    crossStationStatusNamesOverride?: readonly string[]
+  ): Promise<ProductionCardData> {
     const cleanStationName = String(stationName || "").trim();
 
     // A normál termelési kártya sorforrása:
@@ -19594,10 +19620,19 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       crossStationStatusesByPlanKey.set(productionCardPlanRowKey(planRow), {});
     });
 
+    const allowedCrossStationKeys = crossStationStatusNamesOverride
+      ? new Set(crossStationStatusNamesOverride.map((station) => getStationPlanIdentityKey(station) || normalizeLooseText(station)))
+      : null;
+
     const otherProductionCardStations = PRODUCTION_CARD_CROSS_STATION_STATUS_STATIONS
       .map((station) => station.stationName)
       .filter(
-        (station) => normalizeLooseText(station) !== normalizeLooseText(cleanStationName)
+        (station) =>
+          normalizeLooseText(station) !== normalizeLooseText(cleanStationName)
+          && (
+            !allowedCrossStationKeys
+            || allowedCrossStationKeys.has(getStationPlanIdentityKey(station) || normalizeLooseText(station))
+          )
       );
 
     const crossOrderNumbers = Array.from(new Set(crossStatusSourceRows.map((row) => row.orderNumber).filter(Boolean)));
@@ -20048,10 +20083,28 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
             })
         : Promise.resolve(null);
 
-      const [settingsResult, dataResult] = await Promise.all([
-        settingsPromise,
-        fetchProductionCardData(cleanStationName, today),
-      ]);
+      let settingsResult: { profile: ProductionMonitorProfile; updatedAt: string } | null;
+      let dataResult: ProductionCardData;
+
+      if (stationKey === "foliazo") {
+        settingsResult = await settingsPromise;
+        const effectiveProfile = settingsResult?.profile || terminalProductionCardProfileLatestRef.current;
+        const visibleCrossStationNames = getVisibleProductionCardCrossStationNames(
+          effectiveProfile,
+          cleanStationName
+        );
+
+        dataResult = await fetchProductionCardData(
+          cleanStationName,
+          today,
+          visibleCrossStationNames
+        );
+      } else {
+        [settingsResult, dataResult] = await Promise.all([
+          settingsPromise,
+          fetchProductionCardData(cleanStationName, today),
+        ]);
+      }
 
       const stillCurrent =
         requestSequence === terminalProductionCardLoadSequenceRef.current
@@ -20060,7 +20113,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
 
       if (!stillCurrent) return;
 
-      if (settingsResult) setTerminalProductionCardProfile(settingsResult.profile);
+      if (settingsResult) {
+        terminalProductionCardProfileLatestRef.current = settingsResult.profile;
+        setTerminalProductionCardProfile(settingsResult.profile);
+      }
       setTerminalProductionCardData(dataResult);
     } catch (error) {
       const stillCurrent =
@@ -30689,14 +30745,40 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       scheduleRefresh(true);
     };
 
-    const channel = supabase
-      .channel(`production-card-terminal-${normalizeLooseText(machineId)}-${today}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refreshData)
-      .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, refreshData)
-      .on("postgres_changes", { event: "*", schema: "public", table: CARPENTER_SCRAP_REPLACEMENT_TABLE }, refreshData)
+    const isFoliazoTerminal = getStationPlanIdentityKey(machineId) === "foliazo";
+
+    let channel = supabase
+      .channel(`production-card-terminal-${normalizeLooseText(machineId)}-${today}`);
+
+    if (isFoliazoTerminal) {
+      channel = channel
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "work_logs", filter: `machine_id=eq.${machineId}` },
+          refreshData
+        )
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "production_batches", filter: `machine_id=eq.${machineId}` },
+          refreshData
+        )
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: CARPENTER_SCRAP_REPLACEMENT_TABLE, filter: `target_station=eq.${machineId}` },
+          refreshData
+        );
+    } else {
+      channel = channel
+        .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refreshData)
+        .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, refreshData)
+        .on("postgres_changes", { event: "*", schema: "public", table: CARPENTER_SCRAP_REPLACEMENT_TABLE }, refreshData);
+    }
+
+    channel = channel
       .on("postgres_changes", { event: "*", schema: "public", table: tableName }, refreshData)
-      .on("postgres_changes", { event: "*", schema: "public", table: PRODUCTION_CARD_SETTINGS_TABLE, filter: `station_name=eq.${machineId}` }, refreshSettings)
-      .subscribe();
+      .on("postgres_changes", { event: "*", schema: "public", table: PRODUCTION_CARD_SETTINGS_TABLE, filter: `station_name=eq.${machineId}` }, refreshSettings);
+
+    channel.subscribe();
 
     return () => {
       if (refreshTimerId !== null) window.clearTimeout(refreshTimerId);
