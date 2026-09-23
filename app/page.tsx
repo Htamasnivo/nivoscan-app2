@@ -723,6 +723,8 @@ type NivoQuarantineReleasedEvent = {
 type NivoQuarantineAlertSettings = {
   enabled: boolean;
   recipients: string[];
+  // Csak a karanténfigyelő panel színe; a megjelenítés és az e-mail kapcsoló független.
+  panelColor: string;
 };
 
 type NivoEmergencyControlState = {
@@ -2462,6 +2464,18 @@ const NIVO_CLIENT_ID_STORAGE_KEY = "nivoscan-client-id-v1";
 const NIVO_MACHINE_ACTIVITY_TABLE = "nivo_machine_activity";
 const NIVO_EMERGENCY_CONTROL_URL = "/api/nivo-emergency-control";
 const NIVO_QUARANTINE_API_URL = "/api/nivo-quarantine";
+const NIVO_QUARANTINE_PANEL_DEFAULT_COLOR = "#16a34a";
+
+function nivoQuarantineApiError(status: number, serverError?: string): Error {
+  if (status === 404) {
+    return new Error(
+      "HTTP 404: a /api/nivo-quarantine szerveroldali útvonal nem található. " +
+      "Telepítsd az app/api/nivo-quarantine/route.ts fájlt a Vercel-projektbe, " +
+      "majd indíts új Production deployt. Addig az e-mail-beállítások nem menthetők."
+    );
+  }
+  return new Error(serverError || `HTTP ${status}`);
+}
 const NIVO_QUARANTINE_REPORT_ACK_PREFIX = "nivoscan-quarantine-event-ack-v1:";
 const NIVO_QUARANTINE_REPORT_RETRY_MS = 20_000;
 const NIVO_EMERGENCY_CONTROL_POLL_MS = 5_000;
@@ -2485,7 +2499,7 @@ const NIVO_SINGLE_TAB_HEARTBEAT_MS = 1_000;
 const NIVO_SINGLE_TAB_STALE_MS = 6_000;
 const NIVO_SINGLE_TAB_RELOAD_DELAY_MS = 300;
 
-const NIVO_CLIENT_VERSION = "2026-09-23-admin-quarantine-alerts-v10";
+const NIVO_CLIENT_VERSION = "2026-09-23-quarantine-email-panel-color-v2";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
 const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
@@ -10205,7 +10219,7 @@ export default function Page() {
   const [nivoAdminQuarantineEvents, setNivoAdminQuarantineEvents] = useState<NivoQuarantineServerEvent[]>([]);
   const [nivoAdminQuarantineReleased, setNivoAdminQuarantineReleased] = useState<NivoQuarantineReleasedEvent[]>([]);
   const [nivoAdminQuarantineError, setNivoAdminQuarantineError] = useState("");
-  const [nivoQuarantineAlertSettings, setNivoQuarantineAlertSettings] = useState<NivoQuarantineAlertSettings>({ enabled: false, recipients: [] });
+  const [nivoQuarantineAlertSettings, setNivoQuarantineAlertSettings] = useState<NivoQuarantineAlertSettings>({ enabled: false, recipients: [], panelColor: NIVO_QUARANTINE_PANEL_DEFAULT_COLOR });
   const [nivoQuarantineAlertSettingsLoaded, setNivoQuarantineAlertSettingsLoaded] = useState(false);
   const [nivoQuarantineRecipientDraft, setNivoQuarantineRecipientDraft] = useState("");
   const [nivoQuarantineAdminBusy, setNivoQuarantineAdminBusy] = useState(false);
@@ -14244,7 +14258,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         recentReleased?: NivoQuarantineReleasedEvent[];
         error?: string;
       };
-      if (!response.ok) throw new Error(body.error || `Karanténadat HTTP ${response.status}`);
+      if (!response.ok) throw nivoQuarantineApiError(response.status, body.error);
       setNivoAdminQuarantineEvents(body.active || []);
       setNivoAdminQuarantineReleased(body.recentReleased || []);
       setNivoAdminQuarantineError("");
@@ -14377,8 +14391,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         body: JSON.stringify({ action: "read-settings", pin: nivoAdminControlPin }),
       });
       const body = await response.json().catch(() => ({})) as { settings?: NivoQuarantineAlertSettings; error?: string };
-      if (!response.ok || !body.settings) throw new Error(body.error || `HTTP ${response.status}`);
-      setNivoQuarantineAlertSettings({ enabled: Boolean(body.settings.enabled), recipients: body.settings.recipients || [] });
+      if (!response.ok || !body.settings) throw nivoQuarantineApiError(response.status, body.error);
+      setNivoQuarantineAlertSettings((current) => ({
+        enabled: Boolean(body.settings!.enabled),
+        // A még nem mentett, előre felvett címzetteket se vesszük el a betöltéskor.
+        recipients: nivoQuarantineAlertSettingsLoaded
+          ? (body.settings!.recipients || [])
+          : Array.from(new Set([...(body.settings!.recipients || []), ...current.recipients])),
+        panelColor: /^#[0-9a-f]{6}$/i.test(body.settings!.panelColor || "")
+          ? body.settings!.panelColor
+          : NIVO_QUARANTINE_PANEL_DEFAULT_COLOR,
+      }));
       setNivoQuarantineAlertSettingsLoaded(true);
     } catch (error) {
       setNivoQuarantineActionMessage(`Értesítési beállítások: ${normalizeError(error)}`);
@@ -14393,6 +14416,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
       setNivoQuarantineActionMessage("Adj meg egy érvényes e-mail-címet.");
       return;
     }
+    if (nivoQuarantineAlertSettings.recipients.length >= 20 && !nivoQuarantineAlertSettings.recipients.includes(next)) {
+      setNivoQuarantineActionMessage("Legfeljebb 20 címzett adható meg.");
+      return;
+    }
     setNivoQuarantineAlertSettings((current) => ({
       ...current, recipients: Array.from(new Set([...current.recipients, next])),
     }));
@@ -14401,6 +14428,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   }
 
   async function saveNivoQuarantineAlertSettings(): Promise<void> {
+    if (!nivoQuarantineAlertSettingsLoaded) {
+      setNivoQuarantineActionMessage("Előbb töltsd be a mentett beállításokat az Admin PIN-nel, hogy más címzettek beállításai ne vesszenek el.");
+      return;
+    }
     if (!nivoAdminControlPin.trim()) {
       setNivoQuarantineActionMessage("A mentéshez add meg fent az Admin PIN-t.");
       return;
@@ -14413,12 +14444,17 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           action: "save-settings", pin: nivoAdminControlPin,
           enabled: nivoQuarantineAlertSettings.enabled,
           recipients: nivoQuarantineAlertSettings.recipients,
+          panelColor: nivoQuarantineAlertSettings.panelColor,
         }),
       });
       const body = await response.json().catch(() => ({})) as { settings?: NivoQuarantineAlertSettings; error?: string };
-      if (!response.ok || !body.settings) throw new Error(body.error || `HTTP ${response.status}`);
-      setNivoQuarantineAlertSettings({ enabled: Boolean(body.settings.enabled), recipients: body.settings.recipients || [] });
-      setNivoQuarantineActionMessage("Karanténértesítési beállítások elmentve.");
+      if (!response.ok || !body.settings) throw nivoQuarantineApiError(response.status, body.error);
+      setNivoQuarantineAlertSettings({
+        enabled: Boolean(body.settings.enabled),
+        recipients: body.settings.recipients || [],
+        panelColor: body.settings.panelColor || NIVO_QUARANTINE_PANEL_DEFAULT_COLOR,
+      });
+      setNivoQuarantineActionMessage("Karanténértesítési címzettek, automatikus e-mail és panelszín elmentve.");
     } catch (error) {
       setNivoQuarantineActionMessage(`Értesítések mentése sikertelen: ${normalizeError(error)}`);
     } finally {
@@ -14551,6 +14587,10 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         || recentlyReleasedKeys.has(`${machineKey}:${triggeredAt}`)) return [];
       return [{ machineId: row.machine_id, ...quarantine }];
     });
+    const quarantinePanelColor = /^#[0-9a-f]{6}$/i.test(nivoQuarantineAlertSettings.panelColor)
+      ? nivoQuarantineAlertSettings.panelColor
+      : NIVO_QUARANTINE_PANEL_DEFAULT_COLOR;
+    const quarantinePanelBg = `linear-gradient(${quarantinePanelColor}18, ${quarantinePanelColor}18), ${theme.panelBackground}`;
     const activeRequestCount = nivoAdminActivityRows.reduce((sum, row) => sum + (Array.isArray(row.active_requests) ? row.active_requests.length : 0), 0);
     const totalRequestCount1m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_1m || 0), 0);
     const totalRequestCount5m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_5m || 0), 0);
@@ -14612,8 +14652,8 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           {nivoEmergencyControl.globalStop && <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: "#7f1d1d", color: "#fee2e2", fontWeight: 900 }}>⚠ GLOBÁLIS VÉSZLEÁLLÍTÁS AKTÍV – a kliensek csak a Vercel vészcsatornát figyelik.</div>}
         </div>
 
-        <div data-office-window="admin:quarantine-alerts" style={{ ...panel, padding: 16, marginBottom: 14, borderWidth: 2, borderColor: activeQuarantineEvents.length || pendingQuarantineRows.length ? "#f59e0b" : "#16a34a" }}>
-          <h3 style={{ fontSize: 18, margin: "0 0 10px", color: activeQuarantineEvents.length || pendingQuarantineRows.length ? "#fbbf24" : "#86efac" }}>
+        <div data-office-window="admin:quarantine-alerts" style={{ ...panel, padding: 16, marginBottom: 14, borderWidth: 2, borderColor: quarantinePanelColor, background: quarantinePanelBg }}>
+          <h3 style={{ fontSize: 18, margin: "0 0 10px", color: quarantinePanelColor }}>
             Automatikus karanténban lévő gépek ({activeQuarantineEvents.length + pendingQuarantineRows.length})
           </h3>
           {nivoQuarantineActionMessage && (
@@ -14621,7 +14661,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
               {nivoQuarantineActionMessage}
             </div>
           )}
-          {activeQuarantineEvents.length === 0 && pendingQuarantineRows.length === 0 && (
+          {activeQuarantineEvents.length === 0 && pendingQuarantineRows.length === 0 && !nivoAdminQuarantineError && (
             <div style={{ color: "#86efac", fontWeight: 800 }}>✓ Minden munkaállomás rendben – nincs ismert aktív karantén.</div>
           )}
           {nivoAdminQuarantineError && <div style={{ color: "#fcd34d", marginBottom: 8 }}>A központi karanténnapló nem elérhető: {nivoAdminQuarantineError}. A gépektől származó utolsó állapotot mutatjuk.</div>}
@@ -14650,12 +14690,15 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           <div style={{ borderTop: `1px solid ${theme.borderColor}`, marginTop: 14, paddingTop: 12 }}>
             <h4 style={{ margin: "0 0 8px", fontSize: 16 }}>Karanténértesítések e-mailben</h4>
             <div style={{ fontSize: 12, color: theme.mutedText, marginBottom: 9 }}>A beállítások közösen a Supabase-ban tárolódnak. Az értesítést a Vercel küldi a karantén megjelenésekor, az Admin oldal megnyitása nélkül is.</div>
-            {!nivoQuarantineAlertSettingsLoaded ? (
-              <button type="button" style={buttonSecondary} disabled={nivoQuarantineAdminBusy} onClick={() => void loadNivoQuarantineAlertSettings()}>
-                {nivoQuarantineAdminBusy ? "Betöltés…" : "Értesítési beállítások betöltése (Admin PIN)"}
-              </button>
-            ) : (
-              <div style={{ display: "grid", gap: 9 }}>
+            <div style={{ display: "grid", gap: 9 }}>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <button type="button" style={buttonSecondary} disabled={nivoQuarantineAdminBusy} onClick={() => void loadNivoQuarantineAlertSettings()}>
+                  {nivoQuarantineAdminBusy ? "Betöltés…" : "Mentett beállítások betöltése (Admin PIN)"}
+                </button>
+                <span style={{ fontSize: 12, color: nivoQuarantineAlertSettingsLoaded ? "#86efac" : "#fde68a" }}>
+                  {nivoQuarantineAlertSettingsLoaded ? "Beállítások betöltve – szerkeszthető és menthető." : "A mezők már szerkeszthetők; mentés előtt töltsd be az elmentett beállításokat."}
+                </span>
+              </div>
                 <label style={{ display: "flex", gap: 9, alignItems: "center", fontWeight: 800 }}>
                   <input type="checkbox" checked={nivoQuarantineAlertSettings.enabled}
                     onChange={(event) => setNivoQuarantineAlertSettings((current) => ({ ...current, enabled: event.target.checked }))} />
@@ -14678,14 +14721,32 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   ))}
                   {!nivoQuarantineAlertSettings.recipients.length && <span style={{ color: theme.mutedText, fontSize: 12 }}>Nincs még megadott címzett.</span>}
                 </div>
+                <div style={{ borderTop: `1px solid ${theme.borderColor}`, paddingTop: 12, display: "grid", gap: 9 }}>
+                  <div style={{ fontWeight: 800 }}>Karanténpanel megjelenésének színe</div>
+                  <div style={{ fontSize: 12, color: theme.mutedText }}>Csak ennek a panelnek a színét módosítja; a panel mindig látható marad, és az e-mail-értesítések beállítását nem érinti.</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+                    <input type="color" aria-label="Karanténpanel színének kiválasztása"
+                      value={nivoQuarantineAlertSettings.panelColor}
+                      onChange={(event) => setNivoQuarantineAlertSettings((current) => ({ ...current, panelColor: event.target.value }))}
+                      style={{ width: 54, height: 36, cursor: "pointer", background: "transparent", padding: 1 }} />
+                    <span style={{ color: theme.mutedText, fontSize: 12 }}>{nivoQuarantineAlertSettings.panelColor}</span>
+                    {[
+                      ["Zöld", "#16a34a"], ["Kék", "#3b82f6"], ["Lila", "#a855f7"],
+                      ["Narancs", "#f59e0b"], ["Piros", "#ef4444"],
+                    ].map(([label, color]) => (
+                      <button key={color} type="button" title={label} aria-label={`Panelszín: ${label}`}
+                        onClick={() => setNivoQuarantineAlertSettings((current) => ({ ...current, panelColor: color }))}
+                        style={{ width: 30, height: 30, borderRadius: 9, background: color, cursor: "pointer", border: nivoQuarantineAlertSettings.panelColor === color ? "3px solid white" : "1px solid #64748b" }} />
+                    ))}
+                  </div>
+                </div>
                 <div>
-                  <button type="button" style={buttonPrimary} disabled={nivoQuarantineAdminBusy}
+                  <button type="button" style={buttonPrimary} disabled={nivoQuarantineAdminBusy || !nivoQuarantineAlertSettingsLoaded}
                     onClick={() => void saveNivoQuarantineAlertSettings()}>
-                    {nivoQuarantineAdminBusy ? "Mentés…" : "Értesítési beállítások mentése"}
+                    {nivoQuarantineAdminBusy ? "Mentés…" : "E-mail és panelszín mentése"}
                   </button>
                 </div>
               </div>
-            )}
           </div>
         </div>
 
@@ -31025,9 +31086,20 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
   useEffect(() => {
     const normalAdminOpen = Boolean(activeWorker && isAdmin(activeWorker) && terminalView === "management" && flowStage === "dashboard" && managementSection === "admin");
     if (!normalAdminOpen && !nivoEmergencyAdminOpen) return;
+    let cancelled = false;
+    // A karanténpanel színét egyszer, az Admin nézet megnyitásakor töltjük be.
+    // Nem kerül be az 5 másodperces aktivitási lekérdezési ciklusba.
+    void fetch(`${NIVO_QUARANTINE_API_URL}?scope=appearance`, { cache: "no-store" })
+      .then(async (response) => response.ok ? response.json() : null)
+      .then((body: { panelColor?: string } | null) => {
+        if (!cancelled && body?.panelColor && /^#[0-9a-f]{6}$/i.test(body.panelColor)) {
+          setNivoQuarantineAlertSettings((current) => ({ ...current, panelColor: body.panelColor! }));
+        }
+      })
+      .catch(() => undefined);
     void loadNivoAdminActivity({ quiet: true });
     const intervalId = window.setInterval(() => void loadNivoAdminActivity({ quiet: true }), 5_000);
-    return () => window.clearInterval(intervalId);
+    return () => { cancelled = true; window.clearInterval(intervalId); };
   }, [activeWorker?.id, terminalView, flowStage, managementSection, nivoEmergencyAdminOpen, supabase]);
 
   useEffect(() => {
