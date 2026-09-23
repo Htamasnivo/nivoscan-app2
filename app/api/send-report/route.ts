@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import nodemailer from "nodemailer";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const MAX_RAW_ATTACHMENT_BYTES = 29 * 1024 * 1024;
+// A Gmail legfeljebb kb. 25 MB méretű teljes e-mailt enged.
+// A mellékletek MIME/base64 kódolással kb. 37%-kal nagyobbak lesznek.
+const MAX_RAW_ATTACHMENT_BYTES = 18 * 1024 * 1024;
+const MAX_INLINE_LOGO_BYTES = 5 * 1024 * 1024;
 
 function splitRecipients(value: string): string[] {
   return Array.from(
@@ -27,45 +31,41 @@ function safeFileName(value: string, fallback: string): string {
 
 async function fileToAttachment(value: FormDataEntryValue | null, fallbackName: string) {
   if (!(value instanceof File) || value.size <= 0) return null;
-  if (value.size > MAX_RAW_ATTACHMENT_BYTES) {
-    throw new Error(`A(z) ${value.name || fallbackName} csatolmány túl nagy.`);
-  }
-
-  const bytes = Buffer.from(await value.arrayBuffer());
   return {
     filename: safeFileName(value.name || fallbackName, fallbackName),
-    content: bytes.toString("base64"),
+    content: Buffer.from(await value.arrayBuffer()),
   };
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    const apiKey = process.env.RESEND_API_KEY?.trim();
-    if (!apiKey) {
+    // Ugyanazok a Vercel környezeti változók, mint a korábbi Gmail-küldésnél.
+    // A Google alkalmazásjelszavában a másoláskor bekerült szóközöket eltávolítjuk.
+    const gmailUser = String(process.env.GMAIL_USER || "").trim();
+    const gmailAppPassword = String(process.env.GMAIL_APP_PASSWORD || "").replace(/\s/g, "");
+
+    if (!gmailUser || !gmailAppPassword) {
       return NextResponse.json(
-        { error: "Hiányzik a RESEND_API_KEY környezeti változó a Vercel projektből." },
+        { error: "A Gmail-küldéshez a GMAIL_USER és GMAIL_APP_PASSWORD Vercel környezeti változó szükséges." },
+        { status: 500 }
+      );
+    }
+    if (!isEmail(gmailUser)) {
+      return NextResponse.json(
+        { error: "A GMAIL_USER környezeti változó nem érvényes e-mail-cím." },
         { status: 500 }
       );
     }
 
-    const from = (
-      process.env.REPORT_FROM_EMAIL ||
-      process.env.RESEND_FROM_EMAIL ||
-      process.env.EMAIL_FROM ||
-      "NÍVÓ Riport <onboarding@resend.dev>"
-    ).trim();
-
     const formData = await request.formData();
-    const toRaw = String(formData.get("to") || "").trim();
-    const recipients = splitRecipients(toRaw);
-    const invalidRecipients = recipients.filter((item) => !isEmail(item));
-
+    const recipients = splitRecipients(String(formData.get("to") || "").trim());
     if (!recipients.length) {
-      return NextResponse.json({ error: "Nincs megadva email címzett." }, { status: 400 });
+      return NextResponse.json({ error: "Nincs megadva e-mail-címzett." }, { status: 400 });
     }
+    const invalidRecipients = recipients.filter((recipient) => !isEmail(recipient));
     if (invalidRecipients.length) {
       return NextResponse.json(
-        { error: `Hibás email cím: ${invalidRecipients.join(", ")}` },
+        { error: `Hibás e-mail-cím: ${invalidRecipients.join(", ")}` },
         { status: 400 }
       );
     }
@@ -73,97 +73,119 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const subject = String(formData.get("subject") || "NÍVÓ termelési riport").trim() || "NÍVÓ termelési riport";
     const html = String(formData.get("html") || "").trim();
     const text = String(formData.get("text") || "").trim();
-
-    const attachments = [] as Array<{ filename: string; content: string; content_id?: string; content_type?: string }>;
-    const pdfAttachment = await fileToAttachment(formData.get("pdf"), "nivo_riport.pdf");
-    const excelAttachment = await fileToAttachment(formData.get("excel"), "nivo_riport.xlsx");
-    if (pdfAttachment) attachments.push(pdfAttachment);
-    if (excelAttachment) attachments.push(excelAttachment);
-
-    // Resend CID melléklet: a NÍVÓ logó az email törzsében jelenik meg,
-    // nem távoli kép URL-ként (azt több levelezőkliens blokkolja).
+    const pdfEntry = formData.get("pdf");
+    const excelEntry = formData.get("excel");
     const logoEntry = formData.get("logo");
-    if (html.includes("cid:nivo-report-logo") && !(logoEntry instanceof File && logoEntry.size > 0)) {
-      return NextResponse.json({ error: "A HTML riporthoz szükséges NÍVÓ logó hiányzik." }, { status: 400 });
-    }
-    if (logoEntry instanceof File && logoEntry.size > 0) {
-      if (!logoEntry.type.startsWith("image/") || logoEntry.size > 5 * 1024 * 1024) {
-        return NextResponse.json({ error: "A NÍVÓ logó legfeljebb 5 MB-os képfájl lehet." }, { status: 400 });
-      }
-      const logoAttachment = await fileToAttachment(logoEntry, "nivo-logo.png");
-      if (logoAttachment) attachments.push({
-        ...logoAttachment,
-        content_id: "nivo-report-logo",
-        content_type: logoEntry.type,
-      });
-    }
-
-    const rawBytes = [formData.get("pdf"), formData.get("excel"), formData.get("logo")].reduce((sum, item) => {
-      return sum + (item instanceof File ? item.size : 0);
-    }, 0);
+    const rawBytes = [pdfEntry, excelEntry, logoEntry].reduce<number>(
+      (sum, item) => sum + (item instanceof File ? item.size : 0),
+      0
+    );
     if (rawBytes > MAX_RAW_ATTACHMENT_BYTES) {
       return NextResponse.json(
-        { error: "A csatolmányok összmérete túl nagy az email küldéshez." },
+        { error: "A mellékletek túl nagyok a Gmail 25 MB-os üzenetméretéhez. Csökkentsd a PDF/Excel méretét." },
         { status: 413 }
       );
     }
 
-    const payload: Record<string, unknown> = {
-      from,
-      to: recipients,
-      subject,
-      ...(html ? { html } : {}),
-      ...(text ? { text } : {}),
-      ...(attachments.length ? { attachments } : {}),
-    };
-
-    if (!html && !text) {
-      payload.text = "Automatikusan generált NÍVÓ termelési riport.";
+    if (html.includes("cid:nivo-report-logo") && !(logoEntry instanceof File && logoEntry.size > 0)) {
+      return NextResponse.json(
+        { error: "A HTML-riporthoz szükséges NÍVÓ logó hiányzik." },
+        { status: 400 }
+      );
+    }
+    if (logoEntry instanceof File && logoEntry.size > 0) {
+      if (!logoEntry.type.startsWith("image/") || logoEntry.size > MAX_INLINE_LOGO_BYTES) {
+        return NextResponse.json(
+          { error: "A NÍVÓ logó legfeljebb 5 MB-os képfájl lehet." },
+          { status: 400 }
+        );
+      }
     }
 
-    const resendResponse = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-      cache: "no-store",
+    const attachments: Array<{
+      filename: string;
+      content: Buffer;
+      contentType?: string;
+      cid?: string;
+      contentDisposition?: "inline";
+    }> = [];
+    const pdf = await fileToAttachment(pdfEntry, "nivo_riport.pdf");
+    const excel = await fileToAttachment(excelEntry, "nivo_riport.xlsx");
+    if (pdf) attachments.push({ ...pdf, contentType: "application/pdf" });
+    if (excel) attachments.push({
+      ...excel,
+      contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
 
-    const responseText = await resendResponse.text();
-    let responseData: any = null;
-    try {
-      responseData = responseText ? JSON.parse(responseText) : null;
-    } catch {
-      responseData = null;
+    if (logoEntry instanceof File && logoEntry.size > 0) {
+      const logo = await fileToAttachment(logoEntry, "nivo-logo.png");
+      if (logo) attachments.push({
+        ...logo,
+        contentType: logoEntry.type,
+        cid: "nivo-report-logo",
+        contentDisposition: "inline",
+      });
     }
 
-    if (!resendResponse.ok) {
-      const resendMessage = String(
-        responseData?.message || responseData?.error?.message || responseData?.error || responseText || "Resend küldési hiba"
-      ).trim();
+    const transporter = nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      auth: { user: gmailUser, pass: gmailAppPassword },
+      connectionTimeout: 15_000,
+      greetingTimeout: 15_000,
+      socketTimeout: 45_000,
+    });
+
+    // A Gmail a hitelesített GMAIL_USER címéről küld; nem szükséges Resend.
+    const result = await transporter.sendMail({
+      from: { name: "NÍVÓ Riport", address: gmailUser },
+      to: recipients,
+      subject,
+      text: text || (html ? undefined : "Automatikusan generált NÍVÓ termelési riport."),
+      ...(html ? { html } : {}),
+      ...(attachments.length ? { attachments } : {}),
+    });
+
+    const accepted = (result.accepted || []).map(String);
+    const rejected = (result.rejected || []).map(String);
+    if (!accepted.length || rejected.length) {
       return NextResponse.json(
         {
-          error: resendMessage,
-          provider: "resend",
-          status: resendResponse.status,
+          error: rejected.length
+            ? `A Gmail nem fogadta el az összes címzettet: ${rejected.join(", ")}`
+            : "A Gmail nem fogadta el a levelet.",
+          provider: "gmail",
+          accepted,
+          rejected,
+          id: result.messageId || null,
         },
-        { status: resendResponse.status >= 400 && resendResponse.status < 600 ? resendResponse.status : 502 }
+        { status: 502 }
       );
     }
 
     return NextResponse.json({
       ok: true,
-      id: responseData?.id || null,
+      provider: "gmail",
+      id: result.messageId || null,
       recipients,
       attachmentCount: attachments.length,
     });
-  } catch (error: any) {
-    console.error("/api/send-report hiba:", error);
-    return NextResponse.json(
-      { error: error?.message || "Ismeretlen szerveroldali email küldési hiba." },
-      { status: 500 }
-    );
+  } catch (error: unknown) {
+    // A jelszó vagy más titok nem kerülhet a klienshez vagy a naplóba.
+    const smtpError = error as { code?: string; responseCode?: number; message?: string };
+    const code = String(smtpError?.code || "");
+    console.error("/api/send-report Gmail-küldési hiba:", {
+      code: code || undefined,
+      responseCode: smtpError?.responseCode,
+    });
+
+    let message = "A Gmail e-mail küldése nem sikerült. Ellenőrizd a Vercel GMAIL_USER és GMAIL_APP_PASSWORD beállításokat.";
+    if (smtpError?.responseCode === 535 || code === "EAUTH") {
+      message = "Gmail-hitelesítési hiba. Ellenőrizd a GMAIL_USER címet és a Google alkalmazásjelszót (nem a szokásos fiókjelszót).";
+    } else if (["ETIMEDOUT", "ECONNECTION", "ESOCKET"].includes(code)) {
+      message = "Nem sikerült kapcsolatot létesíteni a Gmail SMTP-szerverével. Ellenőrizd a hálózati és SMTP-beállításokat.";
+    }
+    return NextResponse.json({ error: message, provider: "gmail" }, { status: 502 });
   }
 }
