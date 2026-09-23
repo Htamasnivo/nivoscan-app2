@@ -2198,6 +2198,7 @@ type ProductionMonitorUserSettingsRow = {
 };
 
 type ReportFormat = "pdf" | "excel" | "both";
+type ReportDeliveryFormat = ReportFormat | "html";
 type ReportFrequency = "daily" | "weekly";
 
 type ReportRecipient = {
@@ -2229,6 +2230,7 @@ type ReportDeliveryReportType =
   | "reklamacio"
   | "keszre-jelentes"
   | "beepites"
+  | "data-upload"
   | "custom";
 
 type ReportDeliveryFrequency = "daily" | "weekly" | "monthly";
@@ -2258,7 +2260,7 @@ type ReportDeliveryProfile = {
   orderFilter: string;
   productTypeFilter: ReportDeliveryProductType;
   reportType: ReportDeliveryReportType;
-  reportFormat: ReportFormat;
+  reportFormat: ReportDeliveryFormat;
   customBlocks: ReportDeliveryBlock[];
   frequency: ReportDeliveryFrequency;
   periodScope: ReportDeliveryPeriodScope;
@@ -2376,6 +2378,7 @@ const REPORT_DELIVERY_REPORT_TYPE_LABELS: Record<ReportDeliveryReportType, strin
   reklamacio: "Reklamációs riport",
   "keszre-jelentes": "Készre jelentés",
   beepites: "Beépítés",
+  "data-upload": "Adatfeltöltés",
   custom: "Egyedi kombinált riport",
 };
 
@@ -12065,9 +12068,9 @@ ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h
       reportType: (Object.prototype.hasOwnProperty.call(REPORT_DELIVERY_REPORT_TYPE_LABELS, String(row.report_type || "worker-analysis"))
         ? String(row.report_type || "worker-analysis")
         : "worker-analysis") as ReportDeliveryReportType,
-      reportFormat: (["pdf", "excel", "both"].includes(String(row.report_format || "pdf"))
+      reportFormat: (["pdf", "excel", "both", "html"].includes(String(row.report_format || "pdf"))
         ? String(row.report_format || "pdf")
-        : "pdf") as ReportFormat,
+        : "pdf") as ReportDeliveryFormat,
       customBlocks: customBlocks.length ? customBlocks : ["worker-analysis"],
       frequency: (["daily", "weekly", "monthly"].includes(String(row.frequency || "monthly"))
         ? String(row.frequency || "monthly")
@@ -12979,9 +12982,24 @@ ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h
     keszletreveteliErtek: number | null;
   };
   type ReportDeliveryBeepitesRow = { orderNumber: string; installationAt: string };
+  type ReportDeliveryUploadRow = {
+    id: string;
+    blockName: string;
+    fileType: string;
+    status: "success" | "error" | "running" | "queued" | "cancelled";
+    startedAt: string;
+    finishedAt: string;
+    durationMs: number | null;
+    attemptsLabel: string;
+    detail: string;
+    rowsRead: number;
+    rowsUploaded: number;
+  };
+
   type ReportDeliveryPreparedRows = {
     keszre?: ReportDeliveryKeszreRow[];
     beepites?: ReportDeliveryBeepitesRow[];
+    dataUpload?: ReportDeliveryUploadRow[];
   };
 
   async function fetchReportDeliveryKeszreRows(
@@ -13133,8 +13151,151 @@ ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h
       .map(({ orderNumber, installationAt }) => ({ orderNumber, installationAt }));
   }
 
+  // A webes Adat feltöltés / Windows feltöltő agent valódi futási naplója.
+  // A külön Excel/Power BI automatizáló program helyi naplója nincs automatikusan
+  // szinkronizálva ide; csak a data_upload_runs-ba mentett futások jelennek meg.
+  async function fetchReportDeliveryDataUploadRows(
+    range: { startIso: string; endIso: string }
+  ): Promise<ReportDeliveryUploadRow[]> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const blockResponse = await supabase.from(DATA_UPLOAD_BLOCKS_TABLE).select("id,name");
+    if (blockResponse.error) throw blockResponse.error;
+    const blockNames = new Map<string, string>(
+      ((blockResponse.data || []) as Array<{ id: string; name: string }>).map((row) => [String(row.id), String(row.name || "")])
+    );
+    const entries: ReportDeliveryUploadRow[] = [];
+    for (let start = 0; ; start += 1000) {
+      const response = await supabase.from(DATA_UPLOAD_RUNS_TABLE)
+        .select("id,block_id,status,requested_at,started_at,finished_at,source_file_path,target_table,rows_read,rows_uploaded,message")
+        .gte("requested_at", range.startIso)
+        .lt("requested_at", range.endIso)
+        .order("requested_at", { ascending: true })
+        .range(start, start + 999);
+      if (response.error) throw response.error;
+      const page = (response.data || []) as Array<Record<string, unknown>>;
+      for (const raw of page) {
+        const startedAt = String(raw.started_at || raw.requested_at || "");
+        const finishedAt = String(raw.finished_at || "");
+        const startMs = Date.parse(startedAt);
+        const finishMs = Date.parse(finishedAt);
+        const durationMs = finishedAt && Number.isFinite(startMs) && Number.isFinite(finishMs)
+          ? Math.max(0, finishMs - startMs) : null;
+        const filename = String(raw.source_file_path || "");
+        const type = /\.pbix$/i.test(filename) ? "Power BI" : "Excel";
+        const status = String(raw.status || "queued") as ReportDeliveryUploadRow["status"];
+        entries.push({
+          id: String(raw.id || ""),
+          blockName: blockNames.get(String(raw.block_id || "")) || String(raw.target_table || "Ismeretlen blokk"),
+          fileType: type,
+          status,
+          startedAt,
+          finishedAt,
+          durationMs,
+          // data_upload_runs nem tartalmaz próbálkozásszámot; nem állítunk be kitalált értéket.
+          attemptsLabel: "–",
+          detail: String(raw.message || "").trim() || (status === "success" ? "Adatfeltöltés sikeres." : "Nincs részletes üzenet."),
+          rowsRead: Number(raw.rows_read) || 0,
+          rowsUploaded: Number(raw.rows_uploaded) || 0,
+        });
+      }
+      if (page.length < 1000) break;
+      if (entries.length >= 50000) throw new Error("Az Adatfeltöltés riport túl sok sort tartalmaz; szűkítsd a dátumtartományt.");
+    }
+    return entries;
+  }
+
+  function reportDeliveryUploadSummary(rows: readonly ReportDeliveryUploadRow[]) {
+    return {
+      success: rows.filter((row) => row.status === "success").length,
+      errors: rows.filter((row) => row.status === "error" || row.status === "cancelled").length,
+      active: rows.filter((row) => row.status === "running" || row.status === "queued").length,
+    };
+  }
+
+  function formatReportDeliveryUploadDuration(milliseconds: number | null): string {
+    if (milliseconds == null) return "–";
+    const seconds = Math.round(milliseconds / 1000);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor(seconds % 3600 / 60);
+    const remainder = seconds % 60;
+    return hours ? `${hours} ó ${minutes} p ${remainder} mp` : minutes ? `${minutes} p ${remainder} mp` : `${remainder} mp`;
+  }
+
+  function reportDeliveryUploadStatusLabel(status: ReportDeliveryUploadRow["status"]): string {
+    const labels: Record<ReportDeliveryUploadRow["status"], string> = {
+      success: "SIKERES", error: "HIBÁS", running: "FOLYAMATBAN",
+      queued: "SORBAN ÁLL", cancelled: "MEGSZAKÍTVA",
+    };
+    return labels[status] || status;
+  }
+
+  function reportDeliveryUploadDataRows(rows: readonly ReportDeliveryUploadRow[]): string[][] {
+    return rows.map((row) => [
+      row.blockName, row.fileType, reportDeliveryUploadStatusLabel(row.status),
+      row.startedAt ? formatDateTime(row.startedAt) : "–",
+      row.finishedAt ? formatDateTime(row.finishedAt) : "–",
+      formatReportDeliveryUploadDuration(row.durationMs), row.attemptsLabel,
+      row.detail + (row.rowsRead || row.rowsUploaded ? ` (Olvasott: ${row.rowsRead}, feltöltött: ${row.rowsUploaded} sor)` : ""),
+    ]);
+  }
+
   function formatReportDeliveryAmount(value: number | null): string {
     return value == null ? "" : `${value.toLocaleString("hu-HU", { maximumFractionDigits: 2 })} Ft`;
+  }
+
+  async function createReportDeliveryDataUploadPdfBlob(
+    rows: ReportDeliveryUploadRow[],
+    range: { label: string }
+  ): Promise<Blob> {
+    const [jsPdfNamespace, logo] = await Promise.all([waitForJsPdf(), loadDashboardPdfCompanyLogo()]);
+    const doc = new jsPdfNamespace.jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+    registerPdfUnicodeFonts(doc);
+    const pdf = doc as any;
+    doc.setFillColor(25, 37, 55);
+    doc.rect(0, 0, 841.89, 120, "F");
+    try {
+      const dimensions = await getPdfImageNaturalSize(logo);
+      const width = Math.min(100, 48 * dimensions.width / Math.max(1, dimensions.height));
+      const height = width * dimensions.height / Math.max(1, dimensions.width);
+      pdf.addImage(logo, 36, 20 + (48 - height) / 2, width, height);
+    } catch { /* NÍVÓ felirat továbbra is látható */ }
+    doc.setTextColor(255, 255, 255);
+    doc.setFont(PDF_FONT_FAMILY, "bold");
+    doc.setFontSize(19);
+    doc.text("NÍVÓ | ADATFELTÖLTÉS", 152, 51);
+    doc.setFont(PDF_FONT_FAMILY, "normal");
+    doc.setFontSize(10);
+    doc.text(`Riportfrissítési összesítő – ${range.label}`, 152, 75);
+    const summary = reportDeliveryUploadSummary(rows);
+    const cards: Array<{ label: string; count: number; color: [number, number, number] }> = [
+      { label: "Sikeres", count: summary.success, color: [33, 129, 82] },
+      { label: "Hibás", count: summary.errors, color: [181, 68, 76] },
+      { label: "Folyamatban", count: summary.active, color: [173, 115, 35] },
+    ];
+    cards.forEach((card, index) => {
+      const x = 34 + index * 268;
+      doc.setFillColor(...card.color);
+      doc.roundedRect(x, 137, 252, 57, 6, 6, "F");
+      doc.setTextColor(255, 255, 255);
+      doc.setFont(PDF_FONT_FAMILY, "bold");
+      doc.setFontSize(17);
+      doc.text(`${card.count}`, x + 15, 163);
+      doc.setFont(PDF_FONT_FAMILY, "normal");
+      doc.setFontSize(10);
+      doc.text(card.label, x + 15, 182);
+    });
+    pdf.autoTable({
+      startY: 209,
+      head: [["Blokk", "Típus", "Állapot", "Indult", "Befejeződött", "Időtartam", "Próbák", "Részlet"]],
+      body: rows.length ? reportDeliveryUploadDataRows(rows) : [["Nincs adat az időszakban", "", "", "", "", "", "", ""]],
+      styles: { font: PDF_FONT_FAMILY, fontSize: 7.4, overflow: "linebreak", cellPadding: 5 },
+      headStyles: { fillColor: [48, 60, 77], textColor: [255, 255, 255], font: PDF_FONT_FAMILY },
+      alternateRowStyles: { fillColor: [244, 248, 251] },
+      margin: { left: 34, right: 34, top: 32, bottom: 33 },
+      columnStyles: { 0: { cellWidth: 99 }, 1: { cellWidth: 49 }, 2: { cellWidth: 77 },
+        3: { cellWidth: 93 }, 4: { cellWidth: 93 }, 5: { cellWidth: 73 }, 6: { cellWidth: 43 }, 7: { cellWidth: 235 } },
+    });
+    return doc.output("blob");
   }
 
   async function createSimpleReportDeliveryPdfBlob(
@@ -13774,6 +13935,10 @@ ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h
         rows.map((row) => [row.orderNumber, formatDateTime(row.installationAt)]), range
       );
     }
+    if (profile.reportType === "data-upload") {
+      const rows = prepared?.dataUpload ?? await fetchReportDeliveryDataUploadRows(range);
+      return createReportDeliveryDataUploadPdfBlob(rows, range);
+    }
     const sourceData: DashboardData = profile.reportType === "reklamacio"
       ? {
           logs: [], availableOrderNumbers: [], orderRows: [], openRows: [], workerRows: [], scrapRows: [], productTypeRows: [],
@@ -13829,7 +13994,15 @@ ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h
       XLSX.utils.book_append_sheet(workbook, sheet, name.slice(0, 31));
     };
 
-    if (profile.reportType === "keszre-jelentes") {
+    if (profile.reportType === "data-upload") {
+      const rows = prepared?.dataUpload ?? await fetchReportDeliveryDataUploadRows(range);
+      const summary = reportDeliveryUploadSummary(rows);
+      addSheet("Összesítő", ["Mutató", "Érték"], [
+        ["Időszak", range.label], ["Sikeres", summary.success], ["Hibás", summary.errors], ["Folyamatban vagy sorban", summary.active],
+      ]);
+      addSheet("Feltöltési napló", ["Blokk", "Típus", "Állapot", "Indult", "Befejeződött", "Időtartam", "Próbák", "Részlet"],
+        reportDeliveryUploadDataRows(rows));
+    } else if (profile.reportType === "keszre-jelentes") {
       const rows = prepared?.keszre ?? await fetchReportDeliveryKeszreRows(profile, range);
       addSheet("Készre jelentés", ["Időpont", "Rendelésszám", "Nettó ár", "Készletrevételi érték"],
         rows.map((row) => [formatDateTime(row.completedAt), row.orderNumber,
@@ -13948,6 +14121,106 @@ ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h
     return new Blob([output], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   }
 
+  // Csak e-mailhez alkalmas HTML: táblázatos, inline CSS és CID logó, minden adat escape-elve.
+  async function createReportDeliveryProfileHtml(
+    profile: ReportDeliveryProfile,
+    prepared: ReportDeliveryPreparedRows = {},
+    sharedDashboard?: DashboardData,
+    logoSource = "cid:nivo-report-logo"
+  ): Promise<string> {
+    const range = getReportDeliveryProfileRange(profile);
+    const isUpload = profile.reportType === "data-upload";
+    const reportTitle = REPORT_DELIVERY_REPORT_TYPE_LABELS[profile.reportType];
+    let sections: Array<{ title: string; headers: string[]; rows: string[][] }> = [];
+    let cards: Array<{ name: string; value: string; color: string; bg: string }> = [];
+
+    if (isUpload) {
+      const runs = prepared.dataUpload ?? await fetchReportDeliveryDataUploadRows(range);
+      const summary = reportDeliveryUploadSummary(runs);
+      cards = [
+        { name: "Sikeres futás", value: String(summary.success), color: "#7de4a9", bg: "#253f39" },
+        { name: "Hibás futás", value: String(summary.errors), color: "#ff838d", bg: "#49373c" },
+        { name: "Folyamatban / várakozik", value: String(summary.active), color: "#ffcc75", bg: "#494337" },
+      ];
+      sections = [{ title: "Adatfeltöltési napló", headers: ["Blokk", "Típus", "Állapot", "Indult", "Befejeződött", "Időtartam", "Próbák", "Részlet"], rows: reportDeliveryUploadDataRows(runs) }];
+    } else {
+      // A már létező Excel-generátor ugyanazokat a dátum-/állomás-/dolgozószűrőket
+      // alkalmazza, ezért az összes meglévő riport HTML-je pontosan ugyanazokat
+      // az adatsorokat tartalmazza, mint a megfelelő Excel-export.
+      const xlsxBlob = await createReportDeliveryProfileExcelBlob(profile, prepared, sharedDashboard);
+      const XLSX = await waitForXlsx();
+      const workbook = XLSX.read(await xlsxBlob.arrayBuffer(), { type: "array" });
+      sections = workbook.SheetNames.map((sheetName: string) => {
+        const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, raw: false, defval: "" }) as Array<Array<unknown>>;
+        const headers = (matrix[0] || []).map((cell) => String(cell ?? ""));
+        return {
+          title: sheetName,
+          headers,
+          rows: matrix.slice(1).map((row) => headers.map((_, index) => String(row[index] ?? ""))),
+        };
+      });
+      const mainSection = sections[0];
+      cards = [
+        { name: "Összes adatsor", value: String(sections.reduce((sum, sec) => sum + sec.rows.length, 0)), color: "#7de4a9", bg: "#253f39" },
+        { name: "Riportlapok", value: String(sections.length), color: "#a4c8ff", bg: "#303d55" },
+        { name: mainSection?.title || "Időszak", value: String(mainSection?.rows.length || 0), color: "#ffcc75", bg: "#494337" },
+      ];
+    }
+
+    const safe = (value: unknown): string => escapeHtml(String(value ?? ""));
+    const kpiCells = cards.map((card) => `
+      <td valign="top" width="33%" style="padding:8px;">
+        <div style="border-radius:10px;background:${card.bg};padding:16px 18px;min-height:75px;">
+          <div style="font-size:28px;font-weight:800;color:${card.color};">${safe(card.value)}</div>
+          <div style="font-size:12px;color:${card.color};margin-top:6px;">${safe(card.name)}</div>
+        </div>
+      </td>`).join("");
+    const sectionHtml = sections.map((section) => {
+      const head = section.headers.map((headText) => `<th align="left" style="background:#353f53;color:#f2f6ff;padding:11px 9px;border-bottom:1px solid #667185;">${safe(headText)}</th>`).join("");
+      const body = section.rows.length
+        ? section.rows.map((row, index) => {
+            const cells = section.headers.map((_, column) => {
+              const value = row[column] || "";
+              const statusColor = column === 2 && isUpload
+                ? /SIKERES/.test(value) ? "#9df3bc" : /HIBÁS|MEGSZAKÍTVA/.test(value) ? "#ff9898" : "#fbd18a"
+                : index % 2 === 0 ? "#e0e7ef" : "#d3dce7";
+              return `<td valign="top" style="padding:9px;border-bottom:1px solid #4e5664;color:${statusColor};overflow-wrap:anywhere;">${safe(value)}</td>`;
+            }).join("");
+            return `<tr style="background:${index % 2 ? "#35404d" : "#303a47"};">${cells}</tr>`;
+          }).join("")
+        : `<tr><td colspan="${Math.max(section.headers.length, 1)}" style="padding:22px;color:#cfd8e4;">Nincs adat a kiválasztott időszakban.</td></tr>`;
+      return `
+        <div style="margin:23px 0 10px;padding:0 8px;font-weight:800;font-size:17px;color:#fff;">${safe(section.title)}</div>
+        <div style="overflow-x:auto;max-width:100%;">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;font-size:12px;line-height:1.45;table-layout:auto;">
+            <thead><tr>${head}</tr></thead><tbody>${body}</tbody>
+          </table>
+        </div>`;
+    }).join("");
+
+    return `<!doctype html><html lang="hu"><head><meta charset="utf-8"></head>
+      <body style="margin:0;padding:20px 8px;background:#e9edf3;font-family:Arial,Helvetica,sans-serif;">
+      <div style="max-width:1080px;margin:auto;background:#29333e;color:#f5f7fa;border-radius:16px;overflow:hidden;">
+        <div style="background:#455267;padding:26px 30px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+            <td width="124" valign="middle"><img src="${safe(logoSource)}" alt="NÍVÓ logó" width="105" style="max-width:105px;max-height:58px;object-fit:contain;display:block;"></td>
+            <td valign="middle" style="border-left:2px solid #8492a6;padding-left:22px;">
+              <div style="font-size:12px;letter-spacing:2px;color:#bac8dc;font-weight:bold;">NÍVÓ • AUTOMATIKUS RIPORT</div>
+              <div style="font-size:27px;font-weight:800;color:white;margin-top:9px;">${safe(isUpload ? "Riportfrissítési összesítő" : reportTitle)}</div>
+              <div style="font-size:13px;color:#d6deeb;margin-top:10px;">${safe(range.label)} • Generálva: ${safe(formatDateTime(new Date()))}</div>
+            </td>
+          </tr></table>
+        </div>
+        <div style="padding:18px 18px 30px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="table-layout:fixed;"><tr>${kpiCells}</tr></table>
+          ${sectionHtml}
+          <div style="border-top:1px solid #687589;margin-top:28px;padding:17px 8px;color:#bfcbda;font-size:11px;">
+            NÍVÓ • ${safe(reportTitle)} • ${safe(profile.name)} • A beállított dátumszűrő szerint
+          </div>
+        </div>
+      </div></body></html>`;
+  }
+
   async function sendReportDeliveryProfile(profile: ReportDeliveryProfile, testOnly = false): Promise<void> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     if (!profile.id) throw new Error("A riportprofilt előbb létre kell hozni.");
@@ -13989,17 +14262,27 @@ ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h
         prepared.keszre = await fetchReportDeliveryKeszreRows(profile, range);
       } else if (profile.reportType === "beepites") {
         prepared.beepites = await fetchReportDeliveryBeepitesRows(profile, range);
+      } else if (profile.reportType === "data-upload") {
+        prepared.dataUpload = await fetchReportDeliveryDataUploadRows(range);
       }
       const sharedDashboard = requestedFormat === "both"
-        && !["keszre-jelentes", "beepites", "reklamacio", "atvetel"].includes(profile.reportType)
+        && !["keszre-jelentes", "beepites", "data-upload", "reklamacio", "atvetel"].includes(profile.reportType)
         ? await fetchDashboardData(range, parseReportDeliveryOrderFilters(profile.orderFilter))
         : undefined;
       const [pdfBlob, excelBlob] = await Promise.all([
-        requestedFormat === "excel" ? Promise.resolve(null) : createReportDeliveryProfilePdfBlob(profile, prepared, sharedDashboard),
-        requestedFormat === "pdf" ? Promise.resolve(null) : createReportDeliveryProfileExcelBlob(profile, prepared, sharedDashboard),
+        (requestedFormat === "excel" || requestedFormat === "html") ? Promise.resolve(null) : createReportDeliveryProfilePdfBlob(profile, prepared, sharedDashboard),
+        (requestedFormat === "pdf" || requestedFormat === "html") ? Promise.resolve(null) : createReportDeliveryProfileExcelBlob(profile, prepared, sharedDashboard),
       ]);
+      const includeStyledEmail = requestedFormat === "html" || profile.reportType === "data-upload";
+      // A NÍVÓ által feltöltött logó CID-mellékletként kerül az emailbe (nem
+      // távoli URL / base64 <img>, melyet több levelezőprogram letilt).
+      const logoData = includeStyledEmail ? await loadDashboardPdfCompanyLogo() : "";
+      const logoFile = logoData ? await fetch(logoData).then((response) => response.blob()) : null;
+      const htmlBody = includeStyledEmail
+        ? await createReportDeliveryProfileHtml(profile, prepared, sharedDashboard)
+        : "";
       const label = REPORT_DELIVERY_REPORT_TYPE_LABELS[profile.reportType];
-      const filenameBase = (profile.reportType === "keszre-jelentes" || profile.reportType === "beepites")
+      const filenameBase = (["keszre-jelentes", "beepites", "data-upload"].includes(profile.reportType))
         ? label // Az új riportok csatolmányának fájlneve is pontosan a választott riport címe.
         : profile.name.replace(/[^a-zA-Z0-9_\-]+/g, "_") || "riport";
 
@@ -14009,11 +14292,15 @@ ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h
         const reportTypeLabel = REPORT_DELIVERY_REPORT_TYPE_LABELS[profile.reportType];
         const reportTitle = profile.reportType === "keszre-jelentes" || profile.reportType === "beepites"
           ? reportTypeLabel : profile.name;
-        const formatLabel = requestedFormat === "both" ? "Excel és PDF" : requestedFormat === "excel" ? "Excel" : "PDF";
+        const formatLabel = requestedFormat === "both" ? "Excel és PDF" : requestedFormat === "excel" ? "Excel" : requestedFormat === "html" ? "HTML" : "PDF";
         formData.append("subject", `${testOnly ? "[TESZT] " : ""}${reportTitle}`);
-        formData.append("html", `<p><strong>${escapeHtml(reportTitle)}</strong></p><p>Csatolt ${formatLabel} riport: ${escapeHtml(reportTypeLabel)}.</p>`);
-        formData.append("text", `${reportTitle}\nCsatolt ${formatLabel} riport.`);
+        formData.append("html", htmlBody || `<p><strong>${escapeHtml(reportTitle)}</strong></p><p>Csatolt ${formatLabel} riport: ${escapeHtml(reportTypeLabel)}.</p>`);
+        formData.append("text", `${reportTitle}\n${range.label}\n${htmlBody ? "A teljes színes riport az email törzsében olvasható." : `Csatolt ${formatLabel} riport.`}`);
         formData.append("requestedFormat", requestedFormat);
+        if (logoFile) {
+          const extension = logoFile.type === "image/jpeg" ? "jpg" : logoFile.type === "image/svg+xml" ? "svg" : "png";
+          formData.append("logo", logoFile, `nivo-logo.${extension}`);
+        }
         if (pdfBlob) formData.append("pdf", pdfBlob, `${filenameBase}.pdf`);
         if (excelBlob) formData.append("excel", excelBlob, `${filenameBase}.xlsx`);
 
@@ -15560,7 +15847,7 @@ ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Profil neve<input value={draft.name} onChange={(e) => updateReportDeliveryDraft(profile.id, { name: e.target.value })} style={control} /></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Címzettek (email, vessző/pontosvessző)<textarea value={reportDeliveryRecipientTextById[profile.id] ?? draft.recipients.join("; ")} onChange={(e) => { const value = e.target.value; setReportDeliveryRecipientTextById((current) => ({ ...current, [profile.id]: value })); updateReportDeliveryDraft(profile.id, { recipients: parseReportDeliveryRecipients(value) }); }} style={textareaControl} /></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Riport típusa<select value={draft.reportType} onChange={(e) => { const reportType = e.target.value as ReportDeliveryReportType; updateReportDeliveryDraft(profile.id, reportType === "reklamacio" ? { reportType, frequency: "daily", reportFilterMode: "today" } : { reportType }); }} style={control}>{Object.entries(REPORT_DELIVERY_REPORT_TYPE_LABELS).map(([id,label]) => <option key={id} value={id}>{label}</option>)}</select></label>
-              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Küldés formátuma<select value={draft.reportFormat || "pdf"} onChange={(e) => updateReportDeliveryDraft(profile.id, { reportFormat: e.target.value as ReportFormat })} style={control}><option value="pdf">PDF</option><option value="excel">Excel (.xlsx)</option><option value="both">Excel + PDF</option></select></label>
+              <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Küldés formátuma<select value={draft.reportFormat || "pdf"} onChange={(e) => updateReportDeliveryDraft(profile.id, { reportFormat: e.target.value as ReportDeliveryFormat })} style={control}><option value="pdf">PDF</option><option value="excel">Excel (.xlsx)</option><option value="both">Excel + PDF</option><option value="html">HTML (színes e-mail, NÍVÓ logóval)</option></select></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Munkaállomás<select value={draft.stationFilter} onChange={(e) => updateReportDeliveryDraft(profile.id, { stationFilter: e.target.value })} style={control}><option value="all">Összes munkaállomás</option>{stationOptions.map((station) => <option key={station} value={station}>{station}</option>)}</select></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Dolgozó<select value={draft.workerFilter} onChange={(e) => updateReportDeliveryDraft(profile.id, { workerFilter: e.target.value })} style={control}><option value="all">Összes dolgozó</option>{workerOptions.map((workerName) => <option key={workerName} value={workerName}>{workerName}</option>)}</select></label>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Rendelésszám / gyorskód<input value={draft.orderFilter} onChange={(e) => updateReportDeliveryDraft(profile.id, { orderFilter: e.target.value })} placeholder="pl. 07178 vagy R260716178" style={control} /></label>
@@ -15797,6 +16084,15 @@ ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h
             <button type="button" onClick={() => void saveReportDeliveryProfile(draft, true).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={secondaryAction}>Másolat készítése</button>
             <button type="button" onClick={() => void (async () => { try { const blob = await createReportDeliveryProfilePdfBlob(draft); downloadBlob(`${draft.name.replace(/[^a-zA-Z0-9_-]+/g, "_") || "teszt_riport"}.pdf`, blob, "application/pdf"); } catch (error) { setMessage({ type: "error", text: normalizeError(error) }); } })()} disabled={busy} style={secondaryAction}>Teszt PDF</button>
             {(draft.reportFormat === "excel" || draft.reportFormat === "both") && <button type="button" onClick={() => void (async () => { try { const blob = await createReportDeliveryProfileExcelBlob(draft); downloadBlob(`${draft.name.replace(/[^a-zA-Z0-9_-]+/g, "_") || "teszt_riport"}.xlsx`, blob, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); } catch (error) { setMessage({ type: "error", text: normalizeError(error) }); } })()} disabled={busy} style={secondaryAction}>Teszt Excel</button>}
+            {draft.reportFormat === "html" && <button type="button" onClick={() => void (async () => {
+              try {
+                const logo = await loadDashboardPdfCompanyLogo();
+                const html = await createReportDeliveryProfileHtml(draft, {}, undefined, logo);
+                const previewUrl = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+                window.open(previewUrl, "_blank", "noopener,noreferrer");
+                window.setTimeout(() => URL.revokeObjectURL(previewUrl), 120_000);
+              } catch (error) { setMessage({ type: "error", text: normalizeError(error) }); }
+            })()} disabled={busy} style={secondaryAction}>Teszt HTML megtekintés</button>}
             <button type="button" onClick={() => void sendReportDeliveryProfile(draft, true).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={secondaryAction}>Teszt küldés</button>
             <button type="button" onClick={() => void toggleReportDeliveryProfile(draft).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={{ ...secondaryAction, borderColor: profile.active ? "#f59e0b" : style.activeColor }}>{profile.active ? "Kikapcsolás" : "Aktiválás"}</button>
             <button type="button" onClick={() => void deleteReportDeliveryProfile(profile).catch((error) => setMessage({ type: "error", text: normalizeError(error) }))} disabled={busy} style={{ ...secondaryAction, borderColor: style.errorColor, color: style.errorColor }}>Törlés</button>
