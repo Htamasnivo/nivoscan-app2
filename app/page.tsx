@@ -976,6 +976,7 @@ const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]>
     { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Admin gépfelügyelet fejléc" }, { id:"summary", label:"Aktivitás összesítő" },
     { id:"machines", label:"Gépek aktivitása" }, { id:"emergency", label:"Vészleállítás" },
     { id:"quarantine-alerts", label:"Automatikus karantén" }, { id:"quarantine-notifications", label:"Karantén e-mail értesítések" },
+    { id:"machine-activity-cards", label:"Munkaállomások aktivitási boxai" },
   ],
 };
 
@@ -11686,6 +11687,21 @@ ${selector} tbody, ${selector} td { color: ${theme.textColor} !important; border
 ${selector} label, ${selector} p, ${selector} span { font-family: ${theme.fontFamily} !important; }
 ${selector} > section, ${selector} > article { border-color: ${theme.borderColor} !important; }
 ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h3 { color: ${theme.accentColor} !important; }` : ""}
+${pageKey === "admin" && windowDef.id === "machine-activity-cards" ? `
+${selector}[data-nivo-quarantine="true"] {
+  background: #991b1b !important;
+  border-color: #ef4444 !important;
+  color: #ffffff !important;
+  box-shadow: 0 0 0 1px #fca5a5, 0 7px 18px rgba(127,29,29,.38) !important;
+}
+${selector}[data-nivo-quarantine="true"] strong,
+${selector}[data-nivo-quarantine="true"] [data-nivo-card-name] {
+  color: #ffffff !important;
+}
+${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
+  color: #fee2e2 !important;
+}
+` : ""}
 `;
     }).join("\n");
   }
@@ -14889,6 +14905,26 @@ ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h
         || recentlyReleasedKeys.has(`${machineKey}:${triggeredAt}`)) return [];
       return [{ machineId: row.machine_id, ...quarantine }];
     });
+    // A központi esemény elsőbbséget élvez; ha még nem érkezett meg,
+    // az utolsó gép-aktivitási sor jelzi a karantént. A feloldott események
+    // egyik forrásból sem jelennek meg újra.
+    const quarantineSnapshotByMachine = new Map<string, { requestCount1m: number; reason: string }>();
+    for (const event of activeQuarantineEvents) {
+      quarantineSnapshotByMachine.set(nivoNormalizeEmergencyMachineKey(event.machine_id), {
+        requestCount1m: Number(event.request_count_1m || 0),
+        reason: String(event.reason || ""),
+      });
+    }
+    for (const item of pendingQuarantineRows) {
+      const key = nivoNormalizeEmergencyMachineKey(item.machineId);
+      if (!quarantineSnapshotByMachine.has(key)) {
+        quarantineSnapshotByMachine.set(key, {
+          requestCount1m: Number(item.requestCount1m || 0),
+          reason: String(item.reason || ""),
+        });
+      }
+    }
+    const machineActivityCardTheme = getOfficeWindowTheme("admin", "machine-activity-cards");
     const activeRequestCount = nivoAdminActivityRows.reduce((sum, row) => sum + (Array.isArray(row.active_requests) ? row.active_requests.length : 0), 0);
     const totalRequestCount1m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_1m || 0), 0);
     const totalRequestCount5m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_5m || 0), 0);
@@ -14954,12 +14990,70 @@ ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h
           <h3 style={{ fontSize: 18, margin: "0 0 10px", color: getOfficeWindowTheme("admin", "quarantine-alerts").accentColor }}>
             Automatikus karanténban lévő gépek ({activeQuarantineEvents.length + pendingQuarantineRows.length})
           </h3>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 360px), 1fr))", gap: 16, alignItems: "start" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.7fr) minmax(320px, .85fr)", gap: 14, alignItems: "start" }}>
             <div style={{ display: "grid", gap: 9, minWidth: 0 }}>
               {activeQuarantineEvents.length === 0 && pendingQuarantineRows.length === 0 && !nivoAdminQuarantineError && (
                 <div style={{ color: "#86efac", fontWeight: 800 }}>✓ Minden munkaállomás rendben – nincs ismert aktív karantén.</div>
               )}
               {nivoAdminQuarantineError && <div style={{ color: "#fcd34d", marginBottom: 8 }}>A központi karanténnapló nem elérhető: {nivoAdminQuarantineError}. A gépektől származó utolsó állapotot mutatjuk.</div>}
+              <div style={{ marginTop: 4, paddingTop: 12, borderTop: `1px solid ${getOfficeWindowTheme("admin", "quarantine-alerts").borderColor}`, minWidth: 0 }}>
+                <h4 style={{ margin: "0 0 9px", fontSize: 14, fontWeight: 900 }}>
+                  Munkaállomások · 1 perces lekérdezések
+                </h4>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 155px), 1fr))", gap: 8, alignItems: "stretch", minWidth: 0 }}>
+                  {machineNames.map((machineName) => {
+                    const machineKey = nivoNormalizeEmergencyMachineKey(machineName);
+                    const row = activityByMachine.get(machineKey) || null;
+                    const snapshot = quarantineSnapshotByMachine.get(machineKey);
+                    const quarantined = Boolean(snapshot);
+                    // A régi heartbeat-számláló az offline gépnél nem aktuális.
+                    const isOnline = Boolean(row?.last_seen_at && (
+                      Date.now() - new Date(row.last_seen_at).getTime() <= 30_000
+                    ));
+                    const minuteCount = quarantined
+                      ? Number(snapshot?.requestCount1m || 0)
+                      : isOnline ? Number(row?.request_count_1m || 0) : 0;
+                    return (
+                      <div
+                        key={machineKey}
+                        data-office-window="admin:machine-activity-cards"
+                        data-nivo-quarantine={quarantined ? "true" : "false"}
+                        title={quarantined
+                          ? `${machineName} – KARANTÉN: ${snapshot?.reason || "Automatikus karantén"}`
+                          : isOnline ? `${machineName} – online` : `${machineName} – offline`}
+                        style={{
+                          minWidth: 0, minHeight: 90, boxSizing: "border-box",
+                          display: "flex", flexDirection: "column", justifyContent: "space-between",
+                          padding: "9px 11px", borderRadius: machineActivityCardTheme.borderRadius,
+                          border: `${machineActivityCardTheme.borderWidth}px solid ${machineActivityCardTheme.borderColor}`,
+                          background: machineActivityCardTheme.panelBackground,
+                          color: machineActivityCardTheme.textColor,
+                        }}
+                      >
+                        {quarantined && (
+                          <div style={{ color: "#fee2e2", fontSize: 10, fontWeight: 900, letterSpacing: ".08em", marginBottom: 2 }}>
+                            KARANTÉN
+                          </div>
+                        )}
+                        <div style={{ display: "flex", gap: 5, alignItems: "flex-start", justifyContent: "space-between" }}>
+                          <strong data-nivo-card-name style={{ fontSize: 13, fontWeight: 900, lineHeight: 1.2, overflowWrap: "anywhere", minWidth: 0 }}>
+                            {machineName}
+                          </strong>
+                          {!quarantined && (
+                            <span data-nivo-card-state style={{ color: isOnline ? "#86efac" : machineActivityCardTheme.mutedText, fontSize: 9, fontWeight: 800, whiteSpace: "nowrap", flexShrink: 0 }}>
+                              {isOnline ? "ONLINE" : "OFFLINE"}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ display: "flex", gap: 5, alignItems: "baseline", flexWrap: "wrap", marginTop: 6 }}>
+                          <strong style={{ fontSize: 22, lineHeight: 1, fontWeight: 900 }}>{minuteCount}</strong>
+                          <span style={{ fontSize: 10, opacity: .9 }}>kérés/perc</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
               <div style={{ display: "grid", gap: 9 }}>
                 {activeQuarantineEvents.map((event) => (
                   <div key={event.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: 12, border: "1px solid #b45309", borderRadius: 10, background: "#422006", flexWrap: "wrap" }}>
@@ -14983,7 +15077,7 @@ ${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h
                 ))}
               </div>
             </div>
-            <section data-office-window="admin:quarantine-notifications" style={{ ...panel, background: getOfficeWindowTheme("admin", "quarantine-notifications").panelBackground, borderColor: getOfficeWindowTheme("admin", "quarantine-notifications").borderColor, padding: 14, minWidth: 0 }}>
+            <section data-office-window="admin:quarantine-notifications" style={{ ...panel, background: getOfficeWindowTheme("admin", "quarantine-notifications").panelBackground, borderColor: getOfficeWindowTheme("admin", "quarantine-notifications").borderColor, padding: 12, minWidth: 0 }}>
               {nivoQuarantineActionMessage && (
                 <div role="status" style={{ marginBottom: 10, padding: 10, border: "1px solid #eab308", borderRadius: 8, color: "#fde68a" }}>
                   {nivoQuarantineActionMessage}
