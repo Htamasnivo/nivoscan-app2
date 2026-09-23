@@ -2435,12 +2435,11 @@ const NIVO_MACHINE_ACTIVITY_HEARTBEAT_MS = 10_000;
 
 // Automatikus gép-önvédelem:
 // - normál állapot jelenleg kb. 25–45 tényleges Supabase kérés/perc;
-// - 90 kérés/perc feletti terhelésnek 5 percig folyamatosan fenn kell állnia a karanténhoz;
-// - 160 kérés/perc továbbra is azonnali vész-küszöb;
+// - 160 kérés/perc feletti terhelésnek 5 percig folyamatosan fenn kell állnia a karanténhoz;
+// - rövid indulási / munkaállomás-váltási csúcs önmagában nem okoz karantént;
 // - a hibás gép 30 percre saját magát karanténba teszi, a többi gép változatlanul működik.
 const NIVO_AUTO_PROTECTION_STORAGE_KEY = "nivoscan-auto-protection-v1";
-const NIVO_AUTO_PROTECTION_SUSTAINED_REQUESTS_1M = 90;
-const NIVO_AUTO_PROTECTION_HARD_REQUESTS_1M = 160;
+const NIVO_AUTO_PROTECTION_SUSTAINED_REQUESTS_1M = 160;
 const NIVO_AUTO_PROTECTION_SUSTAIN_MS = 5 * 60 * 1000;
 const NIVO_AUTO_PROTECTION_DURATION_MS = 30 * 60 * 1000;
 
@@ -2452,7 +2451,7 @@ const NIVO_SINGLE_TAB_HEARTBEAT_MS = 1_000;
 const NIVO_SINGLE_TAB_STALE_MS = 6_000;
 const NIVO_SINGLE_TAB_RELOAD_DELAY_MS = 300;
 
-const NIVO_CLIENT_VERSION = "2026-09-23-event2-foliazo6-quarantine-tune-v5";
+const NIVO_CLIENT_VERSION = "2026-09-23-office-mobile-multitab-160x5-v6";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
 const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
@@ -5544,6 +5543,17 @@ function nivoSingleTabMachineKey(machineIdValue: string): string {
   return String(machineIdValue || DEFAULT_MACHINE_ID).trim().toLocaleLowerCase("hu-HU");
 }
 
+function nivoSingleTabLimitEnabledForMachine(machineIdValue: string): boolean {
+  const normalized = String(machineIdValue || DEFAULT_MACHINE_ID)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+
+  // Az Iroda és a Mobil eszköz szándékosan több párhuzamos klienssel/füllel használható.
+  return normalized !== "iroda" && normalized !== "mobil eszkoz";
+}
+
 function nivoSingleTabStorageKey(machineIdValue: string): string {
   return `${NIVO_SINGLE_TAB_LOCK_PREFIX}${encodeURIComponent(nivoSingleTabMachineKey(machineIdValue))}`;
 }
@@ -5661,6 +5671,7 @@ function nivoReleaseSingleTabLease(machineIdValue: string): void {
 
 function nivoSingleTabCanUseSupabase(machineIdValue = readMachineIdFromStorage()): boolean {
   if (typeof window === "undefined") return true;
+  if (!nivoSingleTabLimitEnabledForMachine(machineIdValue)) return true;
 
   const machineKey = nivoSingleTabMachineKey(machineIdValue);
   if (nivoSingleTabDeniedMachineKey === machineKey) return false;
@@ -5670,6 +5681,7 @@ function nivoSingleTabCanUseSupabase(machineIdValue = readMachineIdFromStorage()
 
 function nivoSingleTabBlockedByOther(machineIdValue = readMachineIdFromStorage()): boolean {
   if (typeof window === "undefined") return false;
+  if (!nivoSingleTabLimitEnabledForMachine(machineIdValue)) return false;
 
   const machineKey = nivoSingleTabMachineKey(machineIdValue);
   const lease = nivoReadSingleTabLease(machineIdValue);
@@ -6140,13 +6152,6 @@ function nivoMaybeActivateAutoProtection(): NivoAutoProtectionState | null {
   nivoPruneActivityWindows(now);
   const requestCount1m = nivoActivityCountSince(nivoActivityRequestTimes, now - 60_000);
 
-  if (requestCount1m >= NIVO_AUTO_PROTECTION_HARD_REQUESTS_1M) {
-    return nivoActivateAutoProtection(
-      requestCount1m,
-      `AUTOMATIKUS VÉDELEM: ${requestCount1m} Supabase kérés/perc miatt a gép 30 percre karanténba került.`
-    );
-  }
-
   if (requestCount1m >= NIVO_AUTO_PROTECTION_SUSTAINED_REQUESTS_1M) {
     if (!nivoAutoProtectionHighLoadSince) nivoAutoProtectionHighLoadSince = now;
     if (now - nivoAutoProtectionHighLoadSince >= NIVO_AUTO_PROTECTION_SUSTAIN_MS) {
@@ -6156,7 +6161,7 @@ function nivoMaybeActivateAutoProtection(): NivoAutoProtectionState | null {
       );
     }
   } else {
-    // Ha az 1 perces terhelés 90 alá visszaesik, az 5 perces tartós időmérés újraindul.
+    // Ha az 1 perces terhelés 160 alá visszaesik, az 5 perces tartós időmérés újraindul.
     // Így egy rövid indulási vagy munkaállomás-váltási csúcs nem okozhat téves karantént.
     nivoAutoProtectionHighLoadSince = 0;
   }
@@ -10720,6 +10725,19 @@ export default function Page() {
     const evaluateSingleTabOwnership = (): void => {
       const runtimeMachine = readMachineIdFromStorage();
       const runtimeMachineKey = nivoSingleTabMachineKey(runtimeMachine);
+
+      if (!nivoSingleTabLimitEnabledForMachine(runtimeMachine)) {
+        // Iroda / Mobil eszköz: több aktív fül és több párhuzamos kliens megengedett.
+        // Ha korábbról maradt saját lock, azt felszabadítjuk, de más működéshez nem nyúlunk.
+        nivoReleaseSingleTabLease(runtimeMachine);
+        if (nivoSingleTabDeniedMachineKey === runtimeMachineKey) {
+          nivoSingleTabDeniedMachineKey = "";
+        }
+        setNivoDuplicateTabBlocked(false);
+        setNivoDuplicateTabMachine(runtimeMachine);
+        return;
+      }
+
       const lease = nivoReadSingleTabLease(runtimeMachine);
       const leaseFresh = nivoSingleTabLeaseIsFresh(lease);
 
