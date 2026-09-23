@@ -975,6 +975,7 @@ const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]>
   "admin": [
     { id:"navigation", label:"Felső menüsor" }, { id:"header", label:"Admin gépfelügyelet fejléc" }, { id:"summary", label:"Aktivitás összesítő" },
     { id:"machines", label:"Gépek aktivitása" }, { id:"emergency", label:"Vészleállítás" },
+    { id:"quarantine-alerts", label:"Automatikus karantén" }, { id:"quarantine-notifications", label:"Karantén e-mail értesítések" },
   ],
 };
 
@@ -11589,6 +11590,19 @@ export default function Page() {
     const key = officeWindowStateKey(pageKey, windowKey);
     if (officeWindowThemeByKey[key]) return officeWindowThemeByKey[key];
 
+    // Meglévő központilag mentett karanténpanelszínt csak kezdőértékként használjuk.
+    // Az irodai megjelenésszerkesztőben elmentett külön ablaktéma felülírja.
+    if (pageKey === "admin" && windowKey === "quarantine-alerts") {
+      const legacyColor = /^#[0-9a-f]{6}$/i.test(nivoQuarantineAlertSettings.panelColor)
+        ? nivoQuarantineAlertSettings.panelColor
+        : NIVO_QUARANTINE_PANEL_DEFAULT_COLOR;
+      return ensureReadableOfficeTheme({
+        ...getOfficeTheme(pageKey),
+        borderColor: legacyColor,
+        accentColor: legacyColor,
+      });
+    }
+
     // Az END Excel export gomb alapból külön, neon narancs-sárga kiemelést kap.
     // A felhasználó ezt ugyanúgy külön szerkesztheti és mentheti, mint bármelyik irodai ablakot.
     if (pageKey === "dashboard" && windowKey === "end-excel-export") {
@@ -11668,6 +11682,7 @@ ${selector} thead, ${selector} th { background: ${theme.headerBackground} !impor
 ${selector} tbody, ${selector} td { color: ${theme.textColor} !important; border-color: ${theme.borderColor} !important; }
 ${selector} label, ${selector} p, ${selector} span { font-family: ${theme.fontFamily} !important; }
 ${selector} > section, ${selector} > article { border-color: ${theme.borderColor} !important; }
+${pageKey === "admin" && windowDef.id === "quarantine-alerts" ? `${selector} > h3 { color: ${theme.accentColor} !important; }` : ""}
 `;
     }).join("\n");
   }
@@ -14454,7 +14469,7 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         recipients: body.settings.recipients || [],
         panelColor: body.settings.panelColor || NIVO_QUARANTINE_PANEL_DEFAULT_COLOR,
       });
-      setNivoQuarantineActionMessage("Karanténértesítési címzettek, automatikus e-mail és panelszín elmentve.");
+      setNivoQuarantineActionMessage("Karanténértesítési címzettek és az automatikus e-mail beállításai elmentve.");
     } catch (error) {
       setNivoQuarantineActionMessage(`Értesítések mentése sikertelen: ${normalizeError(error)}`);
     } finally {
@@ -14587,10 +14602,6 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
         || recentlyReleasedKeys.has(`${machineKey}:${triggeredAt}`)) return [];
       return [{ machineId: row.machine_id, ...quarantine }];
     });
-    const quarantinePanelColor = /^#[0-9a-f]{6}$/i.test(nivoQuarantineAlertSettings.panelColor)
-      ? nivoQuarantineAlertSettings.panelColor
-      : NIVO_QUARANTINE_PANEL_DEFAULT_COLOR;
-    const quarantinePanelBg = `linear-gradient(${quarantinePanelColor}18, ${quarantinePanelColor}18), ${theme.panelBackground}`;
     const activeRequestCount = nivoAdminActivityRows.reduce((sum, row) => sum + (Array.isArray(row.active_requests) ? row.active_requests.length : 0), 0);
     const totalRequestCount1m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_1m || 0), 0);
     const totalRequestCount5m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_5m || 0), 0);
@@ -14652,46 +14663,49 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
           {nivoEmergencyControl.globalStop && <div style={{ marginTop: 12, padding: 12, borderRadius: 10, background: "#7f1d1d", color: "#fee2e2", fontWeight: 900 }}>⚠ GLOBÁLIS VÉSZLEÁLLÍTÁS AKTÍV – a kliensek csak a Vercel vészcsatornát figyelik.</div>}
         </div>
 
-        <div data-office-window="admin:quarantine-alerts" style={{ ...panel, padding: 16, marginBottom: 14, borderWidth: 2, borderColor: quarantinePanelColor, background: quarantinePanelBg }}>
-          <h3 style={{ fontSize: 18, margin: "0 0 10px", color: quarantinePanelColor }}>
+        <div data-office-window="admin:quarantine-alerts" style={{ ...panel, padding: 16, marginBottom: 14, borderWidth: 2, borderColor: getOfficeWindowTheme("admin", "quarantine-alerts").borderColor }}>
+          <h3 style={{ fontSize: 18, margin: "0 0 10px", color: getOfficeWindowTheme("admin", "quarantine-alerts").accentColor }}>
             Automatikus karanténban lévő gépek ({activeQuarantineEvents.length + pendingQuarantineRows.length})
           </h3>
-          {nivoQuarantineActionMessage && (
-            <div role="status" style={{ marginBottom: 10, padding: 10, border: "1px solid #eab308", borderRadius: 8, color: "#fde68a" }}>
-              {nivoQuarantineActionMessage}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 360px), 1fr))", gap: 16, alignItems: "start" }}>
+            <div style={{ display: "grid", gap: 9, minWidth: 0 }}>
+              {activeQuarantineEvents.length === 0 && pendingQuarantineRows.length === 0 && !nivoAdminQuarantineError && (
+                <div style={{ color: "#86efac", fontWeight: 800 }}>✓ Minden munkaállomás rendben – nincs ismert aktív karantén.</div>
+              )}
+              {nivoAdminQuarantineError && <div style={{ color: "#fcd34d", marginBottom: 8 }}>A központi karanténnapló nem elérhető: {nivoAdminQuarantineError}. A gépektől származó utolsó állapotot mutatjuk.</div>}
+              <div style={{ display: "grid", gap: 9 }}>
+                {activeQuarantineEvents.map((event) => (
+                  <div key={event.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: 12, border: "1px solid #b45309", borderRadius: 10, background: "#422006", flexWrap: "wrap" }}>
+                    <div>
+                      <strong style={{ color: "#fde68a", fontSize: 17 }}>{event.machine_id}</strong>
+                      <div style={{ marginTop: 4, fontSize: 13, color: "#fed7aa" }}>Kiváltó terhelés: {event.request_count_1m} kérés/perc · Feloldás: {formatDateTime(event.blocked_until)} · Hátralévő idő: {Math.max(0, Math.ceil((new Date(event.blocked_until).getTime() - Date.now()) / 60_000))} perc</div>
+                      <div style={{ marginTop: 3, color: "#fdba74", fontSize: 12 }}>{event.reason}</div>
+                      <div style={{ color: "#cbd5e1", fontSize: 12 }}>E-mail: {event.email_sent_at ? "elküldve" : event.email_skipped_at ? "kikapcsolva" : event.email_error ? `hiba: ${event.email_error}` : "feldolgozás alatt"}</div>
+                    </div>
+                    <button type="button" style={{ ...buttonPrimary, background: "#166534", borderColor: "#22c55e" }}
+                      disabled={nivoQuarantineAdminBusy} onClick={() => void releaseNivoQuarantineRemotely(event)}>
+                      Karantén feloldása
+                    </button>
+                  </div>
+                ))}
+                {pendingQuarantineRows.map((item) => (
+                  <div key={`pending-${item.machineId}`} style={{ padding: 12, border: "1px solid #92400e", borderRadius: 10, background: "#422006", color: "#fde68a" }}>
+                    <strong>{item.machineId}</strong> · {item.requestCount1m} kérés/perc · Feloldás: {formatDateTime(new Date(item.blockedUntil).toISOString())}
+                    <div style={{ fontSize: 12, marginTop: 4 }}>A központi esemény bejegyzésére várunk; a távoli feloldás akkor válik elérhetővé.</div>
+                  </div>
+                ))}
+              </div>
             </div>
-          )}
-          {activeQuarantineEvents.length === 0 && pendingQuarantineRows.length === 0 && !nivoAdminQuarantineError && (
-            <div style={{ color: "#86efac", fontWeight: 800 }}>✓ Minden munkaállomás rendben – nincs ismert aktív karantén.</div>
-          )}
-          {nivoAdminQuarantineError && <div style={{ color: "#fcd34d", marginBottom: 8 }}>A központi karanténnapló nem elérhető: {nivoAdminQuarantineError}. A gépektől származó utolsó állapotot mutatjuk.</div>}
-          <div style={{ display: "grid", gap: 9 }}>
-            {activeQuarantineEvents.map((event) => (
-              <div key={event.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: 12, border: "1px solid #b45309", borderRadius: 10, background: "#422006", flexWrap: "wrap" }}>
-                <div>
-                  <strong style={{ color: "#fde68a", fontSize: 17 }}>{event.machine_id}</strong>
-                  <div style={{ marginTop: 4, fontSize: 13, color: "#fed7aa" }}>Kiváltó terhelés: {event.request_count_1m} kérés/perc · Feloldás: {formatDateTime(event.blocked_until)} · Hátralévő idő: {Math.max(0, Math.ceil((new Date(event.blocked_until).getTime() - Date.now()) / 60_000))} perc</div>
-                  <div style={{ marginTop: 3, color: "#fdba74", fontSize: 12 }}>{event.reason}</div>
-                  <div style={{ color: "#cbd5e1", fontSize: 12 }}>E-mail: {event.email_sent_at ? "elküldve" : event.email_skipped_at ? "kikapcsolva" : event.email_error ? `hiba: ${event.email_error}` : "feldolgozás alatt"}</div>
+            <section data-office-window="admin:quarantine-notifications" style={{ ...panel, background: getOfficeWindowTheme("admin", "quarantine-notifications").panelBackground, borderColor: getOfficeWindowTheme("admin", "quarantine-notifications").borderColor, padding: 14, minWidth: 0 }}>
+              {nivoQuarantineActionMessage && (
+                <div role="status" style={{ marginBottom: 10, padding: 10, border: "1px solid #eab308", borderRadius: 8, color: "#fde68a" }}>
+                  {nivoQuarantineActionMessage}
                 </div>
-                <button type="button" style={{ ...buttonPrimary, background: "#166534", borderColor: "#22c55e" }}
-                  disabled={nivoQuarantineAdminBusy} onClick={() => void releaseNivoQuarantineRemotely(event)}>
-                  Karantén feloldása
-                </button>
-              </div>
-            ))}
-            {pendingQuarantineRows.map((item) => (
-              <div key={`pending-${item.machineId}`} style={{ padding: 12, border: "1px solid #92400e", borderRadius: 10, background: "#422006", color: "#fde68a" }}>
-                <strong>{item.machineId}</strong> · {item.requestCount1m} kérés/perc · Feloldás: {formatDateTime(new Date(item.blockedUntil).toISOString())}
-                <div style={{ fontSize: 12, marginTop: 4 }}>A központi esemény bejegyzésére várunk; a távoli feloldás akkor válik elérhetővé.</div>
-              </div>
-            ))}
-          </div>
-          <div style={{ borderTop: `1px solid ${theme.borderColor}`, marginTop: 14, paddingTop: 12 }}>
-            <h4 style={{ margin: "0 0 8px", fontSize: 16 }}>Karanténértesítések e-mailben</h4>
-            <div style={{ fontSize: 12, color: theme.mutedText, marginBottom: 9 }}>A beállítások közösen a Supabase-ban tárolódnak. Az értesítést a Vercel küldi a karantén megjelenésekor, az Admin oldal megnyitása nélkül is.</div>
-            <div style={{ display: "grid", gap: 9 }}>
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              )}
+              <h4 style={{ margin: "0 0 8px", fontSize: 16 }}>Karanténértesítések e-mailben</h4>
+              <div style={{ fontSize: 12, color: theme.mutedText, marginBottom: 9 }}>A beállítások közösen a Supabase-ban tárolódnak. Az értesítést a Vercel küldi a karantén megjelenésekor, az Admin oldal megnyitása nélkül is.</div>
+              <div style={{ display: "grid", gap: 9 }}>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                 <button type="button" style={buttonSecondary} disabled={nivoQuarantineAdminBusy} onClick={() => void loadNivoQuarantineAlertSettings()}>
                   {nivoQuarantineAdminBusy ? "Betöltés…" : "Mentett beállítások betöltése (Admin PIN)"}
                 </button>
@@ -14721,32 +14735,14 @@ ${selector} > section, ${selector} > article { border-color: ${theme.borderColor
                   ))}
                   {!nivoQuarantineAlertSettings.recipients.length && <span style={{ color: theme.mutedText, fontSize: 12 }}>Nincs még megadott címzett.</span>}
                 </div>
-                <div style={{ borderTop: `1px solid ${theme.borderColor}`, paddingTop: 12, display: "grid", gap: 9 }}>
-                  <div style={{ fontWeight: 800 }}>Karanténpanel megjelenésének színe</div>
-                  <div style={{ fontSize: 12, color: theme.mutedText }}>Csak ennek a panelnek a színét módosítja; a panel mindig látható marad, és az e-mail-értesítések beállítását nem érinti.</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-                    <input type="color" aria-label="Karanténpanel színének kiválasztása"
-                      value={nivoQuarantineAlertSettings.panelColor}
-                      onChange={(event) => setNivoQuarantineAlertSettings((current) => ({ ...current, panelColor: event.target.value }))}
-                      style={{ width: 54, height: 36, cursor: "pointer", background: "transparent", padding: 1 }} />
-                    <span style={{ color: theme.mutedText, fontSize: 12 }}>{nivoQuarantineAlertSettings.panelColor}</span>
-                    {[
-                      ["Zöld", "#16a34a"], ["Kék", "#3b82f6"], ["Lila", "#a855f7"],
-                      ["Narancs", "#f59e0b"], ["Piros", "#ef4444"],
-                    ].map(([label, color]) => (
-                      <button key={color} type="button" title={label} aria-label={`Panelszín: ${label}`}
-                        onClick={() => setNivoQuarantineAlertSettings((current) => ({ ...current, panelColor: color }))}
-                        style={{ width: 30, height: 30, borderRadius: 9, background: color, cursor: "pointer", border: nivoQuarantineAlertSettings.panelColor === color ? "3px solid white" : "1px solid #64748b" }} />
-                    ))}
-                  </div>
-                </div>
                 <div>
                   <button type="button" style={buttonPrimary} disabled={nivoQuarantineAdminBusy || !nivoQuarantineAlertSettingsLoaded}
                     onClick={() => void saveNivoQuarantineAlertSettings()}>
-                    {nivoQuarantineAdminBusy ? "Mentés…" : "E-mail és panelszín mentése"}
+                    {nivoQuarantineAdminBusy ? "Mentés…" : "E-mail beállítások mentése"}
                   </button>
                 </div>
               </div>
+            </section>
           </div>
         </div>
 
