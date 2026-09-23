@@ -700,6 +700,43 @@ type NivoMachineActivityRow = {
   updated_at: string | null;
 };
 
+type NivoSharedClientActivityRow = {
+  tab_id: string;
+  machine_id: string;
+  client_id: string;
+  user_name: string | null;
+  online_since: string | null;
+  last_seen_at: string;
+  request_count_total: number | null;
+  request_count_1m: number | null;
+  request_count_5m: number | null;
+  request_count_1h: number | null;
+  error_count_1m: number | null;
+  active_request_count: number | null;
+  app_version: string | null;
+};
+
+type NivoSharedClientGroup = {
+  clientId: string;
+  userNames: string[];
+  tabs: NivoSharedClientActivityRow[];
+  lastSeenAt: string;
+  requestCount1m: number;
+};
+
+type NivoSharedMachineSummary = {
+  machineId: string;
+  groups: NivoSharedClientGroup[];
+  tabCount: number;
+  requestCount1m: number;
+  requestCount5m: number;
+  requestCount1h: number;
+  errorCount1m: number;
+  activeRequestCount: number;
+  totalRequestCount: number;
+  lastSeenAt: string | null;
+};
+
 type NivoQuarantineServerEvent = {
   id: number;
   machine_id: string;
@@ -2467,6 +2504,9 @@ const ADMIN_RESET_PIN = "4826";
 const MACHINE_ID_STORAGE_KEY = "nivoscan-machine-id-v1";
 const NIVO_CLIENT_ID_STORAGE_KEY = "nivoscan-client-id-v1";
 const NIVO_MACHINE_ACTIVITY_TABLE = "nivo_machine_activity";
+// Csak az Iroda/Mobil eszköz párhuzamos böngészőfüleinek külön állapotai.
+const NIVO_SHARED_CLIENT_ACTIVITY_TABLE = "nivo_shared_client_activity";
+const NIVO_SHARED_CLIENT_ONLINE_MS = 30_000;
 const NIVO_EMERGENCY_CONTROL_URL = "/api/nivo-emergency-control";
 const NIVO_QUARANTINE_API_URL = "/api/nivo-quarantine";
 const NIVO_QUARANTINE_PANEL_DEFAULT_COLOR = "#16a34a";
@@ -2504,7 +2544,7 @@ const NIVO_SINGLE_TAB_HEARTBEAT_MS = 1_000;
 const NIVO_SINGLE_TAB_STALE_MS = 6_000;
 const NIVO_SINGLE_TAB_RELOAD_DELAY_MS = 300;
 
-const NIVO_CLIENT_VERSION = "2026-09-23-quarantine-email-panel-color-v2";
+const NIVO_CLIENT_VERSION = "2026-09-23-shared-office-mobile-activity-v1";
 const DEFAULT_MACHINE_ID = "Mobil eszköz";
 const TERMINAL_ENTRY_LAYOUT_STORAGE_KEY = "nivo-terminal-entry-layout-v1";
 const TERMINAL_ENTRY_LAYOUT_GRID_SIZE = 12;
@@ -5646,6 +5686,12 @@ function nivoSingleTabMachineKey(machineIdValue: string): string {
   return String(machineIdValue || DEFAULT_MACHINE_ID).trim().toLocaleLowerCase("hu-HU");
 }
 
+function nivoIsSharedActivityMachine(machineIdValue: unknown): boolean {
+  const name = String(machineIdValue || "").normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+  return name === "iroda" || name === "mobil eszkoz";
+}
+
 function nivoSingleTabLimitEnabledForMachine(machineIdValue: string): boolean {
   const normalized = String(machineIdValue || DEFAULT_MACHINE_ID)
     .normalize("NFD")
@@ -6128,6 +6174,17 @@ let nivoActivityLastSuccessAt = "";
 let nivoActivityLastErrorAt = "";
 let nivoActivityLastError = "";
 let nivoActivitySequence = 0;
+// A közös munkaállomások saját, külön számlálót kapnak: ha a fejlesztő
+// ugyanabban a böngészőfülben munkaállomást vált, a másik állomás kéréseit
+// nem számoljuk bele az Iroda/Mobil összesített forgalmába.
+const nivoSharedStationWindows = new Map<string, {
+  requests: number[];
+  errors: number[];
+  total: number;
+  active: number;
+}>();
+// A fül aktuális állomása, nem a többi fül által is írható localStorage.
+let nivoCurrentTabMachineId = "";
 let nivoAutoProtectionHighLoadSince = 0;
 let nivoQuarantineReportInFlight = false;
 const nivoQuarantineReportLastAttempt = new Map<string, number>();
@@ -6135,6 +6192,9 @@ const nivoQuarantineReportLastAttempt = new Map<string, number>();
 const nivoSingleTabRuntimeId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
   ? crypto.randomUUID()
   : `tab-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+// Ha a böngésző tiltja a localStorage-ot, egy munkameneten belül
+// akkor se változzon tíz másodpercenként a kliensazonosító.
+const nivoFallbackClientId = `fallback-${nivoSingleTabRuntimeId}`;
 let nivoSingleTabDeniedMachineKey = "";
 let nivoSingleTabReloadScheduled = false;
 
@@ -6330,7 +6390,7 @@ function nivoGetClientId(): string {
     window.localStorage.setItem(NIVO_CLIENT_ID_STORAGE_KEY, next);
     return next;
   } catch {
-    return `client-${Date.now()}`;
+    return nivoFallbackClientId;
   }
 }
 
@@ -6367,7 +6427,8 @@ function nivoDescribeSupabaseRequest(url: string, method: string): { kind: strin
 
 function nivoShouldTrackSupabaseRequest(url: string): boolean {
   if (!url.startsWith(SUPABASE_URL)) return false;
-  return !url.includes(`/rest/v1/${NIVO_MACHINE_ACTIVITY_TABLE}`);
+  return !url.includes(`/rest/v1/${NIVO_MACHINE_ACTIVITY_TABLE}`)
+    && !url.includes(`/rest/v1/${NIVO_SHARED_CLIENT_ACTIVITY_TABLE}`);
 }
 
 function nivoPruneActivityWindows(now = Date.now()): void {
@@ -6397,6 +6458,23 @@ async function nivoTrackActualSupabaseRequest(
 
   const descriptor = nivoDescribeSupabaseRequest(url, method);
   const startedMs = Date.now();
+  const currentStationName = nivoCurrentTabMachineId
+    || (typeof window !== "undefined" ? readMachineIdFromStorage() : "");
+  const sharedStationKey = nivoIsSharedActivityMachine(currentStationName)
+    ? nivoNormalizeEmergencyMachineKey(currentStationName) : "";
+  let sharedWindow = sharedStationKey ? nivoSharedStationWindows.get(sharedStationKey) : undefined;
+  if (sharedStationKey && !sharedWindow) {
+    sharedWindow = { requests: [], errors: [], total: 0, active: 0 };
+    nivoSharedStationWindows.set(sharedStationKey, sharedWindow);
+  }
+  if (sharedWindow) {
+    sharedWindow.requests.push(startedMs);
+    sharedWindow.total += 1;
+    sharedWindow.active += 1;
+    const cutoff = startedMs - 60 * 60_000;
+    while (sharedWindow.requests.length && sharedWindow.requests[0] < cutoff) sharedWindow.requests.shift();
+    while (sharedWindow.errors.length && sharedWindow.errors[0] < cutoff) sharedWindow.errors.shift();
+  }
   const item: NivoQueryActivityItem = {
     id: `q-${startedMs}-${++nivoActivitySequence}`,
     method,
@@ -6421,6 +6499,7 @@ async function nivoTrackActualSupabaseRequest(
       nivoActivityLastSuccessAt = item.finishedAt;
     } else {
       nivoActivityErrorTimes.push(finishedMs);
+      if (sharedWindow) sharedWindow.errors.push(finishedMs);
       nivoActivityLastErrorAt = item.finishedAt;
       nivoActivityLastError = `${descriptor.kind} ${descriptor.target}: HTTP ${response.status}`;
       item.error = nivoActivityLastError;
@@ -6433,10 +6512,12 @@ async function nivoTrackActualSupabaseRequest(
     item.ok = false;
     item.error = error instanceof Error ? error.message : String(error);
     nivoActivityErrorTimes.push(finishedMs);
+    if (sharedWindow) sharedWindow.errors.push(finishedMs);
     nivoActivityLastErrorAt = item.finishedAt;
     nivoActivityLastError = item.error;
     throw error;
   } finally {
+    if (sharedWindow) sharedWindow.active = Math.max(0, sharedWindow.active - 1);
     nivoActivityActiveRequests.delete(item.id);
     nivoActivityRecentRequests.unshift({ ...item });
     if (nivoActivityRecentRequests.length > 20) nivoActivityRecentRequests.length = 20;
@@ -6472,6 +6553,84 @@ function nivoBuildMachineActivityPayload(machineId: string, userName: string): R
     app_version: NIVO_CLIENT_VERSION,
     updated_at: new Date(now).toISOString(),
   };
+}
+
+function nivoBuildSharedClientActivityPayload(machineId: string, userName: string): Record<string, unknown> {
+  const payload = nivoBuildMachineActivityPayload(machineId, userName);
+  const stationKey = nivoNormalizeEmergencyMachineKey(machineId);
+  const counters = nivoSharedStationWindows.get(stationKey);
+  const now = Date.now();
+  const requests = counters?.requests || [];
+  const errors = counters?.errors || [];
+  if (counters) {
+    const cutoff = now - 60 * 60_000;
+    while (requests.length && requests[0] < cutoff) requests.shift();
+    while (errors.length && errors[0] < cutoff) errors.shift();
+  }
+  return {
+    tab_id: nivoSingleTabRuntimeId, // Minden önállóan futó böngészőfül saját azonosítóval rendelkezik.
+    machine_id: payload.machine_id,
+    client_id: payload.client_id, // Azonos Chrome-profil fülei ugyanazon eszközcsoportba tartoznak.
+    user_name: payload.user_name,
+    online_since: payload.online_since,
+    last_seen_at: payload.last_seen_at,
+    request_count_total: counters?.total || 0,
+    request_count_1m: nivoActivityCountSince(requests, now - 60_000),
+    request_count_5m: nivoActivityCountSince(requests, now - 5 * 60_000),
+    request_count_1h: nivoActivityCountSince(requests, now - 60 * 60_000),
+    error_count_1m: nivoActivityCountSince(errors, now - 60_000),
+    active_request_count: counters?.active || 0,
+    app_version: payload.app_version,
+  };
+}
+
+function nivoAggregateSharedClientActivity(
+  rows: NivoSharedClientActivityRow[],
+  now = Date.now()
+): Map<string, NivoSharedMachineSummary> {
+  const summaries = new Map<string, NivoSharedMachineSummary>();
+  const devices = new Map<string, Map<string, NivoSharedClientGroup>>();
+  for (const row of rows) {
+    const lastSeen = Date.parse(row.last_seen_at);
+    if (!Number.isFinite(lastSeen) || now - lastSeen > NIVO_SHARED_CLIENT_ONLINE_MS || lastSeen > now + 10_000) continue;
+    if (!nivoIsSharedActivityMachine(row.machine_id)) continue;
+    const key = nivoNormalizeEmergencyMachineKey(row.machine_id);
+    let summary = summaries.get(key);
+    if (!summary) {
+      summary = {
+        machineId: row.machine_id, groups: [], tabCount: 0, requestCount1m: 0,
+        requestCount5m: 0, requestCount1h: 0, errorCount1m: 0,
+        activeRequestCount: 0, totalRequestCount: 0, lastSeenAt: null,
+      };
+      summaries.set(key, summary);
+      devices.set(key, new Map());
+    }
+    let group = devices.get(key)!.get(row.client_id);
+    if (!group) {
+      group = { clientId: row.client_id, userNames: [], tabs: [], lastSeenAt: row.last_seen_at, requestCount1m: 0 };
+      devices.get(key)!.set(row.client_id, group);
+      summary.groups.push(group);
+    }
+    group.tabs.push(row);
+    group.requestCount1m += Number(row.request_count_1m || 0);
+    if (row.user_name && !group.userNames.includes(row.user_name)) group.userNames.push(row.user_name);
+    if (Date.parse(row.last_seen_at) > Date.parse(group.lastSeenAt)) group.lastSeenAt = row.last_seen_at;
+    summary.tabCount += 1;
+    summary.requestCount1m += Number(row.request_count_1m || 0);
+    summary.requestCount5m += Number(row.request_count_5m || 0);
+    summary.requestCount1h += Number(row.request_count_1h || 0);
+    summary.errorCount1m += Number(row.error_count_1m || 0);
+    summary.activeRequestCount += Number(row.active_request_count || 0);
+    summary.totalRequestCount += Number(row.request_count_total || 0);
+    if (!summary.lastSeenAt || Date.parse(row.last_seen_at) > Date.parse(summary.lastSeenAt)) {
+      summary.lastSeenAt = row.last_seen_at;
+    }
+  }
+  for (const summary of summaries.values()) {
+    summary.groups.sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt));
+    for (const group of summary.groups) group.tabs.sort((a, b) => Date.parse(b.last_seen_at) - Date.parse(a.last_seen_at));
+  }
+  return summaries;
 }
 
 function nivoSupabaseFetchUrl(input: NivoFetchInput): string {
@@ -6602,7 +6761,8 @@ async function nivoRunGuardedSupabaseRead(input: NivoFetchInput, init?: NivoFetc
 function nivoGuardedSupabaseFetch(input: NivoFetchInput, init?: NivoFetchInit): Promise<Response> {
   const url = nivoSupabaseFetchUrl(input);
   const isSupabaseRequest = url.startsWith(SUPABASE_URL);
-  const isMachineActivityRequest = url.includes(`/rest/v1/${NIVO_MACHINE_ACTIVITY_TABLE}`);
+  const isMachineActivityRequest = url.includes(`/rest/v1/${NIVO_MACHINE_ACTIVITY_TABLE}`)
+    || url.includes(`/rest/v1/${NIVO_SHARED_CLIENT_ACTIVITY_TABLE}`);
 
   if (isSupabaseRequest && !nivoSingleTabCanUseSupabase()) {
     return Promise.reject(new Error(
@@ -10221,6 +10381,11 @@ export default function Page() {
 
   // Admin gépfelügyelet + Supabase-tól független Vercel vészleállítás.
   const [nivoAdminActivityRows, setNivoAdminActivityRows] = useState<NivoMachineActivityRow[]>([]);
+  const [nivoAdminSharedClientRows, setNivoAdminSharedClientRows] = useState<NivoSharedClientActivityRow[]>([]);
+  const [nivoAdminSharedActivityLoaded, setNivoAdminSharedActivityLoaded] = useState(false);
+  const [nivoExpandedSharedMachine, setNivoExpandedSharedMachine] = useState<string | null>(null);
+  const nivoSharedAdminQueryRetryAtRef = useRef(0);
+  const nivoSharedAdminQueryInFlightRef = useRef(false);
   const [nivoAdminQuarantineEvents, setNivoAdminQuarantineEvents] = useState<NivoQuarantineServerEvent[]>([]);
   const [nivoAdminQuarantineReleased, setNivoAdminQuarantineReleased] = useState<NivoQuarantineReleasedEvent[]>([]);
   const [nivoAdminQuarantineError, setNivoAdminQuarantineError] = useState("");
@@ -10816,6 +10981,7 @@ export default function Page() {
   );
 
   const [machineId, setMachineId] = useState<MachineIdOption>("iroda");
+  nivoCurrentTabMachineId = machineId;
   const [nivoDuplicateTabBlocked, setNivoDuplicateTabBlocked] = useState(false);
   const [nivoDuplicateTabMachine, setNivoDuplicateTabMachine] = useState("");
   const nivoSingleTabPreviousMachineRef = useRef("");
@@ -10855,6 +11021,7 @@ export default function Page() {
     if (typeof window === "undefined") return;
 
     const storedMachineId = readMachineIdFromStorage();
+    nivoCurrentTabMachineId = storedMachineId;
     setMachineId(storedMachineId);
     setMachineDraftId(storedMachineId);
     setTerminalEntryLayoutByStation(readTerminalEntryLayoutsFromStorage());
@@ -14569,6 +14736,34 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       nextError = nextError ? `${nextError} | ${detail}` : detail;
     }
 
+    // Az Iroda/Mobil eszköz kliensenkénti mérése az admin meglévő frissítésével
+    // együtt fut, nem indít külön időzítőt, és hibánál a termelési oldalt nem zavarja.
+    if (supabase && !nivoEmergencyRuntimeBlocked
+        && !nivoSharedAdminQueryInFlightRef.current
+        && Date.now() >= nivoSharedAdminQueryRetryAtRef.current) {
+      nivoSharedAdminQueryInFlightRef.current = true;
+      try {
+        const since = new Date(Date.now() - NIVO_SHARED_CLIENT_ONLINE_MS).toISOString();
+        const sharedResponse = await supabase.from(NIVO_SHARED_CLIENT_ACTIVITY_TABLE)
+          .select("tab_id,machine_id,client_id,user_name,online_since,last_seen_at,request_count_total,request_count_1m,request_count_5m,request_count_1h,error_count_1m,active_request_count,app_version")
+          .gte("last_seen_at", since)
+          .order("last_seen_at", { ascending: false });
+        if (sharedResponse.error) throw sharedResponse.error;
+        setNivoAdminSharedClientRows((sharedResponse.data || []) as NivoSharedClientActivityRow[]);
+        setNivoAdminSharedActivityLoaded(true);
+        nivoSharedAdminQueryRetryAtRef.current = 0;
+      } catch (error) {
+        // Ha az új SQL még nincs telepítve, ne küldjünk percenként 12 hibás kérést.
+        nivoSharedAdminQueryRetryAtRef.current = Date.now() + 60_000;
+        setNivoAdminSharedActivityLoaded(false);
+        setNivoAdminSharedClientRows([]);
+        const detail = `Iroda/Mobil kliensaktivitás: ${normalizeError(error)}. Futtasd az új SQL-t.`;
+        nextError = nextError ? `${nextError} | ${detail}` : detail;
+      } finally {
+        nivoSharedAdminQueryInFlightRef.current = false;
+      }
+    }
+
     try {
       const response = await fetch(`${NIVO_QUARANTINE_API_URL}?scope=active`, { cache: "no-store" });
       const body = await response.json().catch(() => ({})) as {
@@ -14871,8 +15066,40 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       color: theme.textColor,
       boxShadow: `0 10px ${theme.shadowBlur}px rgba(0,0,0,${theme.shadowOpacity})`,
     };
+    const sharedSummaries = nivoAggregateSharedClientActivity(nivoAdminSharedClientRows);
     const activityByMachine = new Map<string, NivoMachineActivityRow>();
     nivoAdminActivityRows.forEach((row) => activityByMachine.set(nivoNormalizeEmergencyMachineKey(row.machine_id), row));
+    if (nivoAdminSharedActivityLoaded) {
+      // Az Iroda/Mobil esetében a régi egyetlen heartbeat-sor nem az összes dolgozóé.
+      // A meglévő Admin összesítők és részletes boxok is kliensfülenként összegzett értéket kapnak.
+      for (const machineName of ["iroda", "Mobil eszköz"]) {
+        const key = nivoNormalizeEmergencyMachineKey(machineName);
+        const shared = sharedSummaries.get(key);
+        const old = activityByMachine.get(key);
+        if (!old && !shared) continue;
+        const merged: NivoMachineActivityRow = {
+          ...(old || {
+            machine_id: machineName, client_id: null, online_since: null,
+            user_name: null, page_url: null, user_agent: null, is_visible: null,
+            last_request_at: null, last_success_at: null, last_error_at: null,
+            last_error: null, active_requests: [], recent_requests: [],
+            gateway_backoff_until: null, gateway_failure_count: null,
+            app_version: NIVO_CLIENT_VERSION, updated_at: null,
+          }),
+          last_seen_at: shared?.lastSeenAt || null,
+          client_id: null,
+          user_name: shared ? `${shared.groups.length} eszköz / ${shared.tabCount} fül` : null,
+          request_count_total: shared?.totalRequestCount || 0,
+          request_count_1m: shared?.requestCount1m || 0,
+          request_count_5m: shared?.requestCount5m || 0,
+          request_count_1h: shared?.requestCount1h || 0,
+          error_count_1m: shared?.errorCount1m || 0,
+          active_requests: [],
+          recent_requests: [],
+        };
+        activityByMachine.set(key, merged);
+      }
+    }
     const machineNames = Array.from(new Set([
       ...machineOptions,
       ...nivoAdminActivityRows.map((row) => String(row.machine_id || "").trim()).filter(Boolean),
@@ -14925,12 +15152,17 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       }
     }
     const machineActivityCardTheme = getOfficeWindowTheme("admin", "machine-activity-cards");
-    const activeRequestCount = nivoAdminActivityRows.reduce((sum, row) => sum + (Array.isArray(row.active_requests) ? row.active_requests.length : 0), 0);
-    const totalRequestCount1m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_1m || 0), 0);
-    const totalRequestCount5m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_5m || 0), 0);
-    const totalRequestCount1h = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_1h || 0), 0);
-    const totalErrorCount1m = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.error_count_1m || 0), 0);
-    const totalRequestCount = nivoAdminActivityRows.reduce((sum, row) => sum + Number(row.request_count_total || 0), 0);
+    const aggregatedMachineRows = Array.from(activityByMachine.values());
+    const activeRequestCount = aggregatedMachineRows.reduce((sum, row) => sum + (
+      nivoAdminSharedActivityLoaded && nivoIsSharedActivityMachine(row.machine_id)
+        ? sharedSummaries.get(nivoNormalizeEmergencyMachineKey(row.machine_id))?.activeRequestCount || 0
+        : Array.isArray(row.active_requests) ? row.active_requests.length : 0
+    ), 0);
+    const totalRequestCount1m = aggregatedMachineRows.reduce((sum, row) => sum + Number(row.request_count_1m || 0), 0);
+    const totalRequestCount5m = aggregatedMachineRows.reduce((sum, row) => sum + Number(row.request_count_5m || 0), 0);
+    const totalRequestCount1h = aggregatedMachineRows.reduce((sum, row) => sum + Number(row.request_count_1h || 0), 0);
+    const totalErrorCount1m = aggregatedMachineRows.reduce((sum, row) => sum + Number(row.error_count_1m || 0), 0);
+    const totalRequestCount = aggregatedMachineRows.reduce((sum, row) => sum + Number(row.request_count_total || 0), 0);
 
     return (
       <div style={{ minHeight: "100vh", background: theme.pageBackground, color: theme.textColor, padding: 22, fontFamily: theme.fontFamily, boxSizing: "border-box" }}>
@@ -15010,12 +15242,29 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                     const isOnline = Boolean(row?.last_seen_at && (
                       Date.now() - new Date(row.last_seen_at).getTime() <= 30_000
                     ));
-                    const minuteCount = quarantined
-                      ? Number(snapshot?.requestCount1m || 0)
+                    const isShared = nivoIsSharedActivityMachine(machineName);
+                    const shared = nivoAdminSharedActivityLoaded ? sharedSummaries.get(machineKey) : undefined;
+                    // Közös munkaállomásnál karantén esetén is az összes többi
+                    // aktív kliens VALÓDI összesített forgalmát mutatjuk;
+                    // a kiváltó kliens saját száma az eseménynél látszik.
+                    const minuteCount = isShared && nivoAdminSharedActivityLoaded
+                      ? Number(shared?.requestCount1m || 0)
+                      : quarantined ? Number(snapshot?.requestCount1m || 0)
                       : isOnline ? Number(row?.request_count_1m || 0) : 0;
+                    const isSharedExpanded = nivoExpandedSharedMachine === machineKey;
                     return (
                       <div
                         key={machineKey}
+                        onClick={isShared ? () => setNivoExpandedSharedMachine(isSharedExpanded ? null : machineKey) : undefined}
+                        onKeyDown={isShared ? (event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            setNivoExpandedSharedMachine(isSharedExpanded ? null : machineKey);
+                          }
+                        } : undefined}
+                        role={isShared ? "button" : undefined}
+                        tabIndex={isShared ? 0 : undefined}
+                        aria-expanded={isShared ? isSharedExpanded : undefined}
                         data-office-window="admin:machine-activity-cards"
                         data-nivo-quarantine={quarantined ? "true" : "false"}
                         title={quarantined
@@ -15028,6 +15277,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                           border: `${machineActivityCardTheme.borderWidth}px solid ${machineActivityCardTheme.borderColor}`,
                           background: machineActivityCardTheme.panelBackground,
                           color: machineActivityCardTheme.textColor,
+                          cursor: isShared ? "pointer" : "default",
+                          outline: isShared && isSharedExpanded ? `2px solid ${machineActivityCardTheme.accentColor}` : undefined,
                         }}
                       >
                         {quarantined && (
@@ -15049,10 +15300,53 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                           <strong style={{ fontSize: 22, lineHeight: 1, fontWeight: 900 }}>{minuteCount}</strong>
                           <span style={{ fontSize: 10, opacity: .9 }}>kérés/perc</span>
                         </div>
+                        {isShared && (
+                          <div style={{ fontSize: 10, fontWeight: 800, marginTop: 4, opacity: .95 }}>
+                            {nivoAdminSharedActivityLoaded
+                              ? `${shared?.groups.length || 0}/${shared?.tabCount || 0} eszköz/fül · Részletek ${isSharedExpanded ? "▲" : "▼"}`
+                              : "Kliensadat nem elérhető · Részletek ▼"}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
                 </div>
+                {nivoExpandedSharedMachine && nivoIsSharedActivityMachine(nivoExpandedSharedMachine) && (
+                  <div style={{ ...panel, background: theme.panelAltBackground, padding: 12, marginTop: 9, minWidth: 0 }}>
+                    <div style={{ fontWeight: 900, fontSize: 14, marginBottom: 8 }}>
+                      {nivoExpandedSharedMachine === "iroda" ? "Iroda" : "Mobil eszköz"} – aktív kliensek
+                    </div>
+                    {!nivoAdminSharedActivityLoaded && (
+                      <div style={{ fontSize: 12, color: "#fde68a" }}>A kliensadatok nem érhetők el. Futtasd az új SQL-t, majd frissítsd a dolgozói oldalakat.</div>
+                    )}
+                    {nivoAdminSharedActivityLoaded && !(sharedSummaries.get(nivoExpandedSharedMachine)?.groups.length) && (
+                      <div style={{ fontSize: 12, color: theme.mutedText }}>Az elmúlt 30 másodpercben nem jelentkezett aktív kliens.</div>
+                    )}
+                    {(sharedSummaries.get(nivoExpandedSharedMachine)?.groups || []).map((group, index) => (
+                      <div key={group.clientId} style={{ marginTop: 7, padding: 9, border: `1px solid ${theme.borderColor}`, borderRadius: 9 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, fontSize: 12 }}>
+                          <strong>
+                            {`Eszköz ${index + 1} · 1/${group.tabs.length} (eszköz/fül)`}
+                            {activeQuarantineEvents.some((event) =>
+                              nivoNormalizeEmergencyMachineKey(event.machine_id) === nivoExpandedSharedMachine
+                              && event.client_id === group.clientId
+                            ) && <span style={{ color: "#fca5a5", marginLeft: 8 }}>KARANTÉN</span>}
+                          </strong>
+                          <strong>{group.requestCount1m} kérés/perc</strong>
+                        </div>
+                        <div style={{ fontSize: 11, color: theme.mutedText, marginTop: 3 }}>
+                          {group.userNames.length ? group.userNames.join(", ") : "Nincs belépett dolgozó"} · Utolsó aktivitás: {formatDateTime(group.lastSeenAt)}
+                        </div>
+                        {group.tabs.map((tab, tabIndex) => (
+                          <div key={tab.tab_id} style={{ display: "flex", gap: 6, justifyContent: "space-between", flexWrap: "wrap", fontSize: 11, marginTop: 5, paddingTop: 5, borderTop: `1px solid ${theme.borderColor}` }}>
+                            <span>{`Fül ${tabIndex + 1} · ${tab.user_name || "Nincs belépett dolgozó"}`}</span>
+                            <span>{formatDateTime(tab.last_seen_at)} · {Number(tab.request_count_1m || 0)} kérés/perc</span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
               <div style={{ display: "grid", gap: 9 }}>
                 {activeQuarantineEvents.map((event) => (
@@ -31434,6 +31728,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     let cancelled = false;
     let heartbeatInFlight = false;
     let heartbeatBackoffUntil = 0;
+    let sharedHeartbeatBackoffUntil = 0;
+    let sharedHeartbeatWarned = false;
 
     const sendHeartbeat = async (): Promise<void> => {
       if (
@@ -31454,6 +31750,26 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           }
           if (!String(response.error.message || "").includes("nivo_machine_activity")) {
             console.warn("NÍVÓ gépaktivitás heartbeat hiba:", response.error);
+          }
+        }
+
+        if (nivoIsSharedActivityMachine(machineId)
+            && nivoNormalizeEmergencyMachineKey(nivoCurrentTabMachineId) === nivoNormalizeEmergencyMachineKey(machineId)
+            && Date.now() >= sharedHeartbeatBackoffUntil) {
+          // Ugyanazon böngésző három fülén három eltérő tab_id, egy közös client_id.
+          // A korábbi gépenkénti heartbeat megmarad a régi admin felületeknek.
+          try {
+            const sharedPayload = nivoBuildSharedClientActivityPayload(machineId, String(activeWorker?.["Teljes nev"] || ""));
+            const sharedResponse = await supabase.from(NIVO_SHARED_CLIENT_ACTIVITY_TABLE)
+              .upsert(sharedPayload, { onConflict: "tab_id" });
+            if (sharedResponse.error) throw sharedResponse.error;
+            sharedHeartbeatWarned = false;
+          } catch (error) {
+            sharedHeartbeatBackoffUntil = Date.now() + 60_000;
+            if (!sharedHeartbeatWarned) {
+              console.warn("Iroda/Mobil kliensaktivitás nem menthető (telepítetted az SQL-t?):", error);
+              sharedHeartbeatWarned = true;
+            }
           }
         }
       } catch {
