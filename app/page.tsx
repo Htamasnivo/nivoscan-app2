@@ -2527,14 +2527,29 @@ const NIVO_EMERGENCY_CONTROL_POLL_MS = 5_000;
 const NIVO_MACHINE_ACTIVITY_HEARTBEAT_MS = 10_000;
 
 // Automatikus gép-önvédelem:
-// - normál állapot jelenleg kb. 25–45 tényleges Supabase kérés/perc;
-// - 160 kérés/perc feletti terhelésnek 5 percig folyamatosan fenn kell állnia a karanténhoz;
-// - rövid indulási / munkaállomás-váltási csúcs önmagában nem okoz karantént;
-// - a hibás gép 30 percre saját magát karanténba teszi, a többi gép változatlanul működik.
+// - Iroda + Mobil eszköz: kliensenként 500 kérés/perc engedett;
+// - minden más munkaállomás: 250 kérés/perc engedett;
+// - a tartós küszöböt 2 percig folyamatosan túl kell lépni a karanténhoz;
+// - 800 kérés/perc azonnali vész-küszöb marad;
+// - a hibás kliens / munkaállomás 5 percre karanténba kerül.
 const NIVO_AUTO_PROTECTION_STORAGE_KEY = "nivoscan-auto-protection-v1";
-const NIVO_AUTO_PROTECTION_SUSTAINED_REQUESTS_1M = 160;
-const NIVO_AUTO_PROTECTION_SUSTAIN_MS = 5 * 60 * 1000;
-const NIVO_AUTO_PROTECTION_DURATION_MS = 30 * 60 * 1000;
+const NIVO_AUTO_PROTECTION_OFFICE_MOBILE_REQUESTS_1M = 500;
+const NIVO_AUTO_PROTECTION_MACHINE_REQUESTS_1M = 250;
+const NIVO_AUTO_PROTECTION_HARD_REQUESTS_1M = 800;
+const NIVO_AUTO_PROTECTION_SUSTAIN_MS = 2 * 60 * 1000;
+const NIVO_AUTO_PROTECTION_DURATION_MS = 5 * 60 * 1000;
+
+function nivoGetAutoProtectionSustainedLimit(machineIdValue = readMachineIdFromStorage()): number {
+  const normalized = String(machineIdValue || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+
+  return normalized === "iroda" || normalized === "mobil eszkoz"
+    ? NIVO_AUTO_PROTECTION_OFFICE_MOBILE_REQUESTS_1M
+    : NIVO_AUTO_PROTECTION_MACHINE_REQUESTS_1M;
+}
 
 // Egy munkaállomáson egyszerre csak egy böngészőfül küldhet hálózati kéréseket.
 // A zárolás kizárólag ugyanazon böngésző/origin localStorage-án belül él,
@@ -6361,18 +6376,30 @@ function nivoMaybeActivateAutoProtection(): NivoAutoProtectionState | null {
   const now = Date.now();
   nivoPruneActivityWindows(now);
   const requestCount1m = nivoActivityCountSince(nivoActivityRequestTimes, now - 60_000);
+  const machineIdValue = readMachineIdFromStorage();
+  const sustainedLimit = nivoGetAutoProtectionSustainedLimit(machineIdValue);
 
-  if (requestCount1m >= NIVO_AUTO_PROTECTION_SUSTAINED_REQUESTS_1M) {
+  // Azonnali vészvédelem: extrém lekérdezési lavinánál nem várjuk ki a 2 percet.
+  if (requestCount1m >= NIVO_AUTO_PROTECTION_HARD_REQUESTS_1M) {
+    return nivoActivateAutoProtection(
+      requestCount1m,
+      `AUTOMATIKUS VÉDELEM: ${requestCount1m} Supabase kérés/perc elérte az azonnali ${NIVO_AUTO_PROTECTION_HARD_REQUESTS_1M}/perc vészküszöböt, ezért a kliens 5 percre karanténba került.`
+    );
+  }
+
+  // Iroda / Mobil eszköz esetén ez a számláló kliensenként fut, ezért több
+  // párhuzamos irodai vagy mobil kliens nem adódik össze a karanténszabályban.
+  if (requestCount1m > sustainedLimit) {
     if (!nivoAutoProtectionHighLoadSince) nivoAutoProtectionHighLoadSince = now;
     if (now - nivoAutoProtectionHighLoadSince >= NIVO_AUTO_PROTECTION_SUSTAIN_MS) {
       return nivoActivateAutoProtection(
         requestCount1m,
-        `AUTOMATIKUS VÉDELEM: legalább 5 percig tartósan magas (${requestCount1m}/perc) Supabase terhelés miatt a gép 30 percre karanténba került.`
+        `AUTOMATIKUS VÉDELEM: több mint 2 percig ${sustainedLimit}/perc felett maradt a Supabase terhelés (${requestCount1m}/perc), ezért a kliens 5 percre karanténba került.`
       );
     }
   } else {
-    // Ha az 1 perces terhelés 160 alá visszaesik, az 5 perces tartós időmérés újraindul.
-    // Így egy rövid indulási vagy munkaállomás-váltási csúcs nem okozhat téves karantént.
+    // Amint visszaesik az adott kliens / munkaállomás engedélyezett határára
+    // vagy az alá, a 2 perces tartós terhelés számlálója újraindul.
     nivoAutoProtectionHighLoadSince = 0;
   }
 
@@ -11486,6 +11513,29 @@ export default function Page() {
   const actionLastInputAtRef = useRef<number | null>(null);
   const actionScanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // CSAK Kerítés fólia + Csomagolás:
+  // a fizikai scanner gyors karakterfolyamát külön mérjük, hogy az Enter suffix
+  // után +2 másodpercet várjunk a feldolgozással. Kézi Enter/gomb változatlanul azonnali.
+  const slowStationScannerBurstRef = useRef<Record<string, {
+    startedAt: number;
+    lastAt: number;
+    lastLength: number;
+    changes: number;
+  }>>({});
+  const slowStationScannerSubmitTimersRef = useRef<Record<string, ReturnType<typeof setTimeout> | null>>({});
+  const slowStationScannerWorkflowContextRef = useRef({
+    step,
+    flowStage,
+    pendingAction,
+    workflowMode,
+  });
+  slowStationScannerWorkflowContextRef.current = {
+    step,
+    flowStage,
+    pendingAction,
+    workflowMode,
+  };
+
 
   const batchFinalizeInFlightRef = useRef(false);
   const groupTwoStartSubmitInFlightRef = useRef(false);
@@ -15067,7 +15117,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     }
 
     if (typeof window !== "undefined" && !window.confirm(
-      `Feloldod a(z) ${currentMachine} gép 30 perces automatikus karanténját?`
+      `Feloldod a(z) ${currentMachine} gép 5 perces automatikus karanténját?`
     )) return;
 
     // A helyi feloldást a központi eseménynaplóval is egyeztetjük, hogy az
@@ -31601,6 +31651,11 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       if (eventBarcodeAutoSubmitTimerRef.current) clearTimeout(eventBarcodeAutoSubmitTimerRef.current);
       if (orderTypeAutoSubmitTimerRef.current) clearTimeout(orderTypeAutoSubmitTimerRef.current);
       if (workerSubmitDebounceTimerRef.current) clearTimeout(workerSubmitDebounceTimerRef.current);
+      Object.values(slowStationScannerSubmitTimersRef.current).forEach((timer) => {
+        if (timer) clearTimeout(timer);
+      });
+      slowStationScannerSubmitTimersRef.current = {};
+      slowStationScannerBurstRef.current = {};
     };
   }, []);
 
@@ -31788,7 +31843,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         // Az automatikus karantén feloldása nem írhatja felül a külön Vercel vészleállítást.
         window.setTimeout(() => window.location.reload(), 250);
       } catch {
-        // Hálózati hiba esetén a 30 perces helyi karantén változatlan marad.
+        // Hálózati hiba esetén az 5 perces helyi karantén változatlan marad.
       } finally {
         checking = false;
       }
@@ -41899,6 +41954,7 @@ body {
   }
 
   function handleEventBarcodeInputChange(nextValue: string): void {
+    trackSlowStationScannerInput("event", nextValue);
     const normalized = nextValue.replace(/[\r\n]+/g, "").trim();
     eventBarcodeLatestValueRef.current = normalized;
     setEventConfirmationInput(normalized);
@@ -43013,6 +43069,7 @@ body {
   }
 
   function handleOrderTypeInputChange(nextValue: string): void {
+    trackSlowStationScannerInput("order-type", nextValue);
     const normalized = nextValue.replace(/[\r\n]+/g, "").trim();
     orderTypeLatestValueRef.current = normalized;
     setOrderTypeInput(normalized);
@@ -46758,6 +46815,7 @@ body {
 
   function handleBatchCodeChange(value: string): void {
     clearBatchScanTimer();
+    trackSlowStationScannerInput("batch-code", value);
     setBatchCode(value);
   }
 
@@ -48569,6 +48627,101 @@ body {
     }
   }
 
+  const SLOW_STATION_SCANNER_EXTRA_DELAY_MS = 2_000;
+
+  function isSlowStationScannerDelayEnabled(): boolean {
+    const stationKey = normalizeLooseText(machineId);
+    return stationKey === normalizeLooseText("Kerítés fólia")
+      || stationKey === normalizeLooseText("Csomagolás");
+  }
+
+  function clearSlowStationScannerSubmitTimer(scanKey: string): void {
+    const timer = slowStationScannerSubmitTimersRef.current[scanKey];
+    if (timer) clearTimeout(timer);
+    slowStationScannerSubmitTimersRef.current[scanKey] = null;
+  }
+
+  function trackSlowStationScannerInput(scanKey: string, rawValue: string): void {
+    if (!isSlowStationScannerDelayEnabled()) return;
+
+    // Ha egy korábbi Enter után még további karakterek érkeznek, a beolvasás
+    // még nem teljes: a korábban beütemezett könyvelést megszakítjuk.
+    clearSlowStationScannerSubmitTimer(scanKey);
+
+    const value = String(rawValue || "").replace(/[\r\n]+/g, "");
+    const now = Date.now();
+    const previous = slowStationScannerBurstRef.current[scanKey];
+    const shouldRestart = !previous
+      || now - previous.lastAt > 260
+      || value.length <= 1
+      || value.length <= previous.lastLength;
+
+    slowStationScannerBurstRef.current[scanKey] = shouldRestart
+      ? { startedAt: now, lastAt: now, lastLength: value.length, changes: 1 }
+      : {
+          startedAt: previous.startedAt,
+          lastAt: now,
+          lastLength: value.length,
+          changes: previous.changes + 1,
+        };
+  }
+
+  function looksLikeSlowStationPhysicalScanner(scanKey: string, rawValue: string): boolean {
+    if (!isSlowStationScannerDelayEnabled()) return false;
+    const value = String(rawValue || "").replace(/[\r\n]+/g, "").trim();
+    const burst = slowStationScannerBurstRef.current[scanKey];
+    if (!burst || value.length < 3 || burst.changes < 3) return false;
+
+    const elapsed = Math.max(0, burst.lastAt - burst.startedAt);
+    const averageGap = burst.changes > 1 ? elapsed / (burst.changes - 1) : Number.POSITIVE_INFINITY;
+    const finalGap = Math.max(0, Date.now() - burst.lastAt);
+
+    // Konzervatív scanner-felismerés: emberi gépelés + Enter ne kapjon késleltetést.
+    return averageGap <= 90 && finalGap <= 180;
+  }
+
+  function scheduleSlowStationScannerSubmit(
+    scanKey: string,
+    rawValue: string,
+    getLatestValue: () => string,
+    submit: (value: string) => void | Promise<void>
+  ): boolean {
+    if (!looksLikeSlowStationPhysicalScanner(scanKey, rawValue)) return false;
+
+    clearSlowStationScannerSubmitTimer(scanKey);
+
+    const expectedContext = { ...slowStationScannerWorkflowContextRef.current };
+    slowStationScannerSubmitTimersRef.current[scanKey] = setTimeout(() => {
+      slowStationScannerSubmitTimersRef.current[scanKey] = null;
+
+      const currentContext = slowStationScannerWorkflowContextRef.current;
+      // Ha közben kézzel továbbléptek, nem indítunk második könyvelést.
+      if (
+        currentContext.step !== expectedContext.step
+        || currentContext.flowStage !== expectedContext.flowStage
+        || currentContext.pendingAction !== expectedContext.pendingAction
+        || currentContext.workflowMode !== expectedContext.workflowMode
+      ) {
+        return;
+      }
+
+      const latestValue = String(getLatestValue() || "").replace(/[\r\n]+/g, "").trim();
+      if (!latestValue) return;
+
+      delete slowStationScannerBurstRef.current[scanKey];
+      void submit(latestValue);
+    }, SLOW_STATION_SCANNER_EXTRA_DELAY_MS);
+
+    return true;
+  }
+
+  async function waitSlowStationCameraScannerDelay(): Promise<void> {
+    if (!isSlowStationScannerDelayEnabled()) return;
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, SLOW_STATION_SCANNER_EXTRA_DELAY_MS);
+    });
+  }
+
   function scheduleWorkerAutoSubmit(_currentValue: string, _startedAt: number): void {
     clearWorkerScanTimer();
     clearWorkerSubmitDebounceTimer();
@@ -48584,6 +48737,7 @@ body {
 
   function handleOrderInputChange(value: string): void {
     clearOrderScanTimer();
+    trackSlowStationScannerInput("order", value);
 
     const normalized = value.replace(/[\r\n]+/g, "");
     const now = Date.now();
@@ -48604,6 +48758,7 @@ body {
 
   function handleActionBarcodeChange(value: string): void {
     clearActionScanTimer();
+    trackSlowStationScannerInput("action", value);
 
     const normalized = value.replace(/[\r\n]+/g, "");
     const now = Date.now();
@@ -50668,13 +50823,8 @@ body {
     setMessage({ type: "success", text: "START kód rendben. Most olvasd be vagy írd be a rendelésszámot." });
   }
 
-  async function handleSingleEndBarcodeKeyDown(event: React.KeyboardEvent<HTMLInputElement>): Promise<void> {
-    if (!isScannerSubmitKey(event)) return;
-
-    event.preventDefault();
-    // Ha a scanner Enter suffixet is küld, az automata timer ne tudjon másodszor menteni.
-    clearActionScanTimer();
-    const raw = event.currentTarget.value.trim();
+  async function processSingleEndBarcodeValue(rawValue: string): Promise<void> {
+    const raw = rawValue.trim();
 
     if (!raw) {
       setMessage({ type: "error", text: "Olvasd be az END kódot." });
@@ -50746,6 +50896,27 @@ body {
 
     await saveWorkLog("END", { note: finalNote, scrapQty: finalScrapQty });
     setActionBarcode("");
+  }
+
+  async function handleSingleEndBarcodeKeyDown(event: React.KeyboardEvent<HTMLInputElement>): Promise<void> {
+    if (!isScannerSubmitKey(event)) return;
+
+    event.preventDefault();
+    clearActionScanTimer();
+
+    const submittedValue = event.currentTarget.value;
+    if (
+      scheduleSlowStationScannerSubmit(
+        "action",
+        submittedValue,
+        () => actionBarcodeInputRef.current?.value || actionBarcode,
+        (latestValue) => processSingleEndBarcodeValue(latestValue)
+      )
+    ) {
+      return;
+    }
+
+    await processSingleEndBarcodeValue(submittedValue);
   }
 
   async function handleEventFiveAwareEndSaveButton(): Promise<void> {
@@ -50901,6 +51072,10 @@ body {
         const scannedNormalized = scanned.trim();
         if (!scannedNormalized || scannerLockRef.current) return;
         scannerLockRef.current = true;
+
+        // Kamera/QR scanner esetén is ugyanaz a +2 mp extra várakozás érvényes
+        // kizárólag a Kerítés fólia és Csomagolás munkaállomásokon.
+        await waitSlowStationCameraScannerDelay();
 
         if (workflowMode === "end" && flowStage === "end-batch-detail" && scannedNormalized.toUpperCase() === "ALL-READY") {
           closeScanner();
@@ -51630,7 +51805,7 @@ body {
           <div style={{ color: "#fecaca", fontSize: 17, fontWeight: 800 }}>{nivoRuntimeBlockReason || "A gépet az adminisztrátor letiltotta."}</div>
           <div style={{ color: "#cbd5e1", marginTop: 12, lineHeight: 1.5 }}>
             A kliens nem küld Supabase lekérdezést vagy mentést. Admin letiltásnál a Vercel vészcsatorna feloldása után,
-            automatikus túlterhelés-védelemnél pedig a 30 perces karantén lejárta után a kliens automatikusan újraindul.
+            automatikus túlterhelés-védelemnél pedig az 5 perces karantén lejárta után a kliens automatikusan újraindul.
           </div>
           <button type="button" onClick={openNivoEmergencyAdminLogin} style={{ ...buttonSecondary, marginTop: 18, borderColor: "#f59e0b", color: "#fde68a", background: "#451a03" }}>🛡 Vészhelyzeti Admin</button>
         </div>
@@ -52386,6 +52561,19 @@ body {
                               }
                               const submittedValue = (e.currentTarget.value || "").replace(/[\r\n]+/g, "").trim();
                               eventBarcodeLatestValueRef.current = submittedValue;
+                              if (
+                                scheduleSlowStationScannerSubmit(
+                                  "event",
+                                  submittedValue,
+                                  () => eventBarcodeInputRef.current?.value || eventBarcodeLatestValueRef.current,
+                                  (latestValue) => {
+                                    eventBarcodeLatestValueRef.current = latestValue;
+                                    return handleEventBarcodeSubmit(latestValue);
+                                  }
+                                )
+                              ) {
+                                return;
+                              }
                               if (!eventBarcodeSubmitLockRef.current) {
                                 void handleEventBarcodeSubmit(eventBarcodeLatestValueRef.current || submittedValue);
                               }
@@ -52499,6 +52687,19 @@ body {
                             }
                             const submittedValue = (e.currentTarget.value || "").replace(/[\r\n]+/g, "").trim();
                             orderTypeLatestValueRef.current = submittedValue;
+                            if (
+                              scheduleSlowStationScannerSubmit(
+                                "order-type",
+                                submittedValue,
+                                () => orderTypeInputRef.current?.value || orderTypeLatestValueRef.current,
+                                (latestValue) => {
+                                  orderTypeLatestValueRef.current = latestValue;
+                                  handleOrderTypeBarcodeSubmit(latestValue);
+                                }
+                              )
+                            ) {
+                              return;
+                            }
                             handleOrderTypeBarcodeSubmit(submittedValue);
                           }
                         }}
@@ -52586,6 +52787,7 @@ body {
                         ref={batchOperationInputRef}
                         value={batchOperationInput}
                         onChange={(event) => {
+                          trackSlowStationScannerInput("batch-operation", event.target.value);
                           setBatchOperationInput(event.target.value.replace(/[\r\n]+/g, "").trim());
                           setBatchOperationError("");
                         }}
@@ -52599,7 +52801,18 @@ body {
                           if (isScannerSubmitKey(event)) {
                             event.preventDefault();
                             event.stopPropagation();
-                            void handleBatchOperationBarcodeSubmit(event.currentTarget.value);
+                            const submittedValue = event.currentTarget.value;
+                            if (
+                              scheduleSlowStationScannerSubmit(
+                                "batch-operation",
+                                submittedValue,
+                                () => batchOperationInputRef.current?.value || batchOperationInput,
+                                (latestValue) => handleBatchOperationBarcodeSubmit(latestValue)
+                              )
+                            ) {
+                              return;
+                            }
+                            void handleBatchOperationBarcodeSubmit(submittedValue);
                           }
                         }}
                       />
@@ -52657,7 +52870,18 @@ body {
                       onKeyDown={(e) => {
                         if (isScannerSubmitKey(e)) {
                           e.preventDefault();
-                          void handleBatchStep(false, e.currentTarget.value);
+                          const submittedValue = e.currentTarget.value;
+                          if (
+                            scheduleSlowStationScannerSubmit(
+                              "batch-code",
+                              submittedValue,
+                              () => batchInputRef.current?.value || batchCode,
+                              (latestValue) => handleBatchStep(false, latestValue)
+                            )
+                          ) {
+                            return;
+                          }
+                          void handleBatchStep(false, submittedValue);
                         }
                       }}
                     />
@@ -52732,14 +52956,36 @@ body {
                         <input
                           ref={activeBatchInputRef}
                           value={activeBatchInput}
-                          onChange={(e) => setActiveBatchInput(e.target.value.replace(/[\r\n]+/g, "").trim())}
+                          onChange={(e) => {
+                            trackSlowStationScannerInput("active-batch", e.target.value);
+                            setActiveBatchInput(e.target.value.replace(/[\r\n]+/g, "").trim());
+                          }}
                           placeholder="Pl. BATCH-... vagy YYYYMMDD_01"
                           style={fieldStyle}
                           autoComplete="off"
                           onKeyDown={(e) => {
                             if (isScannerSubmitKey(e)) {
                               e.preventDefault();
-                              void handleActiveBatchLookup(e.currentTarget.value);
+                              const submittedValue = e.currentTarget.value;
+                              if (
+                                scheduleSlowStationScannerSubmit(
+                                  "active-batch",
+                                  submittedValue,
+                                  () => activeBatchInputRef.current?.value || activeBatchInput,
+                                  async (latestValue) => {
+                                    await handleActiveBatchLookup(latestValue);
+                                    window.setTimeout(() => {
+                                      focusAndSelectInput(activeBatchInputRef, {
+                                        force: true,
+                                        preventScroll: true,
+                                      });
+                                    }, 0);
+                                  }
+                                )
+                              ) {
+                                return;
+                              }
+                              void handleActiveBatchLookup(submittedValue);
                               window.setTimeout(() => {
                                 focusAndSelectInput(activeBatchInputRef, {
                                   force: true,
@@ -53128,14 +53374,28 @@ body {
                         <input
                           ref={endBatchCommandInputRef}
                           value={endBatchCommandInput}
-                          onChange={(e) => setEndBatchCommandInput(e.target.value.replace(/[\r\n]+/g, "").trim())}
+                          onChange={(e) => {
+                            trackSlowStationScannerInput("end-batch-command", e.target.value);
+                            setEndBatchCommandInput(e.target.value.replace(/[\r\n]+/g, "").trim());
+                          }}
                           placeholder={normalizeBatchOperationCode(selectedEndBatch.operation_code) === "SZABAS" ? "ALL-READY, ATFORGATAS-MARASRA vagy END" : "ALL-READY vagy END"}
                           style={fieldStyle}
                           autoComplete="off"
                           onKeyDown={(e) => {
                             if (isScannerSubmitKey(e)) {
                               e.preventDefault();
-                              void handleEndBatchCommand(e.currentTarget.value);
+                              const submittedValue = e.currentTarget.value;
+                              if (
+                                scheduleSlowStationScannerSubmit(
+                                  "end-batch-command",
+                                  submittedValue,
+                                  () => endBatchCommandInputRef.current?.value || endBatchCommandInput,
+                                  (latestValue) => handleEndBatchCommand(latestValue)
+                                )
+                              ) {
+                                return;
+                              }
+                              void handleEndBatchCommand(submittedValue);
                             }
                           }}
                         />
@@ -53209,10 +53469,26 @@ body {
                         if (isScannerSubmitKey(e)) {
                           e.preventDefault();
                           clearOrderScanTimer();
+                          const submittedValue = e.currentTarget.value;
+                          if (
+                            scheduleSlowStationScannerSubmit(
+                              "order",
+                              submittedValue,
+                              () => orderInputRef.current?.value || orderNumber,
+                              (latestValue) => {
+                                if (standaloneScrapReportMode && isStandaloneScrapReportStation(machineId)) {
+                                  return reportStandaloneScrap(latestValue);
+                                }
+                                return handleOrderStep(false, latestValue);
+                              }
+                            )
+                          ) {
+                            return;
+                          }
                           if (standaloneScrapReportMode && isStandaloneScrapReportStation(machineId)) {
-                            void reportStandaloneScrap(e.currentTarget.value);
+                            void reportStandaloneScrap(submittedValue);
                           } else {
-                            void handleOrderStep(false, e.currentTarget.value);
+                            void handleOrderStep(false, submittedValue);
                           }
                         }
                       }}
@@ -53343,11 +53619,28 @@ body {
                     if (isScannerSubmitKey(e)) {
                       e.preventDefault();
                       clearOrderScanTimer();
+                      const submittedValue = e.currentTarget.value;
+
+                      if (
+                        scheduleSlowStationScannerSubmit(
+                          "order",
+                          submittedValue,
+                          () => orderInputRef.current?.value || orderNumber,
+                          (latestValue) => {
+                            if (standaloneScrapReportMode && isStandaloneScrapReportStation(machineId)) {
+                              return reportStandaloneScrap(latestValue);
+                            }
+                            return handleOrderStep(false, latestValue);
+                          }
+                        )
+                      ) {
+                        return;
+                      }
 
                       if (standaloneScrapReportMode && isStandaloneScrapReportStation(machineId)) {
-                        void reportStandaloneScrap(e.currentTarget.value);
+                        void reportStandaloneScrap(submittedValue);
                       } else {
-                        void handleOrderStep(false, e.currentTarget.value);
+                        void handleOrderStep(false, submittedValue);
                       }
                     }
                   }}
@@ -53495,7 +53788,18 @@ body {
                       onKeyDown={(e) => {
                         if (isScannerSubmitKey(e)) {
                           e.preventDefault();
-                          void handleActionBarcodeSubmit(false, e.currentTarget.value);
+                          const submittedValue = e.currentTarget.value;
+                          if (
+                            scheduleSlowStationScannerSubmit(
+                              "action",
+                              submittedValue,
+                              () => actionBarcodeInputRef.current?.value || actionBarcode,
+                              (latestValue) => handleActionBarcodeSubmit(false, latestValue)
+                            )
+                          ) {
+                            return;
+                          }
+                          void handleActionBarcodeSubmit(false, submittedValue);
                         }
                       }}
                       onBlur={() => {
