@@ -11282,6 +11282,25 @@ export default function Page() {
   const [dashboardFilterMode, setDashboardFilterMode] = useState<DashboardFilterMode>("custom");
   const [dashboardDate, setDashboardDate] = useState(getLocalDateKey(new Date()));
   const [dashboardDateTo, setDashboardDateTo] = useState(getLocalDateKey(new Date()));
+  const dashboardFilterModeRef = useRef<DashboardFilterMode>(dashboardFilterMode);
+  const dashboardDateRef = useRef(dashboardDate);
+  const dashboardDateToRef = useRef(dashboardDateTo);
+  const dashboardLoadRevisionRef = useRef(0);
+  const dashboardManualLoadInFlightRef = useRef(false);
+  const dashboardBackgroundLoadInFlightRef = useRef(false);
+  const dashboardActiveLoadKeyRef = useRef("");
+  const dashboardQueuedManualLoadRef = useRef<{
+    filterMode: DashboardFilterMode;
+    dateKey: string;
+    dateToKey: string;
+    orderFilters: string[];
+  } | null>(null);
+  const dashboardQueuedBackgroundLoadRef = useRef<{
+    filterMode: DashboardFilterMode;
+    dateKey: string;
+    dateToKey: string;
+    orderFilters: string[];
+  } | null>(null);
   const [dashboardSelectedStation, setDashboardSelectedStation] = useState("all");
   const [dashboardSelectedWorker, setDashboardSelectedWorker] = useState("all");
   const [dashboardPlanFieldKey, setDashboardPlanFieldKey] = useState("");
@@ -12115,6 +12134,24 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     return suggestions;
   }
 
+  function scheduleDashboardFilterRefresh(
+    delayMs = 600,
+    filterMode: DashboardFilterMode = dashboardFilterModeRef.current,
+    dateKey = dashboardDateRef.current,
+    dateToKey = dashboardDateToRef.current,
+    orderFilters: string[] = dashboardOrderFiltersRef.current
+  ): void {
+    if (dashboardPlanFieldFilterTimerRef.current) {
+      clearTimeout(dashboardPlanFieldFilterTimerRef.current);
+    }
+
+    const nextOrderFilters = [...orderFilters];
+    dashboardPlanFieldFilterTimerRef.current = setTimeout(() => {
+      dashboardPlanFieldFilterTimerRef.current = null;
+      void loadManagementDashboardView(filterMode, dateKey, dateToKey, nextOrderFilters);
+    }, delayMs);
+  }
+
   function addDashboardOrderFilter(rawValue = dashboardOrderInput): void {
     const value = String(rawValue || "").trim();
     if (!value) return;
@@ -12126,7 +12163,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     setDashboardOrderInput("");
     setDashboardOrderSuggestions([]);
     setDashboardOrderSuggestionsOpen(false);
-    void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, next);
+    scheduleDashboardFilterRefresh(
+      600,
+      dashboardFilterModeRef.current,
+      dashboardDateRef.current,
+      dashboardDateToRef.current,
+      next
+    );
   }
 
   function removeDashboardOrderFilter(value: string): void {
@@ -12134,17 +12177,23 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const next = dashboardOrderFilters.filter((item) => normalizeDashboardOrderSearch(item) !== normalized);
     dashboardOrderFiltersRef.current = [...next];
     setDashboardOrderFilters(next);
-    void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, next);
+    scheduleDashboardFilterRefresh(
+      600,
+      dashboardFilterModeRef.current,
+      dashboardDateRef.current,
+      dashboardDateToRef.current,
+      next
+    );
   }
 
-  function scheduleDashboardPlanFieldFilterRefresh(delayMs = 450): void {
-    if (dashboardPlanFieldFilterTimerRef.current) {
-      clearTimeout(dashboardPlanFieldFilterTimerRef.current);
-    }
-    dashboardPlanFieldFilterTimerRef.current = setTimeout(() => {
-      dashboardPlanFieldFilterTimerRef.current = null;
-      void loadManagementDashboardView("custom", dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
-    }, delayMs);
+  function scheduleDashboardPlanFieldFilterRefresh(delayMs = 600): void {
+    scheduleDashboardFilterRefresh(
+      delayMs,
+      "custom",
+      dashboardDateRef.current,
+      dashboardDateToRef.current,
+      dashboardOrderFiltersRef.current
+    );
   }
 
   function clearDashboardSecondaryFilters(): void {
@@ -12164,7 +12213,14 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     setDashboardOrderInput("");
     setDashboardOrderSuggestions([]);
     setDashboardOrderSuggestionsOpen(false);
-    void loadManagementDashboardView("custom", dashboardDate, dashboardDateTo, []);
+    dashboardFilterModeRef.current = "custom";
+    scheduleDashboardFilterRefresh(
+      600,
+      "custom",
+      dashboardDateRef.current,
+      dashboardDateToRef.current,
+      []
+    );
   }
 
   function toggleDashboardEndExportStation(stationName: string): void {
@@ -30203,10 +30259,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                   const nextFrom = event.target.value;
                   if (!nextFrom) return;
                   const nextTo = !dashboardDateTo || nextFrom > dashboardDateTo ? nextFrom : dashboardDateTo;
+                  dashboardFilterModeRef.current = "custom";
+                  dashboardDateRef.current = nextFrom;
+                  dashboardDateToRef.current = nextTo;
                   setDashboardFilterMode("custom");
                   setDashboardDate(nextFrom);
                   if (nextTo !== dashboardDateTo) setDashboardDateTo(nextTo);
-                  void loadManagementDashboardView("custom", nextFrom, nextTo);
+                  scheduleDashboardFilterRefresh(600, "custom", nextFrom, nextTo, dashboardOrderFiltersRef.current);
                 }}
                 style={{ ...dashboardFilterFieldStyle, width: 175 }}
               />
@@ -30221,10 +30280,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                   const nextTo = event.target.value;
                   if (!nextTo) return;
                   const nextFrom = !dashboardDate || nextTo < dashboardDate ? nextTo : dashboardDate;
+                  dashboardFilterModeRef.current = "custom";
+                  dashboardDateRef.current = nextFrom;
+                  dashboardDateToRef.current = nextTo;
                   setDashboardFilterMode("custom");
                   if (nextFrom !== dashboardDate) setDashboardDate(nextFrom);
                   setDashboardDateTo(nextTo);
-                  void loadManagementDashboardView("custom", nextFrom, nextTo);
+                  scheduleDashboardFilterRefresh(600, "custom", nextFrom, nextTo, dashboardOrderFiltersRef.current);
                 }}
                 style={{ ...dashboardFilterFieldStyle, width: 175 }}
               />
@@ -30241,9 +30303,16 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                 }
                 dashboardPlanFieldKeyRef.current = nextFieldKey;
                 dashboardPlanFieldValueRef.current = "";
+                dashboardFilterModeRef.current = "custom";
                 setDashboardPlanFieldKey(nextFieldKey);
                 setDashboardPlanFieldValue("");
-                void loadManagementDashboardView("custom", dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
+                scheduleDashboardFilterRefresh(
+                  600,
+                  "custom",
+                  dashboardDateRef.current,
+                  dashboardDateToRef.current,
+                  dashboardOrderFiltersRef.current
+                );
               }}
               style={{ ...dashboardFilterFieldStyle, width: 235 }}
               aria-label="_terv mező szűrése"
@@ -30270,7 +30339,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                     clearTimeout(dashboardPlanFieldFilterTimerRef.current);
                     dashboardPlanFieldFilterTimerRef.current = null;
                   }
-                  void loadManagementDashboardView("custom", dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
+                  dashboardFilterModeRef.current = "custom";
+                  void loadManagementDashboardView(
+                    "custom",
+                    dashboardDateRef.current,
+                    dashboardDateToRef.current,
+                    dashboardOrderFiltersRef.current
+                  );
                 }}
                 placeholder={`${selectedDashboardPlanFieldOption.label} keresése`}
                 inputMode={selectedDashboardPlanFieldOption.dataType === "integer" ? "numeric" : "text"}
@@ -31821,14 +31896,30 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     if (!activeWorker || !isManagementDashboardWorker(activeWorker)) return;
     if (terminalView !== "management" || flowStage !== "dashboard" || managementSection !== "dashboard") return;
 
-    void loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current);
+    const loadLatestDashboardFilters = (): Promise<void> =>
+      loadManagementDashboardView(
+        dashboardFilterModeRef.current,
+        dashboardDateRef.current,
+        dashboardDateToRef.current,
+        dashboardOrderFiltersRef.current
+      );
+
+    void loadLatestDashboardFilters();
+
     const intervalId = window.setInterval(() => {
-      // A háttérfrissítés SOHA nem írhatja felül a felhasználó aktív rendelésszűrését vagy görgetési pozícióját.
-      void runNivoBackgroundRefresh(() => loadManagementDashboardView(dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFiltersRef.current));
+      // A háttérfrissítés kézi szűrés alatt nem indít új teljes lekérdezési láncot.
+      // A loadManagementDashboardView ilyenkor sorba állítja, majd a kézi szűrés után futtatja.
+      void runNivoBackgroundRefresh(loadLatestDashboardFilters, "management-dashboard");
     }, NIVO_BACKGROUND_REFRESH_MS);
 
-    return () => window.clearInterval(intervalId);
-  }, [activeWorker?.id, terminalView, flowStage, managementSection, dashboardFilterMode, dashboardDate, dashboardDateTo, dashboardOrderFilters]);
+    return () => {
+      window.clearInterval(intervalId);
+      if (dashboardPlanFieldFilterTimerRef.current) {
+        window.clearTimeout(dashboardPlanFieldFilterTimerRef.current);
+        dashboardPlanFieldFilterTimerRef.current = null;
+      }
+    };
+  }, [activeWorker?.id, terminalView, flowStage, managementSection]);
 
   useEffect(() => {
     if (!productionMonitorSettingsOwner || !supabase) return;
@@ -37105,18 +37196,24 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
     const nextDateKey = getLocalDateKey(next);
     const nextToKey = getLocalDateKey(nextTo);
+    dashboardFilterModeRef.current = "custom";
+    dashboardDateRef.current = nextDateKey;
+    dashboardDateToRef.current = nextToKey;
     setDashboardFilterMode("custom");
     setDashboardDate(nextDateKey);
     setDashboardDateTo(nextToKey);
-    void loadManagementDashboardView("custom", nextDateKey, nextToKey);
+    scheduleDashboardFilterRefresh(600, "custom", nextDateKey, nextToKey, dashboardOrderFiltersRef.current);
   }
 
   function resetDashboardToToday(): void {
     const today = getLocalDateKey(new Date());
+    dashboardFilterModeRef.current = "custom";
+    dashboardDateRef.current = today;
+    dashboardDateToRef.current = today;
     setDashboardFilterMode("custom");
     setDashboardDate(today);
     setDashboardDateTo(today);
-    void loadManagementDashboardView("custom", today, today);
+    scheduleDashboardFilterRefresh(600, "custom", today, today, dashboardOrderFiltersRef.current);
   }
 
   async function fetchDashboardData(
@@ -37459,9 +37556,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   }
 
   async function loadManagementDashboardView(
-    filterMode: DashboardFilterMode = dashboardFilterMode,
-    dateKey = dashboardDate,
-    dateToKey = dashboardDateTo,
+    filterMode: DashboardFilterMode = dashboardFilterModeRef.current,
+    dateKey = dashboardDateRef.current,
+    dateToKey = dashboardDateToRef.current,
     orderFilters: string[] = dashboardOrderFiltersRef.current
   ): Promise<void> {
     const backgroundRefresh = isNivoBackgroundRefreshRunning();
@@ -37501,16 +37598,78 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       if (!backgroundRefresh) setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
       return;
     }
-    if (!backgroundRefresh) setLoadingDashboard(true);
+
+    const requestArgs = {
+      filterMode,
+      dateKey,
+      dateToKey,
+      orderFilters: [...orderFilters],
+    };
+    const currentPlanFieldFilter = getCurrentDashboardPlanFieldFilterState();
+    const requestKey = JSON.stringify({
+      filterMode,
+      dateKey,
+      dateToKey,
+      orderFilters: orderFilters.map(normalizeDashboardOrderSearch),
+      planFieldKey: currentPlanFieldFilter.fieldKey,
+      planFieldValue: currentPlanFieldFilter.value,
+    });
+
+    if (backgroundRefresh && dashboardManualLoadInFlightRef.current) {
+      dashboardQueuedBackgroundLoadRef.current = requestArgs;
+      return;
+    }
+
+    let requestRevision = dashboardLoadRevisionRef.current;
+    if (!backgroundRefresh) {
+      // Ha pontosan ugyanez a kézi kérés már fut, nincs szükség újabb teljes
+      // dashboard lekérdezési láncra, és a futó kérés eredményét sem érvénytelenítjük.
+      if (
+        dashboardManualLoadInFlightRef.current
+        && dashboardActiveLoadKeyRef.current === requestKey
+      ) {
+        return;
+      }
+
+      requestRevision = ++dashboardLoadRevisionRef.current;
+
+      // Ha kézi vagy dashboard-háttérbetöltés már fut, csak a LEGUTOLSÓ
+      // kézi szűrést tartjuk meg. A köztes állapotok nem indítanak új láncot.
+      if (
+        dashboardManualLoadInFlightRef.current
+        || dashboardBackgroundLoadInFlightRef.current
+      ) {
+        dashboardQueuedManualLoadRef.current = requestArgs;
+        return;
+      }
+
+      dashboardManualLoadInFlightRef.current = true;
+      dashboardActiveLoadKeyRef.current = requestKey;
+      setLoadingDashboard(true);
+    } else {
+      dashboardBackgroundLoadInFlightRef.current = true;
+    }
+
     try {
       const range = getDashboardDateRange(filterMode, dateKey, dateToKey);
-      const currentPlanFieldFilter = getCurrentDashboardPlanFieldFilterState();
       const currentPlanFieldOption = getDashboardPlanFieldOptionByKey(currentPlanFieldFilter.fieldKey);
       const currentPlanFieldFilterActive = Boolean(
         currentPlanFieldOption
         && (currentPlanFieldOption.dataType === "date" || currentPlanFieldFilter.value.trim())
       );
       const nextDashboardData = await fetchDashboardData(range, orderFilters, currentPlanFieldFilter);
+      const stillCurrent =
+        requestRevision === dashboardLoadRevisionRef.current
+        && !(
+          backgroundRefresh
+          && (
+            dashboardManualLoadInFlightRef.current
+            || dashboardQueuedManualLoadRef.current !== null
+          )
+        );
+
+      if (!stillCurrent) return;
+
       setDashboardData(nextDashboardData);
 
       if (!backgroundRefresh) {
@@ -37536,10 +37695,65 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         });
       }
     } catch (error) {
+      const stillCurrent = requestRevision === dashboardLoadRevisionRef.current;
       console.error("SUPABASE HIBA loadManagementDashboardView:", error);
-      if (!backgroundRefresh) setMessage({ type: "error", text: normalizeError(error) });
+      if (!backgroundRefresh && stillCurrent) {
+        setMessage({ type: "error", text: normalizeError(error) });
+      }
     } finally {
-      if (!backgroundRefresh) setLoadingDashboard(false);
+      if (!backgroundRefresh) {
+        dashboardManualLoadInFlightRef.current = false;
+        dashboardActiveLoadKeyRef.current = "";
+
+        const queuedManual = dashboardQueuedManualLoadRef.current;
+        dashboardQueuedManualLoadRef.current = null;
+
+        if (queuedManual) {
+          queueMicrotask(() => {
+            void loadManagementDashboardView(
+              queuedManual.filterMode,
+              queuedManual.dateKey,
+              queuedManual.dateToKey,
+              queuedManual.orderFilters
+            );
+          });
+        } else {
+          setLoadingDashboard(false);
+
+          const queuedBackground = dashboardQueuedBackgroundLoadRef.current;
+          dashboardQueuedBackgroundLoadRef.current = null;
+          if (queuedBackground) {
+            queueMicrotask(() => {
+              void runNivoBackgroundRefresh(
+                () => loadManagementDashboardView(
+                  queuedBackground.filterMode,
+                  queuedBackground.dateKey,
+                  queuedBackground.dateToKey,
+                  queuedBackground.orderFilters
+                ),
+                "management-dashboard"
+              );
+            });
+          }
+        }
+      } else {
+        dashboardBackgroundLoadInFlightRef.current = false;
+
+        const queuedManual = dashboardQueuedManualLoadRef.current;
+        dashboardQueuedManualLoadRef.current = null;
+        if (queuedManual && typeof window !== "undefined") {
+          // setTimeout szükséges: előbb a runNivoBackgroundRefresh saját finally ága
+          // fejezze be a háttérállapotot, csak utána induljon a kézi szűrés.
+          window.setTimeout(() => {
+            void loadManagementDashboardView(
+              queuedManual.filterMode,
+              queuedManual.dateKey,
+              queuedManual.dateToKey,
+              queuedManual.orderFilters
+            );
+          }, 0);
+        }
+      }
     }
   }
 
