@@ -33504,10 +33504,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
     const headerRow = Array.isArray(rawMatrix[0]) ? rawMatrix[0] : [];
 
-    // A visszatöltés mindig a jelenlegi "Minta Excel" pontos mester-sémáját várja.
-    // Szerelésnél ezért a Nettó ár + Készletrevételi érték mezők is kötelezőek,
-    // a normál állomásoknál pedig az SOS is a minta része.
-    const definitions = getStationPlanExcelFieldDefinitions(stationName, true);
+    // A visszatöltés a jelenlegi "Minta Excel" üzleti oszlopait várja,
+    // DE az SOS kizárólag export/megjelenítés célú rendszermező:
+    // importnál opcionális és teljesen figyelmen kívül marad.
+    // Szerelésnél a Nettó ár + Készletrevételi érték továbbra is kötelező.
+    const definitions = getStationPlanExcelFieldDefinitions(stationName, true)
+      .filter((definition) => definition.key !== "sos");
     const expectedHeaders = definitions.map((definition) => normalizeSpreadsheetHeader(definition.label));
     const actualHeaders = headerRow
       .slice(0, definitions.length)
@@ -33529,9 +33531,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       );
     }
 
-    // FONTOS: a mester-séma UTÁNI oszlopok szándékosan nincsenek ellenőrizve.
-    // Ezek lehetnek képletek, segédtáblák, kalkulációk stb.; importkor teljesen
-    // figyelmen kívül maradnak, és sem a *_terv mezőibe, sem az adat JSON-ba nem kerülnek.
+    // FONTOS: az import-séma UTÁNI oszlopok szándékosan nincsenek ellenőrizve.
+    // Ide tartozik az exportban szereplő SOS oszlop is, valamint bármilyen további
+    // képlet, segédtábla vagy kalkuláció. Importkor ezek teljesen figyelmen kívül
+    // maradnak, és sem a *_terv mezőibe, sem az adat JSON-ba nem kerülnek.
 
     const definitionByKey = new Map(definitions.map((field) => [field.key, field]));
     const parsedRows: StationPlanUploadRow[] = [];
@@ -33879,7 +33882,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const data = row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)
       ? row.adat as Record<string, unknown>
       : {};
-    const definitions = getStationPlanExcelFieldDefinitions(stationName, true);
+    const definitions = getStationPlanExcelFieldDefinitions(stationName, true)
+      .filter((definition) => definition.key !== "sos");
 
     return JSON.stringify(
       definitions.map((definition) => {
