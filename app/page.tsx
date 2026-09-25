@@ -34034,6 +34034,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       const directFields: Record<string, unknown> = {};
       definitions.forEach((definition) => {
         if (definition.key === "sorszam" || definition.key === "elkeszules_datum") return;
+        // Az SOS-t az Excel-import SOHA nem kezeli.
+        if (definition.key === "sos") return;
         if (isPrimaPowerPlanStation(stationName)
             && PRIMAPOWER_NEW_FIELD_KEYS.some((key) => key === definition.key)) return;
 
@@ -34063,11 +34065,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     // mezőket. Előbb beolvassuk az adott munkaállomás meglévő sorait, majd az
     // új Excel-adatot csak rámerge-eljük a korábbi JSON-ra.
     const existingDynamicDataByKey = new Map<string, Record<string, unknown>>();
+    const existingDynamicSosByKey = new Map<string, boolean>();
     const dynamicPageSize = 1000;
     for (let offset = 0; ; offset += dynamicPageSize) {
       const existingResponse = await supabase
         .from(DYNAMIC_PRODUCTION_PLAN_TABLE)
-        .select("machine_name, sorszam, elkeszules_datum, adat")
+        .select("machine_name, sorszam, elkeszules_datum, adat, sos")
         .eq("machine_name", stationName)
         .range(offset, offset + dynamicPageSize - 1);
       if (existingResponse.error) throw existingResponse.error;
@@ -34084,6 +34087,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             ? existingRow.adat as Record<string, unknown>
             : {};
         existingDynamicDataByKey.set(existingKey, existingAdat);
+        existingDynamicSosByKey.set(existingKey, existingRow.sos === true);
       });
       if (existingRows.length < dynamicPageSize) break;
     }
@@ -34099,6 +34103,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         ? row.adat as Record<string, unknown>
         : {};
       row.adat = { ...oldAdat, ...newAdat };
+
+      // Az SOS nem Excel-adat. Meglévő kompatibilitási rekordnál a programban
+      // kézzel beállított érték marad, új rekordnál false csak a NOT NULL miatt.
+      row.sos = existingDynamicSosByKey.get(key) ?? false;
     });
 
     const legacyConflictKeys = payload.map((row) =>
@@ -34185,6 +34193,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
       const failedSheets: string[] = [];
       const successfulSheets: string[] = [];
+      const compatibilitySyncWarnings: string[] = [];
       let totalProcessed = 0;
       let totalSkipped = 0;
 
@@ -34202,17 +34211,28 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           const rows = parseStationPlanRowsFromWorkbookSheet(sheet.rows, `„${sheet.name}” munkafül`, stationName);
           const actions = await buildStationPlanMergeActions(stationName, rows, selectedFile.name);
           const result = await applyStationPlanMergeActions(stationName, actions);
-          const insertedRows = actions
-            .filter((action) => action.action === "insert")
-            .map(({ action: _action, existing_id: _existingId, source_file: _sourceFile, ...row }) => row as StationPlanUploadRow);
-          await syncDynamicProductionPlanRows(
-            stationName,
-            insertedRows as unknown as Array<Record<string, unknown>>,
-            selectedFile.name
-          );
+
+          // A számláló kizárólag a tényleges munkaállomási *_terv műveletet mutatja.
           totalProcessed += result.processed;
           totalSkipped += result.skipped;
           successfulSheets.push(`${stationName} (${result.processed} új, ${result.skipped} már létezett)`);
+
+          const insertedRows = actions
+            .filter((action) => action.action === "insert")
+            .map(({ action: _action, existing_id: _existingId, source_file: _sourceFile, ...row }) => row as StationPlanUploadRow);
+
+          try {
+            await syncDynamicProductionPlanRows(
+              stationName,
+              insertedRows as unknown as Array<Record<string, unknown>>,
+              selectedFile.name
+            );
+          } catch (syncError) {
+            // A másodlagos termelesi_terv kompatibilitási tükör hibája nem
+            // változtathatja utólag "sikertelenre" a már megtörtént *_terv mentést.
+            console.error(`KOMPATIBILITÁSI SZINKRON HIBA ${stationName}:`, syncError);
+            compatibilitySyncWarnings.push(`${stationName}: ${normalizeError(syncError)}`);
+          }
         } catch (error) {
           failedSheets.push(`${stationName}: ${normalizeError(error)}`);
         }
@@ -34231,6 +34251,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
       const warningParts = [
         failedSheets.length ? `Hibák: ${failedSheets.join(" | ")}` : "",
+        compatibilitySyncWarnings.length
+          ? `Kompatibilitási szinkron figyelmeztetés: ${compatibilitySyncWarnings.join(" | ")}`
+          : "",
       ].filter(Boolean);
 
       setMessage({
@@ -34301,6 +34324,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     setUploadingStationPlans(true);
     const successfulStations: string[] = [];
     const failedStations: string[] = [];
+    const compatibilitySyncWarnings: string[] = [];
     let uploadedRowCount = 0;
     let skippedExistingRowCount = 0;
 
@@ -34312,17 +34336,26 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         try {
           const actions = await buildStationPlanMergeActions(stationName, selection.rows, selection.fileName || "kézi feltöltés");
           const result = await applyStationPlanMergeActions(stationName, actions);
-          const insertedRows = actions
-            .filter((action) => action.action === "insert")
-            .map(({ action: _action, existing_id: _existingId, source_file: _sourceFile, ...row }) => row as StationPlanUploadRow);
-          await syncDynamicProductionPlanRows(
-            stationName,
-            insertedRows as unknown as Array<Record<string, unknown>>,
-            selection.fileName || "kézi feltöltés"
-          );
+
+          // A kijelzett érték a tényleges *_terv eredmény.
           uploadedRowCount += result.processed;
           skippedExistingRowCount += result.skipped;
           successfulStations.push(`${stationName} (${result.processed} új, ${result.skipped} már létezett)`);
+
+          const insertedRows = actions
+            .filter((action) => action.action === "insert")
+            .map(({ action: _action, existing_id: _existingId, source_file: _sourceFile, ...row }) => row as StationPlanUploadRow);
+
+          try {
+            await syncDynamicProductionPlanRows(
+              stationName,
+              insertedRows as unknown as Array<Record<string, unknown>>,
+              selection.fileName || "kézi feltöltés"
+            );
+          } catch (syncError) {
+            console.error(`KOMPATIBILITÁSI SZINKRON HIBA ${stationName}:`, syncError);
+            compatibilitySyncWarnings.push(`${stationName}: ${normalizeError(syncError)}`);
+          }
         } catch (error) {
           console.error(`SUPABASE HIBA ${buildStationPlanTableName(stationName)}:`, error);
           failedStations.push(`${stationName}: ${normalizeError(error)}`);
@@ -34346,12 +34379,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           : "";
         setMessage({
           type: "error",
-          text: `Néhány terv feltöltése sikertelen volt.${successPart} Hibák: ${failedStations.join(" | ")}`,
+          text: `Néhány terv feltöltése sikertelen volt.${successPart} Hibák: ${failedStations.join(" | ")}${compatibilitySyncWarnings.length ? ` Kompatibilitási szinkron figyelmeztetés: ${compatibilitySyncWarnings.join(" | ")}` : ""}`,
         });
       } else {
         setMessage({
-          type: "success",
-          text: `${successfulStations.length} munkaállomás terve feldolgozva. ${uploadedRowCount} új sor feltöltve, ${skippedExistingRowCount} már létezett és kihagyva. ${successfulStations.join(", ")}.`,
+          type: compatibilitySyncWarnings.length ? "info" : "success",
+          text: `${successfulStations.length} munkaállomás terve feldolgozva. ${uploadedRowCount} új sor feltöltve, ${skippedExistingRowCount} már létezett és kihagyva. ${successfulStations.join(", ")}.${compatibilitySyncWarnings.length ? ` Kompatibilitási szinkron figyelmeztetés: ${compatibilitySyncWarnings.join(" | ")}` : ""}`,
         });
       }
     } finally {
