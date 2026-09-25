@@ -33503,17 +33503,15 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     if (!rawMatrix.length) throw new Error(`${sourceLabel}: a munkafül üres.`);
 
     const headerRow = Array.isArray(rawMatrix[0]) ? rawMatrix[0] : [];
-    const isSzereles = getStationPlanIdentityKey(stationName) === "szereles";
-    const hasSzerelesPriceHeader = isSzereles && headerRow.some((cell) => {
-      const normalized = normalizeSpreadsheetHeader(String(cell ?? ""));
-      return normalized === normalizeSpreadsheetHeader("Nettó ár")
-        || normalized === normalizeSpreadsheetHeader("Készletrevételi érték");
-    });
-    const allDefinitions = getStationPlanExcelFieldDefinitions(stationName, hasSzerelesPriceHeader);
-    const hasSosHeader = headerRow.some((value) => normalizeSpreadsheetHeader(String(value ?? "")) === "sos");
-    const definitions = hasSosHeader ? allDefinitions : allDefinitions.filter((field) => field.key !== "sos");
+
+    // A visszatöltés mindig a jelenlegi "Minta Excel" pontos mester-sémáját várja.
+    // Szerelésnél ezért a Nettó ár + Készletrevételi érték mezők is kötelezőek,
+    // a normál állomásoknál pedig az SOS is a minta része.
+    const definitions = getStationPlanExcelFieldDefinitions(stationName, true);
     const expectedHeaders = definitions.map((definition) => normalizeSpreadsheetHeader(definition.label));
-    const actualHeaders = headerRow.map((value) => normalizeSpreadsheetHeader(String(value ?? "")));
+    const actualHeaders = headerRow
+      .slice(0, definitions.length)
+      .map((value) => normalizeSpreadsheetHeader(String(value ?? "")));
 
     const mismatches = definitions
       .map((definition, index) => ({
@@ -33524,22 +33522,16 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       }))
       .filter((item) => !item.matches);
 
-    const unexpectedHeaders = headerRow
-      .slice(definitions.length)
-      .map((value) => String(value ?? "").trim())
-      .filter(Boolean);
-
-    if (mismatches.length > 0 || unexpectedHeaders.length > 0) {
-      const mismatchText = mismatches.length > 0
-        ? ` Eltérő oszlopok: ${mismatches.map((item) => `${item.index + 1}. „${item.actual || "(üres)"}” → várt: „${item.expected}”`).join("; ")}.`
-        : "";
-      const extraText = unexpectedHeaders.length > 0
-        ? ` Nem várt fejléc(ek): ${unexpectedHeaders.join(", ")}.`
-        : "";
+    if (mismatches.length > 0) {
+      const mismatchText = ` Eltérő/hiányzó oszlopok: ${mismatches.map((item) => `${item.index + 1}. „${item.actual || "(üres)"}” → várt: „${item.expected}”`).join("; ")}.`;
       throw new Error(
-        `${sourceLabel}: az Excel fejlécének sorrendje/formája nem egyezik a mester-sémával.${mismatchText}${extraText}`
+        `${sourceLabel}: az Excel első ${definitions.length} oszlopának sorrendje/formája nem egyezik a mester-sémával.${mismatchText}`
       );
     }
+
+    // FONTOS: a mester-séma UTÁNI oszlopok szándékosan nincsenek ellenőrizve.
+    // Ezek lehetnek képletek, segédtáblák, kalkulációk stb.; importkor teljesen
+    // figyelmen kívül maradnak, és sem a *_terv mezőibe, sem az adat JSON-ba nem kerülnek.
 
     const definitionByKey = new Map(definitions.map((field) => [field.key, field]));
     const parsedRows: StationPlanUploadRow[] = [];
@@ -33560,16 +33552,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       definitions.forEach((definition, columnIndex) => {
         normalizedRawRow[definition.key] = row[columnIndex] ?? "";
       });
-      // A mesterfájlban néhány munkalap jobb oldalán fejléc nélküli segédcellák /
-      // képletek is vannak. Ezek NEM részei a kötelező _terv sémának, ezért nem
-      // exportáljuk őket oszlopként, de egy valódi tervsorhoz tartozó nem üres
-      // értékeiket technikai kulccsal az adat JSON-ban megőrizzük. Így importkor
-      // ezek sem vesznek el, és egy későbbi frissítés sem törli őket.
-      row.slice(definitions.length).forEach((extraValue, extraIndex) => {
-        if (extraValue === null || extraValue === undefined || String(extraValue).trim() === "") return;
-        normalizedRawRow[`__excel_extra_col_${definitions.length + extraIndex + 1}`] = extraValue;
-      });
-
       const normalizedValues: Record<string, unknown> = {};
       definitions.forEach((definition) => {
         const rawValue = normalizedRawRow[definition.key];
@@ -33837,16 +33819,101 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     return "skip";
   }
 
+  function getStationPlanAppendIdentity(
+    row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
+  ): string {
+    const data = row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)
+      ? row.adat as Record<string, unknown>
+      : {};
+
+    // Elsődlegesen a tényleges Rendelésszám / Sorszám mezőt használjuk.
+    // Ha egy állomás mester-sémájában ilyen nincs, a kompatibilitási sorszam
+    // (pl. gyártási szám) a visszaesési azonosító.
+    const candidates = [
+      row.rsz,
+      data.rsz,
+      row.sorszam,
+      data.sorszam,
+      row.gyartasi_szam,
+      data.gyartasi_szam,
+      row.gyartasi_szam_projekt_neve,
+      data.gyartasi_szam_projekt_neve,
+    ];
+
+    for (const value of candidates) {
+      const clean = String(value ?? "").trim();
+      if (clean) return normalizeLooseText(clean);
+    }
+    return "";
+  }
+
+  function normalizeStationPlanTemplateComparisonValue(
+    definition: StationPlanFieldDefinition,
+    value: unknown
+  ): string {
+    if (definition.dataType === "date") {
+      return parseStationPlanDateValue(value) || "";
+    }
+    if (definition.dataType === "boolean") {
+      return normalizeSosValue(value) ? "1" : "0";
+    }
+    if (definition.dataType === "integer") {
+      const parsed = parseSpreadsheetNumber(value);
+      return parsed === null ? "" : String(Math.trunc(parsed));
+    }
+    if (definition.dataType === "numeric") {
+      const parsed = parseSzerelesPriceValue(value);
+      return parsed === null ? "" : String(parsed);
+    }
+
+    if (normalizePlanColumnName(definition.key).includes("normaido")) {
+      return formatExcelDuration(value) || "";
+    }
+    return String(value ?? "").trim();
+  }
+
+  function getStationPlanTemplateFingerprint(
+    stationName: string,
+    row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
+  ): string {
+    const data = row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)
+      ? row.adat as Record<string, unknown>
+      : {};
+    const definitions = getStationPlanExcelFieldDefinitions(stationName, true);
+
+    return JSON.stringify(
+      definitions.map((definition) => {
+        const directValue = row[definition.key];
+        const value = directValue !== undefined ? directValue : data[definition.key];
+        return normalizeStationPlanTemplateComparisonValue(definition, value);
+      })
+    );
+  }
+
   async function buildStationPlanMergeActions(
     stationName: string,
     rows: StationPlanUploadRow[],
     sourceFile: string
   ): Promise<StationPlanMergeAction[]> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+
+    // Csőlézer + PrimaPower: ezeknél szándékosan NINCS duplikáció-kiszűrés.
+    // Ugyanaz a tétel többször is gyártható, a konkrét tervsor azonosítását a
+    // már meglévő futó sorszám logika végzi. Ahhoz itt nem nyúlunk.
+    if (usesPlanRunSequence(stationName)) {
+      return rows.map((row) => ({
+        ...row,
+        action: "insert",
+        source_file: sourceFile,
+      }));
+    }
+
     const tableName = buildStationPlanTableName(stationName);
     const existingRows: StationPlanExistingRow[] = [];
 
-    // A teljes *_terv táblát ellenőrizzük, mert az egyezőség nem dátumfüggő.
+    // Egyetlen logikai előbetöltés: nem kérdezünk rá Excel-soronként a Supabase-ra.
+    // A PostgREST eredménykorlát miatt nagy táblánál lapozunk, majd minden
+    // összehasonlítás kizárólag memóriában történik.
     const pageSize = 1000;
     for (let offset = 0; ; offset += pageSize) {
       const { data, error } = await supabase
@@ -33862,109 +33929,35 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       if (pageRows.length < pageSize) break;
     }
 
-    const actions: StationPlanMergeAction[] = [];
-    const exactRowKey = (
-      row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
-    ) => getStationPlanDuplicateKey(stationName, row);
-    const conflictRowKey = (
-      row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
-    ) => getStationPlanConflictKey(stationName, row);
+    // Rendelésszám/sorszám -> a már adatbázisban lévő minta-sorok ujjlenyomatai.
+    // Az aktuális Excelen belüli ismétlődő sorokat SZÁNDÉKOSAN nem tesszük ebbe
+    // a mapbe: a kérés szerint azok mind külön sorban bekerülhetnek.
+    const existingFingerprintsByIdentity = new Map<string, Set<string>>();
+    existingRows.forEach((existingRow) => {
+      const identity = getStationPlanAppendIdentity(existingRow);
+      if (!identity) return;
+      const fingerprint = getStationPlanTemplateFingerprint(stationName, existingRow);
+      const fingerprints = existingFingerprintsByIdentity.get(identity) || new Set<string>();
+      fingerprints.add(fingerprint);
+      existingFingerprintsByIdentity.set(identity, fingerprints);
+    });
 
-    for (const row of rows) {
-      const exactKey = exactRowKey(row);
-      const conflictKey = conflictRowKey(row);
+    return rows.map((row) => {
+      const identity = getStationPlanAppendIdentity(row);
+      const fingerprint = getStationPlanTemplateFingerprint(stationName, row);
+      const alreadyExists = Boolean(
+        identity
+        && existingFingerprintsByIdentity.get(identity)?.has(fingerprint)
+      );
 
-      const exactDatabaseMatches = existingRows.filter((existing) => exactRowKey(existing) === exactKey);
-      const exactPendingMatches = actions
-        .map((action, index) => ({ action, index }))
-        .filter(({ action }) => exactRowKey(action) === exactKey && action.action === "insert");
-
-      // PrimaPowernél a 4 mezős pontos kulcs az elsődleges. Ha a mennyiség az egyetlen
-      // eltérés, a 3 mezős csoportkulcs mégis felhozza a konfliktuskezelőt, ahogy kérted.
-      const hasExactConflict = exactDatabaseMatches.length > 0 || exactPendingMatches.length > 0;
-      const databaseMatches = hasExactConflict
-        ? exactDatabaseMatches
-        : existingRows.filter((existing) => conflictRowKey(existing) === conflictKey);
-      const pendingMatches = hasExactConflict
-        ? exactPendingMatches
-        : actions
-            .map((action, index) => ({ action, index }))
-            .filter(({ action }) => conflictRowKey(action) === conflictKey && action.action === "insert");
-
-      if (databaseMatches.length === 0 && pendingMatches.length === 0) {
-        actions.push({ ...row, action: "insert", source_file: sourceFile });
-        continue;
-      }
-
-      const conflictPreview: StationPlanExistingRow[] = [
-        ...databaseMatches,
-        ...pendingMatches.map(({ action, index }) => ({
-          id: `új-import-sor-${index + 1}`,
-          sorszam: action.sorszam,
-          megnevezes: action.megnevezes,
-          termek: action.termek,
-          gyartasi_szam_projekt_neve: action.gyartasi_szam_projekt_neve,
-          mennyiseg: action.mennyiseg,
-          elkeszules_datum: action.elkeszules_datum,
-          tipus: action.tipus,
-          adat: action.adat || {},
-        })),
-      ];
-      const selectedAction = askStationPlanConflictAction(stationName, row, conflictPreview);
-      if (selectedAction === "cancel") throw new Error("A felhasználó megszakította a termelési terv importját.");
-      if (selectedAction === "skip") {
-        actions.push({ ...row, action: "skip", source_file: sourceFile });
-        continue;
-      }
-      if (selectedAction === "insert") {
-        actions.push({ ...row, action: "insert", source_file: sourceFile });
-        continue;
-      }
-
-      const latestPending = pendingMatches.at(-1);
-      if (latestPending) {
-        const target = actions[latestPending.index];
-        if (selectedAction === "add") {
-          target.mennyiseg += row.mennyiseg;
-        } else {
-          const safeRow = isPrimaPowerPlanStation(stationName) ? preservePrimaPowerNewFields(row, target) : row;
-          const mergedAdat = {
-            ...((target.adat && typeof target.adat === "object" && !Array.isArray(target.adat)) ? target.adat as Record<string, unknown> : {}),
-            ...((safeRow.adat && typeof safeRow.adat === "object" && !Array.isArray(safeRow.adat)) ? safeRow.adat as Record<string, unknown> : {}),
-          };
-          Object.assign(target, safeRow, { adat: mergedAdat, action: "insert", source_file: sourceFile });
-        }
-        continue;
-      }
-
-      const latestDatabaseRow = [...databaseMatches]
-        .sort((left, right) => Number(left.id) - Number(right.id))
-        .at(-1);
-      if (!latestDatabaseRow) throw new Error(`${stationName}: a konfliktusos tervsor nem található.`);
-      const safeRow = selectedAction === "update" && isPrimaPowerPlanStation(stationName)
-        ? preservePrimaPowerNewFields(row, latestDatabaseRow)
-        : row;
-      const nextQuantity = selectedAction === "add"
-        ? Number(latestDatabaseRow.mennyiseg || 0) + Number(row.mennyiseg || 0)
-        : row.mennyiseg;
-      const mergedAdat = selectedAction === "update"
-        ? {
-            ...((latestDatabaseRow.adat && typeof latestDatabaseRow.adat === "object" && !Array.isArray(latestDatabaseRow.adat)) ? latestDatabaseRow.adat as Record<string, unknown> : {}),
-            ...((safeRow.adat && typeof safeRow.adat === "object" && !Array.isArray(safeRow.adat)) ? safeRow.adat as Record<string, unknown> : {}),
-          }
-        : row.adat;
-      actions.push({
-        ...safeRow,
-        adat: mergedAdat,
-        mennyiseg: nextQuantity,
-        action: selectedAction,
-        existing_id: latestDatabaseRow.id,
+      // Ha ugyanaz a rendelésszám/sorszám létezik, de BÁRMELY minta-mező
+      // megváltozott, az ujjlenyomat eltér -> új sor kerül be, a régi nem módosul.
+      return {
+        ...row,
+        action: alreadyExists ? "skip" : "insert",
         source_file: sourceFile,
-      });
-      if (selectedAction === "add") latestDatabaseRow.mennyiseg = nextQuantity;
-      else Object.assign(latestDatabaseRow, safeRow);
-    }
-    return actions;
+      };
+    });
   }
 
   async function applyStationPlanMergeActions(stationName: string, actions: StationPlanMergeAction[]): Promise<{ processed: number; skipped: number }> {
@@ -34205,10 +34198,17 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           const rows = parseStationPlanRowsFromWorkbookSheet(sheet.rows, `„${sheet.name}” munkafül`, stationName);
           const actions = await buildStationPlanMergeActions(stationName, rows, selectedFile.name);
           const result = await applyStationPlanMergeActions(stationName, actions);
-          await syncDynamicProductionPlanRows(stationName, rows as unknown as Array<Record<string, unknown>>, selectedFile.name);
+          const insertedRows = actions
+            .filter((action) => action.action === "insert")
+            .map(({ action: _action, existing_id: _existingId, source_file: _sourceFile, ...row }) => row as StationPlanUploadRow);
+          await syncDynamicProductionPlanRows(
+            stationName,
+            insertedRows as unknown as Array<Record<string, unknown>>,
+            selectedFile.name
+          );
           totalProcessed += result.processed;
           totalSkipped += result.skipped;
-          successfulSheets.push(`${stationName} (${rows.length} sor)`);
+          successfulSheets.push(`${stationName} (${result.processed} új, ${result.skipped} már létezett)`);
         } catch (error) {
           failedSheets.push(`${stationName}: ${normalizeError(error)}`);
         }
@@ -34231,7 +34231,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
       setMessage({
         type: warningParts.length ? "info" : "success",
-        text: `${selectedFile.name}: ${successfulSheets.length} munkafül sikeresen feldolgozva, ${totalProcessed} adatbázis-művelet, ${totalSkipped} kihagyás. ${successfulSheets.join(", ")}.${warningParts.length ? ` ${warningParts.join(" ")}` : ""}`,
+        text: `${selectedFile.name}: ${successfulSheets.length} munkafül sikeresen feldolgozva. ${totalProcessed} új sor feltöltve, ${totalSkipped} már létezett és kihagyva. ${successfulSheets.join(", ")}.${warningParts.length ? ` ${warningParts.join(" ")}` : ""}`,
       });
       if (productionCardAdminStation) void loadProductionCardData(productionCardAdminStation, productionCardDate);
     } catch (error) {
@@ -34298,6 +34298,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const successfulStations: string[] = [];
     const failedStations: string[] = [];
     let uploadedRowCount = 0;
+    let skippedExistingRowCount = 0;
 
     try {
       for (const stationName of uploadableStations) {
@@ -34307,9 +34308,17 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         try {
           const actions = await buildStationPlanMergeActions(stationName, selection.rows, selection.fileName || "kézi feltöltés");
           const result = await applyStationPlanMergeActions(stationName, actions);
-          await syncDynamicProductionPlanRows(stationName, selection.rows as unknown as Array<Record<string, unknown>>, selection.fileName || "kézi feltöltés");
+          const insertedRows = actions
+            .filter((action) => action.action === "insert")
+            .map(({ action: _action, existing_id: _existingId, source_file: _sourceFile, ...row }) => row as StationPlanUploadRow);
+          await syncDynamicProductionPlanRows(
+            stationName,
+            insertedRows as unknown as Array<Record<string, unknown>>,
+            selection.fileName || "kézi feltöltés"
+          );
           uploadedRowCount += result.processed;
-          successfulStations.push(stationName);
+          skippedExistingRowCount += result.skipped;
+          successfulStations.push(`${stationName} (${result.processed} új, ${result.skipped} már létezett)`);
         } catch (error) {
           console.error(`SUPABASE HIBA ${buildStationPlanTableName(stationName)}:`, error);
           failedStations.push(`${stationName}: ${normalizeError(error)}`);
@@ -34320,7 +34329,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       if (successfulStations.length > 0) {
         setStationPlanFiles((previous) => {
           const next = { ...previous };
-          successfulStations.forEach((station) => delete next[station]);
+          uploadableStations.forEach((station) => {
+            if (!failedStations.some((failed) => failed.startsWith(`${station}:`))) delete next[station];
+          });
           return next;
         });
       }
@@ -34336,7 +34347,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       } else {
         setMessage({
           type: "success",
-          text: `${successfulStations.length} munkaállomás terve, összesen ${uploadedRowCount} sor sikeresen feltöltve a megfelelő Supabase-táblákba.`,
+          text: `${successfulStations.length} munkaállomás terve feldolgozva. ${uploadedRowCount} új sor feltöltve, ${skippedExistingRowCount} már létezett és kihagyva. ${successfulStations.join(", ")}.`,
         });
       }
     } finally {
