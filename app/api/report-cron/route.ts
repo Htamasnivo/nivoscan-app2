@@ -1,11 +1,91 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHmac, timingSafeEqual } from "crypto";
+import { open, stat, unlink } from "fs/promises";
 import chromium from "@sparticuz/chromium";
 import { chromium as playwrightChromium } from "playwright-core";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+
+const CHROMIUM_LAUNCH_LOCK_FILE = "/tmp/nivo-report-cron-chromium.lock";
+const CHROMIUM_LAUNCH_LOCK_STALE_MS = 20_000;
+const CHROMIUM_LAUNCH_LOCK_WAIT_MS = 12_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isEtxtbsyError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  const code = String((error as { code?: unknown } | null)?.code || "");
+  return code === "ETXTBSY" || /ETXTBSY/i.test(message);
+}
+
+async function acquireChromiumLaunchLock(): Promise<() => Promise<void>> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < CHROMIUM_LAUNCH_LOCK_WAIT_MS) {
+    try {
+      const handle = await open(CHROMIUM_LAUNCH_LOCK_FILE, "wx");
+      await handle.writeFile(`${process.pid}|${Date.now()}`);
+
+      return async () => {
+        await handle.close().catch(() => undefined);
+        await unlink(CHROMIUM_LAUNCH_LOCK_FILE).catch(() => undefined);
+      };
+    } catch (error) {
+      const code = String((error as { code?: unknown } | null)?.code || "");
+      if (code !== "EEXIST") throw error;
+
+      try {
+        const lockStat = await stat(CHROMIUM_LAUNCH_LOCK_FILE);
+        if (Date.now() - lockStat.mtimeMs > CHROMIUM_LAUNCH_LOCK_STALE_MS) {
+          await unlink(CHROMIUM_LAUNCH_LOCK_FILE).catch(() => undefined);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+
+      await sleep(250);
+    }
+  }
+
+  throw new Error("A Chromium indítási zár 12 másodpercen belül nem szabadult fel.");
+}
+
+async function launchChromiumSafely() {
+  const releaseLock = await acquireChromiumLaunchLock();
+  try {
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      try {
+        const executablePath = await chromium.executablePath();
+
+        return await playwrightChromium.launch({
+          args: chromium.args,
+          executablePath,
+          headless: true,
+        });
+      } catch (error) {
+        lastError = error;
+        if (!isEtxtbsyError(error) || attempt >= 5) throw error;
+
+        // @sparticuz/chromium ugyanazt a /tmp/chromium fájlt bontja ki.
+        // Párhuzamos Vercel invocation esetén rövid ideig ETXTBSY lehet.
+        // Várunk, majd ugyanazzal a már externalizált binárissal újrapróbáljuk.
+        await sleep(350 * attempt);
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error("A Chromium nem indult el.");
+  } finally {
+    await releaseLock();
+  }
+}
 
 function getSecret(): string {
   return String(process.env.REPORT_CRON_SECRET || process.env.CRON_SECRET || "").trim();
@@ -82,11 +162,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   let browser: Awaited<ReturnType<typeof playwrightChromium.launch>> | null = null;
   try {
-    browser = await playwrightChromium.launch({
-      args: chromium.args,
-      executablePath: await chromium.executablePath(),
-      headless: true,
-    });
+    browser = await launchChromiumSafely();
 
     const context = await browser.newContext({
       timezoneId: "Europe/Budapest",
