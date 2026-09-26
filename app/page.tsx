@@ -2310,6 +2310,7 @@ type ReportDeliveryProfile = {
   scheduleEndDate: string;
   weeklyDay: number;
   monthlyDay: number;
+  activeDays: number[];
   active: boolean;
   lastSentMarker: string;
   lastSentAt: string;
@@ -2420,6 +2421,18 @@ const REPORT_DELIVERY_REPORT_TYPE_LABELS: Record<ReportDeliveryReportType, strin
   custom: "Egyedi kombinált riport",
 };
 
+const REPORT_DELIVERY_DAY_OPTIONS: Array<{ value: number; label: string; title: string }> = [
+  { value: 1, label: "H", title: "Hétfő" },
+  { value: 2, label: "K", title: "Kedd" },
+  { value: 3, label: "SZ", title: "Szerda" },
+  { value: 4, label: "CS", title: "Csütörtök" },
+  { value: 5, label: "P", title: "Péntek" },
+  { value: 6, label: "SZ", title: "Szombat" },
+  { value: 7, label: "V", title: "Vasárnap" },
+];
+
+const REPORT_DELIVERY_DEFAULT_ACTIVE_DAYS = REPORT_DELIVERY_DAY_OPTIONS.map((item) => item.value);
+
 const REPORT_DELIVERY_BLOCK_OPTIONS: Array<{ id: ReportDeliveryBlock; label: string }> = [
   { id: "worker-analysis", label: "Dolgozói időszaki elemzés" },
   { id: "worker-comparison", label: "Dolgozói összehasonlítás" },
@@ -2451,6 +2464,7 @@ const DEFAULT_REPORT_DELIVERY_PROFILE: ReportDeliveryProfile = {
   scheduleEndDate: "",
   weeklyDay: 1,
   monthlyDay: 1,
+  activeDays: [...REPORT_DELIVERY_DEFAULT_ACTIVE_DAYS],
   active: false,
   lastSentMarker: "",
   lastSentAt: "",
@@ -12394,6 +12408,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       scheduleEndDate: normalizeReportDeliveryDateKey(row.schedule_end_date),
       weeklyDay: Math.min(7, Math.max(1, Number(row.weekly_day || 1))),
       monthlyDay: Math.min(28, Math.max(1, Number(row.monthly_day || 1))),
+      activeDays: Array.isArray(row.send_days)
+        ? Array.from(new Set(
+            row.send_days
+              .map((value) => Number(value))
+              .filter((value) => Number.isInteger(value) && value >= 1 && value <= 7)
+          )).sort((a, b) => a - b)
+        : [...REPORT_DELIVERY_DEFAULT_ACTIVE_DAYS],
       active: Boolean(row.active),
       lastSentMarker: String(row.last_sent_marker || ""),
       lastSentAt: String(row.last_sent_at || ""),
@@ -12441,7 +12462,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   }
 
   function cloneReportDeliveryProfile(profile: ReportDeliveryProfile): ReportDeliveryProfile {
-    return { ...profile, recipients: [...profile.recipients], customBlocks: [...profile.customBlocks] };
+    return {
+      ...profile,
+      recipients: [...profile.recipients],
+      customBlocks: [...profile.customBlocks],
+      activeDays: [...profile.activeDays],
+    };
   }
 
   function sortReportDeliveryProfiles(rows: ReportDeliveryProfile[]): ReportDeliveryProfile[] {
@@ -12673,6 +12699,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       schedule_end_date: null,
       weekly_day: 1,
       monthly_day: 1,
+      send_days: [...REPORT_DELIVERY_DEFAULT_ACTIVE_DAYS],
       active: false,
       last_sent_marker: "",
       last_sent_at: null,
@@ -12750,6 +12777,11 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       schedule_end_date: profile.scheduleEndDate || null,
       weekly_day: Math.min(7, Math.max(1, Number(profile.weeklyDay || 1))),
       monthly_day: Math.min(28, Math.max(1, Number(profile.monthlyDay || 1))),
+      send_days: Array.from(new Set(
+        (profile.activeDays || [])
+          .map((value) => Number(value))
+          .filter((value) => Number.isInteger(value) && value >= 1 && value <= 7)
+      )).sort((a, b) => a - b),
       active: activeOverride === undefined ? profile.active : activeOverride,
       created_by: profile.createdBy || activeWorker?.["Teljes nev"] || "",
       updated_at: new Date().toISOString(),
@@ -12983,6 +13015,17 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     return true;
   }
 
+  function getReportDeliveryWeekdayNumber(date: Date): number {
+    return date.getDay() === 0 ? 7 : date.getDay();
+  }
+
+  function isReportDeliveryDayEnabled(profile: ReportDeliveryProfile, date = new Date()): boolean {
+    const selectedDays = Array.isArray(profile.activeDays)
+      ? profile.activeDays
+      : REPORT_DELIVERY_DEFAULT_ACTIVE_DAYS;
+    return selectedDays.includes(getReportDeliveryWeekdayNumber(date));
+  }
+
   function getNextReportDeliveryRun(profile: ReportDeliveryProfile, now = new Date()): Date | null {
     if (!profile.active || !profile.sendTime) return null;
 
@@ -13003,26 +13046,52 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     candidate.setSeconds(0, 0);
     candidate.setHours(hour, minute, 0, 0);
 
+    if (!profile.activeDays?.length) return null;
+
     if (profile.frequency === "daily") {
       if (candidate.getTime() <= calculationBase.getTime()) candidate.setDate(candidate.getDate() + 1);
+
+      // Legfeljebb egy héten belül biztosan megtaláljuk a következő kijelölt napot.
+      for (let attempt = 0; attempt < 7 && !isReportDeliveryDayEnabled(profile, candidate); attempt += 1) {
+        candidate.setDate(candidate.getDate() + 1);
+      }
+      if (!isReportDeliveryDayEnabled(profile, candidate)) return null;
     } else if (profile.frequency === "weekly") {
+      // A meglévő heti "Küldés napja" beállítás továbbra is érvényes,
+      // a kis napboxok pedig plusz engedélyezési feltételt adnak hozzá.
+      if (!(profile.activeDays || []).includes(profile.weeklyDay)) return null;
+
       const jsTargetDay = profile.weeklyDay === 7 ? 0 : profile.weeklyDay;
       let delta = (jsTargetDay - candidate.getDay() + 7) % 7;
       if (delta === 0 && candidate.getTime() <= calculationBase.getTime()) delta = 7;
       candidate.setDate(candidate.getDate() + delta);
     } else {
-      candidate.setDate(Math.min(28, Math.max(1, profile.monthlyDay || 1)));
+      // Havi riportnál addig lépünk hónapról hónapra, amíg a kiválasztott
+      // hónapnap egy engedélyezett H/K/SZ/CS/P/SZ/V napra nem esik.
+      const monthlyDay = Math.min(28, Math.max(1, profile.monthlyDay || 1));
+      candidate.setDate(monthlyDay);
       if (candidate.getTime() <= calculationBase.getTime()) {
-        candidate.setMonth(
-          candidate.getMonth() + 1,
-          Math.min(28, Math.max(1, profile.monthlyDay || 1))
-        );
+        candidate.setMonth(candidate.getMonth() + 1, monthlyDay);
       }
+
+      let attempts = 0;
+      while (!isReportDeliveryDayEnabled(profile, candidate) && attempts < 24) {
+        candidate.setMonth(candidate.getMonth() + 1, monthlyDay);
+        attempts += 1;
+      }
+      if (!isReportDeliveryDayEnabled(profile, candidate)) return null;
     }
 
     if (scheduleStart && candidate.getTime() < scheduleStart.getTime()) {
       candidate.setTime(scheduleStart.getTime());
       candidate.setHours(hour, minute, 0, 0);
+
+      // Az érvényességi kezdőnap önmagában nem írhatja felül a napválasztást.
+      if (profile.frequency === "daily") {
+        for (let attempt = 0; attempt < 7 && !isReportDeliveryDayEnabled(profile, candidate); attempt += 1) {
+          candidate.setDate(candidate.getDate() + 1);
+        }
+      }
     }
 
     if (scheduleEnd && candidate.getTime() > scheduleEnd.getTime()) return null;
@@ -13113,7 +13182,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     // A riportált adatok napi/heti/havi időszaklogikája változatlan.
     if (!isInsideReportDeliveryScheduleWindow(profile, now)) return false;
 
-    const weekday = now.getDay() === 0 ? 7 : now.getDay();
+    const weekday = getReportDeliveryWeekdayNumber(now);
+    if (!isReportDeliveryDayEnabled(profile, now)) return false;
     if (profile.frequency === "weekly" && weekday !== profile.weeklyDay) return false;
     if (profile.frequency === "monthly" && now.getDate() !== profile.monthlyDay) return false;
     const currentTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
@@ -16422,6 +16492,47 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             <strong>Automatikus ütemezés</strong>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: style.gap }}>
               <label style={{ display: "grid", gap: 6, fontWeight: 800 }}>Ismétlődés<select value={draft.frequency} onChange={(e) => updateReportDeliveryDraft(profile.id, { frequency: e.target.value as ReportDeliveryFrequency })} style={control}><option value="daily">Naponta</option><option value="weekly">Hetente</option><option value="monthly">Havonta</option></select></label>
+              <div style={{ display: "grid", gap: 6, alignContent: "end" }}>
+                <span style={{ fontWeight: 800 }}>Küldési napok</span>
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", minHeight: style.fieldHeight }}>
+                  {REPORT_DELIVERY_DAY_OPTIONS.map((day) => {
+                    const selected = (draft.activeDays || []).includes(day.value);
+                    return (
+                      <button
+                        key={day.value}
+                        type="button"
+                        title={day.title}
+                        aria-pressed={selected}
+                        onClick={() => {
+                          const currentDays = Array.isArray(draft.activeDays) ? draft.activeDays : [];
+                          const nextDays = selected
+                            ? currentDays.filter((value) => value !== day.value)
+                            : [...currentDays, day.value].sort((a, b) => a - b);
+                          updateReportDeliveryDraft(profile.id, { activeDays: nextDays });
+                        }}
+                        style={{
+                          width: 38,
+                          minWidth: 38,
+                          height: 34,
+                          padding: 0,
+                          borderRadius: Math.max(6, Math.min(10, style.borderRadius)),
+                          border: `${Math.max(1, style.borderWidth)}px solid ${selected ? style.activeColor : style.borderColor}`,
+                          background: selected ? style.activeColor : style.inputBackground,
+                          color: selected ? style.buttonText : style.inputText,
+                          fontFamily: style.fontFamily,
+                          fontSize: Math.max(11, style.baseFontSize - 1),
+                          fontWeight: 900,
+                          cursor: "pointer",
+                          boxShadow: selected ? `0 0 0 1px ${style.activeColor}55` : "none",
+                          transition: "background 120ms ease, border-color 120ms ease, transform 120ms ease",
+                        }}
+                      >
+                        {day.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
               <div style={{ display: "grid", gap: 6, alignContent: "end" }}>
                 <span style={{ fontWeight: 800 }}>Riport adatainak időszaka</span>
                 <button
