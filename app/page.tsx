@@ -3411,6 +3411,7 @@ function registerFenyezoBusinessPlanFields(rows: Array<Record<string, unknown>>)
 }
 
 const STATION_PLAN_SOS_FIELD: StationPlanFieldDefinition = { key: "sos", label: "SOS", dataType: "boolean" };
+const STATION_PLAN_MANUAL_RUN_FIELD: StationPlanFieldDefinition = { key: "futo_sorszam", label: "Futosorszam", dataType: "integer" };
 const STATION_PLAN_DISCOVERED_FIELDS = new Map<string, StationPlanFieldDefinition[]>();
 
 function normalizeSosValue(value: unknown): boolean {
@@ -3436,7 +3437,8 @@ function registerStationPlanFields(stationName: string, rows: Array<Record<strin
   const existing = STATION_PLAN_DISCOVERED_FIELDS.get(stationKey) || [];
   const fields = new Map(existing.map((field) => [field.key, field]));
   rows.forEach((row) => Object.keys(row || {}).forEach((key) => {
-    // A futó sorszám kizárólag belső sorazonosító, nem megjelenítendő kártyamező.
+    // A futó sorszám tervsor-azonosító: Excelben import/export mező,
+    // de a termelési kártya dinamikus üzleti mezői közé továbbra sem vesszük fel.
     if (key === "futo_sorszam") return;
     if (key.startsWith("__") || fields.has(key)) return;
     if (stationKey === "primapower" && PRIMAPOWER_EXACT_FIELD_NAMES.has(key)) return;
@@ -3525,11 +3527,17 @@ function getStationPlanExcelFieldDefinitions(
 ): StationPlanFieldDefinition[] {
   const key = getStationPlanIdentityKey(stationName);
   const baseDefinitions = STATION_PLAN_EXCEL_FIELD_DEFINITIONS[key] || STATION_PLAN_BASE_FIELD_DEFINITIONS;
-  const definitions = key === "szereles" && includeSzerelesPrices
+  const withPrices = key === "szereles" && includeSzerelesPrices
     ? [...baseDefinitions, ...SZERELES_TERV_EXCEL_PRICE_FIELDS]
-    : baseDefinitions;
-  if (key === "primapower") return [...definitions];
-  return definitions.some((field) => field.key === "sos") ? definitions : [...definitions, STATION_PLAN_SOS_FIELD];
+    : [...baseDefinitions];
+
+  // Az exportban minden munkafül végén pontosan:
+  // ... üzleti mezők | SOS | Futosorszam
+  // Az SOS továbbra is csak export/megjelenítés célú; importból nem írjuk.
+  const businessDefinitions = withPrices.filter(
+    (field) => field.key !== "sos" && field.key !== "futo_sorszam"
+  );
+  return [...businessDefinitions, STATION_PLAN_SOS_FIELD, STATION_PLAN_MANUAL_RUN_FIELD];
 }
 
 function getStationPlanFieldDefinitions(stationName: string | null | undefined): StationPlanFieldDefinition[] {
@@ -7471,12 +7479,15 @@ function getExactProductionCardPlanTableName(stationName: string): string {
   return buildStationPlanTableName(stationName);
 }
 
-// PrimaPower és Csőlézer tervsorai ugyanazzal a rendelés-/gyártási számmal
-// később újra előfordulhatnak. Ezeknél kizárólag a monoton futó sorszám köti
-// össze a konkrét tervsort a START/END munkanaplóval.
+// Minden termelési *_terv sor saját, kézzel megadott Futosorszamot kap.
+// Ez különbözteti meg az azonos rendelés-/gyártási számú tervsorokat, és ezt
+// kötjük a START/END munkanapló terv_futo_sorszam mezőjéhez.
 function usesPlanRunSequence(stationName: string | null | undefined): boolean {
   const key = getStationPlanIdentityKey(stationName);
-  return key === "primapower" || key === "csolezer";
+  if (!key) return false;
+  return STATION_PLAN_MASTER_SHEET_NAMES.some(
+    (masterName) => getStationPlanIdentityKey(masterName) === key
+  );
 }
 
 function parsePlanRunSequence(value: unknown): number | null {
@@ -13108,12 +13119,22 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const currentTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
     const scheduledTime = profile.sendTime.slice(0, 5);
 
-    // NINCS utólagos / belépéskori pótlás.
-    // 08:00-s beállítás kizárólag 08:00 percében küldhet.
-    // Ha az alkalmazás 08:01-kor nyílik meg, a 08:00-s riport már nem megy ki.
-    if (currentTime !== scheduledTime) return false;
+    // A beállított időpont ELŐTT nem küldünk. Utána ugyanazon a napon viszont
+    // addig újrapróbálható, amíg nincs sikeres schedule marker.
+    if (currentTime < scheduledTime) return false;
 
-    return profile.lastSentMarker !== getReportDeliveryScheduleMarker(profile, now);
+    const marker = getReportDeliveryScheduleMarker(profile, now);
+    if (profile.lastSentMarker === marker) return false;
+
+    // Sikertelen küldés után ne próbálkozzon minden percben: 10 percenként retry.
+    if (profile.lastAttemptAt) {
+      const lastAttemptMs = new Date(profile.lastAttemptAt).getTime();
+      if (Number.isFinite(lastAttemptMs) && now.getTime() - lastAttemptMs < 10 * 60 * 1000) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   function filterReportDeliveryLogs(sourceData: DashboardData, profile: ReportDeliveryProfile): WorkLogRow[] {
@@ -14624,7 +14645,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       const lastSendError = errors.join(" | ");
       const updatePayload: Record<string, unknown> = errors.length
         ? {
-            last_sent_marker: marker,
             last_attempt_at: completedAt,
             last_send_status: "error",
             last_send_error: lastSendError,
@@ -14642,14 +14662,14 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       let response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).update(updatePayload).eq("id", profile.id);
       if (response.error && /last_attempt_at|last_send_status/i.test(String(response.error.message || ""))) {
         const legacyPayload = errors.length
-          ? { last_sent_marker: marker, last_send_error: lastSendError, updated_at: completedAt }
+          ? { last_send_error: lastSendError, updated_at: completedAt }
           : { last_sent_marker: marker, last_sent_at: completedAt, last_send_error: "", updated_at: completedAt };
         response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).update(legacyPayload).eq("id", profile.id);
       }
       if (response.error) console.error("Riportküldési státusz mentési hiba:", response.error);
 
       const statusPatch: Partial<ReportDeliveryProfile> = {
-        lastSentMarker: marker,
+        ...(errors.length ? {} : { lastSentMarker: marker }),
         lastSentAt: errors.length ? profile.lastSentAt : completedAt,
         lastAttemptAt: completedAt,
         lastSendStatus: errors.length ? "error" : "success",
@@ -14677,7 +14697,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         });
         const marker = getReportDeliveryScheduleMarker(profile);
         const updatePayload = {
-          last_sent_marker: marker,
           last_attempt_at: completedAt,
           last_send_status: "error",
           last_send_error: errorText,
@@ -14686,14 +14705,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         let response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).update(updatePayload).eq("id", profile.id);
         if (response.error && /last_attempt_at|last_send_status/i.test(String(response.error.message || ""))) {
           response = await supabase.from(REPORT_DELIVERY_PROFILES_TABLE).update({
-            last_sent_marker: marker,
             last_send_error: errorText,
             updated_at: completedAt,
           }).eq("id", profile.id);
         }
         if (response.error) console.error("Riportküldési hibaállapot mentési hiba:", response.error);
         const statusPatch: Partial<ReportDeliveryProfile> = {
-          lastSentMarker: marker,
           lastAttemptAt: completedAt,
           lastSendStatus: "error",
           lastSendError: errorText,
@@ -14720,6 +14737,32 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     } finally {
       setReportDeliverySendingById((current) => ({ ...current, [profile.id]: false }));
     }
+  }
+
+  async function claimReportDeliveryAttempt(profile: ReportDeliveryProfile, now = new Date()): Promise<boolean> {
+    if (!supabase || !profile.id) return false;
+    const cutoffIso = new Date(now.getTime() - 10 * 60 * 1000).toISOString();
+    const attemptIso = now.toISOString();
+
+    // PostgreSQL UPDATE feltétellel: párhuzamos cron / böngésző ellenőrzésnél
+    // csak az egyik kérés tudja lefoglalni az adott 10 perces próbálkozási ablakot.
+    const response = await supabase
+      .from(REPORT_DELIVERY_PROFILES_TABLE)
+      .update({
+        last_attempt_at: attemptIso,
+        last_send_status: "sending",
+        updated_at: attemptIso,
+      })
+      .eq("id", profile.id)
+      .or(`last_attempt_at.is.null,last_attempt_at.lt.${cutoffIso}`)
+      .select("id")
+      .maybeSingle();
+
+    if (response.error) {
+      console.error(`Riportküldési foglalás hiba (${profile.name}):`, response.error);
+      return false;
+    }
+    return Boolean(response.data?.id);
   }
 
   async function checkAutomaticReportDeliveryProfiles(): Promise<void> {
@@ -14767,8 +14810,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       const now = new Date();
       for (const profile of activeFromDb) {
         if (!isReportDeliveryProfileDue(profile, now)) continue;
+        const claimed = await claimReportDeliveryAttempt(profile, now);
+        if (!claimed) continue;
         try {
-          await sendReportDeliveryProfile(profile, false);
+          await sendReportDeliveryProfile({ ...profile, lastAttemptAt: now.toISOString() }, false);
         } catch (error) {
           console.error(`Automatikus riportküldés sikertelen (${profile.name}):`, error);
         }
@@ -31701,6 +31746,40 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   }, [activeWorker, step, reportSettings]);
 
   useEffect(() => {
+    if (!supabase || typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("view") !== "report-cron") return;
+
+    let cancelled = false;
+    (window as typeof window & { __NIVO_REPORT_CRON_DONE__?: boolean; __NIVO_REPORT_CRON_ERROR__?: string }).__NIVO_REPORT_CRON_DONE__ = false;
+
+    const run = async (): Promise<void> => {
+      try {
+        const ts = params.get("ts") || "";
+        const sig = params.get("sig") || "";
+        const validation = await fetch(`/api/report-cron?mode=validate&ts=${encodeURIComponent(ts)}&sig=${encodeURIComponent(sig)}`, {
+          cache: "no-store",
+        });
+        if (!validation.ok) throw new Error("A szerveroldali riport-cron hitelesítése sikertelen.");
+
+        // A dolgozó-/gép-listák normál indulási betöltésének adunk egy rövid időt,
+        // hogy a PDF/Excel riportok ugyanazokat a neveket és szűrőket használják.
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 2500));
+        if (cancelled) return;
+        await checkAutomaticReportDeliveryProfiles();
+      } catch (error) {
+        console.error("Szerveroldali riport cron hiba:", error);
+        (window as typeof window & { __NIVO_REPORT_CRON_ERROR__?: string }).__NIVO_REPORT_CRON_ERROR__ = normalizeError(error);
+      } finally {
+        (window as typeof window & { __NIVO_REPORT_CRON_DONE__?: boolean }).__NIVO_REPORT_CRON_DONE__ = true;
+      }
+    };
+
+    void run();
+    return () => { cancelled = true; };
+  }, [supabase]);
+
+  useEffect(() => {
     if (!supabase || !activeWorker || !isManagementDashboardWorker(activeWorker)) return;
     if (terminalView !== "management" || flowStage !== "dashboard") return;
 
@@ -33503,47 +33582,61 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     if (!rawMatrix.length) throw new Error(`${sourceLabel}: a munkafül üres.`);
 
     const headerRow = Array.isArray(rawMatrix[0]) ? rawMatrix[0] : [];
+    const exportDefinitions = getStationPlanExcelFieldDefinitions(stationName, true);
+    const sosIndex = exportDefinitions.findIndex((field) => field.key === "sos");
+    const runIndex = exportDefinitions.findIndex((field) => field.key === "futo_sorszam");
+    if (runIndex < 0) throw new Error(`${sourceLabel}: a Futosorszam mestermező hiányzik.`);
 
-    // A visszatöltés a jelenlegi "Minta Excel" üzleti oszlopait várja,
-    // DE az SOS kizárólag export/megjelenítés célú rendszermező:
-    // importnál opcionális és teljesen figyelmen kívül marad.
-    // Szerelésnél a Nettó ár + Készletrevételi érték továbbra is kötelező.
-    const definitions = getStationPlanExcelFieldDefinitions(stationName, true)
-      .filter((definition) => definition.key !== "sos");
-    const expectedHeaders = definitions.map((definition) => normalizeSpreadsheetHeader(definition.label));
-    const actualHeaders = headerRow
-      .slice(0, definitions.length)
-      .map((value) => normalizeSpreadsheetHeader(String(value ?? "")));
+    // SOS importnál opcionális és teljesen figyelmen kívül marad.
+    // A Futosorszam viszont kötelező, és ez zárja az importált tartományt.
+    const headerAtSos = sosIndex >= 0 ? normalizeSpreadsheetHeader(String(headerRow[sosIndex] ?? "")) : "";
+    const hasSosColumn = sosIndex >= 0 && headerAtSos === normalizeSpreadsheetHeader("SOS");
+    const importDefinitions = exportDefinitions.filter((field) => field.key !== "sos");
 
-    const mismatches = definitions
-      .map((definition, index) => ({
-        index,
-        expected: definition.label,
-        actual: String(headerRow[index] ?? "").trim(),
-        matches: actualHeaders[index] === expectedHeaders[index],
-      }))
+    const importColumnMap = new Map<string, number>();
+    let importColumnIndex = 0;
+    for (const definition of exportDefinitions) {
+      if (definition.key === "sos") {
+        if (hasSosColumn) importColumnIndex += 1;
+        continue;
+      }
+      importColumnMap.set(definition.key, importColumnIndex);
+      importColumnIndex += 1;
+    }
+
+    const mismatches = importDefinitions
+      .map((definition) => {
+        const index = importColumnMap.get(definition.key) ?? -1;
+        const actual = index >= 0 ? String(headerRow[index] ?? "").trim() : "";
+        return {
+          index,
+          expected: definition.label,
+          actual,
+          matches: normalizeSpreadsheetHeader(actual) === normalizeSpreadsheetHeader(definition.label),
+        };
+      })
       .filter((item) => !item.matches);
 
     if (mismatches.length > 0) {
       const mismatchText = ` Eltérő/hiányzó oszlopok: ${mismatches.map((item) => `${item.index + 1}. „${item.actual || "(üres)"}” → várt: „${item.expected}”`).join("; ")}.`;
       throw new Error(
-        `${sourceLabel}: az Excel első ${definitions.length} oszlopának sorrendje/formája nem egyezik a mester-sémával.${mismatchText}`
+        `${sourceLabel}: az Excel importmezőinek sorrendje/formája nem egyezik a mester-sémával.${mismatchText}`
       );
     }
 
-    // FONTOS: az import-séma UTÁNI oszlopok szándékosan nincsenek ellenőrizve.
-    // Ide tartozik az exportban szereplő SOS oszlop is, valamint bármilyen további
-    // képlet, segédtábla vagy kalkuláció. Importkor ezek teljesen figyelmen kívül
-    // maradnak, és sem a *_terv mezőibe, sem az adat JSON-ba nem kerülnek.
+    const definitions = importDefinitions;
 
+    // A Futosorszam oszlop UTÁNI minden érték szándékosan figyelmen kívül marad.
+    // Így a jobb oldali képletek / segédtáblák / kalkulációk nem részei az importnak.
     const definitionByKey = new Map(definitions.map((field) => [field.key, field]));
     const parsedRows: StationPlanUploadRow[] = [];
 
     rawMatrix.slice(1).forEach((rowValues, index) => {
       const rowNumber = index + 2;
       const row = Array.isArray(rowValues) ? rowValues : [];
-      const isCompletelyEmpty = definitions.every((_, columnIndex) => {
-        const value = row[columnIndex];
+      const isCompletelyEmpty = definitions.every((definition) => {
+        const columnIndex = importColumnMap.get(definition.key) ?? -1;
+        const value = columnIndex >= 0 ? row[columnIndex] : "";
         return value === null || value === undefined || String(value).trim() === "";
       });
       if (isCompletelyEmpty) return;
@@ -33552,8 +33645,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       // fontos a Lakatos két, majdnem azonos „hegesztett pánt” oszlopánál:
       // így egyik érték sem tud elveszni vagy felülíródni.
       const normalizedRawRow: Record<string, unknown> = {};
-      definitions.forEach((definition, columnIndex) => {
-        normalizedRawRow[definition.key] = row[columnIndex] ?? "";
+      definitions.forEach((definition) => {
+        const columnIndex = importColumnMap.get(definition.key) ?? -1;
+        normalizedRawRow[definition.key] = columnIndex >= 0 ? (row[columnIndex] ?? "") : "";
       });
       const normalizedValues: Record<string, unknown> = {};
       definitions.forEach((definition) => {
@@ -33581,6 +33675,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           normalizedValues[definition.key] = value || null;
         }
       });
+
+      const manualRunSequence = parsePlanRunSequence(normalizedValues.futo_sorszam ?? normalizedRawRow.futo_sorszam);
+      if (!manualRunSequence) {
+        throw new Error(`${sourceLabel}, ${rowNumber}. sor, Futosorszam: kötelező 1-nél nagyobb vagy egyenlő egész szám.`);
+      }
+      normalizedValues.futo_sorszam = manualRunSequence;
 
       const firstText = (...keys: string[]): string => {
         for (const key of keys) {
@@ -33900,24 +34000,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     sourceFile: string
   ): Promise<StationPlanMergeAction[]> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
-
-    // Csőlézer + PrimaPower: ezeknél szándékosan NINCS duplikáció-kiszűrés.
-    // Ugyanaz a tétel többször is gyártható, a konkrét tervsor azonosítását a
-    // már meglévő futó sorszám logika végzi. Ahhoz itt nem nyúlunk.
-    if (usesPlanRunSequence(stationName)) {
-      return rows.map((row) => ({
-        ...row,
-        action: "insert",
-        source_file: sourceFile,
-      }));
-    }
-
     const tableName = buildStationPlanTableName(stationName);
     const existingRows: StationPlanExistingRow[] = [];
 
-    // Egyetlen logikai előbetöltés: nem kérdezünk rá Excel-soronként a Supabase-ra.
-    // A PostgREST eredménykorlát miatt nagy táblánál lapozunk, majd minden
-    // összehasonlítás kizárólag memóriában történik.
+    // Egyetlen előbetöltés / lapozás, utána minden egyezés memóriában történik.
     const pageSize = 1000;
     for (let offset = 0; ; offset += pageSize) {
       const { data, error } = await supabase
@@ -33927,41 +34013,66 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         .range(offset, offset + pageSize - 1);
 
       if (error) throw error;
-
       const pageRows = (data || []) as StationPlanExistingRow[];
       existingRows.push(...pageRows);
       if (pageRows.length < pageSize) break;
     }
 
-    // Rendelésszám/sorszám -> a már adatbázisban lévő minta-sorok ujjlenyomatai.
-    // Az aktuális Excelen belüli ismétlődő sorokat SZÁNDÉKOSAN nem tesszük ebbe
-    // a mapbe: a kérés szerint azok mind külön sorban bekerülhetnek.
-    const existingFingerprintsByIdentity = new Map<string, Set<string>>();
-    existingRows.forEach((existingRow) => {
-      const identity = getStationPlanAppendIdentity(existingRow);
-      if (!identity) return;
-      const fingerprint = getStationPlanTemplateFingerprint(stationName, existingRow);
-      const fingerprints = existingFingerprintsByIdentity.get(identity) || new Set<string>();
-      fingerprints.add(fingerprint);
-      existingFingerprintsByIdentity.set(identity, fingerprints);
+    const existingByRun = new Map<number, StationPlanExistingRow>();
+    existingRows.forEach((existing) => {
+      const run = parsePlanRunSequence(existing.futo_sorszam);
+      if (run) existingByRun.set(run, existing);
     });
 
-    return rows.map((row) => {
-      const identity = getStationPlanAppendIdentity(row);
-      const fingerprint = getStationPlanTemplateFingerprint(stationName, row);
-      const alreadyExists = Boolean(
-        identity
-        && existingFingerprintsByIdentity.get(identity)?.has(fingerprint)
-      );
+    // Egy feltöltött munkafülön belül ugyanaz a Futosorszam nem szerepelhet kétszer.
+    const seenUploadRuns = new Set<number>();
+    const actions: StationPlanMergeAction[] = [];
 
-      // Ha ugyanaz a rendelésszám/sorszám létezik, de BÁRMELY minta-mező
-      // megváltozott, az ujjlenyomat eltér -> új sor kerül be, a régi nem módosul.
-      return {
-        ...row,
-        action: alreadyExists ? "skip" : "insert",
+    for (const row of rows) {
+      const run = parsePlanRunSequence(row.futo_sorszam);
+      if (!run) {
+        throw new Error(`${stationName}: minden tervsorhoz kötelező a Futosorszam.`);
+      }
+      if (seenUploadRuns.has(run)) {
+        throw new Error(`${stationName}: a Futosorszam (${run}) ugyanabban az Excelben többször szerepel. Munkaállomáson belül egyedi érték szükséges.`);
+      }
+      seenUploadRuns.add(run);
+
+      const existing = existingByRun.get(run);
+      if (!existing) {
+        actions.push({
+          ...row,
+          futo_sorszam: run,
+          action: "insert",
+          source_file: sourceFile,
+        });
+        continue;
+      }
+
+      // Meglévő Futosorszam: NEM készítünk duplikátumot, hanem ugyanazt a
+      // tervsort frissítjük az Excel aktuális adataira. SOS nincs a row-ban,
+      // ezért a programban kézzel beállított SOS érték érintetlen marad.
+      const safeRow = isPrimaPowerPlanStation(stationName)
+        ? preservePrimaPowerNewFields(row, existing)
+        : row;
+      const oldAdat = existing.adat && typeof existing.adat === "object" && !Array.isArray(existing.adat)
+        ? existing.adat as Record<string, unknown>
+        : {};
+      const newAdat = safeRow.adat && typeof safeRow.adat === "object" && !Array.isArray(safeRow.adat)
+        ? safeRow.adat as Record<string, unknown>
+        : {};
+
+      actions.push({
+        ...safeRow,
+        futo_sorszam: run,
+        adat: { ...oldAdat, ...newAdat },
+        action: "update",
+        existing_id: existing.id,
         source_file: sourceFile,
-      };
-    });
+      });
+    }
+
+    return actions;
   }
 
   async function applyStationPlanMergeActions(stationName: string, actions: StationPlanMergeAction[]): Promise<{ processed: number; skipped: number }> {
@@ -34516,6 +34627,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
     if (key === "kiszallitasi_datum") return "";
     if (field.key === "sos") return "Nem";
+    if (field.key === "futo_sorszam") return 1;
     if (field.dataType === "date") return getLocalDateKey(new Date());
     if (field.dataType === "integer") return 1;
     if (field.dataType === "numeric") return "";
