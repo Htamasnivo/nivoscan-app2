@@ -7493,9 +7493,9 @@ function getExactProductionCardPlanTableName(stationName: string): string {
   return buildStationPlanTableName(stationName);
 }
 
-// Minden termelési *_terv sor saját, kézzel megadott Futosorszamot kap.
-// Ez különbözteti meg az azonos rendelés-/gyártási számú tervsorokat, és ezt
-// kötjük a START/END munkanapló terv_futo_sorszam mezőjéhez.
+// Az ÚJ termelési *_terv sorok kézzel megadott Futosorszamot kapnak.
+// A tényleges tervsor-azonosító a Gyártási szám + Futosorszam együtt.
+// Régi, NULL Futosorszam sorok továbbra is a korábbi logika szerint működnek.
 function usesPlanRunSequence(stationName: string | null | undefined): boolean {
   const key = getStationPlanIdentityKey(stationName);
   if (!key) return false;
@@ -34096,6 +34096,47 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     return "";
   }
 
+  function getStationPlanManufacturingNumber(
+    row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
+  ): string {
+    const data = row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)
+      ? row.adat as Record<string, unknown>
+      : {};
+
+    // A tervsor új egyedi kulcsának első fele a Gyártási szám.
+    // PrimaPowernél ennek megfelelő mező a "Gyártási szám / Projekt".
+    // A sorszam csak kompatibilitási fallback régebbi tervsorokhoz.
+    const candidates = [
+      row.gyartasi_szam,
+      data.gyartasi_szam,
+      row.gyartasi_szam_projekt_neve,
+      data.gyartasi_szam_projekt_neve,
+      row.sorszam,
+      data.sorszam,
+    ];
+
+    for (const value of candidates) {
+      const clean = String(value ?? "").trim();
+      if (clean) return clean;
+    }
+    return "";
+  }
+
+  function getStationPlanManufacturingRunKey(
+    row: StationPlanUploadRow | StationPlanExistingRow | StationPlanMergeAction
+  ): string {
+    const data = row.adat && typeof row.adat === "object" && !Array.isArray(row.adat)
+      ? row.adat as Record<string, unknown>
+      : {};
+    const manufacturingNumber = getStationPlanManufacturingNumber(row);
+    const runSequence = parsePlanRunSequence(row.futo_sorszam ?? data.futo_sorszam);
+
+    // Régi, Futosorszam nélküli tervsorhoz nem készítünk új kulcsot:
+    // az a korábbi, rendelés-/gyártásiszám-alapú logika szerint működik tovább.
+    if (!manufacturingNumber || !runSequence) return "";
+    return `${normalizeLooseText(manufacturingNumber)}|${runSequence}`;
+  }
+
   function normalizeStationPlanTemplateComparisonValue(
     definition: StationPlanFieldDefinition,
     value: unknown
@@ -34164,27 +34205,47 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       if (pageRows.length < pageSize) break;
     }
 
-    const existingByRun = new Map<number, StationPlanExistingRow>();
+    const existingByManufacturingRunKey = new Map<string, StationPlanExistingRow>();
     existingRows.forEach((existing) => {
-      const run = parsePlanRunSequence(existing.futo_sorszam);
-      if (run) existingByRun.set(run, existing);
+      const compositeKey = getStationPlanManufacturingRunKey(existing);
+      if (compositeKey) existingByManufacturingRunKey.set(compositeKey, existing);
     });
 
-    // Egy feltöltött munkafülön belül ugyanaz a Futosorszam nem szerepelhet kétszer.
-    const seenUploadRuns = new Set<number>();
+    // Egy feltöltött munkafülön belül a Gyártási szám + Futosorszam együtt egyedi.
+    // Így különböző gyártási számoknál lehet ugyanaz (pl. 1) a Futosorszam,
+    // ugyanaz a gyártási szám pedig 1, 2, 3... futásokkal többször is szerepelhet.
+    const seenUploadCompositeKeys = new Set<string>();
     const actions: StationPlanMergeAction[] = [];
 
     for (const row of rows) {
       const run = parsePlanRunSequence(row.futo_sorszam);
       if (!run) {
-        throw new Error(`${stationName}: minden tervsorhoz kötelező a Futosorszam.`);
+        throw new Error(`${stationName}: minden új Excel-tervsorhoz kötelező a Futosorszam.`);
       }
-      if (seenUploadRuns.has(run)) {
-        throw new Error(`${stationName}: a Futosorszam (${run}) ugyanabban az Excelben többször szerepel. Munkaállomáson belül egyedi érték szükséges.`);
-      }
-      seenUploadRuns.add(run);
 
-      const existing = existingByRun.get(run);
+      const manufacturingNumber = getStationPlanManufacturingNumber(row);
+      if (!manufacturingNumber) {
+        throw new Error(`${stationName}: a Gyártási szám kötelező, mert az egyedi azonosító a Gyártási szám + Futosorszam.`);
+      }
+
+      const compositeKey = getStationPlanManufacturingRunKey(row);
+      if (!compositeKey) {
+        throw new Error(`${stationName}: a Gyártási szám + Futosorszam egyedi azonosító nem állapítható meg.`);
+      }
+
+      if (seenUploadCompositeKeys.has(compositeKey)) {
+        throw new Error(
+          `${stationName}: a Gyártási szám + Futosorszam páros ugyanabban az Excelben többször szerepel ` +
+          `(${manufacturingNumber} + ${run}).`
+        );
+      }
+      seenUploadCompositeKeys.add(compositeKey);
+
+      // Csak olyan meglévő sort frissítünk, amelynek MÁR VAN Futosorszam értéke
+      // és ugyanaz a Gyártási szám + Futosorszam kulcsa.
+      // A korábbi, NULL Futosorszam sorok szándékosan nem egyeznek:
+      // ha most ugyanarra a gyártási számra új kézi Futosorszam érkezik, új sor készül.
+      const existing = existingByManufacturingRunKey.get(compositeKey);
       if (!existing) {
         actions.push({
           ...row,
@@ -34195,8 +34256,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         continue;
       }
 
-      // Meglévő Futosorszam: NEM készítünk duplikátumot, hanem ugyanazt a
-      // tervsort frissítjük az Excel aktuális adataira. SOS nincs a row-ban,
+      // Meglévő Gyártási szám + Futosorszam: nem duplikálunk, hanem ugyanazt
+      // a tervsort frissítjük az Excel aktuális adataira. SOS nincs a row-ban,
       // ezért a programban kézzel beállított SOS érték érintetlen marad.
       const safeRow = isPrimaPowerPlanStation(stationName)
         ? preservePrimaPowerNewFields(row, existing)
