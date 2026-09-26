@@ -59,10 +59,26 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   const timestamp = String(Date.now());
   const signature = sign(secret, timestamp);
-  const targetUrl = new URL("/", request.nextUrl.origin);
+
+  // FONTOS:
+  // A Vercel Cron a konkrét, generált deployment hostot hívhatja
+  // (pl. nivoscan-app2-...-nivoscanapp2.vercel.app), amely Vercel Authentication
+  // mögött lehet. A headless böngészőnek viszont a projekt stabil PRODUCTION
+  // domainjét kell megnyitnia.
+  const productionHost = String(process.env.VERCEL_PROJECT_PRODUCTION_URL || "").trim();
+  const targetOrigin = productionHost
+    ? `https://${productionHost}`
+    : request.nextUrl.origin;
+
+  const targetUrl = new URL("/", targetOrigin);
   targetUrl.searchParams.set("view", "report-cron");
   targetUrl.searchParams.set("ts", timestamp);
   targetUrl.searchParams.set("sig", signature);
+
+  // Ha a Production domain is Vercel Deployment Protection mögött van,
+  // a Vercel által biztosított Automation Bypass secretet is használjuk.
+  // Ha nincs ilyen secret konfigurálva, egyszerűen a publikus Production URL fut.
+  const automationBypassSecret = String(process.env.VERCEL_AUTOMATION_BYPASS_SECRET || "").trim();
 
   let browser: Awaited<ReturnType<typeof playwrightChromium.launch>> | null = null;
   try {
@@ -75,6 +91,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const context = await browser.newContext({
       timezoneId: "Europe/Budapest",
       locale: "hu-HU",
+      ...(automationBypassSecret
+        ? {
+            extraHTTPHeaders: {
+              "x-vercel-protection-bypass": automationBypassSecret,
+              "x-vercel-set-bypass-cookie": "true",
+            },
+          }
+        : {}),
     });
     const page = await context.newPage();
 
@@ -107,7 +131,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         body: document.body?.innerText?.slice(0, 1000) || "",
       })).catch(() => ({ url: "", title: "", body: "" }));
       throw new Error(
-        `A riport-cron kliens nem indult el. URL: ${diagnostic.url}; title: ${diagnostic.title}; body: ${diagnostic.body}; ` +
+        `A riport-cron kliens nem indult el. Cél: ${targetUrl.origin}; végső URL: ${diagnostic.url}; ` +
+        `title: ${diagnostic.title}; body: ${diagnostic.body}; ` +
+        `Automation bypass: ${automationBypassSecret ? "igen" : "nem"}; ` +
         `Böngészőlog: ${browserMessages.join(" | ")}`
       );
     }
@@ -160,6 +186,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       ok: true,
       checkedAt: new Date().toISOString(),
       timezone: "Europe/Budapest",
+      targetOrigin,
+      automationBypassUsed: Boolean(automationBypassSecret),
       stage: clientState.stage,
       browserMessages,
     });
