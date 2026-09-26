@@ -78,31 +78,90 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
     const page = await context.newPage();
 
-    await page.goto(targetUrl.toString(), {
-      waitUntil: "domcontentloaded",
-      timeout: 40_000,
+    const browserMessages: string[] = [];
+    page.on("console", (message) => {
+      const line = `[console:${message.type()}] ${message.text()}`.slice(0, 1000);
+      browserMessages.push(line);
+      if (browserMessages.length > 20) browserMessages.shift();
+    });
+    page.on("pageerror", (error) => {
+      browserMessages.push(`[pageerror] ${error.message}`.slice(0, 1000));
+      if (browserMessages.length > 20) browserMessages.shift();
     });
 
-    await page.waitForFunction(
-      () => (window as typeof window & { __NIVO_REPORT_CRON_DONE__?: boolean }).__NIVO_REPORT_CRON_DONE__ === true,
-      undefined,
-      { timeout: 50_000 }
-    );
+    await page.goto(targetUrl.toString(), {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000,
+    });
 
-    const clientError = await page.evaluate(
-      () => (window as typeof window & { __NIVO_REPORT_CRON_ERROR__?: string }).__NIVO_REPORT_CRON_ERROR__ || ""
-    );
+    try {
+      await page.waitForFunction(
+        () => (window as typeof window & { __NIVO_REPORT_CRON_STARTED__?: boolean }).__NIVO_REPORT_CRON_STARTED__ === true,
+        undefined,
+        { timeout: 12_000 }
+      );
+    } catch {
+      const diagnostic = await page.evaluate(() => ({
+        url: window.location.href,
+        title: document.title,
+        body: document.body?.innerText?.slice(0, 1000) || "",
+      })).catch(() => ({ url: "", title: "", body: "" }));
+      throw new Error(
+        `A riport-cron kliens nem indult el. URL: ${diagnostic.url}; title: ${diagnostic.title}; body: ${diagnostic.body}; ` +
+        `Böngészőlog: ${browserMessages.join(" | ")}`
+      );
+    }
+
+    try {
+      await page.waitForFunction(
+        () => (window as typeof window & { __NIVO_REPORT_CRON_DONE__?: boolean }).__NIVO_REPORT_CRON_DONE__ === true,
+        undefined,
+        { timeout: 42_000 }
+      );
+    } catch {
+      const state = await page.evaluate(() => {
+        const w = window as typeof window & {
+          __NIVO_REPORT_CRON_STAGE__?: string;
+          __NIVO_REPORT_CRON_ERROR__?: string;
+        };
+        return {
+          stage: w.__NIVO_REPORT_CRON_STAGE__ || "ismeretlen",
+          error: w.__NIVO_REPORT_CRON_ERROR__ || "",
+        };
+      }).catch(() => ({ stage: "nem olvasható", error: "" }));
+      throw new Error(
+        `A riport-cron nem fejeződött be időben. Aktuális szakasz: ${state.stage}. ` +
+        `${state.error ? `Klienshiba: ${state.error}. ` : ""}` +
+        `Böngészőlog: ${browserMessages.join(" | ")}`
+      );
+    }
+
+    const clientState = await page.evaluate(() => {
+      const w = window as typeof window & {
+        __NIVO_REPORT_CRON_ERROR__?: string;
+        __NIVO_REPORT_CRON_STAGE__?: string;
+      };
+      return {
+        error: w.__NIVO_REPORT_CRON_ERROR__ || "",
+        stage: w.__NIVO_REPORT_CRON_STAGE__ || "",
+      };
+    });
 
     await context.close();
 
-    if (clientError) {
-      return NextResponse.json({ ok: false, error: clientError }, { status: 500 });
+    if (clientState.error) {
+      return NextResponse.json(
+        { ok: false, error: clientState.error, stage: clientState.stage, browserMessages },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({
       ok: true,
       checkedAt: new Date().toISOString(),
       timezone: "Europe/Budapest",
+      stage: clientState.stage,
+      browserMessages,
     });
   } catch (error) {
     console.error("/api/report-cron hiba:", error);
