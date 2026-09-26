@@ -13,6 +13,12 @@ const nextConfig = {
       "playwright-core",
       "@sparticuz/chromium",
     ],
+
+    outputFileTracingIncludes: {
+      "/api/report-cron": [
+        "./node_modules/@sparticuz/chromium/bin/**/*",
+      ],
+    },
   },
 
   webpack: (config, { isServer }) => {
