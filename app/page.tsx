@@ -14765,7 +14765,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     return Boolean(response.data?.id);
   }
 
-  async function checkAutomaticReportDeliveryProfiles(): Promise<void> {
+  async function checkAutomaticReportDeliveryProfiles(maxClaimedProfiles = Number.POSITIVE_INFINITY): Promise<void> {
     if (!supabase || reportDeliveryAutoCheckBusyRef.current) return;
     reportDeliveryAutoCheckBusyRef.current = true;
     try {
@@ -14808,15 +14808,23 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       });
 
       const now = new Date();
+      let claimedProfileCount = 0;
       for (const profile of activeFromDb) {
         if (!isReportDeliveryProfileDue(profile, now)) continue;
         const claimed = await claimReportDeliveryAttempt(profile, now);
         if (!claimed) continue;
+
+        claimedProfileCount += 1;
         try {
           await sendReportDeliveryProfile({ ...profile, lastAttemptAt: now.toISOString() }, false);
         } catch (error) {
           console.error(`Automatikus riportküldés sikertelen (${profile.name}):`, error);
         }
+
+        // A Vercel cron route legfeljebb 60 másodpercig futhat.
+        // Headless cron módban ezért egy invocation csak egy riportprofilt küld.
+        // A következő percben a következő esedékes profil kerül sorra.
+        if (claimedProfileCount >= maxClaimedProfiles) break;
       }
     } finally {
       reportDeliveryAutoCheckBusyRef.current = false;
@@ -31746,15 +31754,35 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   }, [activeWorker, step, reportSettings]);
 
   useEffect(() => {
-    if (!supabase || typeof window === "undefined") return;
+    if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     if (params.get("view") !== "report-cron") return;
 
+    type CronWindow = typeof window & {
+      __NIVO_REPORT_CRON_STARTED__?: boolean;
+      __NIVO_REPORT_CRON_DONE__?: boolean;
+      __NIVO_REPORT_CRON_ERROR__?: string;
+      __NIVO_REPORT_CRON_STAGE__?: string;
+    };
+    const cronWindow = window as CronWindow;
+
+    cronWindow.__NIVO_REPORT_CRON_STARTED__ = true;
+    cronWindow.__NIVO_REPORT_CRON_DONE__ = false;
+    cronWindow.__NIVO_REPORT_CRON_ERROR__ = "";
+    cronWindow.__NIVO_REPORT_CRON_STAGE__ = "indítás";
+
+    if (!supabase) {
+      cronWindow.__NIVO_REPORT_CRON_ERROR__ = "Nincs Supabase kapcsolat a cron böngészőben.";
+      cronWindow.__NIVO_REPORT_CRON_STAGE__ = "supabase-hiányzik";
+      cronWindow.__NIVO_REPORT_CRON_DONE__ = true;
+      return;
+    }
+
     let cancelled = false;
-    (window as typeof window & { __NIVO_REPORT_CRON_DONE__?: boolean; __NIVO_REPORT_CRON_ERROR__?: string }).__NIVO_REPORT_CRON_DONE__ = false;
 
     const run = async (): Promise<void> => {
       try {
+        cronWindow.__NIVO_REPORT_CRON_STAGE__ = "hitelesítés";
         const ts = params.get("ts") || "";
         const sig = params.get("sig") || "";
         const validation = await fetch(`/api/report-cron?mode=validate&ts=${encodeURIComponent(ts)}&sig=${encodeURIComponent(sig)}`, {
@@ -31762,16 +31790,23 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         });
         if (!validation.ok) throw new Error("A szerveroldali riport-cron hitelesítése sikertelen.");
 
-        // A dolgozó-/gép-listák normál indulási betöltésének adunk egy rövid időt,
-        // hogy a PDF/Excel riportok ugyanazokat a neveket és szűrőket használják.
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 2500));
+        // A normál indulási listáknak rövid időt adunk, de a 60 mp-es Vercel
+        // function-limit miatt nem várunk feleslegesen több másodpercet.
+        cronWindow.__NIVO_REPORT_CRON_STAGE__ = "indulási adatok";
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
         if (cancelled) return;
-        await checkAutomaticReportDeliveryProfiles();
+
+        cronWindow.__NIVO_REPORT_CRON_STAGE__ = "riportprofil ellenőrzés/küldés";
+        // Egy cron invocation legfeljebb EGY esedékes profilt küld.
+        // Ha több profil esedékes, a következő perc(ek)ben kerülnek sorra.
+        await checkAutomaticReportDeliveryProfiles(1);
+        cronWindow.__NIVO_REPORT_CRON_STAGE__ = "kész";
       } catch (error) {
         console.error("Szerveroldali riport cron hiba:", error);
-        (window as typeof window & { __NIVO_REPORT_CRON_ERROR__?: string }).__NIVO_REPORT_CRON_ERROR__ = normalizeError(error);
+        cronWindow.__NIVO_REPORT_CRON_ERROR__ = normalizeError(error);
+        cronWindow.__NIVO_REPORT_CRON_STAGE__ = "hiba";
       } finally {
-        (window as typeof window & { __NIVO_REPORT_CRON_DONE__?: boolean }).__NIVO_REPORT_CRON_DONE__ = true;
+        cronWindow.__NIVO_REPORT_CRON_DONE__ = true;
       }
     };
 
