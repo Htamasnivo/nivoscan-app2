@@ -510,6 +510,7 @@ type DashboardStationTypePerformanceRow = {
 type DashboardPdfPlanRow = {
   machine_name?: string | null;
   sorszam?: string | null;
+  megnevezes?: string | null;
   elkeszules_datum?: string | null;
   adat?: Record<string, unknown> | null;
 };
@@ -13862,7 +13863,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     let y = drawHeader(false);
     const visibleLogs = filterReportDeliveryLogs(sourceData, profile);
     const completedLogs = visibleLogs.filter((log) => String(log.action || "").toUpperCase() === "END" || Boolean(log.end_time || log.end_timestamp));
-    const planRows = await loadDashboardPdfPlanRows(completedLogs.map((log) => String(log.order_number || "")).filter(Boolean));
+    const planRows = await loadDashboardPdfPlanRows(completedLogs);
     let analyses = buildDashboardPdfWorkerAnalyses(visibleLogs, planRows, profile.stationFilter, profile.workerFilter, sourceData);
     if (profile.productTypeFilter !== "all") {
       analyses = analyses.map((analysis) => {
@@ -14432,7 +14433,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       let analyses: DashboardPdfWorkerAnalysis[] | null = null;
       const getAnalyses = async (): Promise<DashboardPdfWorkerAnalysis[]> => {
         if (!analyses) {
-          const planRows = await loadDashboardPdfPlanRows(completedLogs.map((log) => String(log.order_number || "")).filter(Boolean));
+          const planRows = await loadDashboardPdfPlanRows(completedLogs);
           analyses = buildDashboardPdfWorkerAnalyses(logs, planRows, profile.stationFilter, profile.workerFilter, data);
           if (profile.productTypeFilter !== "all") {
             analyses = analyses.map((item) => ({ ...item, completedOrders: item.completedOrders.filter((row) => row.productType === profile.productTypeFilter) }));
@@ -38735,8 +38736,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   }
 
   function getDashboardPdfProductTypeFromPlanRow(row: DashboardPdfPlanRow | null | undefined): string {
-    const adat = (row?.adat && typeof row.adat === "object") ? row.adat : {};
-    return valueAsText(readRecordValue(adat, ["tipus", "típus", "termek_tipus", "terméktípus", "product_type", "product type"]));
+    // Dolgozói időszaki elemzés:
+    // a Standard / Plus / Extra kategória forrása az adott munkaállomás
+    // *_terv táblájának `megnevezes` mezője.
+    return String(row?.megnevezes || "").trim();
   }
 
   async function loadDashboardPdfCompanyLogo(): Promise<string> {
@@ -38782,47 +38785,78 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     });
   }
 
-  async function loadDashboardPdfPlanRows(orderNumbers: string[]): Promise<DashboardPdfPlanRow[]> {
-    if (!supabase || orderNumbers.length === 0) return [];
-    const unique = Array.from(new Set(orderNumbers.map((value) => String(value || "").trim()).filter(Boolean)));
+  async function loadDashboardPdfPlanRows(completedLogs: WorkLogRow[]): Promise<DashboardPdfPlanRow[]> {
+    if (!supabase || completedLogs.length === 0) return [];
+
+    // Munkaállomásonként külön kérjük le a saját *_terv táblát.
+    // Kulcs: work_logs.order_number <-> *_terv.sorszam
+    // Kategória: *_terv.megnevezes
+    const ordersByStation = new Map<string, Set<string>>();
+
+    completedLogs.forEach((log) => {
+      const orderNumber = String(log.order_number || "").trim();
+      const stationName = resolveLogStation(log, workers);
+      if (!orderNumber || !stationName) return;
+
+      const stationKey = String(stationName).trim();
+      const orders = ordersByStation.get(stationKey) || new Set<string>();
+      orders.add(orderNumber);
+      ordersByStation.set(stationKey, orders);
+    });
+
     const rows: DashboardPdfPlanRow[] = [];
     const chunkSize = 150;
-    for (let index = 0; index < unique.length; index += chunkSize) {
-      const chunk = unique.slice(index, index + chunkSize);
-      const response = await supabase
-        .from(DYNAMIC_PRODUCTION_PLAN_TABLE)
-        .select("machine_name, sorszam, elkeszules_datum, adat")
-        .in("sorszam", chunk)
-        .limit(5000);
-      if (response.error) {
-        console.warn("A termelesi_terv nem olvasható a PDF típusbontáshoz:", response.error);
-        continue;
+
+    for (const [stationName, orderSet] of ordersByStation.entries()) {
+      const tableName = buildStationPlanTableName(stationName);
+      const orderNumbers = Array.from(orderSet);
+
+      for (let index = 0; index < orderNumbers.length; index += chunkSize) {
+        const chunk = orderNumbers.slice(index, index + chunkSize);
+        const response = await supabase
+          .from(tableName)
+          .select("sorszam, megnevezes, elkeszules_datum")
+          .in("sorszam", chunk)
+          .limit(5000);
+
+        if (response.error) {
+          console.warn(
+            `A ${tableName} nem olvasható a dolgozói riport Standard/Plus/Extra kategorizálásához:`,
+            response.error
+          );
+          continue;
+        }
+
+        ((response.data || []) as Array<Record<string, unknown>>).forEach((row) => {
+          rows.push({
+            machine_name: stationName,
+            sorszam: String(row.sorszam || "").trim(),
+            megnevezes: String(row.megnevezes || "").trim(),
+            elkeszules_datum: String(row.elkeszules_datum || "").trim(),
+          });
+        });
       }
-      rows.push(...(((response.data as DashboardPdfPlanRow[]) || [])));
     }
+
     return rows;
   }
 
-  function selectDashboardPdfPlanRow(
+  function selectDashboardPdfPlanRows(
     planRows: DashboardPdfPlanRow[],
     orderNumber: string,
-    stationName: string,
-    completedAt: string
-  ): DashboardPdfPlanRow | null {
+    stationName: string
+  ): DashboardPdfPlanRow[] {
     const orderKey = normalizeLooseText(orderNumber);
     const stationKey = normalizeLooseText(stationName);
-    const candidates = planRows.filter((row) => normalizeLooseText(String(row.sorszam || "")) === orderKey);
-    if (!candidates.length) return null;
-    const stationCandidates = candidates.filter((row) => normalizeLooseText(String(row.machine_name || "")) === stationKey);
-    const pool = stationCandidates.length ? stationCandidates : candidates;
-    const eventMs = new Date(completedAt).getTime();
-    return [...pool].sort((left, right) => {
-      const leftMs = new Date(`${String(left.elkeszules_datum || "")}T12:00:00`).getTime();
-      const rightMs = new Date(`${String(right.elkeszules_datum || "")}T12:00:00`).getTime();
-      const leftDistance = Number.isFinite(leftMs) && Number.isFinite(eventMs) ? Math.abs(leftMs - eventMs) : Number.MAX_SAFE_INTEGER;
-      const rightDistance = Number.isFinite(rightMs) && Number.isFinite(eventMs) ? Math.abs(rightMs - eventMs) : Number.MAX_SAFE_INTEGER;
-      return leftDistance - rightDistance;
-    })[0] || null;
+
+    // Nincs "legközelebbi" vagy egyetlen kiválasztott tervsor.
+    // MINDEN olyan sort visszaadunk, amely ugyanazon munkaállomás saját
+    // *_terv táblájában ugyanazzal a sorszam kulccsal szerepel.
+    // Ha ugyanaz a sor kétszer van a tervben, kétszer kerül a riportba is.
+    return planRows.filter((row) =>
+      normalizeLooseText(String(row.sorszam || "")) === orderKey
+      && normalizeLooseText(String(row.machine_name || "")) === stationKey
+    );
   }
 
   function getDashboardPdfPerformanceRows(
@@ -38856,29 +38890,49 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     });
 
     const completedRows: DashboardPdfCompletedOrderRow[] = [];
-    const dedupe = new Set<string>();
     endLogs.forEach((log) => {
       const orderNumber = String(log.order_number || "").trim();
       const stationName = resolveLogStation(log, workers);
       const workerName = getDashboardLogWorkerName(log);
       const completedAt = getDashboardLogEndAt(log) || getDashboardLogEventAt(log);
       if (!orderNumber || !workerName || workerName === "-") return;
-      const planRow = selectDashboardPdfPlanRow(planRows, orderNumber, stationName, completedAt);
-      const rawProductType = getDashboardPdfProductTypeFromPlanRow(planRow);
-      const productType = normalizeDashboardPdfProductType(rawProductType);
-      const planDate = String(planRow?.elkeszules_datum || "").trim();
-      const key = [normalizeLooseText(workerName), normalizeLooseText(stationName), normalizeLooseText(orderNumber), planDate || getLocalDateKey(new Date(completedAt))].join("|");
-      if (dedupe.has(key)) return;
-      dedupe.add(key);
-      completedRows.push({
-        orderNumber,
-        stationName,
-        workerName,
-        completedAt,
-        elapsedLabel: getDashboardLogElapsedLabel(log),
-        productType,
-        rawProductType: rawProductType || "Nincs tervadat",
-        planDate,
+
+      const matchingPlanRows = selectDashboardPdfPlanRows(planRows, orderNumber, stationName);
+
+      // Ha nincs pár az adott munkaállomás saját *_terv táblájában,
+      // pontosan egy "Egyéb / Nincs tervadat" sort tartunk meg.
+      if (!matchingPlanRows.length) {
+        completedRows.push({
+          orderNumber,
+          stationName,
+          workerName,
+          completedAt,
+          elapsedLabel: getDashboardLogElapsedLabel(log),
+          productType: "Nincs tervadat",
+          rawProductType: "Nincs tervadat",
+          planDate: "",
+        });
+        return;
+      }
+
+      // Minden megtalált tervsort külön-külön megjelenítünk és számolunk.
+      // Tehát ha ugyanaz a sorszam kétszer szerepel a *_terv táblában,
+      // ugyanaz a lezárás kétszer jelenik meg és kétszer számít a kategóriába.
+      matchingPlanRows.forEach((planRow) => {
+        const rawProductType = getDashboardPdfProductTypeFromPlanRow(planRow);
+        const productType = normalizeDashboardPdfProductType(rawProductType);
+        const planDate = String(planRow.elkeszules_datum || "").trim();
+
+        completedRows.push({
+          orderNumber,
+          stationName,
+          workerName,
+          completedAt,
+          elapsedLabel: getDashboardLogElapsedLabel(log),
+          productType,
+          rawProductType: rawProductType || "Nincs tervadat",
+          planDate,
+        });
       });
     });
 
@@ -38978,9 +39032,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const completedLogs = options.sourceData.logs.filter((log) =>
       String(log.action || "").toUpperCase() === "END" || Boolean(log.end_time || log.end_timestamp)
     );
-    const planRows = await loadDashboardPdfPlanRows(
-      completedLogs.map((log) => String(log.order_number || "").trim()).filter(Boolean)
-    );
+    const planRows = await loadDashboardPdfPlanRows(completedLogs);
     let workerAnalyses = buildDashboardPdfWorkerAnalyses(
       options.sourceData.logs,
       planRows,
