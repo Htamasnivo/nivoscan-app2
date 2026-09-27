@@ -38642,19 +38642,63 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       ];
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(openWorkRows), "Folyamatban lévő munkák");
 
+      // Az Eseménynapló exportban külön megmutatjuk, ki indította és ki fejezte be
+      // az adott munkamenetet. A külön START/END sorokat rendelés + munkaállomás
+      // szerint, időrendben párosítjuk: minden END a legkorábbi, előtte lévő, még
+      // fel nem használt START dolgozóját kapja. Az egy sorban tárolt START+END
+      // munkamenetnél természetesen ugyanannak a sornak a dolgozója a START dolgozó.
+      const dashboardStartWorkerByLog = new Map<WorkLogRow, string>();
+      const unmatchedDashboardStarts = new Map<string, Array<{ workerName: string; startedAt: number }>>();
+      const getDashboardExportPairKey = (log: WorkLogRow): string =>
+        `${normalizeLooseText(String(log.order_number || ""))}||${normalizeLooseText(resolveLogStation(log, workers))}`;
+
+      [...exportLogs]
+        .sort((left, right) => getWorkLogEventTime(left) - getWorkLogEventTime(right))
+        .forEach((log) => {
+          const action = String(log.action || "").toUpperCase();
+          const startAt = getDashboardLogStartAt(log);
+          const endAt = getDashboardLogEndAt(log);
+          const workerName = getDashboardLogWorkerName(log);
+          const pairKey = getDashboardExportPairKey(log);
+
+          if (startAt && endAt) {
+            dashboardStartWorkerByLog.set(log, workerName);
+            return;
+          }
+
+          if (startAt && action !== "END") {
+            const queue = unmatchedDashboardStarts.get(pairKey) || [];
+            queue.push({ workerName, startedAt: new Date(startAt).getTime() });
+            unmatchedDashboardStarts.set(pairKey, queue);
+          }
+
+          if (endAt || action === "END") {
+            const queue = unmatchedDashboardStarts.get(pairKey) || [];
+            const endTime = new Date(endAt || getDashboardLogEventAt(log)).getTime();
+            const matchIndex = queue.findIndex((item) => !Number.isFinite(endTime) || item.startedAt <= endTime);
+            if (matchIndex >= 0) {
+              const [matchedStart] = queue.splice(matchIndex, 1);
+              dashboardStartWorkerByLog.set(log, matchedStart.workerName);
+            }
+            unmatchedDashboardStarts.set(pairKey, queue);
+          }
+        });
+
       const eventRows: Array<Array<string | number>> = [
-        ["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
+        ["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "START dolgozó", "END dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
         ...exportLogs.map((log) => {
           const action = String(log.action || "").toUpperCase();
           const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
           const startAt = getDashboardLogStartAt(log);
           const endAt = getDashboardLogEndAt(log);
+          const workerName = getDashboardLogWorkerName(log);
           return [
             formatDateTime(getDashboardLogEventAt(log)),
             startAt ? formatDateTime(startAt) : "-",
             endAt ? formatDateTime(endAt) : "-",
             getDashboardLogElapsedLabel(log),
-            getDashboardLogWorkerName(log),
+            dashboardStartWorkerByLog.get(log) || (!isEnd && startAt ? workerName : "-"),
+            isEnd ? workerName : "-",
             log.order_number || "-",
             isEnd ? "END" : action || "START",
             resolveLogStation(log, workers),
@@ -50949,11 +50993,7 @@ body {
 
           const { error: updateError } = await supabase
             .from("work_logs")
-            .update(
-              getStationPlanIdentityKey(currentMachineId) === "lakatos"
-                ? { ...updatePayload, action: "END" as WorkAction }
-                : updatePayload
-            )
+            .update(updatePayload)
             .eq("id", openLog.id);
 
           if (updateError) throw updateError;
