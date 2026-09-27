@@ -13386,7 +13386,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     rowsUploaded: number;
   };
 
-  type ReportDeliveryWorkerCompletedRow = { orderNumber: string; stationName: string; workerName: string; completedAt: string };
+  type ReportDeliveryWorkerCompletedRow = { orderNumber: string; productType: string; stationName: string; workerName: string; completedAt: string; elapsedLabel: string };
   type ReportDeliveryPreparedRows = {
     keszre?: ReportDeliveryKeszreRow[];
     beepites?: ReportDeliveryBeepitesRow[];
@@ -13397,27 +13397,67 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   async function fetchReportDeliveryWorkerCompletedRows(profile: ReportDeliveryProfile, range: { startIso: string; endIso: string }): Promise<ReportDeliveryWorkerCompletedRow[]> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     const orderFilters = parseReportDeliveryOrderFilters(profile.orderFilter);
+    const completedLogs: WorkLogRow[] = [];
+    const selectColumns = "order_number,machine_id,worker_id,worker_name,action,created_at,start_time,start_timestamp,end_time,end_timestamp";
+
+    // Az időszakot KIZÁRÓLAG a tényleges befejezési idő alapján szűrjük.
+    // A régebbi soroknál előfordulhat, hogy az END az end_timestamp mezőben van,
+    // ezért mindkét tárolási formát külön lekérjük, átfedés nélkül.
+    const loadPageRange = async (useEndTimestamp: boolean): Promise<void> => {
+      for (let start = 0; ; start += 1000) {
+        let query = supabase.from("work_logs")
+          .select(selectColumns)
+          .eq("action", "END");
+        query = useEndTimestamp
+          ? query.is("end_time", null).gte("end_timestamp", range.startIso).lt("end_timestamp", range.endIso).order("end_timestamp", { ascending: true })
+          : query.gte("end_time", range.startIso).lt("end_time", range.endIso).order("end_time", { ascending: true });
+        const response = await query.range(start, start + 999);
+        if (response.error) throw response.error;
+        const page = (response.data || []) as WorkLogRow[];
+        completedLogs.push(...page);
+        if (page.length < 1000) break;
+      }
+    };
+
+    await loadPageRange(false);
+    await loadPageRange(true);
+
+    const filteredLogs = completedLogs.filter((log) => {
+      const stationName = String(log.machine_id || "").trim();
+      const workerName = getDashboardLogWorkerName(log);
+      const orderNumber = String(log.order_number || "").trim();
+      if (!orderNumber) return false;
+      if (profile.stationFilter !== "all" && normalizeLooseText(stationName) !== normalizeLooseText(profile.stationFilter)) return false;
+      if (profile.workerFilter !== "all" && normalizeLooseText(workerName) !== normalizeLooseText(profile.workerFilter)) return false;
+      if (orderFilters.length && !matchesDashboardOrderFilters(orderNumber, orderFilters)) return false;
+      return true;
+    });
+
+    const planRows = await loadDashboardPdfPlanRows(filteredLogs);
     const rows: ReportDeliveryWorkerCompletedRow[] = [];
-    for (let start = 0; ; start += 1000) {
-      const response = await supabase.from("work_logs")
-        .select("order_number,machine_id,worker_id,worker_name,action,end_time,end_timestamp")
-        .eq("action", "END").gte("end_time", range.startIso).lt("end_time", range.endIso)
-        .order("end_time", { ascending: true }).range(start, start + 999);
-      if (response.error) throw response.error;
-      const page = (response.data || []) as WorkLogRow[];
-      page.forEach((log) => {
-        const stationName = String(log.machine_id || "").trim();
-        const workerName = getDashboardLogWorkerName(log);
-        const orderNumber = String(log.order_number || "").trim();
-        if (!orderNumber) return;
-        if (profile.stationFilter !== "all" && normalizeLooseText(stationName) !== normalizeLooseText(profile.stationFilter)) return;
-        if (profile.workerFilter !== "all" && normalizeLooseText(workerName) !== normalizeLooseText(profile.workerFilter)) return;
-        if (orderFilters.length && !matchesDashboardOrderFilters(orderNumber, orderFilters)) return;
-        rows.push({ orderNumber, stationName, workerName, completedAt: String(log.end_time || log.end_timestamp || "") });
+    filteredLogs.forEach((log) => {
+      const orderNumber = String(log.order_number || "").trim();
+      const stationName = String(log.machine_id || "").trim();
+      const workerName = getDashboardLogWorkerName(log);
+      const completedAt = getDashboardLogEndAt(log) || getDashboardLogEventAt(log);
+      const elapsedLabel = getDashboardLogElapsedLabel(log);
+      const matchingPlanRows = selectDashboardPdfPlanRows(planRows, orderNumber, stationName);
+
+      if (!matchingPlanRows.length) {
+        if (profile.productTypeFilter === "all") {
+          rows.push({ orderNumber, productType: "Nincs tervadat", stationName, workerName, completedAt, elapsedLabel });
+        }
+        return;
+      }
+
+      matchingPlanRows.forEach((planRow) => {
+        const productType = normalizeDashboardPdfProductType(getDashboardPdfProductTypeFromPlanRow(planRow));
+        if (profile.productTypeFilter !== "all" && productType !== profile.productTypeFilter) return;
+        rows.push({ orderNumber, productType, stationName, workerName, completedAt, elapsedLabel });
       });
-      if (page.length < 1000) break;
-    }
-    return rows;
+    });
+
+    return rows.sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
   }
 
   async function fetchReportDeliveryKeszreRows(
@@ -14338,7 +14378,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const range = getReportDeliveryProfileRange(profile);
     if (profile.reportType === "worker-analysis-completed") {
       const rows = prepared?.workerCompleted ?? await fetchReportDeliveryWorkerCompletedRows(profile, range);
-      return createSimpleReportDeliveryPdfBlob("Dolgozói időszaki elemzés – készre jelentve", ["Rendelés", "Munkaállomás", "Dolgozó", "Befejezés"], rows.map((row) => [row.orderNumber, row.stationName, row.workerName, formatDateTime(row.completedAt)]), range);
+      return createSimpleReportDeliveryPdfBlob("Dolgozói időszaki elemzés – készre jelentve", ["Rendelés", "Típus", "Munkaállomás", "Dolgozó", "Befejezés", "Eltelt"], rows.map((row) => [row.orderNumber, row.productType, row.stationName, row.workerName, formatDateTime(row.completedAt), row.elapsedLabel]), range);
     }
     if (profile.reportType === "keszre-jelentes") {
       const rows = prepared?.keszre ?? await fetchReportDeliveryKeszreRows(profile, range);
@@ -14426,8 +14466,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         reportDeliveryUploadDataRows(rows));
     } else if (profile.reportType === "worker-analysis-completed") {
       const rows = prepared?.workerCompleted ?? await fetchReportDeliveryWorkerCompletedRows(profile, range);
-      addSheet("Készre jelentve", ["Rendelés", "Munkaállomás", "Dolgozó", "Befejezés"],
-        rows.map((row) => [row.orderNumber, row.stationName, row.workerName, formatDateTime(row.completedAt)]));
+      addSheet("Készre jelentve", ["Rendelés", "Típus", "Munkaállomás", "Dolgozó", "Befejezés", "Eltelt"],
+        rows.map((row) => [row.orderNumber, row.productType, row.stationName, row.workerName, formatDateTime(row.completedAt), row.elapsedLabel]));
     } else if (profile.reportType === "keszre-jelentes") {
       const rows = prepared?.keszre ?? await fetchReportDeliveryKeszreRows(profile, range);
       addSheet("Készre jelentés", ["Időpont", "Rendelésszám", "Nettó ár", "Készletrevételi érték"],
