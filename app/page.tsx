@@ -13408,6 +13408,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         let query = supabase.from("work_logs")
           .select(selectColumns)
           .eq("action", "END");
+        // A kiválasztott munkaállomást már a Supabase lekérdezésben is
+        // pontosan a work_logs.machine_id mezőre szűrjük. Így pl. Lakatos
+        // esetén más munkaállomás sora nem kerülhet az exportba.
+        if (profile.stationFilter !== "all") {
+          query = query.eq("machine_id", profile.stationFilter);
+        }
         query = useEndTimestamp
           ? query.is("end_time", null).gte("end_timestamp", range.startIso).lt("end_timestamp", range.endIso).order("end_timestamp", { ascending: true })
           : query.gte("end_time", range.startIso).lt("end_time", range.endIso).order("end_time", { ascending: true });
