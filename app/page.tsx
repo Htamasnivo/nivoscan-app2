@@ -50864,6 +50864,8 @@ body {
         const endPayload = {
           worker_id: activeWorker.id,
           worker_name: activeWorker["Teljes nev"],
+          start_worker_name: String(openLog.start_worker_name || openLog.worker_name || "").trim() || null,
+          end_worker_name: activeWorker["Teljes nev"],
           machine_id: currentMachineId,
           order_number: finalOrderNumber,
           action: "END" as WorkAction,
@@ -51071,6 +51073,8 @@ body {
         const payloadBase = {
           worker_id: activeWorker.id,
           worker_name: activeWorker["Teljes nev"],
+          start_worker_name: activeWorker["Teljes nev"],
+          end_worker_name: null,
           machine_id: currentMachineId,
           order_number: finalOrderNumber,
           action,
