@@ -2259,6 +2259,7 @@ type ReportSettings = {
 
 type ReportDeliveryReportType =
   | "worker-analysis"
+  | "worker-analysis-completed"
   | "worker-comparison"
   | "reproduction"
   | "scrap-replacement"
@@ -2408,6 +2409,7 @@ const DEFAULT_REPORT_DELIVERY_CARD_STYLE = cloneReportDeliveryCardStyle(REPORT_D
 
 const REPORT_DELIVERY_REPORT_TYPE_LABELS: Record<ReportDeliveryReportType, string> = {
   "worker-analysis": "Dolgozói időszaki elemzés",
+  "worker-analysis-completed": "Dolgozói időszaki elemzés – készre jelentve",
   "worker-comparison": "Dolgozói összehasonlítás",
   reproduction: "Újragyártási riport",
   "scrap-replacement": "Selejtpótlási riport",
@@ -13106,6 +13108,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     return { label: "AKTÍV", color: "#22c55e" };
   }
 
+  function getAutomaticReportDeliveryProfile(profile: ReportDeliveryProfile, now = new Date()): ReportDeliveryProfile {
+    if (profile.frequency !== "monthly") return profile;
+    const previousMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const previousMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+    return { ...profile, reportFilterMode: "custom", reportFilterStartDate: getLocalDateKey(previousMonthStart), reportFilterEndDate: getLocalDateKey(previousMonthEnd) };
+  }
+
   function getReportDeliveryProfileRange(profile: ReportDeliveryProfile, now = new Date()): { startIso: string; endIso: string; label: string } {
     const safeNow = Number.isNaN(now.getTime()) ? new Date() : now;
     const todayKey = getSafeReportDeliveryTodayKey(safeNow);
@@ -13377,11 +13386,39 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     rowsUploaded: number;
   };
 
+  type ReportDeliveryWorkerCompletedRow = { orderNumber: string; stationName: string; workerName: string; completedAt: string };
   type ReportDeliveryPreparedRows = {
     keszre?: ReportDeliveryKeszreRow[];
     beepites?: ReportDeliveryBeepitesRow[];
     dataUpload?: ReportDeliveryUploadRow[];
+    workerCompleted?: ReportDeliveryWorkerCompletedRow[];
   };
+
+  async function fetchReportDeliveryWorkerCompletedRows(profile: ReportDeliveryProfile, range: { startIso: string; endIso: string }): Promise<ReportDeliveryWorkerCompletedRow[]> {
+    if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
+    const orderFilters = parseReportDeliveryOrderFilters(profile.orderFilter);
+    const rows: ReportDeliveryWorkerCompletedRow[] = [];
+    for (let start = 0; ; start += 1000) {
+      const response = await supabase.from("work_logs")
+        .select("order_number,machine_id,worker_id,worker_name,action,end_time,end_timestamp")
+        .eq("action", "END").gte("end_time", range.startIso).lt("end_time", range.endIso)
+        .order("end_time", { ascending: true }).range(start, start + 999);
+      if (response.error) throw response.error;
+      const page = (response.data || []) as WorkLogRow[];
+      page.forEach((log) => {
+        const stationName = String(log.machine_id || "").trim();
+        const workerName = getDashboardLogWorkerName(log);
+        const orderNumber = String(log.order_number || "").trim();
+        if (!orderNumber) return;
+        if (profile.stationFilter !== "all" && normalizeLooseText(stationName) !== normalizeLooseText(profile.stationFilter)) return;
+        if (profile.workerFilter !== "all" && normalizeLooseText(workerName) !== normalizeLooseText(profile.workerFilter)) return;
+        if (orderFilters.length && !matchesDashboardOrderFilters(orderNumber, orderFilters)) return;
+        rows.push({ orderNumber, stationName, workerName, completedAt: String(log.end_time || log.end_timestamp || "") });
+      });
+      if (page.length < 1000) break;
+    }
+    return rows;
+  }
 
   async function fetchReportDeliveryKeszreRows(
     profile: ReportDeliveryProfile,
@@ -14299,6 +14336,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     sharedDashboard?: DashboardData
   ): Promise<Blob> {
     const range = getReportDeliveryProfileRange(profile);
+    if (profile.reportType === "worker-analysis-completed") {
+      const rows = prepared?.workerCompleted ?? await fetchReportDeliveryWorkerCompletedRows(profile, range);
+      return createSimpleReportDeliveryPdfBlob("Dolgozói időszaki elemzés – készre jelentve", ["Rendelés", "Munkaállomás", "Dolgozó", "Befejezés"], rows.map((row) => [row.orderNumber, row.stationName, row.workerName, formatDateTime(row.completedAt)]), range);
+    }
     if (profile.reportType === "keszre-jelentes") {
       const rows = prepared?.keszre ?? await fetchReportDeliveryKeszreRows(profile, range);
       return createSimpleReportDeliveryPdfBlob(
@@ -14383,6 +14424,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       ]);
       addSheet("Feltöltési napló", ["Blokk", "Típus", "Állapot", "Indult", "Befejeződött", "Időtartam", "Próbák", "Részlet"],
         reportDeliveryUploadDataRows(rows));
+    } else if (profile.reportType === "worker-analysis-completed") {
+      const rows = prepared?.workerCompleted ?? await fetchReportDeliveryWorkerCompletedRows(profile, range);
+      addSheet("Készre jelentve", ["Rendelés", "Munkaállomás", "Dolgozó", "Befejezés"],
+        rows.map((row) => [row.orderNumber, row.stationName, row.workerName, formatDateTime(row.completedAt)]));
     } else if (profile.reportType === "keszre-jelentes") {
       const rows = prepared?.keszre ?? await fetchReportDeliveryKeszreRows(profile, range);
       addSheet("Készre jelentés", ["Időpont", "Rendelésszám", "Nettó ár", "Készletrevételi érték"],
@@ -14634,44 +14679,47 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
     let errors: string[] = [];
     try {
-      const requestedFormat = profile.reportFormat || "pdf";
-      // A két csatolmány ugyanazt az előre betöltött adathalmazt használja:
-      // Excel + PDF esetén nem duplázzuk meg a riport adatbázis-lekérdezéseit.
-      const range = getReportDeliveryProfileRange(profile);
+      // Automatikus havi küldés: mindig az előző teljes naptári hónap.
+      // Teszt/kézi export esetén a speciális időbeállítás változatlanul használható.
+      const deliveryProfile = testOnly ? profile : getAutomaticReportDeliveryProfile(profile);
+      const requestedFormat = deliveryProfile.reportFormat || "pdf";
+      const range = getReportDeliveryProfileRange(deliveryProfile);
       const prepared: ReportDeliveryPreparedRows = {};
-      if (profile.reportType === "keszre-jelentes") {
-        prepared.keszre = await fetchReportDeliveryKeszreRows(profile, range);
-      } else if (profile.reportType === "beepites") {
-        prepared.beepites = await fetchReportDeliveryBeepitesRows(profile, range);
-      } else if (profile.reportType === "data-upload") {
+      if (deliveryProfile.reportType === "worker-analysis-completed") {
+        prepared.workerCompleted = await fetchReportDeliveryWorkerCompletedRows(deliveryProfile, range);
+      } else if (deliveryProfile.reportType === "keszre-jelentes") {
+        prepared.keszre = await fetchReportDeliveryKeszreRows(deliveryProfile, range);
+      } else if (deliveryProfile.reportType === "beepites") {
+        prepared.beepites = await fetchReportDeliveryBeepitesRows(deliveryProfile, range);
+      } else if (deliveryProfile.reportType === "data-upload") {
         prepared.dataUpload = await fetchReportDeliveryDataUploadRows(range);
       }
       const sharedDashboard = requestedFormat === "both"
-        && !["keszre-jelentes", "beepites", "data-upload", "reklamacio", "atvetel"].includes(profile.reportType)
-        ? await fetchDashboardData(range, parseReportDeliveryOrderFilters(profile.orderFilter))
+        && !["worker-analysis-completed", "keszre-jelentes", "beepites", "data-upload", "reklamacio", "atvetel"].includes(deliveryProfile.reportType)
+        ? await fetchDashboardData(range, parseReportDeliveryOrderFilters(deliveryProfile.orderFilter))
         : undefined;
       const [pdfBlob, excelBlob] = await Promise.all([
-        (requestedFormat === "excel" || requestedFormat === "html") ? Promise.resolve(null) : createReportDeliveryProfilePdfBlob(profile, prepared, sharedDashboard),
-        (requestedFormat === "pdf" || requestedFormat === "html") ? Promise.resolve(null) : createReportDeliveryProfileExcelBlob(profile, prepared, sharedDashboard),
+        (requestedFormat === "excel" || requestedFormat === "html") ? Promise.resolve(null) : createReportDeliveryProfilePdfBlob(deliveryProfile, prepared, sharedDashboard),
+        (requestedFormat === "pdf" || requestedFormat === "html") ? Promise.resolve(null) : createReportDeliveryProfileExcelBlob(deliveryProfile, prepared, sharedDashboard),
       ]);
-      const includeStyledEmail = requestedFormat === "html" || profile.reportType === "data-upload";
+      const includeStyledEmail = requestedFormat === "html" || deliveryProfile.reportType === "data-upload";
       // A NÍVÓ által feltöltött logó CID-mellékletként kerül az emailbe (nem
       // távoli URL / base64 <img>, melyet több levelezőprogram letilt).
       const logoData = includeStyledEmail ? await loadDashboardPdfCompanyLogo() : "";
       const logoFile = logoData ? await fetch(logoData).then((response) => response.blob()) : null;
       const htmlBody = includeStyledEmail
-        ? await createReportDeliveryProfileHtml(profile, prepared, sharedDashboard)
+        ? await createReportDeliveryProfileHtml(deliveryProfile, prepared, sharedDashboard)
         : "";
-      const label = REPORT_DELIVERY_REPORT_TYPE_LABELS[profile.reportType];
-      const filenameBase = (["keszre-jelentes", "beepites", "data-upload"].includes(profile.reportType))
+      const label = REPORT_DELIVERY_REPORT_TYPE_LABELS[deliveryProfile.reportType];
+      const filenameBase = (["worker-analysis-completed", "keszre-jelentes", "beepites", "data-upload"].includes(deliveryProfile.reportType))
         ? label // Az új riportok csatolmányának fájlneve is pontosan a választott riport címe.
         : profile.name.replace(/[^a-zA-Z0-9_\-]+/g, "_") || "riport";
 
       for (const recipient of profile.recipients) {
         const formData = new FormData();
         formData.append("to", recipient);
-        const reportTypeLabel = REPORT_DELIVERY_REPORT_TYPE_LABELS[profile.reportType];
-        const reportTitle = profile.reportType === "keszre-jelentes" || profile.reportType === "beepites"
+        const reportTypeLabel = REPORT_DELIVERY_REPORT_TYPE_LABELS[deliveryProfile.reportType];
+        const reportTitle = deliveryProfile.reportType === "keszre-jelentes" || deliveryProfile.reportType === "beepites" || deliveryProfile.reportType === "worker-analysis-completed"
           ? reportTypeLabel : profile.name;
         const formatLabel = requestedFormat === "both" ? "Excel és PDF" : requestedFormat === "excel" ? "Excel" : requestedFormat === "html" ? "HTML" : "PDF";
         formData.append("subject", `${testOnly ? "[TESZT] " : ""}${reportTitle}`);
