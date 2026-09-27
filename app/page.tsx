@@ -50949,7 +50949,11 @@ body {
 
           const { error: updateError } = await supabase
             .from("work_logs")
-            .update(updatePayload)
+            .update(
+              getStationPlanIdentityKey(currentMachineId) === "lakatos"
+                ? { ...updatePayload, action: "END" as WorkAction }
+                : updatePayload
+            )
             .eq("id", openLog.id);
 
           if (updateError) throw updateError;
