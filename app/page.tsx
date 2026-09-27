@@ -331,6 +331,10 @@ type WorkLogRow = {
   darab?: number | null;
   szal?: number | null;
   worker_name?: string | null;
+  // work_logs audit: a munkamenetet indító és befejező dolgozó neve külön megőrizve.
+  // Az értékeket a work_logs Supabase trigger tölti minden munkaállomásnál.
+  start_worker_name?: string | null;
+  end_worker_name?: string | null;
   batch_code?: string | null;
   event_name?: string | null;
   event_code?: string | null;
