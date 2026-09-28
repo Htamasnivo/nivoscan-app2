@@ -50983,8 +50983,6 @@ body {
         } else {
           // 100% / normál END: ekkor zárjuk le ténylegesen a nyitott START sort.
           const {
-            worker_id: _workerId,
-            worker_name: _workerName,
             machine_id: _machineId,
             order_number: _orderNumber,
             action: _action,
