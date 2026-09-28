@@ -21213,25 +21213,11 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             : [];
 
           // Futósorszám-kompatibilitás a Lemaradások kártyán:
-          // - a futósorszám előtti régi tervsorok kizárólag a régi,
-          //   terv_futo_sorszam nélküli work_logs / köteg eseményeket használják;
-          // - a futósorszámos tervsorok továbbra is kizárólag a saját futósorszámukat.
-          //
-          // Fontos: a régi soroknál közvetlenül a rendelés teljes rowLogs készletéből
-          // szűrünk. Nem használjuk az új vizuális kártyaazonosító szerinti szűrést,
-          // mert a régi work_logs sorok még nem rendelkeztek ezzel az új azonosítással.
+          // - futósorszám nélküli régi tervsor: pontosan a régi, rendelés +
+          //   munkaállomás alapú működés, futósorszám szerinti logszűrés nélkül;
+          // - futósorszámos tervsor: kizárólag a saját futósorszámának eseményei.
           const stationUsesRunSequence = usesPlanRunSequence(cleanStationName);
           const isLegacyRunSequenceBacklog = stationUsesRunSequence && !runSequence;
-          const legacyRunSequenceLogs = isLegacyRunSequenceBacklog
-            ? rowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === null)
-            : [];
-          const legacyRunSequenceBatchStarts = isLegacyRunSequenceBacklog
-            ? rowBatchStarts.filter((batch) =>
-                parsePlanRunSequence(
-                  getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam
-                ) === null
-              )
-            : [];
 
           const runScopedRowLogs = runSequence
             ? bundleTenScopedRowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === runSequence)
@@ -21246,7 +21232,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             : isRunScopedBacklog
               ? runScopedRowLogs
               : isLegacyRunSequenceBacklog
-                ? legacyRunSequenceLogs
+                ? rowLogs
                 : isExactSzinterBacklog
                   ? filterNivoPlanRowLogs(runScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
                   : isOpenQuantityRemainder
@@ -21257,13 +21243,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             : isRunScopedBacklog
               ? runScopedRowBatchStarts
               : isLegacyRunSequenceBacklog
-                ? legacyRunSequenceBatchStarts
+                ? rowBatchStarts
                 : isExactSzinterBacklog
                   ? filterNivoPlanRowBatches(runScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
                   : isOpenQuantityRemainder
                     ? filterProductionBatchesForQuantityPlanLifecycle(runScopedRowBatchStarts, planRow.planData)
                     : runScopedRowBatchStarts;
-          const exactRowStatusRequired = isRunScopedBacklog || isLegacyRunSequenceBacklog || isOpenQuantityRemainder || isExactSzinterBacklog || hasBundleTenScopedGroupActivity;
+          const exactRowStatusRequired = isRunScopedBacklog || isOpenQuantityRemainder || isExactSzinterBacklog || hasBundleTenScopedGroupActivity;
           const rowWorkerStatus = exactRowStatusRequired
             ? resolveProductionCardWorkers(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
             : workerStatus;
