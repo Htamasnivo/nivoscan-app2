@@ -331,6 +331,10 @@ type WorkLogRow = {
   darab?: number | null;
   szal?: number | null;
   worker_name?: string | null;
+  // work_logs audit: a munkamenetet indító és befejező dolgozó neve külön megőrizve.
+  // Az értékeket a work_logs Supabase trigger tölti minden munkaállomásnál.
+  start_worker_name?: string | null;
+  end_worker_name?: string | null;
   batch_code?: string | null;
   event_name?: string | null;
   event_code?: string | null;
@@ -21208,44 +21212,58 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
               )
             : [];
 
-          // Visszamenőleges kompatibilitás minden futósorszámot használó munkaállomáson:
-          // - régi tervsor (nincs futósorszám) csak a régi, futósorszám nélküli eseményeket látja;
-          // - új tervsor (van futósorszám) csak a saját futósorszámához tartozó eseményeket látja.
-          // Így ugyanazon rendelés régi és új életciklusa nem keveredik a Lemaradások kártyán.
+          // Futósorszám-kompatibilitás a Lemaradások kártyán:
+          // - a futósorszám előtti régi tervsorok kizárólag a régi,
+          //   terv_futo_sorszam nélküli work_logs / köteg eseményeket használják;
+          // - a futósorszámos tervsorok továbbra is kizárólag a saját futósorszámukat.
+          //
+          // Fontos: a régi soroknál közvetlenül a rendelés teljes rowLogs készletéből
+          // szűrünk. Nem használjuk az új vizuális kártyaazonosító szerinti szűrést,
+          // mert a régi work_logs sorok még nem rendelkeztek ezzel az új azonosítással.
           const stationUsesRunSequence = usesPlanRunSequence(cleanStationName);
+          const isLegacyRunSequenceBacklog = stationUsesRunSequence && !runSequence;
+          const legacyRunSequenceLogs = isLegacyRunSequenceBacklog
+            ? rowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === null)
+            : [];
+          const legacyRunSequenceBatchStarts = isLegacyRunSequenceBacklog
+            ? rowBatchStarts.filter((batch) =>
+                parsePlanRunSequence(
+                  getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam
+                ) === null
+              )
+            : [];
+
           const runScopedRowLogs = runSequence
             ? bundleTenScopedRowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === runSequence)
-            : stationUsesRunSequence
-              ? bundleTenScopedRowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === null)
-              : bundleTenScopedRowLogs;
+            : bundleTenScopedRowLogs;
           const runScopedRowBatchStarts = runSequence
             ? bundleTenScopedRowBatchStarts.filter((batch) =>
                 parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam) === runSequence
               )
-            : stationUsesRunSequence
-              ? bundleTenScopedRowBatchStarts.filter((batch) =>
-                  parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam) === null
-                )
-              : bundleTenScopedRowBatchStarts;
+            : bundleTenScopedRowBatchStarts;
           const effectiveRowLogs = isCsolezerRunScopedBacklog
             ? csolezerExactRunLogs
             : isRunScopedBacklog
               ? runScopedRowLogs
-              : isExactSzinterBacklog
-                ? filterNivoPlanRowLogs(runScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
-                : isOpenQuantityRemainder
-                  ? filterWorkLogsForQuantityPlanLifecycle(runScopedRowLogs, planRow.planData)
-                  : runScopedRowLogs;
+              : isLegacyRunSequenceBacklog
+                ? legacyRunSequenceLogs
+                : isExactSzinterBacklog
+                  ? filterNivoPlanRowLogs(runScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
+                  : isOpenQuantityRemainder
+                    ? filterWorkLogsForQuantityPlanLifecycle(runScopedRowLogs, planRow.planData)
+                    : runScopedRowLogs;
           const effectiveRowBatchStarts = isCsolezerRunScopedBacklog
             ? csolezerExactRunBatchStarts
             : isRunScopedBacklog
               ? runScopedRowBatchStarts
-              : isExactSzinterBacklog
-                ? filterNivoPlanRowBatches(runScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
-                : isOpenQuantityRemainder
-                  ? filterProductionBatchesForQuantityPlanLifecycle(runScopedRowBatchStarts, planRow.planData)
-                  : runScopedRowBatchStarts;
-          const exactRowStatusRequired = isRunScopedBacklog || isOpenQuantityRemainder || isExactSzinterBacklog || hasBundleTenScopedGroupActivity;
+              : isLegacyRunSequenceBacklog
+                ? legacyRunSequenceBatchStarts
+                : isExactSzinterBacklog
+                  ? filterNivoPlanRowBatches(runScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
+                  : isOpenQuantityRemainder
+                    ? filterProductionBatchesForQuantityPlanLifecycle(runScopedRowBatchStarts, planRow.planData)
+                    : runScopedRowBatchStarts;
+          const exactRowStatusRequired = isRunScopedBacklog || isLegacyRunSequenceBacklog || isOpenQuantityRemainder || isExactSzinterBacklog || hasBundleTenScopedGroupActivity;
           const rowWorkerStatus = exactRowStatusRequired
             ? resolveProductionCardWorkers(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
             : workerStatus;
@@ -38653,19 +38671,63 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       ];
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(openWorkRows), "Folyamatban lévő munkák");
 
+      // Az Eseménynapló exportban külön megmutatjuk, ki indította és ki fejezte be
+      // az adott munkamenetet. A külön START/END sorokat rendelés + munkaállomás
+      // szerint, időrendben párosítjuk: minden END a legkorábbi, előtte lévő, még
+      // fel nem használt START dolgozóját kapja. Az egy sorban tárolt START+END
+      // munkamenetnél természetesen ugyanannak a sornak a dolgozója a START dolgozó.
+      const dashboardStartWorkerByLog = new Map<WorkLogRow, string>();
+      const unmatchedDashboardStarts = new Map<string, Array<{ workerName: string; startedAt: number }>>();
+      const getDashboardExportPairKey = (log: WorkLogRow): string =>
+        `${normalizeLooseText(String(log.order_number || ""))}||${normalizeLooseText(resolveLogStation(log, workers))}`;
+
+      [...exportLogs]
+        .sort((left, right) => getWorkLogEventTime(left) - getWorkLogEventTime(right))
+        .forEach((log) => {
+          const action = String(log.action || "").toUpperCase();
+          const startAt = getDashboardLogStartAt(log);
+          const endAt = getDashboardLogEndAt(log);
+          const workerName = getDashboardLogWorkerName(log);
+          const pairKey = getDashboardExportPairKey(log);
+
+          if (startAt && endAt) {
+            dashboardStartWorkerByLog.set(log, workerName);
+            return;
+          }
+
+          if (startAt && action !== "END") {
+            const queue = unmatchedDashboardStarts.get(pairKey) || [];
+            queue.push({ workerName, startedAt: new Date(startAt).getTime() });
+            unmatchedDashboardStarts.set(pairKey, queue);
+          }
+
+          if (endAt || action === "END") {
+            const queue = unmatchedDashboardStarts.get(pairKey) || [];
+            const endTime = new Date(endAt || getDashboardLogEventAt(log)).getTime();
+            const matchIndex = queue.findIndex((item) => !Number.isFinite(endTime) || item.startedAt <= endTime);
+            if (matchIndex >= 0) {
+              const [matchedStart] = queue.splice(matchIndex, 1);
+              dashboardStartWorkerByLog.set(log, matchedStart.workerName);
+            }
+            unmatchedDashboardStarts.set(pairKey, queue);
+          }
+        });
+
       const eventRows: Array<Array<string | number>> = [
-        ["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
+        ["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "START dolgozó", "END dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
         ...exportLogs.map((log) => {
           const action = String(log.action || "").toUpperCase();
           const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
           const startAt = getDashboardLogStartAt(log);
           const endAt = getDashboardLogEndAt(log);
+          const workerName = getDashboardLogWorkerName(log);
           return [
             formatDateTime(getDashboardLogEventAt(log)),
             startAt ? formatDateTime(startAt) : "-",
             endAt ? formatDateTime(endAt) : "-",
             getDashboardLogElapsedLabel(log),
-            getDashboardLogWorkerName(log),
+            dashboardStartWorkerByLog.get(log) || (!isEnd && startAt ? workerName : "-"),
+            isEnd ? workerName : "-",
             log.order_number || "-",
             isEnd ? "END" : action || "START",
             resolveLogStation(log, workers),
@@ -50827,6 +50889,8 @@ body {
         const endPayload = {
           worker_id: activeWorker.id,
           worker_name: activeWorker["Teljes nev"],
+          start_worker_name: String(openLog.start_worker_name || openLog.worker_name || "").trim() || null,
+          end_worker_name: activeWorker["Teljes nev"],
           machine_id: currentMachineId,
           order_number: finalOrderNumber,
           action: "END" as WorkAction,
@@ -50944,8 +51008,6 @@ body {
         } else {
           // 100% / normál END: ekkor zárjuk le ténylegesen a nyitott START sort.
           const {
-            worker_id: _workerId,
-            worker_name: _workerName,
             machine_id: _machineId,
             order_number: _orderNumber,
             action: _action,
@@ -51034,6 +51096,8 @@ body {
         const payloadBase = {
           worker_id: activeWorker.id,
           worker_name: activeWorker["Teljes nev"],
+          start_worker_name: activeWorker["Teljes nev"],
+          end_worker_name: null,
           machine_id: currentMachineId,
           order_number: finalOrderNumber,
           action,
