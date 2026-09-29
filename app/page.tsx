@@ -21040,7 +21040,18 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           if (overdueLogError) throw overdueLogError;
           const page = (overdueLogData || []) as WorkLogRow[];
           overdueLogs.push(...page
-            .filter((log) => isProductionCardStationMachineId(log.machine_id, overdueStationAliases))
+            .filter((log) => {
+              if (isProductionCardStationMachineId(log.machine_id, overdueStationAliases)) return true;
+
+              // Csőlézer / PrimaPower régi lejelentések:
+              // a korábbi köteges sorok egy részénél a munkaállomás a __CTX__
+              // metaadatban maradt meg. A Lemaradások visszamenőleges ellenőrzésénél
+              // ezt is elfogadjuk, de kizárólag ennél a két munkaállomásnál.
+              const stationKey = getStationPlanIdentityKey(cleanStationName);
+              if (stationKey !== "csolezer" && stationKey !== "primapower") return false;
+              const legacyMachineId = String(getStructuredNoteMetadata(log.note).machine_id || "").trim();
+              return isProductionCardStationMachineId(legacyMachineId, overdueStationAliases);
+            })
             .map((log) => ({
               ...log,
               worker_name: log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || null,
@@ -21279,13 +21290,21 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             || rowWorkerStatus.panelWorkflow
             || rowWorkerStatus.threePartWorkflow
           );
-          const effectiveRowStatus: ProductionMonitorStatus = hasStructuredPartialWorkflow
-            ? rowWorkerStatus.status
-            : backlogLifecycleCell.status === "in-progress"
-              ? "in-progress"
-              : backlogLifecycleCell.status === "done" && hasFullyCompletedBacklogEnd
-                ? "done"
-                : rowWorkerStatus.status;
+          const hasLegacyLaserCompletedEnd = isLegacyLaserBacklog
+            && effectiveRowLogs.some((log) =>
+              parsePlanRunSequence(log.terv_futo_sorszam) === null
+              && (Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END")
+              && isFullyCompletedEndLog(log)
+            );
+          const effectiveRowStatus: ProductionMonitorStatus = hasLegacyLaserCompletedEnd
+            ? "done"
+            : hasStructuredPartialWorkflow
+              ? rowWorkerStatus.status
+              : backlogLifecycleCell.status === "in-progress"
+                ? "in-progress"
+                : backlogLifecycleCell.status === "done" && hasFullyCompletedBacklogEnd
+                  ? "done"
+                  : rowWorkerStatus.status;
           const effectiveRowStatusLabel = effectiveRowStatus === "done"
             ? "Kész"
             : effectiveRowStatus === "in-progress"
