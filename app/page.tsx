@@ -21049,8 +21049,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
               // ezt is elfogadjuk, de kizárólag ennél a két munkaállomásnál.
               const stationKey = getStationPlanIdentityKey(cleanStationName);
               if (stationKey !== "csolezer" && stationKey !== "primapower") return false;
+
+              const directLogStationKey = getStationPlanIdentityKey(log.machine_id);
+              if (directLogStationKey === stationKey) return true;
+
               const legacyMachineId = String(getStructuredNoteMetadata(log.note).machine_id || "").trim();
-              return isProductionCardStationMachineId(legacyMachineId, overdueStationAliases);
+              return getStationPlanIdentityKey(legacyMachineId) === stationKey;
             })
             .map((log) => ({
               ...log,
@@ -21293,8 +21297,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           const hasLegacyLaserCompletedEnd = isLegacyLaserBacklog
             && effectiveRowLogs.some((log) =>
               parsePlanRunSequence(log.terv_futo_sorszam) === null
-              && (Boolean(log.end_time || log.end_timestamp) || String(log.action || "").toUpperCase() === "END")
-              && isFullyCompletedEndLog(log)
+              && String(log.action || "").trim().toUpperCase() === "END"
             );
           const effectiveRowStatus: ProductionMonitorStatus = hasLegacyLaserCompletedEnd
             ? "done"
