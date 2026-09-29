@@ -21175,11 +21175,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           const runSequence = usesPlanRunSequence(cleanStationName)
             ? getPlanRunSequenceFromPlanData(planRow.planData)
             : null;
-          const isSzerelesStation =
-            getStationPlanIdentityKey(cleanStationName) === "szereles";
-          // Szerelés kompatibilitás:
-          // - futósorszám nélküli régi tervsor: a meglévő rendelésalapú Nyíló/Tok logika marad;
-          // - futósorszámos új tervsor: a saját terv_futo_sorszam eseményei alapján számolunk.
           const isRunScopedBacklog = Boolean(runSequence);
           const isCsolezerRunScopedBacklog =
             getStationPlanIdentityKey(cleanStationName) === "csolezer"
@@ -48659,6 +48654,11 @@ body {
     if(!orders.length){setMessage({type:"error",text:"Nincs beolvasott rendelés."});return;}
     const machine=getCurrentMachineIdForInsert();const code=`BATCH-${Date.now()}`;
     const meta=Object.fromEntries(orders.map(order=>[order,getProductionMetaForOrder(batchOrderProductionMeta,order)])) as Record<string,OrderProductionMeta>;
+    if (usesPlanRunSequence(machine)) {
+      for (const order of orders) {
+        meta[order] = await attachPlanRunIdentityToMeta(machine, order, meta[order]);
+      }
+    }
     if (isEventTenVisualWorker()) {
       bundleTenRowsForSave.forEach((row) => {
         const exactMeta = getBundleTenExactBatchRowMeta(batchOrderProductionMeta, row);
@@ -48681,6 +48681,22 @@ body {
       const {data,error}=await supabase.rpc("nivo_szereles_koteg",{p_action:"START",p_items:items,p_machine_id:machine,p_worker_id:Number(activeWorker.id),p_worker_name:activeWorker["Teljes nev"],p_batch_code:code,p_note:null});
       if(error)throw error;committed=true;
       const saved=data as {batch_code:string;batch?:Record<string,unknown>};const raw=saved.batch||{};
+
+      // A Szerelés RPC régebbi adatbázis-verziója nem minden esetben írta ki
+      // a metadata terv_futo_sorszam értékét a work_logs oszlopba.
+      // A sikeres köteg START után ezért célzottan garantáljuk az oszlop értékét.
+      for (const order of orders) {
+        const runSequence = parsePlanRunSequence(getProductionMetaForOrder(meta, order).terv_futo_sorszam);
+        if (!runSequence) continue;
+        const { error: runSequenceSaveError } = await supabase
+          .from("work_logs")
+          .update({ terv_futo_sorszam: runSequence })
+          .eq("batch_code", saved.batch_code)
+          .eq("order_number", order)
+          .is("terv_futo_sorszam", null);
+        if (runSequenceSaveError) throw runSequenceSaveError;
+      }
+
       if (bundleTenRowsForSave.length) {
         await persistBundleTenSelectionAudit("batch", bundleTenRowsForSave, {
           batchCode: saved.batch_code,
@@ -50087,7 +50103,7 @@ body {
       const bundleTenAutomaticMeta = bundleTenSelectionForSzerelesStart
         ? await prepareBundleTenAutomaticProductionMeta(bundleTenSelectionForSzerelesStart)
         : null;
-      const meta:OrderProductionMeta={
+      let meta:OrderProductionMeta={
         ...(bundleTenAutomaticMeta || {
           ujragyartas:state.reproduction_number>0,
           ujragyartas_sorszam:state.reproduction_number||null,
@@ -50103,6 +50119,7 @@ body {
             ? getBundleTenSourceMeta(bundleTenSelectionForSzerelesEnd)
             : {}),
       };
+      meta = await attachPlanRunIdentityToMeta(machine, order, meta);
       if(action==="START"){
         const groupCheck=await findStartGroupConflicts([order],{currentMachineId:machine});
         if(groupCheck.conflicts.length){throw new Error(buildStartGroupConflictMessage(groupCheck,false));}
@@ -50293,6 +50310,22 @@ body {
       }
 
       committed=true;
+
+      // Futósorszámot csak akkor írunk, ha a konkrét tervsornak ténylegesen van.
+      // Ez az RPC által mentett Nyíló/Tok START/END és a külön audit END sorokra is
+      // garantálja ugyanazt a work_logs.terv_futo_sorszam értéket.
+      const savedRunSequence = parsePlanRunSequence(meta.terv_futo_sorszam);
+      const savedWorkLogIds = result.saved_rows
+        .map((row) => row.id)
+        .filter((id) => id !== null && id !== undefined && String(id).trim() !== "");
+      if (savedRunSequence && savedWorkLogIds.length > 0) {
+        const { error: runSequenceSaveError } = await supabase
+          .from("work_logs")
+          .update({ terv_futo_sorszam: savedRunSequence })
+          .in("id", savedWorkLogIds);
+        if (runSequenceSaveError) throw runSequenceSaveError;
+      }
+
       // A sikeres adatbázis-mentés után még NE töröljük a képernyő állapotát.
       // A selejtpipák / END állapot csak akkor ürülhet, ha a kapcsolódó mentések,
       // a tartós visszaellenőrzés és a három kártya frissítése is sikerült.
@@ -50300,6 +50333,13 @@ body {
       const saved=result.saved_rows[0];
       const savedId=saved?.id||`${order}-${Date.now()}`;
       const savedAt=saved?.ended_at||saved?.started_at||new Date().toISOString();
+
+      // Ugyanazt a terminál-kártya betöltést használjuk, mint a többi termelő
+      // munkaállomás. Csak sikeres Szerelés mentés után fut egyszer; nincs új
+      // sűrű polling, ezért nem növeli folyamatosan a Supabase terhelését.
+      if (getStationPlanIdentityKey(machine) === "szereles") {
+        await loadTerminalProductionCard(machine);
+      }
       if(action==="START"&&bundleTenSelectionForSzerelesStart){
         await persistBundleTenSelectionAudit("single",[bundleTenSelectionForSzerelesStart],{workLogId:savedId});
         await syncBundleTenPriorityRowStatus(bundleTenSelectionForSzerelesStart,"FOLYAMATBAN",activeWorker["Teljes nev"],savedAt,machine);
@@ -50799,24 +50839,6 @@ body {
 
         linkedStartTime = openLog.start_time || openLog.start_timestamp || openLog.created_at || null;
 
-        // Szerelés: ha a nyitott START még a futósorszám bevezetése előtti / hiányos
-        // mentésből származik, az END előtt egyszer hozzárendeljük az aktuális tervsor
-        // futósorszámát. Ettől a Nyíló/Tok részmentések és a végső END ugyanazon
-        // tervsorhoz maradnak kötve. Más munkaállomás működését ez nem érinti.
-        let linkedPlanRunSequence = parsePlanRunSequence(openLog.terv_futo_sorszam);
-        if (!linkedPlanRunSequence && getStationPlanIdentityKey(currentMachineId) === "szereles") {
-          const resolvedSzerelesPlanRun = await resolvePlanRunIdentityForOrder(currentMachineId, finalOrderNumber);
-          linkedPlanRunSequence = resolvedSzerelesPlanRun?.runSequence ?? null;
-          if (linkedPlanRunSequence) {
-            const { error: linkPlanRunError } = await supabase
-              .from("work_logs")
-              .update({ terv_futo_sorszam: linkedPlanRunSequence })
-              .eq("id", openLog.id);
-            if (linkPlanRunError) throw linkPlanRunError;
-            openLog.terv_futo_sorszam = linkedPlanRunSequence;
-          }
-        }
-
         const doorActualDurations = isDoorTwoPartEnd
           ? calculateDoorActualDurations(
               linkedStartTime,
@@ -50862,7 +50884,7 @@ body {
           start_timestamp: linkedStartTime,
           end_time: nowForSave,
           end_timestamp: nowForSave,
-          terv_futo_sorszam: linkedPlanRunSequence ?? null,
+          terv_futo_sorszam: openLog.terv_futo_sorszam ?? null,
           szereles_start_reszek: isDoorTwoPartEnd ? (linkedStartParts.length ? linkedStartParts : null) : null,
           note: buildStructuredNote(finalNote, {
             ...auditMetadata,
