@@ -331,10 +331,6 @@ type WorkLogRow = {
   darab?: number | null;
   szal?: number | null;
   worker_name?: string | null;
-  // work_logs audit: a munkamenetet indító és befejező dolgozó neve külön megőrizve.
-  // Az értékeket a work_logs Supabase trigger tölti minden munkaállomásnál.
-  start_worker_name?: string | null;
-  end_worker_name?: string | null;
   batch_code?: string | null;
   event_name?: string | null;
   event_code?: string | null;
@@ -21179,6 +21175,11 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           const runSequence = usesPlanRunSequence(cleanStationName)
             ? getPlanRunSequenceFromPlanData(planRow.planData)
             : null;
+          const isSzerelesStation =
+            getStationPlanIdentityKey(cleanStationName) === "szereles";
+          // Szerelés kompatibilitás:
+          // - futósorszám nélküli régi tervsor: a meglévő rendelésalapú Nyíló/Tok logika marad;
+          // - futósorszámos új tervsor: a saját terv_futo_sorszam eseményei alapján számolunk.
           const isRunScopedBacklog = Boolean(runSequence);
           const isCsolezerRunScopedBacklog =
             getStationPlanIdentityKey(cleanStationName) === "csolezer"
@@ -21212,13 +21213,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
               )
             : [];
 
-          // Futósorszám-kompatibilitás a Lemaradások kártyán:
-          // - futósorszám nélküli régi tervsor: pontosan a régi, rendelés +
-          //   munkaállomás alapú működés, futósorszám szerinti logszűrés nélkül;
-          // - futósorszámos tervsor: kizárólag a saját futósorszámának eseményei.
-          const stationUsesRunSequence = usesPlanRunSequence(cleanStationName);
-          const isLegacyRunSequenceBacklog = stationUsesRunSequence && !runSequence;
-
           const runScopedRowLogs = runSequence
             ? bundleTenScopedRowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === runSequence)
             : bundleTenScopedRowLogs;
@@ -21231,24 +21225,20 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             ? csolezerExactRunLogs
             : isRunScopedBacklog
               ? runScopedRowLogs
-              : isLegacyRunSequenceBacklog
-                ? rowLogs
-                : isExactSzinterBacklog
-                  ? filterNivoPlanRowLogs(runScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
-                  : isOpenQuantityRemainder
-                    ? filterWorkLogsForQuantityPlanLifecycle(runScopedRowLogs, planRow.planData)
-                    : runScopedRowLogs;
+              : isExactSzinterBacklog
+                ? filterNivoPlanRowLogs(runScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
+                : isOpenQuantityRemainder
+                  ? filterWorkLogsForQuantityPlanLifecycle(runScopedRowLogs, planRow.planData)
+                  : runScopedRowLogs;
           const effectiveRowBatchStarts = isCsolezerRunScopedBacklog
             ? csolezerExactRunBatchStarts
             : isRunScopedBacklog
               ? runScopedRowBatchStarts
-              : isLegacyRunSequenceBacklog
-                ? rowBatchStarts
-                : isExactSzinterBacklog
-                  ? filterNivoPlanRowBatches(runScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
-                  : isOpenQuantityRemainder
-                    ? filterProductionBatchesForQuantityPlanLifecycle(runScopedRowBatchStarts, planRow.planData)
-                    : runScopedRowBatchStarts;
+              : isExactSzinterBacklog
+                ? filterNivoPlanRowBatches(runScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
+                : isOpenQuantityRemainder
+                  ? filterProductionBatchesForQuantityPlanLifecycle(runScopedRowBatchStarts, planRow.planData)
+                  : runScopedRowBatchStarts;
           const exactRowStatusRequired = isRunScopedBacklog || isOpenQuantityRemainder || isExactSzinterBacklog || hasBundleTenScopedGroupActivity;
           const rowWorkerStatus = exactRowStatusRequired
             ? resolveProductionCardWorkers(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
@@ -38657,63 +38647,19 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       ];
       XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(openWorkRows), "Folyamatban lévő munkák");
 
-      // Az Eseménynapló exportban külön megmutatjuk, ki indította és ki fejezte be
-      // az adott munkamenetet. A külön START/END sorokat rendelés + munkaállomás
-      // szerint, időrendben párosítjuk: minden END a legkorábbi, előtte lévő, még
-      // fel nem használt START dolgozóját kapja. Az egy sorban tárolt START+END
-      // munkamenetnél természetesen ugyanannak a sornak a dolgozója a START dolgozó.
-      const dashboardStartWorkerByLog = new Map<WorkLogRow, string>();
-      const unmatchedDashboardStarts = new Map<string, Array<{ workerName: string; startedAt: number }>>();
-      const getDashboardExportPairKey = (log: WorkLogRow): string =>
-        `${normalizeLooseText(String(log.order_number || ""))}||${normalizeLooseText(resolveLogStation(log, workers))}`;
-
-      [...exportLogs]
-        .sort((left, right) => getWorkLogEventTime(left) - getWorkLogEventTime(right))
-        .forEach((log) => {
-          const action = String(log.action || "").toUpperCase();
-          const startAt = getDashboardLogStartAt(log);
-          const endAt = getDashboardLogEndAt(log);
-          const workerName = getDashboardLogWorkerName(log);
-          const pairKey = getDashboardExportPairKey(log);
-
-          if (startAt && endAt) {
-            dashboardStartWorkerByLog.set(log, workerName);
-            return;
-          }
-
-          if (startAt && action !== "END") {
-            const queue = unmatchedDashboardStarts.get(pairKey) || [];
-            queue.push({ workerName, startedAt: new Date(startAt).getTime() });
-            unmatchedDashboardStarts.set(pairKey, queue);
-          }
-
-          if (endAt || action === "END") {
-            const queue = unmatchedDashboardStarts.get(pairKey) || [];
-            const endTime = new Date(endAt || getDashboardLogEventAt(log)).getTime();
-            const matchIndex = queue.findIndex((item) => !Number.isFinite(endTime) || item.startedAt <= endTime);
-            if (matchIndex >= 0) {
-              const [matchedStart] = queue.splice(matchIndex, 1);
-              dashboardStartWorkerByLog.set(log, matchedStart.workerName);
-            }
-            unmatchedDashboardStarts.set(pairKey, queue);
-          }
-        });
-
       const eventRows: Array<Array<string | number>> = [
-        ["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "START dolgozó", "END dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
+        ["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
         ...exportLogs.map((log) => {
           const action = String(log.action || "").toUpperCase();
           const isEnd = action === "END" || Boolean(log.end_time || log.end_timestamp);
           const startAt = getDashboardLogStartAt(log);
           const endAt = getDashboardLogEndAt(log);
-          const workerName = getDashboardLogWorkerName(log);
           return [
             formatDateTime(getDashboardLogEventAt(log)),
             startAt ? formatDateTime(startAt) : "-",
             endAt ? formatDateTime(endAt) : "-",
             getDashboardLogElapsedLabel(log),
-            dashboardStartWorkerByLog.get(log) || (!isEnd && startAt ? workerName : "-"),
-            isEnd ? workerName : "-",
+            getDashboardLogWorkerName(log),
             log.order_number || "-",
             isEnd ? "END" : action || "START",
             resolveLogStation(log, workers),
@@ -50875,8 +50821,6 @@ body {
         const endPayload = {
           worker_id: activeWorker.id,
           worker_name: activeWorker["Teljes nev"],
-          start_worker_name: String(openLog.start_worker_name || openLog.worker_name || "").trim() || null,
-          end_worker_name: activeWorker["Teljes nev"],
           machine_id: currentMachineId,
           order_number: finalOrderNumber,
           action: "END" as WorkAction,
@@ -50994,6 +50938,8 @@ body {
         } else {
           // 100% / normál END: ekkor zárjuk le ténylegesen a nyitott START sort.
           const {
+            worker_id: _workerId,
+            worker_name: _workerName,
             machine_id: _machineId,
             order_number: _orderNumber,
             action: _action,
@@ -51082,8 +51028,6 @@ body {
         const payloadBase = {
           worker_id: activeWorker.id,
           worker_name: activeWorker["Teljes nev"],
-          start_worker_name: activeWorker["Teljes nev"],
-          end_worker_name: null,
           machine_id: currentMachineId,
           order_number: finalOrderNumber,
           action,
