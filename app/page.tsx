@@ -21176,8 +21176,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             ? getPlanRunSequenceFromPlanData(planRow.planData)
             : null;
           const isRunScopedBacklog = Boolean(runSequence);
-          const isCsolezerRunScopedBacklog =
-            getStationPlanIdentityKey(cleanStationName) === "csolezer"
+          const backlogStationKey = getStationPlanIdentityKey(cleanStationName);
+          const isLegacyLaserBacklog =
+            (backlogStationKey === "csolezer" || backlogStationKey === "primapower")
+            && !runSequence;
+          const isExactLaserRunBacklog =
+            (backlogStationKey === "csolezer" || backlogStationKey === "primapower")
             && Boolean(runSequence);
           const sameOrderRowCount = szinterPlanRowCounts.get(normalizeLooseText(orderNumber)) || groupRows.length;
           const bundleTenScopedRowLogs = filterBundleTenVisualLogsForCardRow(
@@ -21194,15 +21198,24 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             `backlog:${String(planRow.id)}`
           );
 
-          // Csőlézernél a futó sorszám a konkrét tervsor elsődleges azonosítója.
-          // A lemaradási kártya ezért közvetlenül a teljes, adott rendeléshez tartozó
-          // work_logs készletből választja ki az azonos terv_futo_sorszam sorait.
-          // Így egy korábbi/eltérő vizuális kártyaazonosító nem tudja elrejteni a
-          // tényleges START/END naplót. A PrimaPower meglévő működését nem változtatjuk.
-          const csolezerExactRunLogs = isCsolezerRunScopedBacklog
+          // Csőlézer / PrimaPower visszamenőleges kompatibilitás:
+          // - régi tervsor (nincs Futosorszam): a régi, rendelésalapú work_logs eseményeket
+          //   használjuk, de az új Futosorszammal mentett eseményeket kizárjuk;
+          // - új tervsor (van Futosorszam): kizárólag a pontos terv_futo_sorszam egyezhet.
+          // Így a régen már legyártott sorok eltűnnek a Lemaradásokból, miközben egy
+          // régi END nem tud egy új, kézzel megadott Futosorszamos tervsort lezárni.
+          const legacyLaserLogs = isLegacyLaserBacklog
+            ? rowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === null)
+            : [];
+          const legacyLaserBatchStarts = isLegacyLaserBacklog
+            ? rowBatchStarts.filter((batch) =>
+                parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam) === null
+              )
+            : [];
+          const exactLaserRunLogs = isExactLaserRunBacklog
             ? rowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === runSequence)
             : [];
-          const csolezerExactRunBatchStarts = isCsolezerRunScopedBacklog
+          const exactLaserRunBatchStarts = isExactLaserRunBacklog
             ? rowBatchStarts.filter((batch) =>
                 parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam) === runSequence
               )
@@ -21216,25 +21229,29 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                 parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam) === runSequence
               )
             : bundleTenScopedRowBatchStarts;
-          const effectiveRowLogs = isCsolezerRunScopedBacklog
-            ? csolezerExactRunLogs
-            : isRunScopedBacklog
-              ? runScopedRowLogs
-              : isExactSzinterBacklog
-                ? filterNivoPlanRowLogs(runScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
-                : isOpenQuantityRemainder
-                  ? filterWorkLogsForQuantityPlanLifecycle(runScopedRowLogs, planRow.planData)
-                  : runScopedRowLogs;
-          const effectiveRowBatchStarts = isCsolezerRunScopedBacklog
-            ? csolezerExactRunBatchStarts
-            : isRunScopedBacklog
-              ? runScopedRowBatchStarts
-              : isExactSzinterBacklog
-                ? filterNivoPlanRowBatches(runScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
-                : isOpenQuantityRemainder
-                  ? filterProductionBatchesForQuantityPlanLifecycle(runScopedRowBatchStarts, planRow.planData)
-                  : runScopedRowBatchStarts;
-          const exactRowStatusRequired = isRunScopedBacklog || isOpenQuantityRemainder || isExactSzinterBacklog || hasBundleTenScopedGroupActivity;
+          const effectiveRowLogs = isExactLaserRunBacklog
+            ? exactLaserRunLogs
+            : isLegacyLaserBacklog
+              ? legacyLaserLogs
+              : isRunScopedBacklog
+                ? runScopedRowLogs
+                : isExactSzinterBacklog
+                  ? filterNivoPlanRowLogs(runScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
+                  : isOpenQuantityRemainder
+                    ? filterWorkLogsForQuantityPlanLifecycle(runScopedRowLogs, planRow.planData)
+                    : runScopedRowLogs;
+          const effectiveRowBatchStarts = isExactLaserRunBacklog
+            ? exactLaserRunBatchStarts
+            : isLegacyLaserBacklog
+              ? legacyLaserBatchStarts
+              : isRunScopedBacklog
+                ? runScopedRowBatchStarts
+                : isExactSzinterBacklog
+                  ? filterNivoPlanRowBatches(runScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
+                  : isOpenQuantityRemainder
+                    ? filterProductionBatchesForQuantityPlanLifecycle(runScopedRowBatchStarts, planRow.planData)
+                    : runScopedRowBatchStarts;
+          const exactRowStatusRequired = isLegacyLaserBacklog || isRunScopedBacklog || isOpenQuantityRemainder || isExactSzinterBacklog || hasBundleTenScopedGroupActivity;
           const rowWorkerStatus = exactRowStatusRequired
             ? resolveProductionCardWorkers(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
             : workerStatus;
