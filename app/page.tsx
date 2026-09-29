@@ -50799,6 +50799,24 @@ body {
 
         linkedStartTime = openLog.start_time || openLog.start_timestamp || openLog.created_at || null;
 
+        // Szerelés: ha a nyitott START még a futósorszám bevezetése előtti / hiányos
+        // mentésből származik, az END előtt egyszer hozzárendeljük az aktuális tervsor
+        // futósorszámát. Ettől a Nyíló/Tok részmentések és a végső END ugyanazon
+        // tervsorhoz maradnak kötve. Más munkaállomás működését ez nem érinti.
+        let linkedPlanRunSequence = parsePlanRunSequence(openLog.terv_futo_sorszam);
+        if (!linkedPlanRunSequence && getStationPlanIdentityKey(currentMachineId) === "szereles") {
+          const resolvedSzerelesPlanRun = await resolvePlanRunIdentityForOrder(currentMachineId, finalOrderNumber);
+          linkedPlanRunSequence = resolvedSzerelesPlanRun?.runSequence ?? null;
+          if (linkedPlanRunSequence) {
+            const { error: linkPlanRunError } = await supabase
+              .from("work_logs")
+              .update({ terv_futo_sorszam: linkedPlanRunSequence })
+              .eq("id", openLog.id);
+            if (linkPlanRunError) throw linkPlanRunError;
+            openLog.terv_futo_sorszam = linkedPlanRunSequence;
+          }
+        }
+
         const doorActualDurations = isDoorTwoPartEnd
           ? calculateDoorActualDurations(
               linkedStartTime,
@@ -50844,7 +50862,7 @@ body {
           start_timestamp: linkedStartTime,
           end_time: nowForSave,
           end_timestamp: nowForSave,
-          terv_futo_sorszam: openLog.terv_futo_sorszam ?? null,
+          terv_futo_sorszam: linkedPlanRunSequence ?? null,
           szereles_start_reszek: isDoorTwoPartEnd ? (linkedStartParts.length ? linkedStartParts : null) : null,
           note: buildStructuredNote(finalNote, {
             ...auditMetadata,
