@@ -1429,6 +1429,9 @@ type ReklamacioViewRow = {
   mentesDatum: string;
   gyartasbaTerveDatum: string;
   keszDatum: string;
+  vevoNeve: string;
+  teljesCim: string;
+  szerelesiIdopont: string;
   lezart: boolean;
   createdAt: string;
   updatedAt: string;
@@ -1452,6 +1455,9 @@ type ReklamacioDraft = {
 
 type ReklamacioTableColumnId =
   | "rendelesszam"
+  | "vevoNeve"
+  | "teljesCim"
+  | "szerelesiIdopont"
   | "muhely"
   | "gyartandoTetelek"
   | "kertDatum"
@@ -1496,6 +1502,9 @@ type ReklamacioFilterMenuState = { columnId: ReklamacioTableColumnId; x: number;
 const REKLAMACIO_TABLE_CONFIG_PAGE_KEY = "__reklamacio_table_config_v1__";
 const DEFAULT_REKLAMACIO_TABLE_COLUMNS: ReklamacioTableColumnConfig[] = [
   { id: "rendelesszam", label: "Rendelésszám", width: 185, visible: true, align: "left" },
+  { id: "vevoNeve", label: "Vevő neve", width: 210, visible: true, align: "left" },
+  { id: "teljesCim", label: "Cím", width: 300, visible: true, align: "left" },
+  { id: "szerelesiIdopont", label: "Szerelési időpont", width: 165, visible: true, align: "left" },
   { id: "muhely", label: "Műhely", width: 145, visible: true, align: "left" },
   { id: "gyartandoTetelek", label: "Gyártandó tételek", width: 300, visible: true, align: "left" },
   { id: "kertDatum", label: "Kért Dátum", width: 165, visible: true, align: "left" },
@@ -21040,22 +21049,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           if (overdueLogError) throw overdueLogError;
           const page = (overdueLogData || []) as WorkLogRow[];
           overdueLogs.push(...page
-            .filter((log) => {
-              if (isProductionCardStationMachineId(log.machine_id, overdueStationAliases)) return true;
-
-              // Csőlézer / PrimaPower régi lejelentések:
-              // a korábbi köteges sorok egy részénél a munkaállomás a __CTX__
-              // metaadatban maradt meg. A Lemaradások visszamenőleges ellenőrzésénél
-              // ezt is elfogadjuk, de kizárólag ennél a két munkaállomásnál.
-              const stationKey = getStationPlanIdentityKey(cleanStationName);
-              if (stationKey !== "csolezer" && stationKey !== "primapower") return false;
-
-              const directLogStationKey = getStationPlanIdentityKey(log.machine_id);
-              if (directLogStationKey === stationKey) return true;
-
-              const legacyMachineId = String(getStructuredNoteMetadata(log.note).machine_id || "").trim();
-              return getStationPlanIdentityKey(legacyMachineId) === stationKey;
-            })
+            .filter((log) => isProductionCardStationMachineId(log.machine_id, overdueStationAliases))
             .map((log) => ({
               ...log,
               worker_name: log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || null,
@@ -21191,12 +21185,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             ? getPlanRunSequenceFromPlanData(planRow.planData)
             : null;
           const isRunScopedBacklog = Boolean(runSequence);
-          const backlogStationKey = getStationPlanIdentityKey(cleanStationName);
-          const isLegacyLaserBacklog =
-            (backlogStationKey === "csolezer" || backlogStationKey === "primapower")
-            && !runSequence;
-          const isExactLaserRunBacklog =
-            (backlogStationKey === "csolezer" || backlogStationKey === "primapower")
+          const isCsolezerRunScopedBacklog =
+            getStationPlanIdentityKey(cleanStationName) === "csolezer"
             && Boolean(runSequence);
           const sameOrderRowCount = szinterPlanRowCounts.get(normalizeLooseText(orderNumber)) || groupRows.length;
           const bundleTenScopedRowLogs = filterBundleTenVisualLogsForCardRow(
@@ -21213,24 +21203,15 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             `backlog:${String(planRow.id)}`
           );
 
-          // Csőlézer / PrimaPower visszamenőleges kompatibilitás:
-          // - régi tervsor (nincs Futosorszam): a régi, rendelésalapú work_logs eseményeket
-          //   használjuk, de az új Futosorszammal mentett eseményeket kizárjuk;
-          // - új tervsor (van Futosorszam): kizárólag a pontos terv_futo_sorszam egyezhet.
-          // Így a régen már legyártott sorok eltűnnek a Lemaradásokból, miközben egy
-          // régi END nem tud egy új, kézzel megadott Futosorszamos tervsort lezárni.
-          const legacyLaserLogs = isLegacyLaserBacklog
-            ? rowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === null)
-            : [];
-          const legacyLaserBatchStarts = isLegacyLaserBacklog
-            ? rowBatchStarts.filter((batch) =>
-                parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam) === null
-              )
-            : [];
-          const exactLaserRunLogs = isExactLaserRunBacklog
+          // Csőlézernél a futó sorszám a konkrét tervsor elsődleges azonosítója.
+          // A lemaradási kártya ezért közvetlenül a teljes, adott rendeléshez tartozó
+          // work_logs készletből választja ki az azonos terv_futo_sorszam sorait.
+          // Így egy korábbi/eltérő vizuális kártyaazonosító nem tudja elrejteni a
+          // tényleges START/END naplót. A PrimaPower meglévő működését nem változtatjuk.
+          const csolezerExactRunLogs = isCsolezerRunScopedBacklog
             ? rowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === runSequence)
             : [];
-          const exactLaserRunBatchStarts = isExactLaserRunBacklog
+          const csolezerExactRunBatchStarts = isCsolezerRunScopedBacklog
             ? rowBatchStarts.filter((batch) =>
                 parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam) === runSequence
               )
@@ -21244,29 +21225,25 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                 parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam) === runSequence
               )
             : bundleTenScopedRowBatchStarts;
-          const effectiveRowLogs = isExactLaserRunBacklog
-            ? exactLaserRunLogs
-            : isLegacyLaserBacklog
-              ? legacyLaserLogs
-              : isRunScopedBacklog
-                ? runScopedRowLogs
-                : isExactSzinterBacklog
-                  ? filterNivoPlanRowLogs(runScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
-                  : isOpenQuantityRemainder
-                    ? filterWorkLogsForQuantityPlanLifecycle(runScopedRowLogs, planRow.planData)
-                    : runScopedRowLogs;
-          const effectiveRowBatchStarts = isExactLaserRunBacklog
-            ? exactLaserRunBatchStarts
-            : isLegacyLaserBacklog
-              ? legacyLaserBatchStarts
-              : isRunScopedBacklog
-                ? runScopedRowBatchStarts
-                : isExactSzinterBacklog
-                  ? filterNivoPlanRowBatches(runScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
-                  : isOpenQuantityRemainder
-                    ? filterProductionBatchesForQuantityPlanLifecycle(runScopedRowBatchStarts, planRow.planData)
-                    : runScopedRowBatchStarts;
-          const exactRowStatusRequired = isLegacyLaserBacklog || isRunScopedBacklog || isOpenQuantityRemainder || isExactSzinterBacklog || hasBundleTenScopedGroupActivity;
+          const effectiveRowLogs = isCsolezerRunScopedBacklog
+            ? csolezerExactRunLogs
+            : isRunScopedBacklog
+              ? runScopedRowLogs
+              : isExactSzinterBacklog
+                ? filterNivoPlanRowLogs(runScopedRowLogs, planRow.planData, String(planRow.id), sameOrderRowCount)
+                : isOpenQuantityRemainder
+                  ? filterWorkLogsForQuantityPlanLifecycle(runScopedRowLogs, planRow.planData)
+                  : runScopedRowLogs;
+          const effectiveRowBatchStarts = isCsolezerRunScopedBacklog
+            ? csolezerExactRunBatchStarts
+            : isRunScopedBacklog
+              ? runScopedRowBatchStarts
+              : isExactSzinterBacklog
+                ? filterNivoPlanRowBatches(runScopedRowBatchStarts, planRow.planData, String(planRow.id), sameOrderRowCount, orderNumber)
+                : isOpenQuantityRemainder
+                  ? filterProductionBatchesForQuantityPlanLifecycle(runScopedRowBatchStarts, planRow.planData)
+                  : runScopedRowBatchStarts;
+          const exactRowStatusRequired = isRunScopedBacklog || isOpenQuantityRemainder || isExactSzinterBacklog || hasBundleTenScopedGroupActivity;
           const rowWorkerStatus = exactRowStatusRequired
             ? resolveProductionCardWorkers(effectiveRowLogs, effectiveRowBatchStarts, orderNumber)
             : workerStatus;
@@ -21294,20 +21271,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             || rowWorkerStatus.panelWorkflow
             || rowWorkerStatus.threePartWorkflow
           );
-          const hasLegacyLaserCompletedEnd = isLegacyLaserBacklog
-            && effectiveRowLogs.some((log) =>
-              parsePlanRunSequence(log.terv_futo_sorszam) === null
-              && String(log.action || "").trim().toUpperCase() === "END"
-            );
-          const effectiveRowStatus: ProductionMonitorStatus = hasLegacyLaserCompletedEnd
-            ? "done"
-            : hasStructuredPartialWorkflow
-              ? rowWorkerStatus.status
-              : backlogLifecycleCell.status === "in-progress"
-                ? "in-progress"
-                : backlogLifecycleCell.status === "done" && hasFullyCompletedBacklogEnd
-                  ? "done"
-                  : rowWorkerStatus.status;
+          const effectiveRowStatus: ProductionMonitorStatus = hasStructuredPartialWorkflow
+            ? rowWorkerStatus.status
+            : backlogLifecycleCell.status === "in-progress"
+              ? "in-progress"
+              : backlogLifecycleCell.status === "done" && hasFullyCompletedBacklogEnd
+                ? "done"
+                : rowWorkerStatus.status;
           const effectiveRowStatusLabel = effectiveRowStatus === "done"
             ? "Kész"
             : effectiveRowStatus === "in-progress"
@@ -27979,6 +27949,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       mentesDatum: "",
       gyartasbaTerveDatum: "",
       keszDatum: "",
+      vevoNeve: "",
+      teljesCim: "",
+      szerelesiIdopont: "",
       lezart: false,
       createdAt: "",
       updatedAt: "",
@@ -28081,6 +28054,32 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         });
       }
       const orderNumbers = Array.from(new Set(dbRows.map((row) => String(row.rendelesszam || "").trim()).filter(Boolean)));
+
+      const reklamacioAtvetelByOrder = new Map<string, { vevoNeve: string; teljesCim: string; szerelesiIdopont: string }>();
+      const baseOrderNumbers = Array.from(new Set(orderNumbers.map((value) => value.replace(/_REK$/i, "").trim()).filter(Boolean)));
+      for (let index = 0; index < baseOrderNumbers.length; index += 100) {
+        const chunk = baseOrderNumbers.slice(index, index + 100);
+        const atvetelResponse = await supabase.from("atvetel_adat").select("*").in("rendelesszam", chunk).limit(10000);
+        if (atvetelResponse.error) throw atvetelResponse.error;
+        const grouped = new Map<string, Record<string, unknown>[]>();
+        ((atvetelResponse.data || []) as Record<string, unknown>[]).forEach((item) => {
+          const order = getAtvetelDetailsOrderNumber(item);
+          if (!order) return;
+          const key = normalizeLooseText(order);
+          grouped.set(key, [...(grouped.get(key) || []), item]);
+        });
+        chunk.forEach((order) => {
+          const matches = grouped.get(normalizeLooseText(order)) || [];
+          if (matches.length !== 1) return;
+          const item = matches[0];
+          reklamacioAtvetelByOrder.set(normalizeLooseText(order), {
+            vevoNeve: getAtvetelDetailsName(item),
+            teljesCim: getAtvetelDetailsFullAddress(item),
+            szerelesiIdopont: getAtvetelDetailsShippingDate(item),
+          });
+        });
+      }
+
       const { presence: planPresence, latestDates: planLatestDates } = await fetchReklamacioPlanPresence(orderNumbers);
 
       const logs: WorkLogRow[] = [];
@@ -28114,6 +28113,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
       const nextRows: ReklamacioViewRow[] = dbRows.map((dbRow) => {
         const orderNumber = String(dbRow.rendelesszam || "").trim();
+        const atvetelOrderNumber = orderNumber.replace(/_REK$/i, "").trim();
+        const atvetelDetails = reklamacioAtvetelByOrder.get(normalizeLooseText(atvetelOrderNumber)) || null;
         const savedDrawings = drawingsByReklamacioId.get(String(dbRow.id)) || [];
         const legacyDrawingUrl = String(dbRow.rajz_url || "");
         const drawings = savedDrawings.length > 0 || !legacyDrawingUrl ? savedDrawings : [{
@@ -28165,6 +28166,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           mentesDatum: String(dbRow.mentes_datum || ""),
           gyartasbaTerveDatum,
           keszDatum: String(dbRow.kesz_datum || ""),
+          vevoNeve: atvetelDetails?.vevoNeve || "",
+          teljesCim: atvetelDetails?.teljesCim || "",
+          szerelesiIdopont: atvetelDetails?.szerelesiIdopont || "",
           lezart: Boolean(dbRow.lezart),
           createdAt: String(dbRow.created_at || ""),
           updatedAt: String(dbRow.updated_at || ""),
@@ -29627,6 +29631,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const getCellText = (row: ReklamacioViewRow, columnId: ReklamacioTableColumnId): string => {
       const draft = getReklamacioDraft(row);
       if (columnId === "rendelesszam") return row.isNew ? draft.rendelesszam : row.rendelesszam;
+      if (columnId === "vevoNeve") return row.vevoNeve || "—";
+      if (columnId === "teljesCim") return row.teljesCim || "—";
+      if (columnId === "szerelesiIdopont") return row.szerelesiIdopont ? formatDateOnly(row.szerelesiIdopont) : "—";
       if (columnId === "muhely") return draft.muhely || "—";
       if (columnId === "gyartandoTetelek") return draft.gyartandoTetelek || "—";
       if (columnId === "kertDatum") return draft.kertDatum || "—";
@@ -29688,6 +29695,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       let content: React.ReactNode = null;
       if (column.id === "rendelesszam") {
         content = row.isNew ? <input value={draft.rendelesszam} maxLength={10} placeholder="R + 9 számjegy" onChange={(event) => updateReklamacioDraft(row.key, { rendelesszam: event.target.value.toUpperCase().replace(/[^R0-9]/g, "").slice(0, 10) })} style={tableInputStyle} /> : <strong>{row.rendelesszam}</strong>;
+      } else if (column.id === "vevoNeve") {
+        content = row.vevoNeve || "–";
+      } else if (column.id === "teljesCim") {
+        content = row.teljesCim || "–";
+      } else if (column.id === "szerelesiIdopont") {
+        content = row.szerelesiIdopont ? formatDateOnly(row.szerelesiIdopont) : "–";
       } else if (column.id === "muhely") {
         content = <select value={draft.muhely} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { muhely: event.target.value as ReklamacioWorkshop })} style={tableInputStyle}><option value="">Válassz...</option><option value="Asztalos">Asztalos</option><option value="Lakatos">Lakatos</option></select>;
       } else if (column.id === "gyartandoTetelek") {
@@ -36437,14 +36450,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         // a monitorba kizárólag az ehhez tartozó atvetel_adat rendelések kerülnek.
         if (!isInsideSelectedRange) return null;
 
-        const backlogDays = aggregate.completionDate <= todayKey
-          ? productionMonitorDateDiffDays(aggregate.completionDate, todayKey)
+        const backlogDays = aggregate.filterDate <= todayKey
+          ? Math.max(1, productionMonitorDateDiffDays(aggregate.filterDate, todayKey))
           : null;
-        const backlogLabel = aggregate.completionDate === todayKey
-          ? "Mai"
-          : backlogDays !== null && backlogDays > 0
-            ? `${backlogDays} nap`
-            : "–";
+        const backlogLabel = backlogDays !== null ? `${backlogDays} nap` : "–";
 
         return {
           itemId: aggregate.itemId,
@@ -48693,11 +48702,6 @@ body {
     if(!orders.length){setMessage({type:"error",text:"Nincs beolvasott rendelés."});return;}
     const machine=getCurrentMachineIdForInsert();const code=`BATCH-${Date.now()}`;
     const meta=Object.fromEntries(orders.map(order=>[order,getProductionMetaForOrder(batchOrderProductionMeta,order)])) as Record<string,OrderProductionMeta>;
-    if (usesPlanRunSequence(machine)) {
-      for (const order of orders) {
-        meta[order] = await attachPlanRunIdentityToMeta(machine, order, meta[order]);
-      }
-    }
     if (isEventTenVisualWorker()) {
       bundleTenRowsForSave.forEach((row) => {
         const exactMeta = getBundleTenExactBatchRowMeta(batchOrderProductionMeta, row);
@@ -48720,22 +48724,6 @@ body {
       const {data,error}=await supabase.rpc("nivo_szereles_koteg",{p_action:"START",p_items:items,p_machine_id:machine,p_worker_id:Number(activeWorker.id),p_worker_name:activeWorker["Teljes nev"],p_batch_code:code,p_note:null});
       if(error)throw error;committed=true;
       const saved=data as {batch_code:string;batch?:Record<string,unknown>};const raw=saved.batch||{};
-
-      // A Szerelés RPC régebbi adatbázis-verziója nem minden esetben írta ki
-      // a metadata terv_futo_sorszam értékét a work_logs oszlopba.
-      // A sikeres köteg START után ezért célzottan garantáljuk az oszlop értékét.
-      for (const order of orders) {
-        const runSequence = parsePlanRunSequence(getProductionMetaForOrder(meta, order).terv_futo_sorszam);
-        if (!runSequence) continue;
-        const { error: runSequenceSaveError } = await supabase
-          .from("work_logs")
-          .update({ terv_futo_sorszam: runSequence })
-          .eq("batch_code", saved.batch_code)
-          .eq("order_number", order)
-          .is("terv_futo_sorszam", null);
-        if (runSequenceSaveError) throw runSequenceSaveError;
-      }
-
       if (bundleTenRowsForSave.length) {
         await persistBundleTenSelectionAudit("batch", bundleTenRowsForSave, {
           batchCode: saved.batch_code,
@@ -50142,7 +50130,7 @@ body {
       const bundleTenAutomaticMeta = bundleTenSelectionForSzerelesStart
         ? await prepareBundleTenAutomaticProductionMeta(bundleTenSelectionForSzerelesStart)
         : null;
-      let meta:OrderProductionMeta={
+      const meta:OrderProductionMeta={
         ...(bundleTenAutomaticMeta || {
           ujragyartas:state.reproduction_number>0,
           ujragyartas_sorszam:state.reproduction_number||null,
@@ -50158,7 +50146,6 @@ body {
             ? getBundleTenSourceMeta(bundleTenSelectionForSzerelesEnd)
             : {}),
       };
-      meta = await attachPlanRunIdentityToMeta(machine, order, meta);
       if(action==="START"){
         const groupCheck=await findStartGroupConflicts([order],{currentMachineId:machine});
         if(groupCheck.conflicts.length){throw new Error(buildStartGroupConflictMessage(groupCheck,false));}
@@ -50349,22 +50336,6 @@ body {
       }
 
       committed=true;
-
-      // Futósorszámot csak akkor írunk, ha a konkrét tervsornak ténylegesen van.
-      // Ez az RPC által mentett Nyíló/Tok START/END és a külön audit END sorokra is
-      // garantálja ugyanazt a work_logs.terv_futo_sorszam értéket.
-      const savedRunSequence = parsePlanRunSequence(meta.terv_futo_sorszam);
-      const savedWorkLogIds = result.saved_rows
-        .map((row) => row.id)
-        .filter((id) => id !== null && id !== undefined && String(id).trim() !== "");
-      if (savedRunSequence && savedWorkLogIds.length > 0) {
-        const { error: runSequenceSaveError } = await supabase
-          .from("work_logs")
-          .update({ terv_futo_sorszam: savedRunSequence })
-          .in("id", savedWorkLogIds);
-        if (runSequenceSaveError) throw runSequenceSaveError;
-      }
-
       // A sikeres adatbázis-mentés után még NE töröljük a képernyő állapotát.
       // A selejtpipák / END állapot csak akkor ürülhet, ha a kapcsolódó mentések,
       // a tartós visszaellenőrzés és a három kártya frissítése is sikerült.
@@ -50372,13 +50343,6 @@ body {
       const saved=result.saved_rows[0];
       const savedId=saved?.id||`${order}-${Date.now()}`;
       const savedAt=saved?.ended_at||saved?.started_at||new Date().toISOString();
-
-      // Ugyanazt a terminál-kártya betöltést használjuk, mint a többi termelő
-      // munkaállomás. Csak sikeres Szerelés mentés után fut egyszer; nincs új
-      // sűrű polling, ezért nem növeli folyamatosan a Supabase terhelését.
-      if (getStationPlanIdentityKey(machine) === "szereles") {
-        await loadTerminalProductionCard(machine);
-      }
       if(action==="START"&&bundleTenSelectionForSzerelesStart){
         await persistBundleTenSelectionAudit("single",[bundleTenSelectionForSzerelesStart],{workLogId:savedId});
         await syncBundleTenPriorityRowStatus(bundleTenSelectionForSzerelesStart,"FOLYAMATBAN",activeWorker["Teljes nev"],savedAt,machine);
@@ -50892,6 +50856,11 @@ body {
           || (isThreePartEnd && threePartCompletionPercent < 100);
 
         const linkedStartMetadata = getStructuredNoteMetadata(openLog.note);
+        const linkedStartRunSequence =
+          parsePlanRunSequence(openLog.terv_futo_sorszam)
+          ?? parsePlanRunSequence(linkedStartMetadata.terv_futo_sorszam);
+        const endPlanRunIdentity = linkedStartRunSequence ? null : await resolvePlanRunIdentityForOrder(currentMachineId, finalOrderNumber);
+        const endPlanRunSequence = linkedStartRunSequence ?? endPlanRunIdentity?.runSequence ?? null;
         bundleTenBacklogEndSaved =
           Number(linkedStartMetadata.event_bundle) === 10
           && String(linkedStartMetadata.visual_source || "").trim() === "backlog"
@@ -50923,7 +50892,7 @@ body {
           start_timestamp: linkedStartTime,
           end_time: nowForSave,
           end_timestamp: nowForSave,
-          terv_futo_sorszam: openLog.terv_futo_sorszam ?? null,
+          terv_futo_sorszam: endPlanRunSequence,
           szereles_start_reszek: isDoorTwoPartEnd ? (linkedStartParts.length ? linkedStartParts : null) : null,
           note: buildStructuredNote(finalNote, {
             ...auditMetadata,
@@ -50937,7 +50906,7 @@ body {
                   terv_megnevezes: linkedStartMetadata.terv_megnevezes || null,
                 }
               : {}),
-            terv_futo_sorszam: openLog.terv_futo_sorszam ?? linkedStartMetadata.terv_futo_sorszam ?? null,
+            terv_futo_sorszam: endPlanRunSequence,
             ...(linkedStartMetadata.visual_source ? {
               visual_source: linkedStartMetadata.visual_source,
               visual_source_label: linkedStartMetadata.visual_source_label || null,
@@ -51213,7 +51182,7 @@ body {
       const savedEventFiveRepairText = eventFiveManualRepairSelected && preparedEventFiveRepairRouteForEnd
         ? ` | ${eventFiveRepairAction}: ${preparedEventFiveRepairRouteForEnd.targets.map((target) => target.stationName).join(", ")}`
         : "";
-      if (action === "END" && bundleTenBacklogEndSaved) {
+      if ((action === "END" && bundleTenBacklogEndSaved) || getStationPlanIdentityKey(currentMachineId) === "raktar") {
         await loadTerminalProductionCard(currentMachineId);
       }
 
