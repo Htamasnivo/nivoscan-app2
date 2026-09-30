@@ -7511,6 +7511,12 @@ function getExactProductionCardPlanTableName(stationName: string): string {
 function usesPlanRunSequence(stationName: string | null | undefined): boolean {
   const key = getStationPlanIdentityKey(stationName);
   if (!key) return false;
+
+  // A Raktár is saját raktar_terv.futo_sorszam értéket használ.
+  // Ezt explicit engedélyezzük, hogy minden meglévő START/END és köteg
+  // mentési útvonal ugyanazzal a terv-futósorszám logikával működjön.
+  if (key === "raktar") return true;
+
   return STATION_PLAN_MASTER_SHEET_NAMES.some(
     (masterName) => getStationPlanIdentityKey(masterName) === key
   );
