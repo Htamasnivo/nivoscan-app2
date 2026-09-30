@@ -47791,10 +47791,12 @@ body {
     if (!cleanOrder) return null;
 
     const tableName = getExactProductionCardPlanTableName(stationName);
+    const isRaktarPlan = getStationPlanIdentityKey(stationName) === "raktar";
+    const planOrderColumn = isRaktarPlan ? "rsz" : "sorszam";
     const { data: planData, error: planError } = await supabase
       .from(tableName)
       .select("*")
-      .eq("sorszam", cleanOrder)
+      .eq(planOrderColumn, cleanOrder)
       .not("futo_sorszam", "is", null)
       .order("elkeszules_datum", { ascending: true })
       .order("excel_sorrend", { ascending: true, nullsFirst: false })
