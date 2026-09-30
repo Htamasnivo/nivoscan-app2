@@ -36459,7 +36459,11 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         const backlogDays = aggregate.filterDate <= todayKey
           ? Math.max(1, productionMonitorDateDiffDays(aggregate.filterDate, todayKey))
           : null;
-        const backlogLabel = backlogDays !== null ? `${backlogDays} nap` : "–";
+        const backlogLabel = aggregate.filterDate === todayKey
+          ? "Mai nap"
+          : backlogDays !== null
+            ? `${backlogDays} nap`
+            : "–";
 
         return {
           itemId: aggregate.itemId,
@@ -48170,11 +48174,6 @@ body {
       const currentMachineId = getCurrentMachineIdForInsert();
       const nowIso = getLocalTimestampWithOffset();
 
-      // 8-as gyorsjelentés: az aktuálisan bejelentkezett munkaállomás saját
-      // *_terv táblájából kérjük le a konkrét rendelés futó sorszámát.
-      const eventEightPlanRunIdentity = await resolvePlanRunIdentityForOrder(currentMachineId, finalOrder);
-      const eventEightPlanRunSequence = eventEightPlanRunIdentity?.runSequence ?? null;
-
       const existingOpen = await findOpenWorkLogForOrderAtCurrentMachine(finalOrder);
 
       if (existingOpen?.id !== null && existingOpen?.id !== undefined) {
@@ -48185,7 +48184,6 @@ body {
           .update({
             end_time: nowIso,
             end_timestamp: nowIso,
-            terv_futo_sorszam: parsePlanRunSequence(existingOpen.terv_futo_sorszam) ?? eventEightPlanRunSequence,
             event_name: "8-as Raktár azonnali készre jelentés",
             event_code: "ESEMENY-8",
             note: buildStructuredNote("8-as Raktár gyorsjelentés", {
@@ -48197,7 +48195,6 @@ body {
               order_number: finalOrder,
               start_time: existingOpen.start_time || existingOpen.start_timestamp || existingOpen.created_at || nowIso,
               end_time: nowIso,
-              terv_futo_sorszam: parsePlanRunSequence(existingOpen.terv_futo_sorszam) ?? eventEightPlanRunSequence,
             }),
           })
           .eq("id", existingOpen.id);
@@ -48246,7 +48243,6 @@ body {
             ujragyartas_sorszam: productionDecision.meta.ujragyartas_sorszam,
             gyartas_tipus: productionDecision.meta.gyartas_tipus,
             gyartasi_kor: productionDecision.meta.gyartasi_kor,
-            terv_futo_sorszam: eventEightPlanRunSequence ?? productionDecision.meta.terv_futo_sorszam ?? null,
             note: buildStructuredNote("8-as Raktár gyorsjelentés", {
               event_bundle: 8,
               instant_completion: true,
@@ -48256,7 +48252,6 @@ body {
               order_number: finalOrder,
               start_time: nowIso,
               end_time: nowIso,
-              terv_futo_sorszam: eventEightPlanRunSequence ?? productionDecision.meta.terv_futo_sorszam ?? null,
             }),
             scrap_qty: null,
             darab: null,
