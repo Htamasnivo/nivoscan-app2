@@ -47791,12 +47791,10 @@ body {
     if (!cleanOrder) return null;
 
     const tableName = getExactProductionCardPlanTableName(stationName);
-    const isRaktarPlan = getStationPlanIdentityKey(stationName) === "raktar";
-    const planOrderColumn = isRaktarPlan ? "rsz" : "sorszam";
     const { data: planData, error: planError } = await supabase
       .from(tableName)
       .select("*")
-      .eq(planOrderColumn, cleanOrder)
+      .eq("sorszam", cleanOrder)
       .not("futo_sorszam", "is", null)
       .order("elkeszules_datum", { ascending: true })
       .order("excel_sorrend", { ascending: true, nullsFirst: false })
@@ -48172,6 +48170,11 @@ body {
       const currentMachineId = getCurrentMachineIdForInsert();
       const nowIso = getLocalTimestampWithOffset();
 
+      // 8-as gyorsjelentés: az aktuálisan bejelentkezett munkaállomás saját
+      // *_terv táblájából kérjük le a konkrét rendelés futó sorszámát.
+      const eventEightPlanRunIdentity = await resolvePlanRunIdentityForOrder(currentMachineId, finalOrder);
+      const eventEightPlanRunSequence = eventEightPlanRunIdentity?.runSequence ?? null;
+
       const existingOpen = await findOpenWorkLogForOrderAtCurrentMachine(finalOrder);
 
       if (existingOpen?.id !== null && existingOpen?.id !== undefined) {
@@ -48182,6 +48185,7 @@ body {
           .update({
             end_time: nowIso,
             end_timestamp: nowIso,
+            terv_futo_sorszam: parsePlanRunSequence(existingOpen.terv_futo_sorszam) ?? eventEightPlanRunSequence,
             event_name: "8-as Raktár azonnali készre jelentés",
             event_code: "ESEMENY-8",
             note: buildStructuredNote("8-as Raktár gyorsjelentés", {
@@ -48193,6 +48197,7 @@ body {
               order_number: finalOrder,
               start_time: existingOpen.start_time || existingOpen.start_timestamp || existingOpen.created_at || nowIso,
               end_time: nowIso,
+              terv_futo_sorszam: parsePlanRunSequence(existingOpen.terv_futo_sorszam) ?? eventEightPlanRunSequence,
             }),
           })
           .eq("id", existingOpen.id);
@@ -48241,6 +48246,7 @@ body {
             ujragyartas_sorszam: productionDecision.meta.ujragyartas_sorszam,
             gyartas_tipus: productionDecision.meta.gyartas_tipus,
             gyartasi_kor: productionDecision.meta.gyartasi_kor,
+            terv_futo_sorszam: eventEightPlanRunSequence ?? productionDecision.meta.terv_futo_sorszam ?? null,
             note: buildStructuredNote("8-as Raktár gyorsjelentés", {
               event_bundle: 8,
               instant_completion: true,
@@ -48250,6 +48256,7 @@ body {
               order_number: finalOrder,
               start_time: nowIso,
               end_time: nowIso,
+              terv_futo_sorszam: eventEightPlanRunSequence ?? productionDecision.meta.terv_futo_sorszam ?? null,
             }),
             scrap_qty: null,
             darab: null,
