@@ -10447,6 +10447,10 @@ export default function Page() {
   const [eventFiveIssueStations, setEventFiveIssueStations] = useState<string[]>([]);
   const [eventFiveIssueBusy, setEventFiveIssueBusy] = useState(false);
   const [eventFiveIssueError, setEventFiveIssueError] = useState("");
+  const [eventFiveIssueHistoryOpen, setEventFiveIssueHistoryOpen] = useState(false);
+  const [eventFiveIssueHistoryBusy, setEventFiveIssueHistoryBusy] = useState(false);
+  const [eventFiveIssueHistoryError, setEventFiveIssueHistoryError] = useState("");
+  const [eventFiveIssueHistoryRows, setEventFiveIssueHistoryRows] = useState<Array<Record<string, unknown>>>([]);
   const [incompleteBatches, setIncompleteBatches] = useState<IncompleteBatchRow[]>([]);
   const [showIncompleteBatches, setShowIncompleteBatches] = useState(false);
   const [activeProductionBatches, setActiveProductionBatches] = useState<ProductionBatchRow[]>([]);
@@ -20659,9 +20663,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           const time = new Date(value).getTime();
           return Number.isFinite(time) && time >= selectedDateStart.getTime() && time < selectedDateEnd.getTime();
         };
-        const eventFiveIssueRows = EVENT_FIVE_ISSUE_STATIONS.some(
-          (station) => normalizeLooseText(station) === normalizeLooseText(cleanStationName)
-        ) ? await fetchEventFiveIssueScrapRows(cleanStationName) : [];
+        const eventFiveIssueStationName = EVENT_FIVE_ISSUE_STATIONS.find(
+          (station) => getStationPlanIdentityKey(station) === getStationPlanIdentityKey(cleanStationName)
+        ) || null;
+        const eventFiveIssueRows = eventFiveIssueStationName
+          ? await fetchEventFiveIssueScrapRows(eventFiveIssueStationName)
+          : [];
         const allNormalizedRows = [
           ...((replacementData || []) as ScrapReplacementRow[]).map(normalizeScrapReplacementRow),
           ...eventFiveIssueRows,
@@ -20699,7 +20706,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         const normalizedReplacementRows = allNormalizedRows
           .filter((row) => {
             const targetMatches = row.target_station
-              ? normalizeLooseText(row.target_station) === normalizedStationKey
+              ? getStationPlanIdentityKey(row.target_station) === getStationPlanIdentityKey(cleanStationName)
               : isCarpenterStationName(cleanStationName); // legacy: csak Asztalos
             return targetMatches
               && row.order_number
@@ -43480,6 +43487,34 @@ body {
     );
   }
 
+  async function openEventFiveIssueHistory(): Promise<void> {
+    if (!supabase) return;
+    setEventFiveIssueHistoryOpen(true);
+    setEventFiveIssueHistoryBusy(true);
+    setEventFiveIssueHistoryError("");
+    try {
+      const { data, error } = await supabase
+        .from(EVENT_FIVE_ISSUE_REPORT_TABLE)
+        .select("id,futo_sorszam,order_number,meret,megjegyzes,reported_by_worker_name,reported_at,status,completed_at,event5_hibajelentes_celallomasok(id,target_station,status,started_at,completed_at,completed_by_worker_name,updated_at)")
+        .order("reported_at", { ascending: false })
+        .limit(5000);
+      if (error) throw error;
+      setEventFiveIssueHistoryRows((data || []) as Array<Record<string, unknown>>);
+    } catch (error) {
+      setEventFiveIssueHistoryError(normalizeError(error));
+      setEventFiveIssueHistoryRows([]);
+    } finally {
+      setEventFiveIssueHistoryBusy(false);
+    }
+  }
+
+  function getEventFiveIssueTargetStatusLabel(value: unknown): string {
+    const status = String(value || "").trim().toUpperCase();
+    if (status === "KESZ") return "Kész";
+    if (status === "FOLYAMATBAN") return "Folyamatban";
+    return "Várakozik";
+  }
+
   function resetEventFiveIssueForm(): void {
     setEventFiveIssueOrder("");
     setEventFiveIssueSize("");
@@ -44920,8 +44955,11 @@ body {
         if (rowInProgress && !existingInProgress) result.set(key, row);
       });
     }
-    if (EVENT_FIVE_ISSUE_STATIONS.some((station) => normalizeLooseText(station) === normalizeLooseText(cleanStation))) {
-      const eventFiveRows = await fetchEventFiveIssueScrapRows(cleanStation);
+    if (EVENT_FIVE_ISSUE_STATIONS.some((station) => getStationPlanIdentityKey(station) === getStationPlanIdentityKey(cleanStation))) {
+      const eventFiveCanonicalStation = EVENT_FIVE_ISSUE_STATIONS.find(
+        (station) => getStationPlanIdentityKey(station) === getStationPlanIdentityKey(cleanStation)
+      ) || cleanStation;
+      const eventFiveRows = await fetchEventFiveIssueScrapRows(eventFiveCanonicalStation);
       eventFiveRows
         .filter((row) => row.status !== "KESZ" && cleanOrders.includes(String(row.order_number || "").trim()))
         .forEach((row) => {
@@ -53257,6 +53295,99 @@ body {
               </div>
             </div>
           </div>
+
+          {step === 1 && terminalView === "scanner" && getStationPlanIdentityKey(machineId) === "szereles" && (
+            <div style={{ marginBottom: 16 }}>
+              <button
+                type="button"
+                onClick={() => void openEventFiveIssueHistory()}
+                style={{
+                  ...buttonPrimary,
+                  width: "100%",
+                  background: "#f59e0b",
+                  border: "1px solid #fbbf24",
+                  color: "#111827",
+                  fontWeight: 900,
+                }}
+              >
+                Leadott folyamatban lévő hibajelentés / felhasználás
+              </button>
+            </div>
+          )}
+
+          {eventFiveIssueHistoryOpen && getStationPlanIdentityKey(machineId) === "szereles" && (
+            <div style={{ position: "fixed", inset: 0, zIndex: 10060, background: "rgba(2,6,23,0.86)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+              <div style={{ width: "min(1180px, 97vw)", maxHeight: "92vh", overflowY: "auto", background: "#0f172a", border: "2px solid #f59e0b", borderRadius: 18, padding: 20, boxShadow: "0 24px 80px rgba(0,0,0,.58)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+                  <div>
+                    <h2 style={{ margin: 0, color: "#fde68a" }}>Leadott hibajelentések / felhasználások</h2>
+                    <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 5 }}>A kész sorok is megmaradnak. Az állomások állapota külön-külön látható.</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button type="button" onClick={() => void openEventFiveIssueHistory()} disabled={eventFiveIssueHistoryBusy} style={{ ...buttonSecondary, borderColor: "#f59e0b", color: "#fde68a" }}>Frissítés</button>
+                    <button type="button" onClick={() => setEventFiveIssueHistoryOpen(false)} style={buttonSecondary}>Bezárás</button>
+                  </div>
+                </div>
+
+                {eventFiveIssueHistoryError && (
+                  <div style={{ color: "#fecaca", background: "#450a0a", border: "1px solid #dc2626", borderRadius: 10, padding: 10, marginBottom: 12 }}>{eventFiveIssueHistoryError}</div>
+                )}
+
+                {eventFiveIssueHistoryBusy ? (
+                  <div style={{ color: "#cbd5e1", padding: 20, textAlign: "center" }}>Betöltés...</div>
+                ) : eventFiveIssueHistoryRows.length === 0 ? (
+                  <div style={{ color: "#94a3b8", padding: 20, textAlign: "center" }}>Még nincs leadott hibajelentés / felhasználás.</div>
+                ) : (
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
+                      <thead>
+                        <tr style={{ color: "#fde68a", textAlign: "left" }}>
+                          {["Futó #", "Rendelés", "Méret", "Megjegyzés", "Leadó", "Leadás", "Munkaállomások állapota", "Összesített állapot"].map((label) => (
+                            <th key={label} style={{ padding: "10px 8px", borderBottom: "1px solid #475569" }}>{label}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {eventFiveIssueHistoryRows.map((raw) => {
+                          const targetsRaw = raw.event5_hibajelentes_celallomasok;
+                          const targets = Array.isArray(targetsRaw) ? targetsRaw as Array<Record<string, unknown>> : [];
+                          const allDone = targets.length > 0 && targets.every((target) => String(target.status || "").toUpperCase() === "KESZ");
+                          return (
+                            <tr key={String(raw.id)} style={{ background: allDone ? "rgba(22,101,52,.22)" : undefined }}>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 900 }}>{String(raw.futo_sorszam ?? "–")}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{String(raw.order_number || "–")}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{String(raw.meret || "–")}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", whiteSpace: "pre-wrap" }}>{String(raw.megjegyzes || "–")}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{String(raw.reported_by_worker_name || "–")}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{raw.reported_at ? formatDateTime(String(raw.reported_at)) : "–"}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
+                                <div style={{ display: "grid", gap: 5 }}>
+                                  {targets.map((target) => {
+                                    const label = getEventFiveIssueTargetStatusLabel(target.status);
+                                    const done = label === "Kész";
+                                    const active = label === "Folyamatban";
+                                    return (
+                                      <div key={String(target.id)} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "5px 8px", borderRadius: 8, background: done ? "#14532d" : active ? "#92400e" : "#1e293b", color: done ? "#bbf7d0" : active ? "#fef3c7" : "#e2e8f0" }}>
+                                        <strong>{String(target.target_station || "–")}</strong>
+                                        <span>{label}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 900, color: allDone ? "#86efac" : "#fbbf24" }}>
+                                {allDone ? "Kész" : "Folyamatban"}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {step === 1 && (
             <div>
