@@ -13433,16 +13433,18 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     const orderFilters = parseReportDeliveryOrderFilters(profile.orderFilter);
     const completedLogs: WorkLogRow[] = [];
-    const selectColumns = "order_number,machine_id,worker_id,worker_name,action,created_at,start_time,start_timestamp,end_time,end_timestamp";
+    const selectColumns = "id,order_number,machine_id,worker_id,worker_name,action,created_at,start_time,start_timestamp,end_time,end_timestamp,terv_futo_sorszam";
 
     // Az időszakot KIZÁRÓLAG a tényleges befejezési idő alapján szűrjük.
-    // A régebbi soroknál előfordulhat, hogy az END az end_timestamp mezőben van,
-    // ezért mindkét tárolási formát külön lekérjük, átfedés nélkül.
+    // Nem szűrünk action='END'-re: minden ténylegesen befejezett work_logs sor
+    // bekerül, akkor is, ha egy régebbi mentési útvonal az action mezőt START-on
+    // hagyta. A terv_futo_sorszam lehet NULL vagy kitöltött; egyik sem kizáró ok.
+    // A két lekérdezés átfedésmentes: az első az end_time-os, a második kizárólag
+    // az end_time nélküli, de end_timestamp-pal rendelkező lezárásokat olvassa.
     const loadPageRange = async (useEndTimestamp: boolean): Promise<void> => {
       for (let start = 0; ; start += 1000) {
         let query = supabase.from("work_logs")
-          .select(selectColumns)
-          .eq("action", "END");
+          .select(selectColumns);
         // A kiválasztott munkaállomást már a Supabase lekérdezésben is
         // pontosan a work_logs.machine_id mezőre szűrjük. Így pl. Lakatos
         // esetén más munkaállomás sora nem kerülhet az exportba.
@@ -13450,8 +13452,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           query = query.eq("machine_id", profile.stationFilter);
         }
         query = useEndTimestamp
-          ? query.is("end_time", null).gte("end_timestamp", range.startIso).lt("end_timestamp", range.endIso).order("end_timestamp", { ascending: true })
-          : query.gte("end_time", range.startIso).lt("end_time", range.endIso).order("end_time", { ascending: true });
+          ? query.is("end_time", null).not("end_timestamp", "is", null).gte("end_timestamp", range.startIso).lt("end_timestamp", range.endIso).order("end_timestamp", { ascending: true })
+          : query.not("end_time", "is", null).gte("end_time", range.startIso).lt("end_time", range.endIso).order("end_time", { ascending: true });
         const response = await query.range(start, start + 999);
         if (response.error) throw response.error;
         const page = (response.data || []) as WorkLogRow[];
