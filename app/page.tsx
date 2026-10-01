@@ -1692,6 +1692,10 @@ type ScrapReplacementRoute = {
 
 type EventFiveRepairAction = "" | "Javítás" | "Újragyártás";
 
+const EVENT_FIVE_ISSUE_REPORT_TABLE = "event5_hibajelentesek";
+const EVENT_FIVE_ISSUE_TARGET_TABLE = "event5_hibajelentes_celallomasok";
+const EVENT_FIVE_ISSUE_STATIONS = ["Asztalos", "Fényező", "Fóliázó"] as const;
+
 const EVENT_FIVE_REPAIR_STATION_OPTIONS = [
   { identityKey: "csolezer", label: "Csőlézer" },
   { identityKey: "osszeallitas", label: "Összeállítás" },
@@ -2272,6 +2276,7 @@ type ReportDeliveryReportType =
   | "worker-comparison"
   | "reproduction"
   | "scrap-replacement"
+  | "event5-issue"
   | "station-performance"
   | "plan-vs-completed"
   | "closed-orders"
@@ -2296,6 +2301,7 @@ type ReportDeliveryBlock =
   | "worker-comparison"
   | "reproduction"
   | "scrap-replacement"
+  | "event5-issue"
   | "station-performance"
   | "plan-vs-completed"
   | "closed-orders";
@@ -2422,6 +2428,7 @@ const REPORT_DELIVERY_REPORT_TYPE_LABELS: Record<ReportDeliveryReportType, strin
   "worker-comparison": "Dolgozói összehasonlítás",
   reproduction: "Újragyártási riport",
   "scrap-replacement": "Selejtpótlási riport",
+  "event5-issue": "Hibajelentések / felhasználások",
   "station-performance": "Munkaállomás teljesítmény",
   "plan-vs-completed": "Termelési terv vs. elkészült",
   "closed-orders": "Lezárt rendelések",
@@ -2450,6 +2457,7 @@ const REPORT_DELIVERY_BLOCK_OPTIONS: Array<{ id: ReportDeliveryBlock; label: str
   { id: "worker-comparison", label: "Dolgozói összehasonlítás" },
   { id: "reproduction", label: "Újragyártási riport" },
   { id: "scrap-replacement", label: "Selejtpótlási riport" },
+  { id: "event5-issue", label: "Hibajelentések / felhasználások" },
   { id: "station-performance", label: "Munkaállomás teljesítmény" },
   { id: "plan-vs-completed", label: "Termelési terv vs. elkészült" },
   { id: "closed-orders", label: "Lezárt rendelések" },
@@ -10431,6 +10439,14 @@ export default function Page() {
   const [eventScanError, setEventScanError] = useState("");
   const [orderTypeInput, setOrderTypeInput] = useState("");
   const [orderTypeScanError, setOrderTypeScanError] = useState("");
+  // 5-ös esemény – Hibajelentés / felhasználás. Külön állapot, a meglévő munkafolyamatot nem módosítja.
+  const [eventFiveIssueOpen, setEventFiveIssueOpen] = useState(false);
+  const [eventFiveIssueOrder, setEventFiveIssueOrder] = useState("");
+  const [eventFiveIssueSize, setEventFiveIssueSize] = useState("");
+  const [eventFiveIssueNote, setEventFiveIssueNote] = useState("");
+  const [eventFiveIssueStations, setEventFiveIssueStations] = useState<string[]>([]);
+  const [eventFiveIssueBusy, setEventFiveIssueBusy] = useState(false);
+  const [eventFiveIssueError, setEventFiveIssueError] = useState("");
   const [incompleteBatches, setIncompleteBatches] = useState<IncompleteBatchRow[]>([]);
   const [showIncompleteBatches, setShowIncompleteBatches] = useState(false);
   const [activeProductionBatches, setActiveProductionBatches] = useState<ProductionBatchRow[]>([]);
@@ -14335,6 +14351,34 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           }
         } catch { /* fallback to work_logs */ }
         addSection("Selejtpótlási riport", [["Rendelés", "Forrás", "Dolgozó", "Időpont", "Megjegyzés"]], rows);
+      } else if (blockId === "event5-issue") {
+        let rows: Array<Array<string | number>> = [];
+        if (supabase) {
+          const response = await supabase
+            .from(EVENT_FIVE_ISSUE_REPORT_TABLE)
+            .select("id,futo_sorszam,order_number,meret,megjegyzes,reported_by_worker_name,source_station,reported_at,status,completed_at,event5_hibajelentes_celallomasok(target_station,status,completed_at,completed_by_worker_name)")
+            .gte("reported_at", range.startIso)
+            .lt("reported_at", range.endIso)
+            .order("reported_at", { ascending: false })
+            .limit(5000);
+          if (response.error) throw response.error;
+          rows = (response.data || []).flatMap((raw: any) => {
+            const targets = Array.isArray(raw.event5_hibajelentes_celallomasok) ? raw.event5_hibajelentes_celallomasok : [];
+            return targets.length > 0 ? targets.map((target: any) => [
+              raw.futo_sorszam ?? "-",
+              raw.order_number || "-",
+              raw.meret || "-",
+              raw.megjegyzes || "-",
+              raw.reported_by_worker_name || "-",
+              raw.reported_at ? formatDateTime(String(raw.reported_at)) : "-",
+              target.target_station || "-",
+              target.status || "-",
+              target.completed_by_worker_name || "-",
+              target.completed_at ? formatDateTime(String(target.completed_at)) : "-",
+            ]) : [[raw.futo_sorszam ?? "-", raw.order_number || "-", raw.meret || "-", raw.megjegyzes || "-", raw.reported_by_worker_name || "-", raw.reported_at ? formatDateTime(String(raw.reported_at)) : "-", "-", raw.status || "-", "-", "-"]];
+          });
+        }
+        addSection("Hibajelentések / felhasználások", [["Futó #", "Rendelés", "Méret", "Megjegyzés", "Jelentő", "Jelentés ideje", "Célállomás", "Státusz", "Befejező", "Befejezés"]], rows);
       } else if (blockId === "station-performance" || blockId === "plan-vs-completed") {
         const stationRows = sourceData.stationEfficiencyRows.filter((row) =>
           profile.stationFilter === "all" || normalizeLooseText(row.stationName) === normalizeLooseText(profile.stationFilter)
@@ -43430,6 +43474,121 @@ body {
     );
   }
 
+  function resetEventFiveIssueForm(): void {
+    setEventFiveIssueOrder("");
+    setEventFiveIssueSize("");
+    setEventFiveIssueNote("");
+    setEventFiveIssueStations([]);
+    setEventFiveIssueError("");
+  }
+
+  function toggleEventFiveIssueStation(station: string): void {
+    setEventFiveIssueStations((current) =>
+      current.includes(station) ? current.filter((item) => item !== station) : [...current, station]
+    );
+  }
+
+  async function saveEventFiveIssueReport(): Promise<void> {
+    if (!supabase || !activeWorker || Number(getWorkerEsemenyKotegValue(activeWorker)) !== 5) return;
+    const order = eventFiveIssueOrder.trim().toUpperCase();
+    const size = eventFiveIssueSize.trim();
+    const note = eventFiveIssueNote.trim();
+    if (!/^R\d{9}$/.test(order)) {
+      setEventFiveIssueError("A rendelésszám kötelező formátuma: R + pontosan 9 számjegy (például R123456789).");
+      return;
+    }
+    if (eventFiveIssueStations.length === 0) {
+      setEventFiveIssueError("Legalább egy cél munkaállomást ki kell választani.");
+      return;
+    }
+    const stationText = eventFiveIssueStations.join(", ");
+    if (!window.confirm(
+      `Hibajelentés / felhasználás mentése?\n\nRendelés: ${order}\nMéret: ${size || "–"}\nMegjegyzés: ${note || "–"}\nCélállomás: ${stationText}`
+    )) return;
+
+    setEventFiveIssueBusy(true);
+    setEventFiveIssueError("");
+    try {
+      const nowIso = new Date().toISOString();
+
+      // A fő tábla identity futó_sorszám mezője adja a teljesen egyedi, riportálható sorszámot.
+      const { data: report, error: reportError } = await supabase
+        .from(EVENT_FIVE_ISSUE_REPORT_TABLE)
+        .insert([{
+          order_number: order,
+          meret: size || null,
+          megjegyzes: note || null,
+          reported_by_worker_id: Number(activeWorker.id),
+          reported_by_worker_name: activeWorker["Teljes nev"],
+          source_station: getCurrentMachineIdForInsert(),
+          reported_at: nowIso,
+          status: "NYITOTT",
+        }])
+        .select("id,futo_sorszam")
+        .single();
+      if (reportError) throw reportError;
+      if (!report?.id) throw new Error("A hibajelentés nem kapott adatbázis-azonosítót.");
+
+      const targetRows = eventFiveIssueStations.map((station) => ({
+        report_id: report.id,
+        futo_sorszam: report.futo_sorszam,
+        target_station: station,
+        status: "VARAKOZIK",
+        created_at: nowIso,
+        updated_at: nowIso,
+      }));
+      const { error: targetError } = await supabase.from(EVENT_FIVE_ISSUE_TARGET_TABLE).insert(targetRows);
+      if (targetError) throw targetError;
+
+      // A három kijelölt állomás meglévő Selejtpótlás kártyájára külön cél-sor kerül.
+      // Az event_id köti vissza ezeket az új, külön hibajelentés táblához.
+      const eventId = `E5-HIBA-${report.id}`;
+      const scrapRows = eventFiveIssueStations.map((station, index) => ({
+        order_number: order,
+        source_station: getCurrentMachineIdForInsert(),
+        source_work_log_id: null,
+        status: "VARAKOZIK",
+        reported_by_worker_id: Number(activeWorker.id),
+        reported_by_worker_name: activeWorker["Teljes nev"],
+        reported_at: nowIso,
+        started_at: null,
+        completed_at: null,
+        last_worker_name: null,
+        updated_at: nowIso,
+        megjegyzes: [note, size ? `Méret: ${size}` : ""].filter(Boolean).join(" | ") || null,
+        kulso_lap_selejt: false,
+        belso_lap_selejt: false,
+        toklec_selejt: false,
+        event_id: eventId,
+        target_station: station,
+        route_sequence: index + 1,
+        previous_target_station: null,
+        source_group: "event5-hibajelentes",
+        generic_scrap: true,
+        scrap_kind: "Hibajelentés / felhasználás",
+        termelesi_kartya_adatok: {
+          hibajelentes_id: report.id,
+          hibajelentes_futo_sorszam: report.futo_sorszam,
+          hibajelentes_meret: size || null,
+          hibajelentes_megjegyzes: note || null,
+        },
+      }));
+      const { error: scrapError } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).insert(scrapRows);
+      if (scrapError) throw scrapError;
+
+      setEventFiveIssueOpen(false);
+      resetEventFiveIssueForm();
+      setMessage({
+        type: "success",
+        text: `Hibajelentés / felhasználás #${report.futo_sorszam} elmentve. Célállomás: ${stationText}.`,
+      });
+    } catch (error) {
+      setEventFiveIssueError(normalizeError(error));
+    } finally {
+      setEventFiveIssueBusy(false);
+    }
+  }
+
   function handleOrderTypeSelection(mode: WorkflowMode): void {
     if (activeWorker && Number(getWorkerEsemenyKotegValue(activeWorker)) === 6 && mode !== "single") {
       setOrderTypeScanError("A 6-os esemény csak egyedi rendelésként jelenthető.");
@@ -44884,6 +45043,55 @@ body {
     }
     const { error } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).update(payload).in("id", ids);
     if (error) throw error;
+    await syncEventFiveIssueTargetFromScrapRows(ids, status, status === "KESZ" ? String(payload.completed_at || nowIso) : null);
+  }
+
+  async function syncEventFiveIssueTargetFromScrapRows(
+    ids: Array<string | number>,
+    status: ScrapReplacementStatus,
+    completedAt?: string | null
+  ): Promise<void> {
+    if (!supabase || ids.length === 0) return;
+    const { data, error } = await supabase
+      .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
+      .select("event_id,target_station")
+      .in("id", ids);
+    if (error) throw error;
+
+    for (const row of (data || []) as Array<{ event_id?: string | null; target_station?: string | null }>) {
+      const eventId = String(row.event_id || "");
+      if (!eventId.startsWith("E5-HIBA-")) continue;
+      const reportId = eventId.slice("E5-HIBA-".length);
+      const station = String(row.target_station || "").trim();
+      if (!reportId || !station) continue;
+      const payload: Record<string, unknown> = {
+        status,
+        updated_at: new Date().toISOString(),
+      };
+      if (status === "KESZ") {
+        payload.completed_at = completedAt || new Date().toISOString();
+        payload.completed_by_worker_id = activeWorker?.id ?? null;
+        payload.completed_by_worker_name = activeWorker?.["Teljes nev"] || null;
+      }
+      const { error: targetError } = await supabase
+        .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
+        .update(payload)
+        .eq("report_id", reportId)
+        .eq("target_station", station);
+      if (targetError) throw targetError;
+
+      const { data: remaining, error: remainingError } = await supabase
+        .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
+        .select("status")
+        .eq("report_id", reportId);
+      if (remainingError) throw remainingError;
+      const allDone = (remaining || []).length > 0 && (remaining || []).every((item) => String(item.status || "").toUpperCase() === "KESZ");
+      const { error: reportUpdateError } = await supabase
+        .from(EVENT_FIVE_ISSUE_REPORT_TABLE)
+        .update({ status: allDone ? "KESZ" : "NYITOTT", completed_at: allDone ? (completedAt || new Date().toISOString()) : null })
+        .eq("id", reportId);
+      if (reportUpdateError) throw reportUpdateError;
+    }
   }
 
   async function createScrapReplacementFromSheetScrap(params: {
@@ -53520,6 +53728,77 @@ body {
                       );
                     })}
                   </div>
+
+                  {workerEventKoteg === 5 && (
+                    <div style={{ marginBottom: 18, background: "rgba(127,29,29,0.24)", border: "2px solid #dc2626", borderRadius: 14, padding: 16 }}>
+                      <div style={{ fontWeight: 900, color: "#fecaca", fontSize: 17, marginBottom: 6 }}>Hibajelentés / felhasználás</div>
+                      <div style={{ color: "#fca5a5", fontSize: 12, marginBottom: 12 }}>
+                        Külön hibajelentés rögzítése az Asztalos, Fényező vagy Fóliázó Selejtpótlás kártyájára.
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { resetEventFiveIssueForm(); setEventFiveIssueOpen(true); }}
+                        style={{ ...buttonPrimary, background: "#dc2626", border: "1px solid #ef4444" }}
+                      >
+                        Hibajelentés / felhasználás
+                      </button>
+                    </div>
+                  )}
+
+                  {eventFiveIssueOpen && workerEventKoteg === 5 && (
+                    <div style={{ position: "fixed", inset: 0, zIndex: 10050, background: "rgba(2,6,23,0.82)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+                      <div style={{ width: "min(760px, 96vw)", maxHeight: "92vh", overflowY: "auto", background: "#0f172a", border: "2px solid #dc2626", borderRadius: 18, padding: 22, boxShadow: "0 24px 70px rgba(0,0,0,.55)" }}>
+                        <h2 style={{ margin: "0 0 18px", color: "#fecaca" }}>Hibajelentés / felhasználás</h2>
+
+                        <label style={{ display: "block", color: "#e2e8f0", fontWeight: 800, marginBottom: 6 }}>Rendelésszám *</label>
+                        <input
+                          value={eventFiveIssueOrder}
+                          onChange={(e) => { setEventFiveIssueOrder(e.target.value.toUpperCase().replace(/\s+/g, "")); setEventFiveIssueError(""); }}
+                          placeholder="R123456789"
+                          maxLength={10}
+                          style={{ ...fieldStyle, width: "100%", marginBottom: 14, background: "#020617", color: "#f8fafc" }}
+                          autoFocus
+                        />
+
+                        <label style={{ display: "block", color: "#e2e8f0", fontWeight: 800, marginBottom: 6 }}>Méret</label>
+                        <textarea
+                          value={eventFiveIssueSize}
+                          onChange={(e) => setEventFiveIssueSize(e.target.value)}
+                          placeholder="Méret megadása"
+                          rows={2}
+                          style={{ ...fieldStyle, width: "100%", marginBottom: 14, background: "#020617", color: "#f8fafc", resize: "vertical" }}
+                        />
+
+                        <label style={{ display: "block", color: "#e2e8f0", fontWeight: 800, marginBottom: 6 }}>Megjegyzés</label>
+                        <textarea
+                          value={eventFiveIssueNote}
+                          onChange={(e) => setEventFiveIssueNote(e.target.value)}
+                          placeholder="Megjegyzés"
+                          rows={4}
+                          style={{ ...fieldStyle, width: "100%", marginBottom: 16, background: "#020617", color: "#f8fafc", resize: "vertical" }}
+                        />
+
+                        <div style={{ color: "#e2e8f0", fontWeight: 900, marginBottom: 8 }}>Cél munkaállomás *</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10, marginBottom: 16 }}>
+                          {EVENT_FIVE_ISSUE_STATIONS.map((station) => (
+                            <label key={station} style={{ display: "flex", gap: 9, alignItems: "center", padding: 13, borderRadius: 12, border: eventFiveIssueStations.includes(station) ? "2px solid #ef4444" : "1px solid #475569", background: "#1e293b", color: "#f8fafc", fontWeight: 800, cursor: "pointer" }}>
+                              <input type="checkbox" checked={eventFiveIssueStations.includes(station)} onChange={() => toggleEventFiveIssueStation(station)} />
+                              {station}
+                            </label>
+                          ))}
+                        </div>
+
+                        {!!eventFiveIssueError && <div style={{ color: "#fecaca", background: "#450a0a", border: "1px solid #dc2626", borderRadius: 10, padding: 10, marginBottom: 14 }}>{eventFiveIssueError}</div>}
+
+                        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                          <button type="button" disabled={eventFiveIssueBusy} onClick={() => { setEventFiveIssueOpen(false); resetEventFiveIssueForm(); }} style={buttonSecondary}>Mégse</button>
+                          <button type="button" disabled={eventFiveIssueBusy} onClick={() => void saveEventFiveIssueReport()} style={{ ...buttonPrimary, background: "#dc2626" }}>
+                            {eventFiveIssueBusy ? "Mentés..." : "Mentés"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {workerEventKoteg === 3 && (
                     <div style={{ marginBottom: 18, background: "linear-gradient(135deg, rgba(14,116,144,0.18), rgba(15,23,42,0.96))", border: "1px solid #0e7490", borderRadius: 14, padding: 16 }}>
