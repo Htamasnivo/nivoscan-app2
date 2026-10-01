@@ -10396,13 +10396,6 @@ export default function Page() {
 
   useEffect(() => installNivoManualRefreshGuard(), []);
 
-  useEffect(() => {
-    if (terminalView !== "scanner") return;
-    const station = String(machineId || "").trim();
-    if (!station) return;
-    void loadProgramErrorRepairNoticesOnce(station);
-  }, [machineId, terminalView]);
-
   function setStep(nextStep: 1 | 2 | 3 | 4 | 5 | 6 | 7): void {
     const currentStep = stepRef.current;
     if (currentStep !== nextStep) {
@@ -11097,6 +11090,17 @@ export default function Page() {
   );
 
   const [machineId, setMachineId] = useState<MachineIdOption>("iroda");
+
+  // Program-hibajavítási értesítések: csak egyszer töltjük le az adott
+  // munkaállomás felületének megnyitásakor. Fontos: ez az effect csak azután
+  // szerepelhet, hogy terminalView, machineId és a használt ref-ek inicializálódtak.
+  useEffect(() => {
+    if (terminalView !== "scanner") return;
+    const station = String(machineId || "").trim();
+    if (!station) return;
+    void loadProgramErrorRepairNoticesOnce(station);
+  }, [machineId, terminalView]);
+
   nivoCurrentTabMachineId = machineId;
   const [nivoDuplicateTabBlocked, setNivoDuplicateTabBlocked] = useState(false);
   const [nivoDuplicateTabMachine, setNivoDuplicateTabMachine] = useState("");
