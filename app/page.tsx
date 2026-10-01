@@ -951,11 +951,11 @@ function createDefaultOfficeThemeMap(): Record<OfficePageKey, OfficeThemeConfig>
   const base = OFFICE_THEME_PRESETS["industrial-night"].theme;
   return {
     dashboard: cloneOfficeTheme(base), "production-plan": cloneOfficeTheme(base), "production-monitor": cloneOfficeTheme(base),
-    "production-card": cloneOfficeTheme(base), "pause-report": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "atvetel": cloneOfficeTheme(base), "reklamacio": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "executive-report": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base), "data-upload": cloneOfficeTheme(base), "admin": cloneOfficeTheme(base),
+    "production-card": cloneOfficeTheme(base), "pause-report": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "atvetel": cloneOfficeTheme(base), "reklamacio": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "executive-report": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base), "data-upload": cloneOfficeTheme(base), "admin": cloneOfficeTheme(base), "program-error-reports": cloneOfficeTheme(base),
   };
 }
 function createDefaultOfficeThemePresetMap(): Record<OfficePageKey, OfficeThemePresetId> {
-  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "pause-report":"industrial-night", "reproduction-report":"industrial-night", "atvetel":"industrial-night", "reklamacio":"industrial-night", "label-printer":"industrial-night", "executive-report":"industrial-night", "report-delivery":"industrial-night", "data-upload":"industrial-night", "admin":"industrial-night" };
+  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "pause-report":"industrial-night", "reproduction-report":"industrial-night", "atvetel":"industrial-night", "reklamacio":"industrial-night", "label-printer":"industrial-night", "executive-report":"industrial-night", "report-delivery":"industrial-night", "data-upload":"industrial-night", "admin":"industrial-night", "program-error-reports":"industrial-night" };
 }
 
 const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]> = {
@@ -1015,6 +1015,11 @@ const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]>
     { id:"machines", label:"Gépek aktivitása" }, { id:"emergency", label:"Vészleállítás" },
     { id:"quarantine-alerts", label:"Automatikus karantén" }, { id:"quarantine-notifications", label:"Karantén e-mail értesítések" },
     { id:"machine-activity-cards", label:"Munkaállomások aktivitási boxai" },
+  ],
+  "program-error-reports": [
+    { id:"navigation", label:"Felső menüsor" },
+    { id:"header", label:"Hibajelentések fejléc" },
+    { id:"table", label:"Hibajelentések táblázata" },
   ],
 };
 
@@ -17220,6 +17225,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
               else if (item.id === "report-delivery") void loadReportDeliveryProfiles();
               else if (item.id === "data-upload") void loadDataUploadView();
               else if (item.id === "admin") void loadNivoAdminActivity();
+              else if (item.id === "program-error-reports") void loadProgramErrorAdminRows();
             }} style={{ border:active ? `1px solid ${currentTheme.accentColor}` : "1px solid transparent", background:active ? currentTheme.navActiveBackground : "transparent", color:active ? currentTheme.textColor : currentTheme.navText, borderRadius:Math.max(4,currentTheme.borderRadius-5), padding:"10px 14px", fontWeight:800, cursor:"pointer", fontFamily:currentTheme.fontFamily }}>{item.label}</button>;
           })}
           <button
@@ -30528,24 +30534,29 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   }
 
   function ProgramErrorReportsAdmin(): React.JSX.Element {
-    const theme = getOfficeTheme("admin");
+    const theme = getOfficeTheme("program-error-reports");
     return (
-      <div style={{ width: "100%", padding: 16, boxSizing: "border-box" }}>
-        <div style={{ background: theme.panelBackground, border: `1px solid ${theme.borderColor}`, borderRadius: 14, padding: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+      <div style={{ width:"100%", minHeight:"100vh", padding:10, boxSizing:"border-box", background:theme.pageBackground, color:theme.textColor }}>
+        <ManagementNavigation />
+
+        <div data-office-window="program-error-reports:header" style={{ background:theme.panelBackground, border:`${theme.borderWidth}px solid ${theme.borderColor}`, borderRadius:theme.borderRadius, padding:16, marginBottom:12 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
             <div>
-              <h2 style={{ margin: 0, color: theme.textColor }}>Hibajelentések</h2>
-              <div style={{ marginTop: 5, color: theme.mutedText, fontSize: 12 }}>A munkaállomásokról leadott programhibák teljes, megmaradó listája.</div>
+              <h2 style={{ margin:0, color:theme.textColor }}>Hibajelentések</h2>
+              <div style={{ marginTop:5, color:theme.mutedText, fontSize:12 }}>A munkaállomásokról leadott programhibák teljes, megmaradó listája.</div>
             </div>
             <button type="button" onClick={() => void loadProgramErrorAdminRows()} disabled={programErrorAdminBusy} style={buttonSecondary}>Frissítés</button>
           </div>
-          {programErrorAdminError && <div style={{ marginTop: 12, padding: 10, borderRadius: 9, background: "#450a0a", color: "#fecaca", border: "1px solid #dc2626" }}>{programErrorAdminError}</div>}
-          <div style={{ overflowX: "auto", marginTop: 14 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1250 }}>
+        </div>
+
+        <div data-office-window="program-error-reports:table" style={{ background:theme.panelBackground, border:`${theme.borderWidth}px solid ${theme.borderColor}`, borderRadius:theme.borderRadius, padding:16 }}>
+          {programErrorAdminError && <div style={{ marginBottom:12, padding:10, borderRadius:9, background:"#450a0a", color:"#fecaca", border:"1px solid #dc2626" }}>{programErrorAdminError}</div>}
+          <div style={{ overflowX:"auto" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", minWidth:1250 }}>
               <thead>
                 <tr>
                   {["Sorszám","Munkaállomás","Név","Megjegyzés","Leadás ideje","Státusz","Kész ideje","Készre állító","Művelet"].map((label) => (
-                    <th key={label} style={{ padding: 9, textAlign: "left", borderBottom: `1px solid ${theme.borderColor}`, color: theme.textColor }}>{label}</th>
+                    <th key={label} style={{ padding:9, textAlign:"left", borderBottom:`1px solid ${theme.borderColor}`, color:theme.textColor }}>{label}</th>
                   ))}
                 </tr>
               </thead>
@@ -30555,18 +30566,18 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                   const responseActive = Boolean(row.show_response) && row.response_visible_until && new Date(String(row.response_visible_until)).getTime() > Date.now();
                   return (
                     <tr key={String(row.id)}>
-                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}`, fontWeight: 900 }}>{String(row.issue_number ?? row.id)}</td>
-                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{String(row.station_name || "–")}</td>
-                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{String(row.reporter_name || "–")}</td>
-                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}`, whiteSpace: "pre-wrap", minWidth: 300 }}>{String(row.note || "–")}</td>
-                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{row.reported_at ? formatDateTime(String(row.reported_at)) : "–"}</td>
-                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}`, fontWeight: 900, color: done ? "#86efac" : "#fbbf24" }}>{done ? "Kész" : "Nyitott"}</td>
-                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{row.completed_at ? formatDateTime(String(row.completed_at)) : "–"}</td>
-                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{String(row.completed_by_worker_name || "–")}</td>
-                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>
-                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <button type="button" disabled={programErrorAdminBusy || done} onClick={() => void completeProgramErrorReport(row)} style={{ ...buttonPrimary, opacity: done ? 0.55 : 1 }}>Kész</button>
-                          <button type="button" disabled={programErrorAdminBusy || !done || responseActive} onClick={() => void showProgramErrorRepairNotice(row)} style={{ ...buttonSecondary, borderColor: "#8b5cf6", color: "#ddd6fe", opacity: (!done || responseActive) ? 0.55 : 1 }}>
+                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}`, fontWeight:900 }}>{String(row.issue_number ?? row.id)}</td>
+                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}` }}>{String(row.station_name || "–")}</td>
+                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}` }}>{String(row.reporter_name || "–")}</td>
+                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}`, whiteSpace:"pre-wrap", minWidth:300 }}>{String(row.note || "–")}</td>
+                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}` }}>{row.reported_at ? formatDateTime(String(row.reported_at)) : "–"}</td>
+                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}`, fontWeight:900, color:done ? "#86efac" : "#fbbf24" }}>{done ? "Kész" : "Nyitott"}</td>
+                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}` }}>{row.completed_at ? formatDateTime(String(row.completed_at)) : "–"}</td>
+                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}` }}>{String(row.completed_by_worker_name || "–")}</td>
+                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}` }}>
+                        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                          <button type="button" disabled={programErrorAdminBusy || done} onClick={() => void completeProgramErrorReport(row)} style={{ ...buttonPrimary, opacity:done ? 0.55 : 1 }}>Kész</button>
+                          <button type="button" disabled={programErrorAdminBusy || !done || responseActive} onClick={() => void showProgramErrorRepairNotice(row)} style={{ ...buttonSecondary, borderColor:"#8b5cf6", color:"#ddd6fe", opacity:(!done || responseActive) ? 0.55 : 1 }}>
                             {responseActive ? "Válasz aktív 24 óráig" : "Válasz megjelenítése a munkaállomáson"}
                           </button>
                         </div>
@@ -30575,7 +30586,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                   );
                 })}
                 {!programErrorAdminBusy && programErrorAdminRows.length === 0 && (
-                  <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", color: theme.mutedText }}>Még nincs hibajelentés.</td></tr>
+                  <tr><td colSpan={9} style={{ padding:24, textAlign:"center", color:theme.mutedText }}>Még nincs hibajelentés.</td></tr>
                 )}
               </tbody>
             </table>
