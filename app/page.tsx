@@ -50272,8 +50272,8 @@ body {
       const logFields=action==="END"?{
         kulso_lap_selejt:outerSheetScrap,belso_lap_selejt:innerSheetScrap,toklec_selejt:toklecScrap,
         selejt_megjegyzes:(hasScrap||hasRepair)?note:null,selejt_forras_munkaallomas:hasScrap||hasRepair?machine:routed?.source_station||null,
-        selejt_potlas:!!routed,scrap_qty:null,darab:null,szal:null,terv_futo_sorszam:eventFivePlanRunSequence
-      }:{selejt_potlas:!!routed,selejt_forras_munkaallomas:routed?.source_station||null,terv_futo_sorszam:eventFivePlanRunSequence};
+        selejt_potlas:!!routed,scrap_qty:null,darab:null,szal:null
+      }:{selejt_potlas:!!routed,selejt_forras_munkaallomas:routed?.source_station||null};
 
       let result:{state:SzerelesOrderState;saved_rows:Array<{id:string|number;part:SzerelesPart;started_at:string;ended_at?:string}>};
       if(action==="END"&&!legacyClose&&hasPause){
