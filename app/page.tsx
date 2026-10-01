@@ -30529,9 +30529,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
   function ProgramErrorReportsAdmin(): React.JSX.Element {
     const theme = getOfficeTheme("admin");
-    useEffect(() => {
-      void loadProgramErrorAdminRows();
-    }, []);
     return (
       <div style={{ width: "100%", padding: 16, boxSizing: "border-box" }}>
         <div style={{ background: theme.panelBackground, border: `1px solid ${theme.borderColor}`, borderRadius: 14, padding: 16 }}>
@@ -33625,6 +33622,14 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   }
 
 
+
+  // A Hibajelentés admin lista betöltése a fő komponens hook-sorrendjében történik.
+  // Így a menüpontra váltás nem hoz létre feltételes hookot (React #310).
+  useEffect(() => {
+    if (managementSection !== "program-error-reports") return;
+    if (!activeWorker || !isAdmin(activeWorker)) return;
+    void loadProgramErrorAdminRows();
+  }, [managementSection, activeWorker?.id, supabase]);
 
   const previousManagementSectionForAtvetelRef = useRef(managementSection);
   useEffect(() => {
