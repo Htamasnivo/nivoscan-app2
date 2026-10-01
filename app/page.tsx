@@ -1694,6 +1694,7 @@ type EventFiveRepairAction = "" | "Javítás" | "Újragyártás";
 
 const EVENT_FIVE_ISSUE_REPORT_TABLE = "event5_hibajelentesek";
 const EVENT_FIVE_ISSUE_TARGET_TABLE = "event5_hibajelentes_celallomasok";
+const EVENT_FIVE_ISSUE_STATUS_AUDIT_TABLE = "event5_hibajelentes_allapotnaplo";
 const EVENT_FIVE_ISSUE_STATIONS = ["Asztalos", "Fényező", "Fóliázó"] as const;
 
 const EVENT_FIVE_REPAIR_STATION_OPTIONS = [
@@ -10451,6 +10452,10 @@ export default function Page() {
   const [eventFiveIssueHistoryBusy, setEventFiveIssueHistoryBusy] = useState(false);
   const [eventFiveIssueHistoryError, setEventFiveIssueHistoryError] = useState("");
   const [eventFiveIssueHistoryRows, setEventFiveIssueHistoryRows] = useState<Array<Record<string, unknown>>>([]);
+  const [eventFiveStationIssueOpen, setEventFiveStationIssueOpen] = useState(false);
+  const [eventFiveStationIssueBusy, setEventFiveStationIssueBusy] = useState(false);
+  const [eventFiveStationIssueError, setEventFiveStationIssueError] = useState("");
+  const [eventFiveStationIssueRows, setEventFiveStationIssueRows] = useState<Array<Record<string, unknown>>>([]);
   const [incompleteBatches, setIncompleteBatches] = useState<IncompleteBatchRow[]>([]);
   const [showIncompleteBatches, setShowIncompleteBatches] = useState(false);
   const [activeProductionBatches, setActiveProductionBatches] = useState<ProductionBatchRow[]>([]);
@@ -43489,6 +43494,107 @@ body {
     );
   }
 
+  function getCurrentEventFiveTargetStation(): string | null {
+    const machineKey = getStationPlanIdentityKey(machineId);
+    return EVENT_FIVE_ISSUE_STATIONS.find(
+      (station) => getStationPlanIdentityKey(station) === machineKey
+    ) || null;
+  }
+
+  async function loadEventFiveStationIssues(openModal = false): Promise<void> {
+    if (!supabase) return;
+    const targetStation = getCurrentEventFiveTargetStation();
+    if (!targetStation) return;
+    if (openModal) setEventFiveStationIssueOpen(true);
+    setEventFiveStationIssueBusy(true);
+    setEventFiveStationIssueError("");
+    try {
+      const { data, error } = await supabase
+        .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
+        .select("id,report_id,target_station,status,started_at,completed_at,completed_by_worker_id,completed_by_worker_name,created_at,updated_at,event5_hibajelentesek(id,futo_sorszam,order_number,meret,megjegyzes,reported_by_worker_id,reported_by_worker_name,reported_at,status)")
+        .eq("target_station", targetStation)
+        .order("created_at", { ascending: false })
+        .limit(5000);
+      if (error) throw error;
+      setEventFiveStationIssueRows((data || []) as Array<Record<string, unknown>>);
+    } catch (error) {
+      setEventFiveStationIssueError(normalizeError(error));
+      setEventFiveStationIssueRows([]);
+    } finally {
+      setEventFiveStationIssueBusy(false);
+    }
+  }
+
+  async function setEventFiveStationIssueStatus(
+    targetRow: Record<string, unknown>,
+    nextStatus: "FOLYAMATBAN" | "KESZ"
+  ): Promise<void> {
+    if (!supabase || !activeWorker) return;
+    const targetStation = getCurrentEventFiveTargetStation();
+    if (!targetStation) return;
+    const targetId = String(targetRow.id || "").trim();
+    const reportId = String(targetRow.report_id || "").trim();
+    const oldStatus = String(targetRow.status || "VARAKOZIK").trim().toUpperCase();
+    if (!targetId || !reportId || oldStatus === "KESZ" || oldStatus === nextStatus) return;
+
+    setEventFiveStationIssueBusy(true);
+    setEventFiveStationIssueError("");
+    try {
+      const nowIso = new Date().toISOString();
+      const payload: Record<string, unknown> = {
+        status: nextStatus,
+        updated_at: nowIso,
+      };
+      if (nextStatus === "FOLYAMATBAN") {
+        payload.started_at = targetRow.started_at || nowIso;
+      } else {
+        payload.completed_at = nowIso;
+        payload.completed_by_worker_id = Number(activeWorker.id);
+        payload.completed_by_worker_name = activeWorker["Teljes nev"];
+      }
+
+      const { error: updateError } = await supabase
+        .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
+        .update(payload)
+        .eq("id", targetId)
+        .eq("target_station", targetStation);
+      if (updateError) throw updateError;
+
+      const { error: auditError } = await supabase
+        .from(EVENT_FIVE_ISSUE_STATUS_AUDIT_TABLE)
+        .insert([{
+          report_id: Number(reportId),
+          target_id: Number(targetId),
+          target_station: targetStation,
+          old_status: oldStatus,
+          new_status: nextStatus,
+          changed_by_worker_id: Number(activeWorker.id),
+          changed_by_worker_name: activeWorker["Teljes nev"],
+          changed_at: nowIso,
+        }]);
+      if (auditError) throw auditError;
+
+      const { data: targetStates, error: targetStatesError } = await supabase
+        .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
+        .select("status")
+        .eq("report_id", reportId);
+      if (targetStatesError) throw targetStatesError;
+      const allDone = (targetStates || []).length > 0
+        && (targetStates || []).every((item) => String(item.status || "").toUpperCase() === "KESZ");
+      const { error: reportError } = await supabase
+        .from(EVENT_FIVE_ISSUE_REPORT_TABLE)
+        .update({ status: allDone ? "KESZ" : "NYITOTT", completed_at: allDone ? nowIso : null })
+        .eq("id", reportId);
+      if (reportError) throw reportError;
+
+      await loadEventFiveStationIssues(false);
+    } catch (error) {
+      setEventFiveStationIssueError(normalizeError(error));
+    } finally {
+      setEventFiveStationIssueBusy(false);
+    }
+  }
+
   async function openEventFiveIssueHistory(): Promise<void> {
     if (!supabase) return;
     setEventFiveIssueHistoryOpen(true);
@@ -43516,6 +43622,28 @@ body {
     if (status === "FOLYAMATBAN") return "Folyamatban";
     return "Várakozik";
   }
+
+  useEffect(() => {
+    if (!supabase || (!eventFiveIssueHistoryOpen && !eventFiveStationIssueOpen)) return;
+    const channel = supabase
+      .channel(`event5-hibajelentes-status-${machineId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: EVENT_FIVE_ISSUE_TARGET_TABLE },
+        () => {
+          if (eventFiveIssueHistoryOpen && getStationPlanIdentityKey(machineId) === "szereles") {
+            void openEventFiveIssueHistory();
+          }
+          if (eventFiveStationIssueOpen && getCurrentEventFiveTargetStation()) {
+            void loadEventFiveStationIssues(false);
+          }
+        }
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [supabase, eventFiveIssueHistoryOpen, eventFiveStationIssueOpen, machineId]);
 
   function resetEventFiveIssueForm(): void {
     setEventFiveIssueOrder("");
@@ -53318,7 +53446,7 @@ body {
           )}
 
           {eventFiveIssueHistoryOpen && getStationPlanIdentityKey(machineId) === "szereles" && (
-            <div style={{ position: "fixed", inset: 0, zIndex: 10060, background: "rgba(2,6,23,0.86)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div style={{ position: "fixed", inset: 0, zIndex: 50000, background: "rgba(31,41,55,0.90)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
               <div style={{ width: "min(1180px, 97vw)", maxHeight: "92vh", overflowY: "auto", background: "#0f172a", border: "2px solid #f59e0b", borderRadius: 18, padding: 20, boxShadow: "0 24px 80px rgba(0,0,0,.58)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
                   <div>
@@ -53603,6 +53731,109 @@ body {
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                 <button onClick={() => void handleForgotPasswordReset()} disabled={busy} style={buttonPrimary}>Jelszó visszaállítása</button>
                 <button onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
+              </div>
+            </div>
+          )}
+
+          {step === 3 && activeWorker && !isManagementDashboardWorker(activeWorker) && terminalView === "scanner" && getCurrentEventFiveTargetStation() && (
+            <div style={{ marginBottom: 16 }}>
+              <button
+                type="button"
+                onClick={() => void loadEventFiveStationIssues(true)}
+                style={{
+                  ...buttonPrimary,
+                  width: "100%",
+                  background: "#f59e0b",
+                  border: "1px solid #fbbf24",
+                  color: "#111827",
+                  fontWeight: 900,
+                }}
+              >
+                Leadott folyamatban lévő hibajelentés / felhasználás
+              </button>
+            </div>
+          )}
+
+          {eventFiveStationIssueOpen && activeWorker && getCurrentEventFiveTargetStation() && (
+            <div style={{ position: "fixed", inset: 0, zIndex: 50000, background: "rgba(31,41,55,0.90)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+              <div style={{ width: "min(1180px, 97vw)", maxHeight: "92vh", overflowY: "auto", background: "#0f172a", border: "2px solid #f59e0b", borderRadius: 18, padding: 20, boxShadow: "0 24px 80px rgba(0,0,0,.75)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+                  <div>
+                    <h2 style={{ margin: 0, color: "#fde68a" }}>Leadott hibajelentések / felhasználások – {getCurrentEventFiveTargetStation()}</h2>
+                    <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 5 }}>A státuszt közvetlenül a Folyamatban vagy Kész gombbal állíthatod.</div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button type="button" onClick={() => void loadEventFiveStationIssues(false)} disabled={eventFiveStationIssueBusy} style={{ ...buttonSecondary, borderColor: "#f59e0b", color: "#fde68a" }}>Frissítés</button>
+                    <button type="button" onClick={() => setEventFiveStationIssueOpen(false)} style={buttonSecondary}>Bezárás</button>
+                  </div>
+                </div>
+
+                {eventFiveStationIssueError && (
+                  <div style={{ color: "#fecaca", background: "#450a0a", border: "1px solid #dc2626", borderRadius: 10, padding: 10, marginBottom: 12 }}>{eventFiveStationIssueError}</div>
+                )}
+
+                {eventFiveStationIssueBusy && eventFiveStationIssueRows.length === 0 ? (
+                  <div style={{ color: "#cbd5e1", padding: 20, textAlign: "center" }}>Betöltés...</div>
+                ) : eventFiveStationIssueRows.length === 0 ? (
+                  <div style={{ color: "#94a3b8", padding: 20, textAlign: "center" }}>Erre a munkaállomásra még nincs leadott hibajelentés / felhasználás.</div>
+                ) : (
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1080 }}>
+                      <thead>
+                        <tr style={{ color: "#fde68a", textAlign: "left" }}>
+                          {["Futó #", "Rendelés", "Méret", "Megjegyzés", "Leadó", "Leadás", "Állapot", "Művelet"].map((label) => (
+                            <th key={label} style={{ padding: "10px 8px", borderBottom: "1px solid #475569" }}>{label}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {eventFiveStationIssueRows.map((target) => {
+                          const joined = target.event5_hibajelentesek;
+                          const report = Array.isArray(joined)
+                            ? (joined[0] as Record<string, unknown> | undefined)
+                            : (joined && typeof joined === "object" ? joined as Record<string, unknown> : undefined);
+                          if (!report) return null;
+                          const status = String(target.status || "VARAKOZIK").toUpperCase();
+                          const isProgress = status === "FOLYAMATBAN";
+                          const isDone = status === "KESZ";
+                          return (
+                            <tr key={String(target.id)} style={{ background: isDone ? "rgba(22,101,52,.20)" : undefined }}>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 900 }}>{String(report.futo_sorszam ?? "–")}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{String(report.order_number || "–")}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{String(report.meret || "–")}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", whiteSpace: "pre-wrap" }}>{String(report.megjegyzes || "–")}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{String(report.reported_by_worker_name || "–")}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{report.reported_at ? formatDateTime(String(report.reported_at)) : "–"}</td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 900, color: isDone ? "#86efac" : isProgress ? "#fbbf24" : "#cbd5e1" }}>
+                                {getEventFiveIssueTargetStatusLabel(status)}
+                              </td>
+                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                  <button
+                                    type="button"
+                                    disabled={eventFiveStationIssueBusy || isProgress || isDone}
+                                    onClick={() => void setEventFiveStationIssueStatus(target, "FOLYAMATBAN")}
+                                    style={{ ...buttonSecondary, background: isProgress ? "#92400e" : "#1e293b", color: isProgress ? "#fef3c7" : "#f8fafc", opacity: (isProgress || isDone) ? 0.65 : 1 }}
+                                  >
+                                    Folyamatban
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={eventFiveStationIssueBusy || isDone}
+                                    onClick={() => void setEventFiveStationIssueStatus(target, "KESZ")}
+                                    style={{ ...buttonPrimary, background: isDone ? "#166534" : "#16a34a", opacity: isDone ? 0.65 : 1 }}
+                                  >
+                                    Kész
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             </div>
           )}
