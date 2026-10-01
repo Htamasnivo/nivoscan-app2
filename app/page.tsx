@@ -43495,10 +43495,11 @@ body {
   }
 
   function getCurrentEventFiveTargetStation(): string | null {
-    const machineKey = getStationPlanIdentityKey(machineId);
-    return EVENT_FIVE_ISSUE_STATIONS.find(
-      (station) => getStationPlanIdentityKey(station) === machineKey
-    ) || null;
+    const machineKey = getProductionCardStationMatchKey(machineId);
+    return EVENT_FIVE_ISSUE_STATIONS.find((station) => {
+      const aliases = getProductionCardStationAliases(station, machineIdRows);
+      return aliases.has(machineKey);
+    }) || null;
   }
 
   async function loadEventFiveStationIssues(openModal = false): Promise<void> {
@@ -43513,6 +43514,7 @@ body {
         .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
         .select("id,report_id,target_station,status,started_at,completed_at,completed_by_worker_id,completed_by_worker_name,created_at,updated_at,event5_hibajelentesek(id,futo_sorszam,order_number,meret,megjegyzes,reported_by_worker_id,reported_by_worker_name,reported_at,status)")
         .eq("target_station", targetStation)
+        .neq("status", "KESZ")
         .order("created_at", { ascending: false })
         .limit(5000);
       if (error) throw error;
@@ -53342,6 +53344,9 @@ body {
             ...(step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId)
               ? getTerminalEntryLayoutWindowStyle("worker-entry")
               : {}),
+            ...(eventFiveIssueHistoryOpen
+              ? { zIndex: 60000, overflow: "visible" as const }
+              : {}),
           }}
         >
           {step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId)
@@ -53446,7 +53451,7 @@ body {
           )}
 
           {eventFiveIssueHistoryOpen && getStationPlanIdentityKey(machineId) === "szereles" && (
-            <div style={{ position: "fixed", inset: 0, zIndex: 50000, background: "rgba(31,41,55,0.90)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div style={{ position: "fixed", inset: 0, zIndex: 70000, background: "rgba(31,41,55,0.90)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
               <div style={{ width: "min(1180px, 97vw)", maxHeight: "92vh", overflowY: "auto", background: "#0f172a", border: "2px solid #f59e0b", borderRadius: 18, padding: 20, boxShadow: "0 24px 80px rgba(0,0,0,.58)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
                   <div>
@@ -53735,7 +53740,7 @@ body {
             </div>
           )}
 
-          {step === 3 && activeWorker && !isManagementDashboardWorker(activeWorker) && terminalView === "scanner" && getCurrentEventFiveTargetStation() && (
+          {step >= 2 && activeWorker && !isManagementDashboardWorker(activeWorker) && terminalView === "scanner" && getCurrentEventFiveTargetStation() && (
             <div style={{ marginBottom: 16 }}>
               <button
                 type="button"
@@ -53755,7 +53760,7 @@ body {
           )}
 
           {eventFiveStationIssueOpen && activeWorker && getCurrentEventFiveTargetStation() && (
-            <div style={{ position: "fixed", inset: 0, zIndex: 50000, background: "rgba(31,41,55,0.90)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div style={{ position: "fixed", inset: 0, zIndex: 70000, background: "rgba(31,41,55,0.90)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
               <div style={{ width: "min(1180px, 97vw)", maxHeight: "92vh", overflowY: "auto", background: "#0f172a", border: "2px solid #f59e0b", borderRadius: 18, padding: 20, boxShadow: "0 24px 80px rgba(0,0,0,.75)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
                   <div>
