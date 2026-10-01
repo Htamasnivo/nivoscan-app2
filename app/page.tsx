@@ -20659,7 +20659,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           const time = new Date(value).getTime();
           return Number.isFinite(time) && time >= selectedDateStart.getTime() && time < selectedDateEnd.getTime();
         };
-        const allNormalizedRows = ((replacementData || []) as ScrapReplacementRow[]).map(normalizeScrapReplacementRow);
+        const eventFiveIssueRows = EVENT_FIVE_ISSUE_STATIONS.some(
+          (station) => normalizeLooseText(station) === normalizeLooseText(cleanStationName)
+        ) ? await fetchEventFiveIssueScrapRows(cleanStationName) : [];
+        const allNormalizedRows = [
+          ...((replacementData || []) as ScrapReplacementRow[]).map(normalizeScrapReplacementRow),
+          ...eventFiveIssueRows,
+        ];
         const normalizedStationKey = normalizeLooseText(cleanStationName);
 
         if (getStationPlanIdentityKey(cleanStationName) === "szereles") {
@@ -43540,41 +43546,9 @@ body {
       const { error: targetError } = await supabase.from(EVENT_FIVE_ISSUE_TARGET_TABLE).insert(targetRows);
       if (targetError) throw targetError;
 
-      // A három kijelölt állomás meglévő Selejtpótlás kártyájára külön cél-sor kerül.
-      // Az event_id köti vissza ezeket az új, külön hibajelentés táblához.
-      const eventId = `E5-HIBA-${report.id}`;
-      const scrapRows = eventFiveIssueStations.map((station, index) => ({
-        order_number: order,
-        source_station: getCurrentMachineIdForInsert(),
-        source_work_log_id: null,
-        status: "VARAKOZIK",
-        reported_by_worker_id: Number(activeWorker.id),
-        reported_by_worker_name: activeWorker["Teljes nev"],
-        reported_at: nowIso,
-        started_at: null,
-        completed_at: null,
-        last_worker_name: null,
-        updated_at: nowIso,
-        megjegyzes: [note, size ? `Méret: ${size}` : ""].filter(Boolean).join(" | ") || null,
-        kulso_lap_selejt: false,
-        belso_lap_selejt: false,
-        toklec_selejt: false,
-        event_id: eventId,
-        target_station: station,
-        route_sequence: index + 1,
-        previous_target_station: null,
-        source_group: "event5-hibajelentes",
-        generic_scrap: true,
-        scrap_kind: "Hibajelentés / felhasználás",
-        termelesi_kartya_adatok: {
-          hibajelentes_id: report.id,
-          hibajelentes_futo_sorszam: report.futo_sorszam,
-          hibajelentes_meret: size || null,
-          hibajelentes_megjegyzes: note || null,
-        },
-      }));
-      const { error: scrapError } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).insert(scrapRows);
-      if (scrapError) throw scrapError;
+      // Az új Hibajelentés / felhasználás nem kerül a régi
+      // asztalos_selejt_potlas táblába. Annak lap_check szabálya csak valódi
+      // lap/tokléc selejtre vonatkozik. A kártya az új célállomás táblából olvassa.
 
       setEventFiveIssueOpen(false);
       resetEventFiveIssueForm();
@@ -44367,6 +44341,62 @@ body {
     return `SCRAP-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
+  function eventFiveIssueTargetToScrapReplacementRow(raw: Record<string, unknown>): ScrapReplacementRow | null {
+    const joined = raw.event5_hibajelentesek;
+    const report = Array.isArray(joined)
+      ? joined[0] as Record<string, unknown> | undefined
+      : joined && typeof joined === "object" ? joined as Record<string, unknown> : undefined;
+    if (!report) return null;
+    const targetStatus = String(raw.status || "VARAKOZIK").toUpperCase();
+    const size = String(report.meret || "").trim();
+    const note = String(report.megjegyzes || "").trim();
+    return normalizeScrapReplacementRow({
+      id: `E5TARGET:${String(raw.id || "")}`,
+      order_number: String(report.order_number || "").trim(),
+      kulso_lap_selejt: false,
+      belso_lap_selejt: false,
+      toklec_selejt: false,
+      megjegyzes: [note, size ? `Méret: ${size}` : ""].filter(Boolean).join(" | ") || null,
+      source_station: String(report.source_station || "Szerelés"),
+      source_work_log_id: null,
+      status: targetStatus === "KESZ" ? "KESZ" : targetStatus === "FOLYAMATBAN" ? "SZABAS_FOLYAMATBAN" : "VARAKOZIK",
+      reported_by_worker_id: report.reported_by_worker_id as number | string | null,
+      reported_by_worker_name: String(report.reported_by_worker_name || "") || null,
+      reported_at: String(report.reported_at || report.created_at || new Date().toISOString()),
+      started_at: raw.started_at ? String(raw.started_at) : null,
+      completed_at: raw.completed_at ? String(raw.completed_at) : null,
+      last_worker_name: String(raw.completed_by_worker_name || "") || null,
+      updated_at: raw.updated_at ? String(raw.updated_at) : null,
+      event_id: `E5-HIBA-${String(raw.report_id || report.id || "")}`,
+      target_station: String(raw.target_station || "").trim(),
+      route_sequence: null,
+      previous_target_station: null,
+      source_group: "event5-hibajelentes",
+      generic_scrap: true,
+      scrap_kind: "Hibajelentés / felhasználás",
+      termelesi_kartya_adatok: {
+        hibajelentes_id: raw.report_id || report.id || null,
+        hibajelentes_futo_sorszam: report.futo_sorszam ?? null,
+        hibajelentes_meret: report.meret ?? null,
+        hibajelentes_megjegyzes: report.megjegyzes ?? null,
+      },
+    } as ScrapReplacementRow);
+  }
+
+  async function fetchEventFiveIssueScrapRows(stationName: string): Promise<ScrapReplacementRow[]> {
+    if (!supabase) return [];
+    const { data, error } = await supabase
+      .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
+      .select("id,report_id,target_station,status,started_at,completed_by_worker_id,completed_by_worker_name,completed_at,created_at,updated_at,event5_hibajelentesek(id,futo_sorszam,order_number,meret,megjegyzes,reported_by_worker_id,reported_by_worker_name,source_station,reported_at,created_at)")
+      .eq("target_station", stationName)
+      .order("created_at", { ascending: false })
+      .limit(5000);
+    if (error) throw error;
+    return ((data || []) as Array<Record<string, unknown>>)
+      .map(eventFiveIssueTargetToScrapReplacementRow)
+      .filter((row): row is ScrapReplacementRow => Boolean(row));
+  }
+
   function normalizeScrapReplacementRow(rawRow: ScrapReplacementRow): ScrapReplacementRow {
     return {
       ...rawRow,
@@ -44890,6 +44920,21 @@ body {
         if (rowInProgress && !existingInProgress) result.set(key, row);
       });
     }
+    if (EVENT_FIVE_ISSUE_STATIONS.some((station) => normalizeLooseText(station) === normalizeLooseText(cleanStation))) {
+      const eventFiveRows = await fetchEventFiveIssueScrapRows(cleanStation);
+      eventFiveRows
+        .filter((row) => row.status !== "KESZ" && cleanOrders.includes(String(row.order_number || "").trim()))
+        .forEach((row) => {
+          const key = normalizeLooseText(row.order_number);
+          if (!key) return;
+          const existing = result.get(key);
+          const rowInProgress = row.status !== "VARAKOZIK" && row.status !== "KESZ" || Boolean(row.started_at);
+          const existingInProgress = existing
+            ? (existing.status !== "VARAKOZIK" && existing.status !== "KESZ" || Boolean(existing.started_at))
+            : false;
+          if (!existing || (rowInProgress && !existingInProgress)) result.set(key, row);
+        });
+    }
     return result;
   }
 
@@ -44943,6 +44988,13 @@ body {
         return targetMatches && (row.generic_scrap || row.kulso_lap_selejt || row.belso_lap_selejt || row.toklec_selejt);
       });
 
+    if (rows.length === 0 && EVENT_FIVE_ISSUE_STATIONS.some(
+      (station) => normalizeLooseText(station) === normalizeLooseText(cleanStation)
+    )) {
+      const eventFiveRows = (await fetchEventFiveIssueScrapRows(cleanStation))
+        .filter((row) => row.status !== "KESZ" && normalizeLooseText(row.order_number) === normalizeLooseText(cleanOrderNumber));
+      if (eventFiveRows.length > 0) return eventFiveRows.find((row) => row.status !== "VARAKOZIK" || Boolean(row.started_at)) || eventFiveRows[0];
+    }
     if (rows.length === 0) return null;
 
     const inProgress = rows
@@ -44984,6 +45036,41 @@ body {
     timestamp: string
   ): Promise<void> {
     if (!supabase || !row) return;
+    const eventFiveTargetId = String(row.id || "").startsWith("E5TARGET:")
+      ? String(row.id).slice("E5TARGET:".length)
+      : "";
+    if (eventFiveTargetId) {
+      const targetStatus = status === "KESZ" ? "KESZ" : status === "VARAKOZIK" ? "VARAKOZIK" : "FOLYAMATBAN";
+      const targetPayload: Record<string, unknown> = { status: targetStatus, updated_at: timestamp };
+      if (targetStatus === "FOLYAMATBAN") targetPayload.started_at = row.started_at || timestamp;
+      if (targetStatus === "KESZ") {
+        targetPayload.completed_at = timestamp;
+        targetPayload.completed_by_worker_id = activeWorker?.id ?? null;
+        targetPayload.completed_by_worker_name = activeWorker?.["Teljes nev"] || null;
+      }
+      const { error: targetError } = await supabase
+        .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
+        .update(targetPayload)
+        .eq("id", eventFiveTargetId);
+      if (targetError) throw targetError;
+
+      const reportId = String(row.event_id || "").replace(/^E5-HIBA-/, "");
+      if (reportId) {
+        const { data: targetStates, error: targetStatesError } = await supabase
+          .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
+          .select("status")
+          .eq("report_id", reportId);
+        if (targetStatesError) throw targetStatesError;
+        const allDone = (targetStates || []).length > 0
+          && (targetStates || []).every((item) => String(item.status || "").toUpperCase() === "KESZ");
+        const { error: reportError } = await supabase
+          .from(EVENT_FIVE_ISSUE_REPORT_TABLE)
+          .update({ status: allDone ? "KESZ" : "NYITOTT", completed_at: allDone ? timestamp : null })
+          .eq("id", reportId);
+        if (reportError) throw reportError;
+      }
+      return;
+    }
     if (status === "SZABAS_FOLYAMATBAN" || status === "MARAS_FOLYAMATBAN") {
       await assertScrapReplacementRouteReady(row);
     }
@@ -45023,6 +45110,8 @@ body {
     }
     const ids = openRows.map((row) => row.id);
     if (ids.length === 0) return;
+    const eventFiveRows = openRows.filter((row) => String(row.id || "").startsWith("E5TARGET:"));
+    const legacyIds = openRows.filter((row) => !String(row.id || "").startsWith("E5TARGET:")).map((row) => row.id);
     const nowIso = new Date().toISOString();
     const payload: Record<string, unknown> = {
       status,
@@ -45041,9 +45130,14 @@ body {
       if (!Object.prototype.hasOwnProperty.call(payload, "completed_at")) payload.completed_at = nowIso;
       payload.last_worker_name = activeWorker?.["Teljes nev"] || null;
     }
-    const { error } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).update(payload).in("id", ids);
-    if (error) throw error;
-    await syncEventFiveIssueTargetFromScrapRows(ids, status, status === "KESZ" ? String(payload.completed_at || nowIso) : null);
+    if (legacyIds.length > 0) {
+      const { error } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).update(payload).in("id", legacyIds);
+      if (error) throw error;
+      await syncEventFiveIssueTargetFromScrapRows(legacyIds, status, status === "KESZ" ? String(payload.completed_at || nowIso) : null);
+    }
+    for (const eventFiveRow of eventFiveRows) {
+      await updateSingleScrapReplacement(eventFiveRow, status, nowIso);
+    }
   }
 
   async function syncEventFiveIssueTargetFromScrapRows(
