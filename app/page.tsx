@@ -43934,7 +43934,92 @@ body {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     const {data,error}=await supabase.rpc("nivo_szereles_allapot",{p_order_number:order,p_machine_id:machine});
     if(error) throw error;
-    return normalizeSzerelesOrderState(data);
+    const normalizedState = normalizeSzerelesOrderState(data);
+
+    // Kizárólag az 5-ös Szerelés eseménynél: a szüneteltetési audit END sor nem
+    // zárhatja le a tényleges Nyíló/Tok START sort. Ha a work_logs-ban a rész
+    // továbbra is nyitott, a képernyőn is folyamatban marad és befejezhető.
+    if (Number(getWorkerEsemenyKotegValue(activeWorker)) !== 5 || !requiresSzerelesStartParts(activeWorker)) {
+      return normalizedState;
+    }
+
+    const { data: openRows, error: openRowsError } = await supabase
+      .from("work_logs")
+      .select("id, worker_name, note, created_at, start_time, start_timestamp, szereles_resz, szereles_ciklus_id, terv_futo_sorszam")
+      .eq("order_number", order)
+      .eq("machine_id", machine)
+      .eq("action", "START")
+      .is("end_time", null)
+      .in("szereles_resz", ["nyilo", "tok"])
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (openRowsError) throw openRowsError;
+
+    const restoredState: SzerelesOrderState = {
+      ...normalizedState,
+      parts: {
+        nyilo: { ...normalizedState.parts.nyilo },
+        tok: { ...normalizedState.parts.tok },
+      },
+    };
+
+    (openRows || []).forEach((raw) => {
+      const row = raw as Record<string, unknown>;
+      const part = row.szereles_resz === "nyilo" || row.szereles_resz === "tok"
+        ? row.szereles_resz as SzerelesPart
+        : null;
+      if (!part || restoredState.parts[part].state === "in_progress") return;
+      const noteMeta = getStructuredNoteMetadata(String(row.note || ""));
+      restoredState.parts[part] = {
+        ...restoredState.parts[part],
+        state: "in_progress",
+        done: false,
+        open_id: row.id == null ? null : String(row.id),
+        started_at: String(row.start_time || row.start_timestamp || row.created_at || "") || null,
+        ended_at: null,
+        start_worker_name: String(noteMeta.start_worker_name || row.worker_name || restoredState.parts[part].start_worker_name || ""),
+        end_worker_name: "",
+      };
+      if (!restoredState.cycle_id && row.szereles_ciklus_id) {
+        restoredState.cycle_id = String(row.szereles_ciklus_id);
+      }
+    });
+
+    restoredState.done_count = Number(restoredState.parts.nyilo.done) + Number(restoredState.parts.tok.done);
+    restoredState.is_complete = restoredState.done_count === 2;
+    if (!restoredState.is_complete) restoredState.full_end = null;
+    return restoredState;
+  }
+
+  async function resolveEventFiveSzerelesRunSequence(
+    order: string,
+    machine: string,
+    state?: SzerelesOrderState | null
+  ): Promise<number | null> {
+    if (!supabase) return null;
+
+    const openIds = state
+      ? (["nyilo", "tok"] as SzerelesPart[])
+          .map((part) => state.parts[part].open_id)
+          .filter((id): id is string => Boolean(id))
+      : [];
+
+    if (openIds.length > 0) {
+      const { data: openRunRows, error: openRunError } = await supabase
+        .from("work_logs")
+        .select("id, terv_futo_sorszam")
+        .in("id", openIds)
+        .not("terv_futo_sorszam", "is", null)
+        .limit(100);
+      if (openRunError) throw openRunError;
+      const inherited = (openRunRows || [])
+        .map((row) => parsePlanRunSequence((row as Record<string, unknown>).terv_futo_sorszam))
+        .find((value): value is number => value !== null);
+      if (inherited !== undefined) return inherited;
+    }
+
+    const identity = await resolvePlanRunIdentityForOrder(machine, order);
+    return identity?.runSequence ?? null;
   }
   async function openSzerelesOrderChoice(order: string): Promise<void> {
     if(!supabase || !activeWorker) return;
@@ -46753,6 +46838,7 @@ body {
           state:pauseItem.state,
           reason:pauseItem.reason,
           batchCode:batch.batch_code,
+          planRunSequence:parsePlanRunSequence(getProductionMetaForOrder(meta, pauseItem.order).terv_futo_sorszam),
         });
         pauseAuditResults.push({order:pauseItem.order,pauseNumber:pauseAudit.pauseNumber});
         committed=true;
@@ -48174,6 +48260,11 @@ body {
       const currentMachineId = getCurrentMachineIdForInsert();
       const nowIso = getLocalTimestampWithOffset();
 
+      // 8-as gyorsjelentés: az aktuálisan bejelentkezett munkaállomás saját
+      // *_terv táblájából kérjük le a konkrét rendelés futó sorszámát.
+      const eventEightPlanRunIdentity = await resolvePlanRunIdentityForOrder(currentMachineId, finalOrder);
+      const eventEightPlanRunSequence = eventEightPlanRunIdentity?.runSequence ?? null;
+
       const existingOpen = await findOpenWorkLogForOrderAtCurrentMachine(finalOrder);
 
       if (existingOpen?.id !== null && existingOpen?.id !== undefined) {
@@ -48184,6 +48275,7 @@ body {
           .update({
             end_time: nowIso,
             end_timestamp: nowIso,
+            terv_futo_sorszam: parsePlanRunSequence(existingOpen.terv_futo_sorszam) ?? eventEightPlanRunSequence,
             event_name: "8-as Raktár azonnali készre jelentés",
             event_code: "ESEMENY-8",
             note: buildStructuredNote("8-as Raktár gyorsjelentés", {
@@ -48195,6 +48287,7 @@ body {
               order_number: finalOrder,
               start_time: existingOpen.start_time || existingOpen.start_timestamp || existingOpen.created_at || nowIso,
               end_time: nowIso,
+              terv_futo_sorszam: parsePlanRunSequence(existingOpen.terv_futo_sorszam) ?? eventEightPlanRunSequence,
             }),
           })
           .eq("id", existingOpen.id);
@@ -48243,6 +48336,7 @@ body {
             ujragyartas_sorszam: productionDecision.meta.ujragyartas_sorszam,
             gyartas_tipus: productionDecision.meta.gyartas_tipus,
             gyartasi_kor: productionDecision.meta.gyartasi_kor,
+            terv_futo_sorszam: eventEightPlanRunSequence ?? productionDecision.meta.terv_futo_sorszam ?? null,
             note: buildStructuredNote("8-as Raktár gyorsjelentés", {
               event_bundle: 8,
               instant_completion: true,
@@ -48252,6 +48346,7 @@ body {
               order_number: finalOrder,
               start_time: nowIso,
               end_time: nowIso,
+              terv_futo_sorszam: eventEightPlanRunSequence ?? productionDecision.meta.terv_futo_sorszam ?? null,
             }),
             scrap_qty: null,
             darab: null,
@@ -48717,6 +48812,12 @@ body {
         const exactMeta = getBundleTenExactBatchRowMeta(batchOrderProductionMeta, row);
         if (exactMeta) meta[getBundleTenBatchRowMetaKey(row.orderNumber, row.key)] = exactMeta;
       });
+    }
+    if (Number(getWorkerEsemenyKotegValue(activeWorker)) === 5) {
+      for (const order of orders) {
+        const runSequence = await resolveEventFiveSzerelesRunSequence(order, machine, null);
+        meta[order] = { ...meta[order], terv_futo_sorszam: runSequence };
+      }
     }
     const items=isEventTenVisualWorker() && bundleTenRowsForSave.length === orders.length
       ? bundleTenRowsForSave.map((row)=>{
@@ -49880,6 +49981,7 @@ body {
     state: SzerelesOrderState;
     reason: string;
     batchCode?: string | null;
+    planRunSequence?: number | null;
   }): Promise<{
     id: string | number;
     createdAt: string;
@@ -49939,6 +50041,7 @@ body {
       closed_by_worker_name: activeWorker["Teljes nev"],
       machine_id: machine,
       order_number: order,
+      terv_futo_sorszam: params.planRunSequence ?? null,
     };
 
     const { data: auditRow, error: auditError } = await supabase
@@ -49961,6 +50064,7 @@ body {
         ujragyartas_sorszam: params.state.reproduction_number || null,
         gyartas_tipus: "egyedi",
         gyartasi_kor: null,
+        terv_futo_sorszam: params.planRunSequence ?? null,
         // Szándékosan nincs szereles_resz: a Nyíló/Tok eredeti START sora nyitva marad.
         szereles_resz: null,
         szereles_ciklus_id: params.state.cycle_id,
@@ -50137,6 +50241,7 @@ body {
       if(action==="START"&&routed)await assertScrapReplacementRouteReady(routed);
       const scrapRoute=hasScrap?await buildEventFiveSzerelesSheetScrapRouteTargets(order,machine):null;
       const repairRoute=hasRepair?await buildEventFiveManualRepairRouteTargets(order,machine,eventFiveRepairStationKeys):null;
+      const eventFivePlanRunSequence = await resolveEventFiveSzerelesRunSequence(order, machine, state);
       const bundleTenAutomaticMeta = bundleTenSelectionForSzerelesStart
         ? await prepareBundleTenAutomaticProductionMeta(bundleTenSelectionForSzerelesStart)
         : null;
@@ -50147,6 +50252,7 @@ body {
           gyartas_tipus:"egyedi",
           gyartasi_kor:null,
         }),
+        terv_futo_sorszam:eventFivePlanRunSequence,
         szereles_start_reszek:parts,
         szereles_scrap_hold_parts:scrapHoldParts,
         szereles_scrap_tok_meret:toklecScrap?cleanTokSize:null,
@@ -50166,8 +50272,8 @@ body {
       const logFields=action==="END"?{
         kulso_lap_selejt:outerSheetScrap,belso_lap_selejt:innerSheetScrap,toklec_selejt:toklecScrap,
         selejt_megjegyzes:(hasScrap||hasRepair)?note:null,selejt_forras_munkaallomas:hasScrap||hasRepair?machine:routed?.source_station||null,
-        selejt_potlas:!!routed,scrap_qty:null,darab:null,szal:null
-      }:{selejt_potlas:!!routed,selejt_forras_munkaallomas:routed?.source_station||null};
+        selejt_potlas:!!routed,scrap_qty:null,darab:null,szal:null,terv_futo_sorszam:eventFivePlanRunSequence
+      }:{selejt_potlas:!!routed,selejt_forras_munkaallomas:routed?.source_station||null,terv_futo_sorszam:eventFivePlanRunSequence};
 
       let result:{state:SzerelesOrderState;saved_rows:Array<{id:string|number;part:SzerelesPart;started_at:string;ended_at?:string}>};
       if(action==="END"&&!legacyClose&&hasPause){
@@ -50177,6 +50283,7 @@ body {
           state,
           reason:pauseReason,
           batchCode:null,
+          planRunSequence:eventFivePlanRunSequence,
         });
         savedPauseNumber=pauseAudit.pauseNumber;
         committed=true;
@@ -50235,6 +50342,7 @@ body {
           ujragyartas_sorszam:state.reproduction_number||null,
           gyartas_tipus:"egyedi",
           gyartasi_kor:null,
+          terv_futo_sorszam:eventFivePlanRunSequence,
           // Szándékosan NULL: a selejt audit nem egy Nyíló/Tok befejezés.
           // Így a régebbi szerelés-állapot RPC sem tudja véletlenül készre zárni a részt.
           szereles_resz:null,
@@ -50310,6 +50418,7 @@ body {
           ujragyartas_sorszam:state.reproduction_number||null,
           gyartas_tipus:"egyedi",
           gyartasi_kor:null,
+          terv_futo_sorszam:eventFivePlanRunSequence,
           szereles_resz:null,
           szereles_ciklus_id:state.cycle_id,
           szereles_start_reszek:runningParts,
@@ -50346,6 +50455,18 @@ body {
       }
 
       committed=true;
+      if (eventFivePlanRunSequence !== null && result.saved_rows.length > 0) {
+        const savedEventFiveIds = result.saved_rows
+          .map((row) => row.id)
+          .filter((id) => id !== null && id !== undefined);
+        if (savedEventFiveIds.length > 0) {
+          const { error: runSequenceSaveError } = await supabase
+            .from("work_logs")
+            .update({ terv_futo_sorszam: eventFivePlanRunSequence })
+            .in("id", savedEventFiveIds);
+          if (runSequenceSaveError) throw runSequenceSaveError;
+        }
+      }
       // A sikeres adatbázis-mentés után még NE töröljük a képernyő állapotát.
       // A selejtpipák / END állapot csak akkor ürülhet, ha a kapcsolódó mentések,
       // a tartós visszaellenőrzés és a három kártya frissítése is sikerült.
