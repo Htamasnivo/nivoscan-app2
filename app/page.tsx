@@ -50449,9 +50449,73 @@ body {
           }],
         };
       }else{
-        result=legacyClose
-          ? await runSzerelesLegacyClose(parts,{order,expectedId:state.legacy_open_id!,note,meta,logFields})
-          : await runSzerelesSession(action,parts,{order,meta,expected,newCycle,rework,note:action==="END"?note:null,logFields});
+        // 5-ös esemény: szüneteltetés után a képernyőn visszaállított konkrét
+        // Nyíló/Tok START sorokat közvetlenül zárjuk le. A szüneteltetési audit
+        // END sor nem számít a rész lezárásának, ezért az RPC állapotellenőrzését
+        // csak ebben a célzott esetben kerüljük meg.
+        const eventFivePausedCompletion = action==="END"
+          && !legacyClose
+          && !hasScrap
+          && !hasRepair
+          && !hasPause
+          && Number(getWorkerEsemenyKotegValue(activeWorker))===5
+          && parts.length>0
+          && parts.every(part=>Boolean(state.parts[part].open_id));
+
+        if(eventFivePausedCompletion){
+          const nowIso=new Date().toISOString();
+          const savedRows:Array<{id:string|number;part:SzerelesPart;started_at:string;ended_at?:string}>=[];
+          for(const part of parts){
+            const openId=state.parts[part].open_id!;
+            const {data:openRow,error:openError}=await supabase
+              .from("work_logs")
+              .select("id, action, start_time, start_timestamp, created_at, end_time, end_timestamp, terv_futo_sorszam")
+              .eq("id",openId)
+              .eq("order_number",order)
+              .eq("machine_id",machine)
+              .eq("action","START")
+              .eq("szereles_resz",part)
+              .is("end_time",null)
+              .maybeSingle();
+            if(openError)throw openError;
+            if(!openRow)throw new Error(`${part}: nincs a kiválasztott START-hoz tartozó nyitott munkamenet. Frissítsd a rendelést.`);
+
+            const inheritedRunSequence=parsePlanRunSequence(openRow.terv_futo_sorszam)??eventFivePlanRunSequence;
+            const {error:closeError}=await supabase
+              .from("work_logs")
+              .update({
+                action:"END",
+                end_time:nowIso,
+                end_timestamp:nowIso,
+                worker_name:activeWorker["Teljes nev"],
+                terv_futo_sorszam:inheritedRunSequence,
+                note:buildStructuredNote(note,{
+                  ...meta,
+                  closed_by_worker_id:Number(activeWorker.id),
+                  closed_by_worker_name:activeWorker["Teljes nev"],
+                  start_worker_name:state.parts[part].start_worker_name||null,
+                  end_worker_name:activeWorker["Teljes nev"],
+                  szereles_resz:part,
+                  terv_futo_sorszam:inheritedRunSequence,
+                }),
+              })
+              .eq("id",openId)
+              .is("end_time",null);
+            if(closeError)throw closeError;
+            savedRows.push({
+              id:openRow.id,
+              part,
+              started_at:String(openRow.start_time||openRow.start_timestamp||openRow.created_at||nowIso),
+              ended_at:nowIso,
+            });
+          }
+          const freshState=await fetchSzerelesOrderState(order,machine);
+          result={state:freshState,saved_rows:savedRows};
+        }else{
+          result=legacyClose
+            ? await runSzerelesLegacyClose(parts,{order,expectedId:state.legacy_open_id!,note,meta,logFields})
+            : await runSzerelesSession(action,parts,{order,meta,expected,newCycle,rework,note:action==="END"?note:null,logFields});
+        }
       }
 
       committed=true;
