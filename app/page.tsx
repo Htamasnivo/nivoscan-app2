@@ -587,7 +587,7 @@ type DashboardData = {
 };
 
 type DashboardFilterMode = "daily" | "weekly" | "monthly" | "custom";
-type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "pause-report" | "reproduction-report" | "atvetel" | "reklamacio" | "label-printer" | "executive-report" | "report-delivery" | "data-upload" | "admin";
+type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "pause-report" | "reproduction-report" | "atvetel" | "reklamacio" | "label-printer" | "executive-report" | "report-delivery" | "data-upload" | "admin" | "program-error-reports";
 type OfficePageKey = ManagementSection;
 
 type PausedSzerelesRow = {
@@ -1695,6 +1695,7 @@ type EventFiveRepairAction = "" | "Javítás" | "Újragyártás";
 const EVENT_FIVE_ISSUE_REPORT_TABLE = "event5_hibajelentesek";
 const EVENT_FIVE_ISSUE_TARGET_TABLE = "event5_hibajelentes_celallomasok";
 const EVENT_FIVE_ISSUE_STATUS_AUDIT_TABLE = "event5_hibajelentes_allapotnaplo";
+const PROGRAM_ERROR_REPORT_TABLE = "program_hibajelentesek";
 const EVENT_FIVE_ISSUE_STATIONS = ["Asztalos", "Fényező", "Fóliázó"] as const;
 
 const EVENT_FIVE_REPAIR_STATION_OPTIONS = [
@@ -10395,6 +10396,13 @@ export default function Page() {
 
   useEffect(() => installNivoManualRefreshGuard(), []);
 
+  useEffect(() => {
+    if (terminalView !== "scanner") return;
+    const station = String(machineId || "").trim();
+    if (!station) return;
+    void loadProgramErrorRepairNoticesOnce(station);
+  }, [machineId, terminalView]);
+
   function setStep(nextStep: 1 | 2 | 3 | 4 | 5 | 6 | 7): void {
     const currentStep = stepRef.current;
     if (currentStep !== nextStep) {
@@ -10456,6 +10464,19 @@ export default function Page() {
   const [eventFiveStationIssueBusy, setEventFiveStationIssueBusy] = useState(false);
   const [eventFiveStationIssueError, setEventFiveStationIssueError] = useState("");
   const [eventFiveStationIssueRows, setEventFiveStationIssueRows] = useState<Array<Record<string, unknown>>>([]);
+  // Általános program-hibabejelentés – teljesen külön a termelési/selejt folyamatoktól.
+  const [programErrorOpen, setProgramErrorOpen] = useState(false);
+  const [programErrorCreateOpen, setProgramErrorCreateOpen] = useState(false);
+  const [programErrorReporterWorkerId, setProgramErrorReporterWorkerId] = useState("");
+  const [programErrorNote, setProgramErrorNote] = useState("");
+  const [programErrorRows, setProgramErrorRows] = useState<Array<Record<string, unknown>>>([]);
+  const [programErrorBusy, setProgramErrorBusy] = useState(false);
+  const [programErrorError, setProgramErrorError] = useState("");
+  const [programErrorAdminRows, setProgramErrorAdminRows] = useState<Array<Record<string, unknown>>>([]);
+  const [programErrorAdminBusy, setProgramErrorAdminBusy] = useState(false);
+  const [programErrorAdminError, setProgramErrorAdminError] = useState("");
+  const [programErrorRepairNotices, setProgramErrorRepairNotices] = useState<Array<Record<string, unknown>>>([]);
+  const programErrorNoticeLoadedForMachineRef = useRef<Set<string>>(new Set());
   const [incompleteBatches, setIncompleteBatches] = useState<IncompleteBatchRow[]>([]);
   const [showIncompleteBatches, setShowIncompleteBatches] = useState(false);
   const [activeProductionBatches, setActiveProductionBatches] = useState<ProductionBatchRow[]>([]);
@@ -17095,13 +17116,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   function ManagementNavigation(): React.JSX.Element {
     const allItems: Array<{ id: ManagementSection; label: string }> = [
       { id:"dashboard", label:"Vezetői műszerfal" }, { id:"production-plan", label:"Termelés tervezése" }, { id:"production-monitor", label:"Termelési monitor" },
-      { id:"production-card", label:"Termelési kártya" }, { id:"pause-report", label:"Szüneteltetés" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"reklamacio", label:"Reklamáció" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" }, { id:"data-upload", label:"Adat feltöltés" }, { id:"admin", label:"Admin" },
+      { id:"production-card", label:"Termelési kártya" }, { id:"pause-report", label:"Szüneteltetés" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"reklamacio", label:"Reklamáció" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" }, { id:"data-upload", label:"Adat feltöltés" }, { id:"admin", label:"Admin" }, { id:"program-error-reports", label:"Hibajelentés" },
     ];
 
     // Esemeny_Koteg = 9: csak ez a három irodai menüpont látható.
     // Esemeny_Koteg = 11: a külön irodai profil kizárólag a kért 9 funkciót látja.
     // A Megjelenés/Profi szerkesztő funkció mindkét korlátozott irodai profilnál megmarad.
-    const permittedItems = allItems.filter((item) => item.id !== "admin" || isAdmin(activeWorker));
+    const permittedItems = allItems.filter((item) => (item.id !== "admin" && item.id !== "program-error-reports") || isAdmin(activeWorker));
     const items = isLimitedOfficeWorker(activeWorker)
       ? permittedItems.filter(
           (item) => item.id === "atvetel" || item.id === "production-monitor" || item.id === "reklamacio"
@@ -30502,6 +30523,67 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     );
   }
 
+  function ProgramErrorReportsAdmin(): React.JSX.Element {
+    const theme = getOfficeTheme("admin");
+    useEffect(() => {
+      void loadProgramErrorAdminRows();
+    }, []);
+    return (
+      <div style={{ width: "100%", padding: 16, boxSizing: "border-box" }}>
+        <div style={{ background: theme.panelBackground, border: `1px solid ${theme.borderColor}`, borderRadius: 14, padding: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <div>
+              <h2 style={{ margin: 0, color: theme.textColor }}>Hibajelentések</h2>
+              <div style={{ marginTop: 5, color: theme.mutedText, fontSize: 12 }}>A munkaállomásokról leadott programhibák teljes, megmaradó listája.</div>
+            </div>
+            <button type="button" onClick={() => void loadProgramErrorAdminRows()} disabled={programErrorAdminBusy} style={buttonSecondary}>Frissítés</button>
+          </div>
+          {programErrorAdminError && <div style={{ marginTop: 12, padding: 10, borderRadius: 9, background: "#450a0a", color: "#fecaca", border: "1px solid #dc2626" }}>{programErrorAdminError}</div>}
+          <div style={{ overflowX: "auto", marginTop: 14 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1250 }}>
+              <thead>
+                <tr>
+                  {["Sorszám","Munkaállomás","Név","Megjegyzés","Leadás ideje","Státusz","Kész ideje","Készre állító","Művelet"].map((label) => (
+                    <th key={label} style={{ padding: 9, textAlign: "left", borderBottom: `1px solid ${theme.borderColor}`, color: theme.textColor }}>{label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {programErrorAdminRows.map((row) => {
+                  const done = String(row.status || "").toUpperCase() === "KESZ";
+                  const responseActive = Boolean(row.show_response) && row.response_visible_until && new Date(String(row.response_visible_until)).getTime() > Date.now();
+                  return (
+                    <tr key={String(row.id)}>
+                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}`, fontWeight: 900 }}>{String(row.issue_number ?? row.id)}</td>
+                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{String(row.station_name || "–")}</td>
+                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{String(row.reporter_name || "–")}</td>
+                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}`, whiteSpace: "pre-wrap", minWidth: 300 }}>{String(row.note || "–")}</td>
+                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{row.reported_at ? formatDateTime(String(row.reported_at)) : "–"}</td>
+                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}`, fontWeight: 900, color: done ? "#86efac" : "#fbbf24" }}>{done ? "Kész" : "Nyitott"}</td>
+                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{row.completed_at ? formatDateTime(String(row.completed_at)) : "–"}</td>
+                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>{String(row.completed_by_worker_name || "–")}</td>
+                      <td style={{ padding: 9, borderBottom: `1px solid ${theme.borderColor}` }}>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                          <button type="button" disabled={programErrorAdminBusy || done} onClick={() => void completeProgramErrorReport(row)} style={{ ...buttonPrimary, opacity: done ? 0.55 : 1 }}>Kész</button>
+                          <button type="button" disabled={programErrorAdminBusy || !done || responseActive} onClick={() => void showProgramErrorRepairNotice(row)} style={{ ...buttonSecondary, borderColor: "#8b5cf6", color: "#ddd6fe", opacity: (!done || responseActive) ? 0.55 : 1 }}>
+                            {responseActive ? "Válasz aktív 24 óráig" : "Válasz megjelenítése a munkaállomáson"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!programErrorAdminBusy && programErrorAdminRows.length === 0 && (
+                  <tr><td colSpan={9} style={{ padding: 24, textAlign: "center", color: theme.mutedText }}>Még nincs hibajelentés.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function ManagementDashboard(): React.JSX.Element {
     // A 9-es korlátozott irodai dolgozó más managementSection értéket
     // sem közvetlen állapotból, sem későbbi új funkcióból nem nyithat meg.
@@ -30524,6 +30606,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     if (managementSection === "report-delivery") return ReportDeliveryAdmin();
     if (managementSection === "data-upload") return DataUploadAdmin();
     if (managementSection === "admin") return isAdmin(activeWorker) ? NivoAdminActivityAdmin() : AtvetelAdmin();
+    if (managementSection === "program-error-reports") return isAdmin(activeWorker) ? ProgramErrorReportsAdmin() : AtvetelAdmin();
 
     const dashboardRange = getDashboardDateRange("custom", dashboardDate, dashboardDateTo);
     const hasDashboardOrderSearch = dashboardOrderFilters.some(
@@ -43494,6 +43577,167 @@ body {
     );
   }
 
+  async function loadProgramErrorRowsForStation(openModal = false): Promise<void> {
+    if (!supabase) return;
+    const station = String(machineId || "").trim();
+    if (!station) return;
+    if (openModal) setProgramErrorOpen(true);
+    setProgramErrorBusy(true);
+    setProgramErrorError("");
+    try {
+      const { data, error } = await supabase
+        .from(PROGRAM_ERROR_REPORT_TABLE)
+        .select("id,issue_number,station_name,reporter_worker_id,reporter_name,note,status,reported_at,completed_at,completed_by_worker_id,completed_by_worker_name,show_response,response_visible_from,response_visible_until")
+        .eq("station_name", station)
+        .order("issue_number", { ascending: false })
+        .limit(1000);
+      if (error) throw error;
+      setProgramErrorRows((data || []) as Array<Record<string, unknown>>);
+    } catch (error) {
+      setProgramErrorError(normalizeError(error));
+      setProgramErrorRows([]);
+    } finally {
+      setProgramErrorBusy(false);
+    }
+  }
+
+  async function saveProgramErrorReport(): Promise<void> {
+    if (!supabase) return;
+    const workerId = Number(programErrorReporterWorkerId);
+    const reporter = workers.find((worker) => Number(worker.id) === workerId) || null;
+    const note = programErrorNote.trim();
+    const station = String(machineId || "").trim();
+    if (!reporter) {
+      setProgramErrorError("A név kiválasztása kötelező.");
+      return;
+    }
+    if (!note) {
+      setProgramErrorError("A hiba pontos leírása kötelező.");
+      return;
+    }
+    if (!station) {
+      setProgramErrorError("A munkaállomás nem azonosítható.");
+      return;
+    }
+    setProgramErrorBusy(true);
+    setProgramErrorError("");
+    try {
+      const { error } = await supabase
+        .from(PROGRAM_ERROR_REPORT_TABLE)
+        .insert([{
+          station_name: station,
+          reporter_worker_id: Number(reporter.id),
+          reporter_name: String(reporter["Teljes nev"] || "").trim(),
+          note,
+          status: "NYITOTT",
+          reported_at: new Date().toISOString(),
+          show_response: false,
+        }]);
+      if (error) throw error;
+      setProgramErrorReporterWorkerId("");
+      setProgramErrorNote("");
+      setProgramErrorCreateOpen(false);
+      await loadProgramErrorRowsForStation(false);
+    } catch (error) {
+      setProgramErrorError(normalizeError(error));
+    } finally {
+      setProgramErrorBusy(false);
+    }
+  }
+
+  async function loadProgramErrorAdminRows(): Promise<void> {
+    if (!supabase || !isAdmin(activeWorker)) return;
+    setProgramErrorAdminBusy(true);
+    setProgramErrorAdminError("");
+    try {
+      const { data, error } = await supabase
+        .from(PROGRAM_ERROR_REPORT_TABLE)
+        .select("id,issue_number,station_name,reporter_worker_id,reporter_name,note,status,reported_at,completed_at,completed_by_worker_id,completed_by_worker_name,show_response,response_visible_from,response_visible_until")
+        .order("issue_number", { ascending: false })
+        .limit(5000);
+      if (error) throw error;
+      setProgramErrorAdminRows((data || []) as Array<Record<string, unknown>>);
+    } catch (error) {
+      setProgramErrorAdminError(normalizeError(error));
+      setProgramErrorAdminRows([]);
+    } finally {
+      setProgramErrorAdminBusy(false);
+    }
+  }
+
+  async function completeProgramErrorReport(row: Record<string, unknown>): Promise<void> {
+    if (!supabase || !activeWorker || !isAdmin(activeWorker)) return;
+    if (String(row.status || "").toUpperCase() === "KESZ") return;
+    setProgramErrorAdminBusy(true);
+    setProgramErrorAdminError("");
+    try {
+      const nowIso = new Date().toISOString();
+      const { error } = await supabase
+        .from(PROGRAM_ERROR_REPORT_TABLE)
+        .update({
+          status: "KESZ",
+          completed_at: nowIso,
+          completed_by_worker_id: Number(activeWorker.id),
+          completed_by_worker_name: String(activeWorker["Teljes nev"] || ""),
+        })
+        .eq("id", row.id);
+      if (error) throw error;
+      await loadProgramErrorAdminRows();
+    } catch (error) {
+      setProgramErrorAdminError(normalizeError(error));
+    } finally {
+      setProgramErrorAdminBusy(false);
+    }
+  }
+
+  async function showProgramErrorRepairNotice(row: Record<string, unknown>): Promise<void> {
+    if (!supabase || !activeWorker || !isAdmin(activeWorker)) return;
+    if (String(row.status || "").toUpperCase() !== "KESZ") return;
+    setProgramErrorAdminBusy(true);
+    setProgramErrorAdminError("");
+    try {
+      const from = new Date();
+      const until = new Date(from.getTime() + 24 * 60 * 60 * 1000);
+      const { error } = await supabase
+        .from(PROGRAM_ERROR_REPORT_TABLE)
+        .update({
+          show_response: true,
+          response_visible_from: from.toISOString(),
+          response_visible_until: until.toISOString(),
+        })
+        .eq("id", row.id);
+      if (error) throw error;
+      await loadProgramErrorAdminRows();
+    } catch (error) {
+      setProgramErrorAdminError(normalizeError(error));
+    } finally {
+      setProgramErrorAdminBusy(false);
+    }
+  }
+
+  async function loadProgramErrorRepairNoticesOnce(stationName: string): Promise<void> {
+    if (!supabase) return;
+    const station = String(stationName || "").trim();
+    if (!station || programErrorNoticeLoadedForMachineRef.current.has(station)) return;
+    programErrorNoticeLoadedForMachineRef.current.add(station);
+    try {
+      const nowIso = new Date().toISOString();
+      const { data, error } = await supabase
+        .from(PROGRAM_ERROR_REPORT_TABLE)
+        .select("id,issue_number,station_name,status,response_visible_until")
+        .eq("station_name", station)
+        .eq("status", "KESZ")
+        .eq("show_response", true)
+        .gt("response_visible_until", nowIso)
+        .order("issue_number", { ascending: false });
+      if (error) throw error;
+      setProgramErrorRepairNotices((data || []) as Array<Record<string, unknown>>);
+    } catch {
+      // Ez csak egyszeri munkaállomási értesítés; hiba esetén nem zavarjuk a termelési folyamatot.
+      setProgramErrorRepairNotices([]);
+    }
+  }
+
   function getCurrentEventFiveTargetStation(): string | null {
     const machineKey = getProductionCardStationMatchKey(machineId);
     return EVENT_FIVE_ISSUE_STATIONS.find((station) => {
@@ -53086,6 +53330,94 @@ body {
         <p style={{ color: "#cbd5e1", marginBottom: 24, textAlign: "center" }}>
           Név azonosítás, jelszó ahol kell, majd egyesével jelentés vagy műhely esetén köteg létrehozás, a meglévő scanneres sebesség megtartásával
         </p>
+
+        {terminalView === "scanner" && (
+          <div style={{ marginBottom: 16 }}>
+            {programErrorRepairNotices.length > 0 && (
+              <div style={{ display: "grid", gap: 7, marginBottom: 10 }}>
+                {programErrorRepairNotices.map((row) => (
+                  <div key={String(row.id)} style={{ background: "#166534", border: "1px solid #22c55e", color: "#dcfce7", borderRadius: 10, padding: "10px 14px", fontWeight: 900, textAlign: "center" }}>
+                    {String(row.issue_number ?? row.id)}. hiba javítva
+                  </div>
+                ))}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => void loadProgramErrorRowsForStation(true)}
+              style={{ ...buttonPrimary, width: "100%", background: "#7c3aed", border: "1px solid #a78bfa", color: "#fff", fontWeight: 900 }}
+            >
+              Hibabejelentés
+            </button>
+          </div>
+        )}
+
+        {programErrorOpen && terminalView === "scanner" && (
+          <div style={{ position: "fixed", inset: 0, zIndex: 90000, background: "rgba(55,65,81,0.92)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div style={{ width: "min(1000px, 96vw)", maxHeight: "92vh", overflowY: "auto", background: "#0f172a", border: "2px solid #8b5cf6", borderRadius: 18, padding: 20, boxShadow: "0 30px 100px rgba(0,0,0,.78)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div>
+                  <h2 style={{ margin: 0, color: "#ddd6fe" }}>Hibabejelentés</h2>
+                  <div style={{ marginTop: 5, color: "#94a3b8", fontSize: 12 }}>Munkaállomás: {String(machineId || "–")}</div>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button type="button" onClick={() => { setProgramErrorError(""); setProgramErrorCreateOpen(true); }} style={{ ...buttonPrimary, background: "#7c3aed", borderColor: "#a78bfa" }}>+ Új hibabejelentés</button>
+                  <button type="button" onClick={() => { setProgramErrorOpen(false); setProgramErrorCreateOpen(false); }} style={buttonSecondary}>Bezárás</button>
+                </div>
+              </div>
+
+              {programErrorError && <div style={{ marginTop: 12, padding: 10, borderRadius: 9, background: "#450a0a", color: "#fecaca", border: "1px solid #dc2626" }}>{programErrorError}</div>}
+
+              <div style={{ overflowX: "auto", marginTop: 14 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+                  <thead>
+                    <tr>
+                      {["Sorszám","Név","Megjegyzés","Leadás ideje","Státusz"].map((label) => <th key={label} style={{ padding: 9, textAlign: "left", borderBottom: "1px solid #334155", color: "#ddd6fe" }}>{label}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {programErrorRows.map((row) => (
+                      <tr key={String(row.id)}>
+                        <td style={{ padding: 9, borderBottom: "1px solid #1e293b", fontWeight: 900 }}>{String(row.issue_number ?? row.id)}</td>
+                        <td style={{ padding: 9, borderBottom: "1px solid #1e293b" }}>{String(row.reporter_name || "–")}</td>
+                        <td style={{ padding: 9, borderBottom: "1px solid #1e293b", whiteSpace: "pre-wrap" }}>{String(row.note || "–")}</td>
+                        <td style={{ padding: 9, borderBottom: "1px solid #1e293b" }}>{row.reported_at ? formatDateTime(String(row.reported_at)) : "–"}</td>
+                        <td style={{ padding: 9, borderBottom: "1px solid #1e293b", fontWeight: 900, color: String(row.status || "").toUpperCase() === "KESZ" ? "#86efac" : "#fbbf24" }}>{String(row.status || "").toUpperCase() === "KESZ" ? "Kész" : "Nyitott"}</td>
+                      </tr>
+                    ))}
+                    {!programErrorBusy && programErrorRows.length === 0 && <tr><td colSpan={5} style={{ padding: 22, textAlign: "center", color: "#94a3b8" }}>Erről a munkaállomásról még nincs hibajelentés.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+
+              {programErrorCreateOpen && (
+                <div style={{ position: "fixed", inset: 0, zIndex: 90010, background: "rgba(55,65,81,0.94)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+                  <div style={{ width: "min(680px, 95vw)", background: "#0f172a", border: "2px solid #8b5cf6", borderRadius: 16, padding: 20, boxShadow: "0 30px 100px rgba(0,0,0,.8)" }}>
+                    <h3 style={{ marginTop: 0, color: "#ddd6fe" }}>Új hibabejelentés</h3>
+                    <label style={{ display: "grid", gap: 6, marginBottom: 14 }}>
+                      <strong>Név *</strong>
+                      <select value={programErrorReporterWorkerId} onChange={(event) => setProgramErrorReporterWorkerId(event.target.value)} style={fieldStyle}>
+                        <option value="">– válassz nevet –</option>
+                        {workers.slice().sort((a,b) => String(a["Teljes nev"] || "").localeCompare(String(b["Teljes nev"] || ""), "hu")).map((worker) => (
+                          <option key={String(worker.id)} value={String(worker.id)}>{String(worker["Teljes nev"] || "")}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label style={{ display: "grid", gap: 6, marginBottom: 14 }}>
+                      <strong>Megjegyzés / a programhiba pontos leírása *</strong>
+                      <textarea value={programErrorNote} onChange={(event) => setProgramErrorNote(event.target.value)} rows={7} style={{ ...fieldStyle, resize: "vertical" }} placeholder="Írd le pontosan, mi a hiba a programmal..." />
+                    </label>
+                    {programErrorError && <div style={{ marginBottom: 12, padding: 10, borderRadius: 9, background: "#450a0a", color: "#fecaca", border: "1px solid #dc2626" }}>{programErrorError}</div>}
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                      <button type="button" onClick={() => { setProgramErrorCreateOpen(false); setProgramErrorError(""); }} style={buttonSecondary}>Mégse</button>
+                      <button type="button" disabled={programErrorBusy} onClick={() => void saveProgramErrorReport()} style={{ ...buttonPrimary, background: "#7c3aed", borderColor: "#a78bfa" }}>Mentés</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {entryPermissionDenied && (
           <div
