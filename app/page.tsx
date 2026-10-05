@@ -1386,6 +1386,9 @@ type ReklamacioDbRow = {
   mentes_datum?: string | null;
   kesz_datum?: string | null;
   lezart?: boolean | null;
+  lezart_at?: string | null;
+  lezarta_worker_id?: number | string | null;
+  lezarta_worker_name?: string | null;
   created_by_worker_id?: number | string | null;
   created_by_worker_name?: string | null;
   updated_by_worker_id?: number | string | null;
@@ -13302,7 +13305,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     scope: "range" | "open-and-today-completed" = "range"
   ): Promise<ReklamacioReportRow[]> {
     if (!supabase) return [];
-    const reklamacioSelectColumns = "id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at";
+    const reklamacioSelectColumns = "id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at";
     let sourceRows: ReklamacioDbRow[] = [];
     if (scope === "open-and-today-completed") {
       const todayKey = getSafeReportDeliveryTodayKey();
@@ -28118,7 +28121,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     try {
       const response = await supabase
         .from(REKLAMACIO_TABLE)
-        .select("id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
+        .select("id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
         .order("created_at", { ascending: false })
         .limit(10000);
       if (response.error) throw response.error;
@@ -28287,6 +28290,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         const closeResponse = await supabase.from(REKLAMACIO_TABLE).update({
           lezart: true,
           kesz_datum: nowIso,
+          lezart_at: nowIso,
+          lezarta_worker_id: Number.isFinite(workerIdNumber) ? workerIdNumber : null,
+          lezarta_worker_name: activeWorker?.["Teljes nev"] || "Automatikus rendszer",
           mentes_datum: nowIso,
           updated_at: nowIso,
           updated_by_worker_id: Number.isFinite(workerIdNumber) ? workerIdNumber : null,
@@ -28411,8 +28417,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         setMessage({ type: "error", text: "A Műhely módosítását előbb mentsd el, utána zárható le a reklamáció." });
         return;
       }
-      if (!row.canClose) {
-        setMessage({ type: "error", text: "A reklamáció csak akkor zárható le, ha minden tervben szereplő szükséges munkaállomás Kész." });
+      if (typeof window !== "undefined" && !window.confirm("Biztosan lezárod ezt a reklamációt? A lezárás után a sor többé nem módosítható.")) {
         return;
       }
     }
@@ -28434,6 +28439,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         mentes_datum: nowIso,
         lezart: closeAfterSave,
         kesz_datum: closeAfterSave ? nowIso : (row.keszDatum || null),
+        lezart_at: closeAfterSave ? nowIso : null,
+        lezarta_worker_id: closeAfterSave ? workerId : null,
+        lezarta_worker_name: closeAfterSave ? workerName : null,
         updated_by_worker_id: workerId,
         updated_by_worker_name: workerName,
         updated_at: nowIso,
@@ -29814,16 +29822,16 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         content = <div style={{ display: "grid", gap: 6 }}>
           <button
             type="button"
-            disabled={!canAddDrawing}
+            disabled={disabled || !canAddDrawing}
             onClick={() => openReklamacioDrawing(row)}
             title={canAddDrawing ? "+ Új rajz" : `Maximum ${MAX_REKLAMACIO_DRAWINGS} rajz készíthető`}
-            style={{ ...buttonSecondary, padding: "6px 9px", opacity: canAddDrawing ? 1 : 0.65, cursor: canAddDrawing ? "pointer" : "not-allowed" }}
+            style={{ ...buttonSecondary, padding: "6px 9px", opacity: (!disabled && canAddDrawing) ? 1 : 0.65, cursor: (!disabled && canAddDrawing) ? "pointer" : "not-allowed" }}
           >{canAddDrawing ? "+ Új rajz" : `Maximum ${MAX_REKLAMACIO_DRAWINGS} rajz készíthető`}</button>
           {drawings.map((drawing, index) => <div key={drawing.key} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto auto auto", gap: 4, alignItems: "center", padding: 4, borderRadius: 6, background: officeTheme.panelAltBackground }}>
             <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}>{index + 1}. {drawing.name}</strong>
             <a href={drawing.source} target="_blank" rel="noreferrer" style={{ color: officeTheme.accentColor, fontWeight: 900 }}>Megnyitás</a>
-            <button type="button" onClick={() => openReklamacioDrawing(row, drawing)} style={{ ...buttonSecondary, padding: "4px 7px" }}>Szerkesztés</button>
-            <button type="button" disabled={reklamacioSavingKey === row.key} onClick={() => void deleteReklamacioDrawing(row, drawing)} style={{ ...buttonSecondary, padding: "4px 7px", color: "#fca5a5" }}>Törlés</button>
+            <button type="button" disabled={disabled} onClick={() => openReklamacioDrawing(row, drawing)} style={{ ...buttonSecondary, padding: "4px 7px" }}>Szerkesztés</button>
+            <button type="button" disabled={disabled} onClick={() => void deleteReklamacioDrawing(row, drawing)} style={{ ...buttonSecondary, padding: "4px 7px", color: "#fca5a5" }}>Törlés</button>
           </div>)}
           {drawings.length > 0 && <span style={{ color: officeTheme.mutedText, fontSize: 10 }}>{drawings.length} külön PNG · Power BI publikus URL</span>}
         </div>;
@@ -29837,7 +29845,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         content = row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "–";
       } else if (column.id === "actions") {
         const saving = reklamacioSavingKey === row.key;
-        content = row.lezart ? <span style={{ display: "inline-flex", padding: "7px 10px", borderRadius: 8, background: "#166534", color: "white", fontWeight: 900 }}>Lezárva</span> : <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}><button type="button" disabled={saving || row.isNew || !row.canClose} onClick={() => void saveReklamacioRow(row, true)} style={{ ...buttonSecondary, padding: "7px 10px" }}>Lezárás</button><button type="button" disabled={saving} onClick={() => void saveReklamacioRow(row, false)} style={{ ...buttonPrimary, padding: "7px 12px" }}>{saving ? "Mentés..." : "Mentés"}</button></div>;
+        content = row.lezart ? <span style={{ display: "inline-flex", padding: "7px 10px", borderRadius: 8, background: "#166534", color: "white", fontWeight: 900 }}>✓ Elkészült</span> : <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}><button type="button" disabled={saving || row.isNew} onClick={() => void saveReklamacioRow(row, true)} style={{ ...buttonSecondary, padding: "7px 10px" }}>Lezárás</button><button type="button" disabled={saving} onClick={() => void saveReklamacioRow(row, false)} style={{ ...buttonPrimary, padding: "7px 12px" }}>{saving ? "Mentés..." : "Mentés"}</button></div>;
       }
       return <td key={column.id} style={{ ...tableCellStyle, width: column.width, minWidth: column.width, maxWidth: column.width, textAlign: column.align }}>{content}</td>;
     };
