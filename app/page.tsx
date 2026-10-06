@@ -1387,6 +1387,7 @@ type ReklamacioDbRow = {
   kert_datum: string;
   rajz_url?: string | null;
   mentes_datum?: string | null;
+  szerkesztes_zarolva?: boolean | null;
   kesz_datum?: string | null;
   lezart?: boolean | null;
   lezart_at?: string | null;
@@ -1440,6 +1441,7 @@ type ReklamacioViewRow = {
   rajzUrl: string;
   drawings: ReklamacioSavedDrawing[];
   mentesDatum: string;
+  szerkesztesZarolva: boolean;
   gyartasbaTerveDatum: string;
   keszDatum: string;
   vevoNeve: string;
@@ -13316,7 +13318,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     scope: "range" | "open-and-today-completed" | "open" | "closed-range" = "range"
   ): Promise<ReklamacioReportRow[]> {
     if (!supabase) return [];
-    const reklamacioSelectColumns = "id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, hibatipus, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, lezaras_mod, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at";
+    const reklamacioSelectColumns = "id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, hibatipus, kert_datum, rajz_url, mentes_datum, szerkesztes_zarolva, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, lezaras_mod, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at";
     let sourceRows: ReklamacioDbRow[] = [];
     if (scope === "open") {
       const response = await supabase.from(REKLAMACIO_TABLE).select(reklamacioSelectColumns).or("lezart.eq.false,lezart.is.null").order("created_at", { ascending: true }).limit(10000);
@@ -13448,7 +13450,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         key: reklamacioId, id: reklamacioId, isNew: false, rendelesszam: orderNumber,
         alapRendelesszam: String(dbRow.alap_rendelesszam || "").trim(), muhely: workshop,
         gyartandoTetelek: String(dbRow.gyartando_tetelek || ""), hibatipus: Array.isArray(dbRow.hibatipus) ? dbRow.hibatipus.filter((value): value is ReklamacioHibaTipus => REKLAMACIO_HIBA_TIPUSOK.includes(value as ReklamacioHibaTipus)) : [], kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
-        rajzUrl: legacyDrawingUrl, drawings, mentesDatum: String(dbRow.mentes_datum || ""), gyartasbaTerveDatum,
+        rajzUrl: legacyDrawingUrl, drawings, mentesDatum: String(dbRow.mentes_datum || ""), szerkesztesZarolva: Boolean(dbRow.szerkesztes_zarolva), gyartasbaTerveDatum,
         keszDatum: String(dbRow.kesz_datum || ""), lezart: Boolean(dbRow.lezart), createdAt: String(dbRow.created_at || ""),
         updatedAt: String(dbRow.updated_at || ""), createdByWorkerName: String(dbRow.created_by_worker_name || "").trim(), stationStates,
         lezartAt: String(dbRow.lezart_at || dbRow.kesz_datum || ""),
@@ -28071,6 +28073,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       rajzUrl: "",
       drawings: [],
       mentesDatum: "",
+      szerkesztesZarolva: false,
       gyartasbaTerveDatum: "",
       keszDatum: "",
       vevoNeve: "",
@@ -28141,7 +28144,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     try {
       const response = await supabase
         .from(REKLAMACIO_TABLE)
-        .select("id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, hibatipus, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, lezaras_mod, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
+        .select("id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, hibatipus, kert_datum, rajz_url, mentes_datum, szerkesztes_zarolva, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, lezaras_mod, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
         .order("created_at", { ascending: false })
         .limit(10000);
       if (response.error) throw response.error;
@@ -28289,6 +28292,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           rajzUrl: String(dbRow.rajz_url || ""),
           drawings,
           mentesDatum: String(dbRow.mentes_datum || ""),
+          szerkesztesZarolva: Boolean(dbRow.szerkesztes_zarolva),
           gyartasbaTerveDatum,
           keszDatum: String(dbRow.kesz_datum || ""),
           vevoNeve: atvetelDetails?.vevoNeve || "",
@@ -28413,6 +28417,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       setMessage({ type: "error", text: "A lezárt reklamáció már nem módosítható." });
       return;
     }
+    if (row.szerkesztesZarolva && !closeAfterSave) {
+      setMessage({ type: "error", text: "A reklamáció mentve van, ezért már nem szerkeszthető." });
+      return;
+    }
     const draft = getReklamacioDraft(row);
     const rawBase = row.isNew ? draft.rendelesszam.trim().toUpperCase() : row.alapRendelesszam;
     if (!/^R\d{9}$/.test(rawBase)) {
@@ -28433,6 +28441,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.kertDatum)) {
       setMessage({ type: "error", text: "A Kért Dátum kitöltése kötelező." });
+      return;
+    }
+    if (!closeAfterSave && typeof window !== "undefined" && !window.confirm("Biztosan mented a reklamációt? Mentés után a sor már nem szerkeszthető.")) {
       return;
     }
     if (closeAfterSave) {
@@ -28465,6 +28476,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         kert_datum: draft.kertDatum,
         rajz_url: row.rajzUrl || null,
         mentes_datum: nowIso,
+        szerkesztes_zarolva: true,
         lezart: closeAfterSave,
         kesz_datum: closeAfterSave ? nowIso : (row.keszDatum || null),
         lezart_at: closeAfterSave ? nowIso : null,
@@ -29830,7 +29842,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
     const renderCell = (row: ReklamacioViewRow, column: ReklamacioTableColumnConfig): React.JSX.Element => {
       const draft = getReklamacioDraft(row);
-      const disabled = row.lezart || reklamacioSavingKey === row.key;
+      const disabled = row.lezart || row.szerkesztesZarolva || reklamacioSavingKey === row.key;
       let content: React.ReactNode = null;
       if (column.id === "rendelesszam") {
         content = row.isNew ? <input value={draft.rendelesszam} maxLength={10} placeholder="R + 9 számjegy" onChange={(event) => updateReklamacioDraft(row.key, { rendelesszam: event.target.value.toUpperCase().replace(/[^R0-9]/g, "").slice(0, 10) })} style={tableInputStyle} /> : <strong>{row.rendelesszam}</strong>;
@@ -29888,7 +29900,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         content = row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "–";
       } else if (column.id === "actions") {
         const saving = reklamacioSavingKey === row.key;
-        content = row.lezart ? <span style={{ display: "inline-flex", padding: "7px 10px", borderRadius: 8, background: "#166534", color: "white", fontWeight: 900 }}>✓ Elkészült</span> : <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}><button type="button" disabled={saving || row.isNew} onClick={() => void saveReklamacioRow(row, true)} style={{ ...buttonSecondary, padding: "7px 10px" }}>Lezárás</button><button type="button" disabled={saving} onClick={() => void saveReklamacioRow(row, false)} style={{ ...buttonPrimary, padding: "7px 12px" }}>{saving ? "Mentés..." : "Mentés"}</button></div>;
+        content = row.lezart ? <span style={{ display: "inline-flex", padding: "7px 10px", borderRadius: 8, background: "#166534", color: "white", fontWeight: 900 }}>✓ Elkészült</span> : <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}><button type="button" disabled={saving || row.isNew} onClick={() => void saveReklamacioRow(row, true)} style={{ ...buttonSecondary, padding: "7px 10px" }}>Lezárás</button>{row.szerkesztesZarolva ? <span style={{ display: "inline-flex", padding: "7px 10px", borderRadius: 8, background: "#334155", color: "white", fontWeight: 900 }}>✓ Mentve</span> : <button type="button" disabled={saving} onClick={() => void saveReklamacioRow(row, false)} style={{ ...buttonPrimary, padding: "7px 12px" }}>{saving ? "Mentés..." : "Mentés"}</button>}</div>;
       }
       return <td key={column.id} style={{ ...tableCellStyle, width: column.width, minWidth: column.width, maxWidth: column.width, textAlign: column.align }}>{content}</td>;
     };
