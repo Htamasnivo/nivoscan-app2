@@ -8278,6 +8278,42 @@ function getBundleTenExactBatchRowMeta(
   return exactMeta ? normalizeOrderProductionMeta(exactMeta) : null;
 }
 
+type BundleTenBatchItemIdentity = {
+  orderNumber: string;
+  itemKey: string;
+  stateKey: string;
+  meta: OrderProductionMeta;
+};
+
+function getBundleTenBatchItemIdentities(batch: ProductionBatchRow): BundleTenBatchItemIdentity[] {
+  const exactByOrder = new Map<string, Array<{ itemKey: string; meta: OrderProductionMeta }>>();
+  Object.entries(batch.production_meta || {}).forEach(([savedKey, rawMeta]) => {
+    if (!savedKey.startsWith(BUNDLE_TEN_BATCH_ROW_META_PREFIX)) return;
+    const meta = normalizeOrderProductionMeta(rawMeta);
+    const itemKey = String(meta.visual_source_item_key || "").trim();
+    const encodedOrder = savedKey.slice(BUNDLE_TEN_BATCH_ROW_META_PREFIX.length).split("::")[0] || "";
+    const orderFromKey = decodeURIComponent(encodedOrder).trim();
+    if (!orderFromKey || !itemKey) return;
+    const normalized = normalizeLooseText(orderFromKey);
+    const list = exactByOrder.get(normalized) || [];
+    list.push({ itemKey, meta });
+    exactByOrder.set(normalized, list);
+  });
+
+  const used = new Map<string, number>();
+  return (batch.order_ids || []).map((rawOrder, index) => {
+    const orderNumber = String(rawOrder || "").trim();
+    const normalized = normalizeLooseText(orderNumber);
+    const occurrence = used.get(normalized) || 0;
+    used.set(normalized, occurrence + 1);
+    const exact = exactByOrder.get(normalized)?.[occurrence] || null;
+    const meta = exact?.meta || getProductionMetaForOrder(batch.production_meta, orderNumber);
+    const itemKey = exact?.itemKey || `${orderNumber}#${occurrence + 1}`;
+    const runSequence = parsePlanRunSequence(meta.terv_futo_sorszam);
+    return { orderNumber, itemKey, stateKey: `bundle10:${itemKey}:${runSequence || "no-run"}:${index}`, meta };
+  });
+}
+
 function resolveLogStation(log: WorkLogRow, workerRows: Worker[]): string {
   const machine = String(log.machine_id || "").trim();
   if (machine && normalizeLooseText(machine) !== normalizeLooseText(DEFAULT_MACHINE_ID)) return machine;
@@ -42767,10 +42803,12 @@ body {
   }
 
   function getBundleTenSourceMeta(row: BundleTenSelectableRow): Partial<OrderProductionMeta> {
+    const exactRunSequence = getPlanRunSequenceFromPlanData(row.planData);
     return {
       visual_source: row.source,
       visual_source_row_id: row.sourceRowId || null,
       visual_source_item_key: row.key,
+      ...(exactRunSequence ? { terv_futo_sorszam: exactRunSequence } : {}),
       ...((row.source === "production-plan" || row.source === "backlog") && row.sourceRowId
         ? { terv_sor_id: row.sourceRowId, terv_megnevezes: row.productName || null }
         : {}),
@@ -47951,9 +47989,12 @@ body {
       return;
     }
 
+    const bundleTenBatchItems = isEventTenVisualWorker() ? getBundleTenBatchItemIdentities(selectedEndBatch) : [];
     const allOrders = selectedEndBatch.order_ids.map((order) => String(order).trim()).filter(Boolean);
-    const readyOrders = allOrders.filter((order) => !!endReadyMap[order]);
-    const remainingOrders = allOrders.filter((order) => !endReadyMap[order]);
+    const readyBundleTenItems = bundleTenBatchItems.filter((item) => !!endReadyMap[item.stateKey]);
+    const remainingBundleTenItems = bundleTenBatchItems.filter((item) => !endReadyMap[item.stateKey]);
+    const readyOrders = isEventTenVisualWorker() ? readyBundleTenItems.map((item) => item.orderNumber) : allOrders.filter((order) => !!endReadyMap[order]);
+    const remainingOrders = isEventTenVisualWorker() ? remainingBundleTenItems.map((item) => item.orderNumber) : allOrders.filter((order) => !endReadyMap[order]);
 
     if (readyOrders.length === 0) {
       setMessage({ type: "error", text: "Nincs készre jelölt tétel. Legalább egy rendelést pipálj be, vagy használd az ALL-READY kódot." });
@@ -48005,9 +48046,13 @@ body {
       const operationLabel = operationCode === "SZABAS" ? "Szabás" : operationCode === "MARAS" ? "Marás" : "Köteg";
       const scrapReplacementMap = await fetchOpenScrapReplacementMap(allOrders);
 
-      const logs = readyOrders.map((order) => {
-        const orderNoteClean = (endOrderNotes[order] || "").trim();
-        const orderProductionMeta = getProductionMetaForOrder(selectedEndBatch.production_meta, order);
+      const endItemsForLogs = isEventTenVisualWorker()
+        ? readyBundleTenItems
+        : readyOrders.map((order) => ({ orderNumber: order, itemKey: order, stateKey: order, meta: getProductionMetaForOrder(selectedEndBatch.production_meta, order) }));
+      const logs = endItemsForLogs.map((batchItem) => {
+        const order = batchItem.orderNumber;
+        const orderNoteClean = (endOrderNotes[batchItem.stateKey] || "").trim();
+        const orderProductionMeta = batchItem.meta;
         const reportedDarab = reportedQuantityByOrder[order] ?? finalDarab;
         return {
           worker_id: activeWorker.id,
@@ -48087,6 +48132,11 @@ body {
           const remainderProductionMeta = Object.fromEntries(
             remainingOrders.map((order) => [order, getProductionMetaForOrder(selectedEndBatch.production_meta, order)])
           ) as Record<string, OrderProductionMeta>;
+          if (isEventTenVisualWorker()) {
+            remainingBundleTenItems.forEach((item) => {
+              remainderProductionMeta[getBundleTenBatchRowMetaKey(item.orderNumber, item.itemKey)] = item.meta;
+            });
+          }
           const { error: insertRemainderError } = await supabase.from("production_batches").insert([{
             batch_code: newBatchCode,
             order_ids: remainingOrders,
@@ -49698,7 +49748,7 @@ body {
       ])
     ) as Record<string, OrderProductionMeta>;
 
-    if (usesPlanRunSequence(currentMachineId)) {
+    if (usesPlanRunSequence(currentMachineId) && !isEventTenVisualWorker()) {
       for (const order of ordersForSave) {
         productionMetaForSave[order] = await attachPlanRunIdentityToMeta(currentMachineId, order, productionMetaForSave[order]);
       }
@@ -49708,7 +49758,11 @@ body {
       bundleTenRowsForSave.forEach((row) => {
         const exactMeta = getBundleTenExactBatchRowMeta(batchOrderProductionMeta, row);
         if (exactMeta) {
-          productionMetaForSave[getBundleTenBatchRowMetaKey(row.orderNumber, row.key)] = exactMeta;
+          const exactRunSequence = getPlanRunSequenceFromPlanData(row.planData);
+          productionMetaForSave[getBundleTenBatchRowMetaKey(row.orderNumber, row.key)] = {
+            ...exactMeta,
+            ...(exactRunSequence ? { terv_futo_sorszam: exactRunSequence } : {}),
+          };
         }
       });
     }
@@ -54979,12 +55033,18 @@ body {
                               ? `${selectedEndBatch.order_ids.filter((order) => { const state = endEventFiveOrderStateMap[String(order)] || EMPTY_EVENT_FIVE_BATCH_ORDER_STATE; return state.tokKesz && state.nyiloKesz; }).length} teljes • ${selectedEndBatch.order_ids.filter((order) => { const state = endEventFiveOrderStateMap[String(order)] || EMPTY_EVENT_FIVE_BATCH_ORDER_STATE; return state.tokKesz !== state.nyiloKesz; }).length} félkész`
                               : isEventSixBatchWorker()
                                 ? `${selectedEndBatch.order_ids.filter((order) => { const state = endEventSixOrderStateMap[String(order)] || EMPTY_EVENT_SIX_BATCH_ORDER_STATE; return state.ajtolapokKesz && state.toklecKesz; }).length} teljes • ${selectedEndBatch.order_ids.filter((order) => { const state = endEventSixOrderStateMap[String(order)] || EMPTY_EVENT_SIX_BATCH_ORDER_STATE; return state.ajtolapokKesz !== state.toklecKesz; }).length} félkész`
-                                : `${selectedEndBatch.order_ids.filter((order) => endReadyMap[order]).length} / ${selectedEndBatch.order_ids.length} kész`}
+                                : isEventTenVisualWorker()
+                                  ? `${getBundleTenBatchItemIdentities(selectedEndBatch).filter((item) => endReadyMap[item.stateKey]).length} / ${selectedEndBatch.order_ids.length} kész`
+                                  : `${selectedEndBatch.order_ids.filter((order) => endReadyMap[order]).length} / ${selectedEndBatch.order_ids.length} kész`}
                           </span>
                         </div>
                         <div style={{ display: "grid", gap: 10 }}>
-                          {selectedEndBatch.order_ids.map((rawOrder) => {
+                          {selectedEndBatch.order_ids.map((rawOrder, batchOrderIndex) => {
                             const order = String(rawOrder);
+                            const bundleTenBatchItem = isEventTenVisualWorker()
+                              ? getBundleTenBatchItemIdentities(selectedEndBatch)[batchOrderIndex] || null
+                              : null;
+                            const endStateKey = bundleTenBatchItem?.stateKey || order;
                             if (isEventFiveBatchWorker()) {
                               const state = endEventFiveOrderStateMap[order] || { ...EMPTY_EVENT_FIVE_BATCH_ORDER_STATE };
                               const percent = getTwoPartCompletionPercent(state.tokKesz, state.nyiloKesz);
@@ -55216,9 +55276,9 @@ body {
                               );
                             }
 
-                            const ready = !!endReadyMap[order];
+                            const ready = !!endReadyMap[endStateKey];
                             return (
-                              <div key={order} style={{ border: "1px solid #334155", borderRadius: 12, padding: 12, background: ready ? "rgba(22,163,74,0.15)" : "#0f172a" }}>
+                              <div key={endStateKey} style={{ border: "1px solid #334155", borderRadius: 12, padding: 12, background: ready ? "rgba(22,163,74,0.15)" : "#0f172a" }}>
                                 <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
                                   <div>
                                     <div style={{ fontSize: 18, fontWeight: 900 }}>{order}</div>
@@ -55232,12 +55292,12 @@ body {
                                         : getBatchOperationStatusLabel(selectedEndBatch)}
                                     </div>
                                   </div>
-                                  <button type="button" onClick={() => setEndReadyMap((prev) => ({ ...prev, [order]: !prev[order] }))} style={{ ...buttonSecondary, minWidth: 92 }}>
+                                  <button type="button" onClick={() => setEndReadyMap((prev) => ({ ...prev, [endStateKey]: !prev[endStateKey] }))} style={{ ...buttonSecondary, minWidth: 92 }}>
                                     {ready ? "✓ Kész" : "□ Pipa"}
                                   </button>
                                 </div>
                                 {renderRequiredBatchQuantityInput(order)}
-                                <textarea value={endOrderNotes[order] || ""} onChange={(e) => setEndOrderNotes((prev) => ({ ...prev, [order]: e.target.value }))} placeholder="Egyedi megjegyzés ehhez a rendeléshez" style={{ ...textareaStyle, marginTop: 10, minHeight: 54 }} />
+                                <textarea value={endOrderNotes[endStateKey] || ""} onChange={(e) => setEndOrderNotes((prev) => ({ ...prev, [endStateKey]: e.target.value }))} placeholder="Egyedi megjegyzés ehhez a rendeléshez" style={{ ...textareaStyle, marginTop: 10, minHeight: 54 }} />
                               </div>
                             );
                           })}
