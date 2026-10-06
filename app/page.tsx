@@ -1374,6 +1374,8 @@ function createDefaultAtvetelTableColumns(): AtvetelTableColumnConfig[] {
 
 
 type ReklamacioWorkshop = "" | "Asztalos" | "Lakatos";
+type ReklamacioHibaTipus = "Felmérés" | "Gyártás" | "Összeszerelés" | "Beszerelés" | "Termékhiba" | "Egyéb";
+const REKLAMACIO_HIBA_TIPUSOK: ReklamacioHibaTipus[] = ["Felmérés", "Gyártás", "Összeszerelés", "Beszerelés", "Termékhiba", "Egyéb"];
 
 type ReklamacioDbRow = {
   id: string;
@@ -1381,6 +1383,7 @@ type ReklamacioDbRow = {
   alap_rendelesszam: string;
   muhely: "Asztalos" | "Lakatos";
   gyartando_tetelek: string;
+  hibatipus?: string[] | null;
   kert_datum: string;
   rajz_url?: string | null;
   mentes_datum?: string | null;
@@ -1389,6 +1392,7 @@ type ReklamacioDbRow = {
   lezart_at?: string | null;
   lezarta_worker_id?: number | string | null;
   lezarta_worker_name?: string | null;
+  lezaras_mod?: "kezi" | "automatikus" | null;
   created_by_worker_id?: number | string | null;
   created_by_worker_name?: string | null;
   updated_by_worker_id?: number | string | null;
@@ -1431,6 +1435,7 @@ type ReklamacioViewRow = {
   alapRendelesszam: string;
   muhely: ReklamacioWorkshop;
   gyartandoTetelek: string;
+  hibatipus: ReklamacioHibaTipus[];
   kertDatum: string;
   rajzUrl: string;
   drawings: ReklamacioSavedDrawing[];
@@ -1449,12 +1454,16 @@ type ReklamacioViewRow = {
 
 type ReklamacioReportRow = ReklamacioViewRow & {
   createdByWorkerName: string;
+  lezartAt: string;
+  lezartaWorkerName: string;
+  lezarasMod: "" | "kezi" | "automatikus";
 };
 
 type ReklamacioDraft = {
   rendelesszam: string;
   muhely: ReklamacioWorkshop;
   gyartandoTetelek: string;
+  hibatipus: ReklamacioHibaTipus[];
   kertDatum: string;
   rajzDataUrl: string;
   pendingDrawings: ReklamacioPendingDrawing[];
@@ -1468,6 +1477,7 @@ type ReklamacioTableColumnId =
   | "szerelesiIdopont"
   | "muhely"
   | "gyartandoTetelek"
+  | "hibatipus"
   | "kertDatum"
   | "rajz"
   | "munkaallomasAllapot"
@@ -1515,6 +1525,7 @@ const DEFAULT_REKLAMACIO_TABLE_COLUMNS: ReklamacioTableColumnConfig[] = [
   { id: "szerelesiIdopont", label: "Szerelési időpont", width: 165, visible: true, align: "left" },
   { id: "muhely", label: "Műhely", width: 145, visible: true, align: "left" },
   { id: "gyartandoTetelek", label: "Gyártandó tételek", width: 300, visible: true, align: "left" },
+  { id: "hibatipus", label: "Hibatípus", width: 250, visible: true, align: "left" },
   { id: "kertDatum", label: "Kért Dátum", width: 165, visible: true, align: "left" },
   { id: "rajz", label: "Rajz", width: 185, visible: true, align: "center" },
   { id: "munkaallomasAllapot", label: "Munkaállomások állapota", width: 430, visible: true, align: "left" },
@@ -13302,12 +13313,20 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   async function fetchReklamacioReportRows(
     profile: ReportDeliveryProfile,
     range: { startIso: string; endIso: string },
-    scope: "range" | "open-and-today-completed" = "range"
+    scope: "range" | "open-and-today-completed" | "open" | "closed-range" = "range"
   ): Promise<ReklamacioReportRow[]> {
     if (!supabase) return [];
-    const reklamacioSelectColumns = "id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at";
+    const reklamacioSelectColumns = "id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, hibatipus, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, lezaras_mod, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at";
     let sourceRows: ReklamacioDbRow[] = [];
-    if (scope === "open-and-today-completed") {
+    if (scope === "open") {
+      const response = await supabase.from(REKLAMACIO_TABLE).select(reklamacioSelectColumns).or("lezart.eq.false,lezart.is.null").order("created_at", { ascending: true }).limit(10000);
+      if (response.error) throw response.error;
+      sourceRows = (response.data || []) as ReklamacioDbRow[];
+    } else if (scope === "closed-range") {
+      const response = await supabase.from(REKLAMACIO_TABLE).select(reklamacioSelectColumns).eq("lezart", true).gte("lezart_at", range.startIso).lt("lezart_at", range.endIso).order("lezart_at", { ascending: true }).limit(10000);
+      if (response.error) throw response.error;
+      sourceRows = (response.data || []) as ReklamacioDbRow[];
+    } else if (scope === "open-and-today-completed") {
       const todayKey = getSafeReportDeliveryTodayKey();
       const todayRange = getDashboardDateRange("custom", todayKey, todayKey);
       const [openResponse, completedTodayResponse] = await Promise.all([
@@ -13338,8 +13357,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const dbRows = sourceRows.filter((row) => {
       const orderNumber = String(row.rendelesszam || "").trim();
       if (!orderNumber) return false;
-      if (scope === "range" && orderFilters.length > 0 && !matchesDashboardOrderFilters(orderNumber, orderFilters)) return false;
-      if (scope === "range" && profile.workerFilter !== "all" && normalizeLooseText(String(row.created_by_worker_name || "")) !== normalizeLooseText(profile.workerFilter)) return false;
+      if (scope !== "open-and-today-completed" && orderFilters.length > 0 && !matchesDashboardOrderFilters(orderNumber, orderFilters)) return false;
+      if (scope !== "open-and-today-completed" && profile.workerFilter !== "all" && normalizeLooseText(String(row.created_by_worker_name || "")) !== normalizeLooseText(profile.workerFilter)) return false;
       return true;
     });
 
@@ -13428,10 +13447,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       return {
         key: reklamacioId, id: reklamacioId, isNew: false, rendelesszam: orderNumber,
         alapRendelesszam: String(dbRow.alap_rendelesszam || "").trim(), muhely: workshop,
-        gyartandoTetelek: String(dbRow.gyartando_tetelek || ""), kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
+        gyartandoTetelek: String(dbRow.gyartando_tetelek || ""), hibatipus: Array.isArray(dbRow.hibatipus) ? dbRow.hibatipus.filter((value): value is ReklamacioHibaTipus => REKLAMACIO_HIBA_TIPUSOK.includes(value as ReklamacioHibaTipus)) : [], kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
         rajzUrl: legacyDrawingUrl, drawings, mentesDatum: String(dbRow.mentes_datum || ""), gyartasbaTerveDatum,
         keszDatum: String(dbRow.kesz_datum || ""), lezart: Boolean(dbRow.lezart), createdAt: String(dbRow.created_at || ""),
         updatedAt: String(dbRow.updated_at || ""), createdByWorkerName: String(dbRow.created_by_worker_name || "").trim(), stationStates,
+        lezartAt: String(dbRow.lezart_at || dbRow.kesz_datum || ""),
+        lezartaWorkerName: String(dbRow.lezarta_worker_name || ""),
+        lezarasMod: dbRow.lezaras_mod === "kezi" || dbRow.lezaras_mod === "automatikus" ? dbRow.lezaras_mod : "",
         canClose: presentStates.length > 0 && presentStates.every((state) => state.status === "done"),
       };
     });
@@ -14205,8 +14227,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
     const addReklamacioReport = async (): Promise<void> => {
       const [rows, statusRows] = await Promise.all([
-        fetchReklamacioReportRows(profile, range, "range"),
-        fetchReklamacioReportRows(profile, range, "open-and-today-completed"),
+        fetchReklamacioReportRows(profile, range, "open"),
+        fetchReklamacioReportRows(profile, range, "closed-range"),
       ]);
       const openCount = rows.filter((row) => !row.lezart).length;
       const closedCount = rows.filter((row) => row.lezart).length;
@@ -14313,13 +14335,14 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
       y = drawSummaryBlockAt(y);
       addReklamacioDetailTable(
-        "Az adott időszakban felvett reklamációk",
-        [["Sorszám", "Rendelésszám", "Műhely", "Gyártandó tételek", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"]],
+        "Reklamáció nyitott",
+        [["Sorszám", "Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"]],
         rows.map((row, index) => [
           index + 1,
           row.rendelesszam || "-",
           row.muhely || "-",
           row.gyartandoTetelek || "-",
+          row.hibatipus.length ? row.hibatipus.join(", ") : "-",
           row.kertDatum || "-",
           row.createdAt ? formatDateTimeMinute(row.createdAt) : "-",
           row.createdByWorkerName || "-",
@@ -14329,19 +14352,14 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       );
 
       addReklamacioDetailTable(
-        "Gyártási és munkaállomás állapotok",
-        [["Sorszám", "Rendelésszám", "Munkaállomások állapota", "Felvétel", "Kért dátum", "Gyártásba téve", "Kész dátum", "Állapot"]],
+        "Reklamáció lezárt",
+        [["Sorszám", "Rendelésszám", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Lezárás", "Lezárás módja", "Lezáró"]],
         statusRows.map((row, index) => [
-          index + 1,
-          row.rendelesszam || "-",
-          row.stationStates.length > 0
-            ? row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join("\n")
-            : "-",
-          row.createdAt ? formatDateTimeMinute(row.createdAt) : "-",
-          row.kertDatum || "-",
-          row.gyartasbaTerveDatum ? formatDateOnly(row.gyartasbaTerveDatum) : "-",
-          row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "-",
-          row.lezart ? "Kész" : "Nyitott",
+          index + 1, row.rendelesszam || "-", row.gyartandoTetelek || "-",
+          row.hibatipus.length ? row.hibatipus.join(", ") : "-", row.kertDatum || "-",
+          row.lezartAt ? formatDateTimeMinute(row.lezartAt) : "-",
+          row.lezarasMod === "kezi" ? "Kézi" : row.lezarasMod === "automatikus" ? "Automatikus" : "-",
+          row.lezartaWorkerName || "-",
         ]),
         true
       );
@@ -14607,16 +14625,17 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         Array.from(monthly.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => [month, count]));
     } else if (profile.reportType === "reklamacio") {
       const [rows, statusRows] = await Promise.all([
-        fetchReklamacioReportRows(profile, range, "range"),
-        fetchReklamacioReportRows(profile, range, "open-and-today-completed"),
+        fetchReklamacioReportRows(profile, range, "open"),
+        fetchReklamacioReportRows(profile, range, "closed-range"),
       ]);
-      addSheet("Reklamáció", ["Rendelésszám", "Műhely", "Gyártandó tételek", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"],
-        rows.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.kertDatum,
-          row.createdAt ? formatDateTime(row.createdAt) : "", row.createdByWorkerName, row.mentesDatum ? formatDateTime(row.mentesDatum) : ""]));
-      addSheet("Reklamáció állapotok", ["Rendelésszám", "Munkaállomások állapota", "Felvétel", "Kért dátum", "Gyártásba téve", "Kész dátum", "Állapot"],
-        statusRows.map((row) => [row.rendelesszam, row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join(" | "),
-          row.createdAt ? formatDateTime(row.createdAt) : "", row.kertDatum, row.gyartasbaTerveDatum, row.keszDatum,
-          row.lezart ? "Kész" : "Nyitott"]));
+      addSheet("Reklamáció nyitott", ["Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Mentés", "Munkaállomások állapota"],
+        rows.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.hibatipus.join(", "), row.kertDatum,
+          row.createdAt ? formatDateTime(row.createdAt) : "", row.createdByWorkerName, row.mentesDatum ? formatDateTime(row.mentesDatum) : "",
+          row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join(" | ")]));
+      addSheet("Reklamáció lezárt", ["Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Lezárás", "Lezárás módja", "Lezáró"],
+        statusRows.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.hibatipus.join(", "), row.kertDatum,
+          row.createdAt ? formatDateTime(row.createdAt) : "", row.createdByWorkerName, row.lezartAt ? formatDateTime(row.lezartAt) : "",
+          row.lezarasMod === "kezi" ? "Kézi" : row.lezarasMod === "automatikus" ? "Automatikus" : "", row.lezartaWorkerName]));
     } else {
       const data = await getData();
       const logs = filterReportDeliveryLogs(data, profile);
@@ -28047,6 +28066,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       alapRendelesszam: "",
       muhely: "",
       gyartandoTetelek: "",
+      hibatipus: [],
       kertDatum: "",
       rajzUrl: "",
       drawings: [],
@@ -28065,7 +28085,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     setReklamacioRows((previous) => [row, ...previous]);
     setReklamacioDrafts((previous) => ({
       ...previous,
-      [key]: { rendelesszam: "", muhely: "", gyartandoTetelek: "", kertDatum: "", rajzDataUrl: "", pendingDrawings: [], dirty: true },
+      [key]: { rendelesszam: "", muhely: "", gyartandoTetelek: "", hibatipus: [], kertDatum: "", rajzDataUrl: "", pendingDrawings: [], dirty: true },
     }));
   }
 
@@ -28121,7 +28141,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     try {
       const response = await supabase
         .from(REKLAMACIO_TABLE)
-        .select("id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
+        .select("id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, hibatipus, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, lezaras_mod, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
         .order("created_at", { ascending: false })
         .limit(10000);
       if (response.error) throw response.error;
@@ -28264,6 +28284,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           alapRendelesszam: String(dbRow.alap_rendelesszam || "").trim(),
           muhely: workshop,
           gyartandoTetelek: String(dbRow.gyartando_tetelek || ""),
+          hibatipus: Array.isArray(dbRow.hibatipus) ? dbRow.hibatipus.filter((value): value is ReklamacioHibaTipus => REKLAMACIO_HIBA_TIPUSOK.includes(value as ReklamacioHibaTipus)) : [],
           kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
           rajzUrl: String(dbRow.rajz_url || ""),
           drawings,
@@ -28293,6 +28314,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           lezart_at: nowIso,
           lezarta_worker_id: Number.isFinite(workerIdNumber) ? workerIdNumber : null,
           lezarta_worker_name: activeWorker?.["Teljes nev"] || "Automatikus rendszer",
+          lezaras_mod: "automatikus",
           mentes_datum: nowIso,
           updated_at: nowIso,
           updated_by_worker_id: Number.isFinite(workerIdNumber) ? workerIdNumber : null,
@@ -28320,6 +28342,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             rendelesszam: row.rendelesszam,
             muhely: row.muhely,
             gyartandoTetelek: row.gyartandoTetelek,
+            hibatipus: row.hibatipus,
             kertDatum: row.kertDatum,
             rajzDataUrl: "",
             pendingDrawings: [],
@@ -28404,6 +28427,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       setMessage({ type: "error", text: "A Gyártandó tételek mező kitöltése kötelező." });
       return;
     }
+    if ((row.isNew || draft.dirty) && draft.hibatipus.length === 0) {
+      setMessage({ type: "error", text: "Legalább egy Hibatípus kiválasztása kötelező." });
+      return;
+    }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.kertDatum)) {
       setMessage({ type: "error", text: "A Kért Dátum kitöltése kötelező." });
       return;
@@ -28434,6 +28461,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         alap_rendelesszam: rawBase,
         muhely: draft.muhely,
         gyartando_tetelek: draft.gyartandoTetelek.trim(),
+        hibatipus: draft.hibatipus,
         kert_datum: draft.kertDatum,
         rajz_url: row.rajzUrl || null,
         mentes_datum: nowIso,
@@ -28442,6 +28470,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         lezart_at: closeAfterSave ? nowIso : null,
         lezarta_worker_id: closeAfterSave ? workerId : null,
         lezarta_worker_name: closeAfterSave ? workerName : null,
+        lezaras_mod: closeAfterSave ? "kezi" : null,
         updated_by_worker_id: workerId,
         updated_by_worker_name: workerName,
         updated_at: nowIso,
@@ -29745,6 +29774,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       if (columnId === "szerelesiIdopont") return row.szerelesiIdopont ? formatDateOnly(row.szerelesiIdopont) : "—";
       if (columnId === "muhely") return draft.muhely || "—";
       if (columnId === "gyartandoTetelek") return draft.gyartandoTetelek || "—";
+      if (columnId === "hibatipus") return draft.hibatipus.length ? draft.hibatipus.join(", ") : "";
       if (columnId === "kertDatum") return draft.kertDatum || "—";
       if (columnId === "rajz") {
         const drawingCount = getReklamacioDrawingItems(row).length;
@@ -29814,6 +29844,19 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         content = <select value={draft.muhely} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { muhely: event.target.value as ReklamacioWorkshop })} style={tableInputStyle}><option value="">Válassz...</option><option value="Asztalos">Asztalos</option><option value="Lakatos">Lakatos</option></select>;
       } else if (column.id === "gyartandoTetelek") {
         content = <textarea value={draft.gyartandoTetelek} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { gyartandoTetelek: event.target.value })} rows={2} placeholder="Gyártandó tételek" style={{ ...tableInputStyle, resize: "vertical", minHeight: 56 }} />;
+      } else if (column.id === "hibatipus") {
+        content = <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: "5px 8px" }}>
+          {REKLAMACIO_HIBA_TIPUSOK.map((tipus) => {
+            const checked = draft.hibatipus.includes(tipus);
+            return <label key={tipus} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 800, cursor: disabled ? "default" : "pointer" }}>
+              <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => {
+                const next = event.target.checked ? Array.from(new Set([...draft.hibatipus, tipus])) : draft.hibatipus.filter((value) => value !== tipus);
+                updateReklamacioDraft(row.key, { hibatipus: next });
+              }} />
+              <span>{tipus}</span>
+            </label>;
+          })}
+        </div>;
       } else if (column.id === "kertDatum") {
         content = <input type="date" value={draft.kertDatum} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { kertDatum: event.target.value })} style={{ ...tableInputStyle, colorScheme: "dark" }} />;
       } else if (column.id === "rajz") {
