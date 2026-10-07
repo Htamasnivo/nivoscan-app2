@@ -28481,7 +28481,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       const h = await supabase.from(REKLAMACIO_UVEG_GYARTASBA_NAPLO_TABLE).insert({ reklamacio_id:row.id, rendelesszam:row.rendelesszam, elozo_datum:row.uvegGyartasbaDatum||null, uj_datum:selectedDate, mentette_worker_id:Number.isFinite(workerId)?workerId:null, mentette_worker_name:workerName||null, mentve_at:nowIso });
       if (h.error) throw h.error;
       setReklamacioUvegDateDrafts(c=>({...c,[row.key]:selectedDate})); await loadReklamacioRows({quiet:true});
-    } catch(error) { setMessage({type:"error",text:error instanceof Error?error.message:"Az Üveg dátum mentése sikertelen."}); }
+    } catch(error) {
+      const errorMessage = error && typeof error === "object" && "message" in error
+        ? String((error as { message?: unknown }).message || "")
+        : "";
+      setMessage({type:"error",text:errorMessage || "Az Üveg dátum mentése sikertelen."});
+    }
     finally { setReklamacioUvegDateSavingKey(""); }
   }
 
