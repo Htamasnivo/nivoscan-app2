@@ -53810,7 +53810,7 @@ body {
                     const themeKey = isGlobal ? "terminal-global-message" : "terminal-station-message";
                     const messageTheme = terminalProgramMessageThemes[themeKey] || ensureReadableOfficeTheme({
                       ...getOfficeTheme("program-error-reports"),
-                      panelBackground: isGlobal ? "#facc15" : "#fde047",
+                      panelBackground: isGlobal ? "#D2B48C" : "#fde047",
                       borderColor: isGlobal ? "#ca8a04" : "#eab308",
                       textColor: "#422006",
                     });
