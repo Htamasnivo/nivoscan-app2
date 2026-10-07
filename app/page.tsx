@@ -53773,7 +53773,14 @@ body {
       <div
         style={{
           width: "100%",
-          maxWidth: "none",
+          maxWidth: (() => {
+            const stationKey = normalizeLooseText(String(machineId || ""));
+            return stationKey === "iroda" || stationKey === "mobil eszkoz" || stationKey === "mobileszkoz"
+              ? (flowStage === "dashboard" || flowStage === "carpenter-printer-settings" || flowStage === "carpenter-reprint-requests"
+                  ? "none"
+                  : (step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId) ? 1700 : 960))
+              : "none";
+          })(),
           overflowAnchor: "none",
         }}
       >
