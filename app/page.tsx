@@ -10548,7 +10548,6 @@ export default function Page() {
   const [programStationMessageStation, setProgramStationMessageStation] = useState("");
   const [programStationMessageDraft, setProgramStationMessageDraft] = useState("");
   const [programStationMessageCreateOpen, setProgramStationMessageCreateOpen] = useState(false);
-  const [programStationMessageReporterWorkerId, setProgramStationMessageReporterWorkerId] = useState("");
   const [programStationMessageBusy, setProgramStationMessageBusy] = useState(false);
   const [programStationMessageError, setProgramStationMessageError] = useState("");
   const [terminalProgramMessages, setTerminalProgramMessages] = useState<Array<Record<string, unknown>>>([]);
@@ -30766,21 +30765,17 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             <div style={{ width:"min(900px,96vw)", background:"#0f172a", color:"#f8fafc", border:"2px solid #7c3aed", borderRadius:16, padding:20, boxShadow:"0 28px 90px rgba(0,0,0,.75)" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
                 <div>
-                  <h3 style={{ margin:"0 0 4px" }}>Hibabejelentés</h3>
+                  <h3 style={{ margin:"0 0 4px" }}>Munkaállomási üzenetek</h3>
                   <div style={{ fontSize:12, color:"#cbd5e1" }}>Munkaállomás: {programStationMessageStation || "Globál"}</div>
                 </div>
                 <div style={{ display:"flex", gap:8 }}>
-                  <button type="button" onClick={()=>{setProgramStationMessageCreateOpen(true);setProgramStationMessageDraft("");setProgramStationMessageReporterWorkerId("");setProgramStationMessageError("");}} style={{...buttonPrimary,background:"#7c3aed"}}>+ Új hibabejelentés</button>
+                  <button type="button" onClick={()=>{setProgramStationMessageCreateOpen(true);setProgramStationMessageDraft("");setProgramStationMessageError("");}} style={{...buttonPrimary,background:"#7c3aed"}}>+ Új üzenet</button>
                   <button type="button" onClick={()=>setProgramStationMessageModalOpen(false)} style={buttonSecondary}>Bezárás</button>
                 </div>
               </div>
 
               {programStationMessageCreateOpen && (
                 <div style={{ marginTop:16, padding:14, border:"1px solid #475569", borderRadius:12 }}>
-                  <select value={programStationMessageReporterWorkerId} onChange={(e)=>setProgramStationMessageReporterWorkerId(e.target.value)} style={{...fieldStyle,width:"100%",marginBottom:10}}>
-                    <option value="">Név kiválasztása...</option>
-                    {workers.map((worker)=><option key={String(worker.id)} value={String(worker.id)}>{String(worker["Teljes nev"] || "")}</option>)}
-                  </select>
                   <textarea value={programStationMessageDraft} onChange={(e)=>setProgramStationMessageDraft(e.target.value)} rows={5} style={{ width:"100%", boxSizing:"border-box", resize:"vertical", ...fieldStyle }} placeholder="Megjegyzés..." />
                   {programStationMessageError && <div style={{ marginTop:10, padding:9, borderRadius:8, background:"#450a0a", color:"#fecaca", border:"1px solid #dc2626" }}>{programStationMessageError}</div>}
                   <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:10}}>
@@ -30794,7 +30789,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                 <table style={{width:"100%",borderCollapse:"collapse",minWidth:700}}>
                   <thead><tr>{["Sorszám","Név","Megjegyzés","Leadás ideje","Státusz","Művelet"].map((label)=><th key={label} style={{padding:9,textAlign:"left",borderBottom:"1px solid #475569"}}>{label}</th>)}</tr></thead>
                   <tbody>
-                    {programStationMessages.filter((row)=>String(row.scope_key||"")===programStationMessageScopeKey(programStationMessageStation) && row.is_active!==false).map((row,index)=>(
+                    {programStationMessages.filter((row)=>String(row.scope_key||"")===programMessageScopeKey(programStationMessageStation) && row.is_active!==false).map((row,index)=>(
                       <tr key={String(row.id)}>
                         <td style={{padding:9,borderBottom:"1px solid #334155",fontWeight:900}}>{index+1}</td>
                         <td style={{padding:9,borderBottom:"1px solid #334155"}}>{String(row.created_by_worker_name||row.updated_by_worker_name||"–")}</td>
@@ -43914,7 +43909,6 @@ body {
     setProgramStationMessageScopeKey(programMessageScopeKey(stationName));
     setProgramStationMessageStation(String(stationName || "").trim());
     setProgramStationMessageDraft("");
-    setProgramStationMessageReporterWorkerId("");
     setProgramStationMessageCreateOpen(false);
     setProgramStationMessageError("");
     setProgramStationMessageModalOpen(true);
@@ -43923,13 +43917,10 @@ body {
   async function saveProgramStationMessage(): Promise<void> {
     if (!supabase || !activeWorker || !isAdmin(activeWorker)) return;
     const messageText = programStationMessageDraft.trim();
-    if (!programStationMessageReporterWorkerId) { setProgramStationMessageError("A név kiválasztása kötelező."); return; }
     if (!messageText) { setProgramStationMessageError("A megjegyzés nem lehet üres."); return; }
-    const selectedWorker = workers.find((worker) => String(worker.id) === programStationMessageReporterWorkerId);
-    if (!selectedWorker) { setProgramStationMessageError("A kiválasztott dolgozó nem található."); return; }
     const scopeKey = programMessageScopeKey(programStationMessageStation);
     const nowIso = new Date().toISOString();
-    const reporterName = String(selectedWorker["Teljes nev"] || "").trim();
+    const reporterName = String(activeWorker["Teljes nev"] || "").trim();
     setProgramStationMessageBusy(true); setProgramStationMessageError("");
     try {
       const insertResult = await supabase.from(PROGRAM_STATION_MESSAGE_TABLE).insert({
@@ -43939,10 +43930,10 @@ body {
         message: messageText,
         is_active: true,
         created_at: nowIso,
-        created_by_worker_id: Number(selectedWorker.id),
+        created_by_worker_id: Number(activeWorker.id),
         created_by_worker_name: reporterName,
         updated_at: nowIso,
-        updated_by_worker_id: Number(selectedWorker.id),
+        updated_by_worker_id: Number(activeWorker.id),
         updated_by_worker_name: reporterName,
       });
       if (insertResult.error) throw insertResult.error;
@@ -43950,11 +43941,10 @@ body {
         scope_key: scopeKey, scope_type: programStationMessageStation ? "STATION" : "GLOBAL",
         station_name: programStationMessageStation || null, action:"LETREHOZAS",
         previous_message:null, new_message:messageText, changed_at:nowIso,
-        changed_by_worker_id:Number(selectedWorker.id), changed_by_worker_name:reporterName,
+        changed_by_worker_id:Number(activeWorker.id), changed_by_worker_name:reporterName,
       });
       if (historyResult.error) throw historyResult.error;
       setProgramStationMessageDraft("");
-      setProgramStationMessageReporterWorkerId("");
       setProgramStationMessageCreateOpen(false);
       await loadProgramStationMessages();
     } catch (error) { setProgramStationMessageError(normalizeError(error)); }
