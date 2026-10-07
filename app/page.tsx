@@ -1019,6 +1019,9 @@ const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]>
   "program-error-reports": [
     { id:"navigation", label:"Felső menüsor" },
     { id:"header", label:"Hibajelentések fejléc" },
+    { id:"station-messages", label:"Munkaállomás üzenet boxok" },
+    { id:"terminal-station-message", label:"Munkaállomási sárga üzenet" },
+    { id:"terminal-global-message", label:"Globál eltérő sárga üzenet" },
     { id:"table", label:"Hibajelentések táblázata" },
   ],
 };
@@ -1724,6 +1727,9 @@ const EVENT_FIVE_ISSUE_REPORT_TABLE = "event5_hibajelentesek";
 const EVENT_FIVE_ISSUE_TARGET_TABLE = "event5_hibajelentes_celallomasok";
 const EVENT_FIVE_ISSUE_STATUS_AUDIT_TABLE = "event5_hibajelentes_allapotnaplo";
 const PROGRAM_ERROR_REPORT_TABLE = "program_hibajelentesek";
+const PROGRAM_STATION_MESSAGE_TABLE = "program_munkaallomas_uzenetek";
+const PROGRAM_STATION_MESSAGE_HISTORY_TABLE = "program_munkaallomas_uzenet_naplo";
+const PROGRAM_STATION_MESSAGE_SETTINGS_TABLE = "program_munkaallomas_uzenet_beallitasok";
 const EVENT_FIVE_ISSUE_STATIONS = ["Asztalos", "Fényező", "Fóliázó"] as const;
 
 const EVENT_FIVE_REPAIR_STATION_OPTIONS = [
@@ -10536,6 +10542,15 @@ export default function Page() {
   const [programErrorAdminError, setProgramErrorAdminError] = useState("");
   const [programErrorRepairNotices, setProgramErrorRepairNotices] = useState<Array<Record<string, unknown>>>([]);
   const programErrorNoticeLoadedForMachineRef = useRef<Set<string>>(new Set());
+  const [programStationMessages, setProgramStationMessages] = useState<Array<Record<string, unknown>>>([]);
+  const [programStationMessageModalOpen, setProgramStationMessageModalOpen] = useState(false);
+  const [programStationMessageScopeKey, setProgramStationMessageScopeKey] = useState("");
+  const [programStationMessageStation, setProgramStationMessageStation] = useState("");
+  const [programStationMessageDraft, setProgramStationMessageDraft] = useState("");
+  const [programStationMessageBusy, setProgramStationMessageBusy] = useState(false);
+  const [programStationMessageError, setProgramStationMessageError] = useState("");
+  const [terminalProgramMessages, setTerminalProgramMessages] = useState<Array<Record<string, unknown>>>([]);
+  const [terminalProgramMessageThemes, setTerminalProgramMessageThemes] = useState<Record<string, OfficeThemeConfig>>({});
   const [incompleteBatches, setIncompleteBatches] = useState<IncompleteBatchRow[]>([]);
   const [showIncompleteBatches, setShowIncompleteBatches] = useState(false);
   const [activeProductionBatches, setActiveProductionBatches] = useState<ProductionBatchRow[]>([]);
@@ -12178,6 +12193,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     setOfficeWindowPresetByKey((current) => ({ ...current, [stateKey]: "custom" }));
     setOfficeWindowThemeByKey((current) => ({ ...current, [stateKey]: nextTheme }));
     queueOfficeUiPreferenceSave(officeWindowDbKey(pageKey, windowKey), "custom", nextTheme);
+    if (pageKey === "program-error-reports" && (windowKey === "terminal-station-message" || windowKey === "terminal-global-message")) {
+      void persistProgramStationMessageTheme(windowKey, nextTheme);
+    }
   }
 
   async function restorePreviousOfficeUiPreference(pageKey: OfficePageKey, windowKey?: string): Promise<void> {
@@ -17303,7 +17321,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
               else if (item.id === "report-delivery") void loadReportDeliveryProfiles();
               else if (item.id === "data-upload") void loadDataUploadView();
               else if (item.id === "admin") void loadNivoAdminActivity();
-              else if (item.id === "program-error-reports") void loadProgramErrorAdminRows();
+              else if (item.id === "program-error-reports") { void loadProgramErrorAdminRows(); void loadProgramStationMessages(); }
             }} style={{ border:active ? `1px solid ${currentTheme.accentColor}` : "1px solid transparent", background:active ? currentTheme.navActiveBackground : "transparent", color:active ? currentTheme.textColor : currentTheme.navText, borderRadius:Math.max(4,currentTheme.borderRadius-5), padding:"10px 14px", fontWeight:800, cursor:"pointer", fontFamily:currentTheme.fontFamily }}>{item.label}</button>;
           })}
           <button
@@ -30721,6 +30739,40 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           </div>
         </div>
 
+        <div data-office-window="program-error-reports:station-messages" style={{ background:theme.panelBackground, border:`${theme.borderWidth}px solid ${theme.borderColor}`, borderRadius:theme.borderRadius, padding:16, marginBottom:12 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", gap:10, alignItems:"center", flexWrap:"wrap", marginBottom:12 }}>
+            <div><strong>Munkaállomási üzenetek</strong><div style={{ color:theme.mutedText, fontSize:12, marginTop:4 }}>Kattints egy munkaállomásra vagy a Globál boxra az üzenet szerkesztéséhez.</div></div>
+            <button type="button" onClick={() => void loadProgramStationMessages()} disabled={programStationMessageBusy} style={buttonSecondary}>Üzenetek frissítése</button>
+          </div>
+          {programStationMessageError && <div style={{ marginBottom:10, padding:9, borderRadius:8, background:"#450a0a", color:"#fecaca", border:"1px solid #dc2626" }}>{programStationMessageError}</div>}
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:10 }}>
+            <button type="button" onClick={() => openProgramStationMessageEditor("")} style={{ ...buttonSecondary, minHeight:72, fontWeight:900 }}>
+              Globál{programStationMessages.some((row) => String(row.scope_key || "") === "GLOBAL" && row.is_active !== false) ? " • van üzenet" : ""}
+            </button>
+            {getProgramMessageStationNames().map((station) => {
+              const hasMessage = programStationMessages.some((row) => String(row.scope_key || "") === programMessageScopeKey(station) && row.is_active !== false);
+              return <button key={station} type="button" onClick={() => openProgramStationMessageEditor(station)} style={{ ...buttonSecondary, minHeight:72, fontWeight:900 }}>{station}{hasMessage ? " • van üzenet" : ""}</button>;
+            })}
+          </div>
+        </div>
+
+        {programStationMessageModalOpen && (
+          <div style={{ position:"fixed", inset:0, zIndex:95000, background:"rgba(15,23,42,.86)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+            <div style={{ width:"min(720px,96vw)", background:theme.panelBackground, color:theme.textColor, border:`2px solid ${theme.borderColor}`, borderRadius:16, padding:20, boxShadow:"0 28px 90px rgba(0,0,0,.75)" }}>
+              <h3 style={{ marginTop:0 }}>{programStationMessageStation ? programStationMessageStation : "Globál"} üzenet</h3>
+              <textarea value={programStationMessageDraft} onChange={(e)=>setProgramStationMessageDraft(e.target.value)} rows={8} style={{ width:"100%", boxSizing:"border-box", resize:"vertical", ...fieldStyle }} placeholder="Írd ide a munkaállomáson megjelenő megjegyzést..." />
+              {programStationMessageError && <div style={{ marginTop:10, padding:9, borderRadius:8, background:"#450a0a", color:"#fecaca", border:"1px solid #dc2626" }}>{programStationMessageError}</div>}
+              <div style={{ display:"flex", justifyContent:"space-between", gap:8, flexWrap:"wrap", marginTop:14 }}>
+                <button type="button" onClick={() => void deleteProgramStationMessage()} disabled={programStationMessageBusy} style={{ ...buttonSecondary, borderColor:"#ef4444" }}>Törlés</button>
+                <div style={{ display:"flex", gap:8 }}>
+                  <button type="button" onClick={()=>setProgramStationMessageModalOpen(false)} disabled={programStationMessageBusy} style={buttonSecondary}>Mégse</button>
+                  <button type="button" onClick={()=>void saveProgramStationMessage()} disabled={programStationMessageBusy} style={buttonPrimary}>{programStationMessageBusy ? "Mentés..." : "Mentés"}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div data-office-window="program-error-reports:table" style={{ background:theme.panelBackground, border:`${theme.borderWidth}px solid ${theme.borderColor}`, borderRadius:theme.borderRadius, padding:16 }}>
           {programErrorAdminError && <div style={{ marginBottom:12, padding:10, borderRadius:9, background:"#450a0a", color:"#fecaca", border:"1px solid #dc2626" }}>{programErrorAdminError}</div>}
           <div style={{ overflowX:"auto" }}>
@@ -33812,7 +33864,20 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     if (managementSection !== "program-error-reports") return;
     if (!activeWorker || !isAdmin(activeWorker)) return;
     void loadProgramErrorAdminRows();
+    void loadProgramStationMessages();
   }, [managementSection, activeWorker?.id, supabase]);
+
+  useEffect(() => {
+    if (!supabase || terminalView !== "scanner") return;
+    const station = String(machineId || "").trim();
+    if (!station) return;
+    void loadTerminalProgramMessages(station);
+    const intervalId = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      void loadTerminalProgramMessages(station);
+    }, 10 * 60 * 1000);
+    return () => window.clearInterval(intervalId);
+  }, [supabase, machineId, terminalView]);
 
   const previousManagementSectionForAtvetelRef = useRef(managementSection);
   useEffect(() => {
@@ -43771,6 +43836,145 @@ body {
     );
   }
 
+  function getProgramMessageStationNames(): string[] {
+    const values = new Set<string>();
+    machineIdRows.forEach((row) => {
+      const name = String(row.name ?? row.Name ?? row.machine_name ?? row.machine_id ?? row.megnevezes ?? "").trim();
+      if (name && normalizeLooseText(name) !== "iroda" && normalizeLooseText(name) !== "mobil eszkoz") values.add(name);
+    });
+    getOrderedDashboardStations().forEach((name) => { if (String(name || "").trim()) values.add(String(name).trim()); });
+    return Array.from(values).sort((a,b) => a.localeCompare(b, "hu"));
+  }
+
+  function programMessageScopeKey(stationName: string): string {
+    const clean = String(stationName || "").trim();
+    return clean ? `STATION:${clean}` : "GLOBAL";
+  }
+
+  async function loadProgramStationMessages(): Promise<void> {
+    if (!supabase || !isAdmin(activeWorker)) return;
+    setProgramStationMessageBusy(true);
+    setProgramStationMessageError("");
+    try {
+      const { data, error } = await supabase.from(PROGRAM_STATION_MESSAGE_TABLE)
+        .select("scope_key,scope_type,station_name,message,is_active,updated_at,updated_by_worker_id,updated_by_worker_name")
+        .order("scope_key", { ascending:true });
+      if (error) throw error;
+      setProgramStationMessages((data || []) as Array<Record<string, unknown>>);
+    } catch (error) {
+      setProgramStationMessageError(normalizeError(error));
+    } finally { setProgramStationMessageBusy(false); }
+  }
+
+  function openProgramStationMessageEditor(stationName: string): void {
+    const scopeKey = programMessageScopeKey(stationName);
+    const existing = programStationMessages.find((row) => String(row.scope_key || "") === scopeKey && row.is_active !== false);
+    setProgramStationMessageScopeKey(scopeKey);
+    setProgramStationMessageStation(String(stationName || "").trim());
+    setProgramStationMessageDraft(String(existing?.message || ""));
+    setProgramStationMessageError("");
+    setProgramStationMessageModalOpen(true);
+  }
+
+  async function saveProgramStationMessage(): Promise<void> {
+    if (!supabase || !activeWorker || !isAdmin(activeWorker)) return;
+    const messageText = programStationMessageDraft.trim();
+    if (!messageText) { setProgramStationMessageError("A megjegyzés nem lehet üres."); return; }
+    const scopeKey = programStationMessageScopeKey(programStationMessageStation);
+    const previous = programStationMessages.find((row) => String(row.scope_key || "") === scopeKey);
+    const nowIso = new Date().toISOString();
+    const workerName = String(activeWorker["Teljes nev"] || "").trim();
+    setProgramStationMessageBusy(true); setProgramStationMessageError("");
+    try {
+      const payload = {
+        scope_key: scopeKey,
+        scope_type: programStationMessageStation ? "STATION" : "GLOBAL",
+        station_name: programStationMessageStation || null,
+        message: messageText,
+        is_active: true,
+        updated_at: nowIso,
+        updated_by_worker_id: Number(activeWorker.id),
+        updated_by_worker_name: workerName,
+      };
+      const currentResult = await supabase.from(PROGRAM_STATION_MESSAGE_TABLE).upsert(payload, { onConflict:"scope_key" });
+      if (currentResult.error) throw currentResult.error;
+      const historyResult = await supabase.from(PROGRAM_STATION_MESSAGE_HISTORY_TABLE).insert({
+        scope_key: scopeKey, scope_type: payload.scope_type, station_name: payload.station_name,
+        action: previous ? "MODOSITAS" : "LETREHOZAS",
+        previous_message: previous ? String(previous.message || "") : null,
+        new_message: messageText, changed_at: nowIso,
+        changed_by_worker_id: Number(activeWorker.id), changed_by_worker_name: workerName,
+      });
+      if (historyResult.error) throw historyResult.error;
+      setProgramStationMessageModalOpen(false);
+      await loadProgramStationMessages();
+    } catch (error) { setProgramStationMessageError(normalizeError(error)); }
+    finally { setProgramStationMessageBusy(false); }
+  }
+
+  async function deleteProgramStationMessage(): Promise<void> {
+    if (!supabase || !activeWorker || !isAdmin(activeWorker)) return;
+    const scopeKey = programMessageScopeKey(programStationMessageStation);
+    const previous = programStationMessages.find((row) => String(row.scope_key || "") === scopeKey);
+    if (!previous) { setProgramStationMessageModalOpen(false); return; }
+    const nowIso = new Date().toISOString();
+    const workerName = String(activeWorker["Teljes nev"] || "").trim();
+    setProgramStationMessageBusy(true); setProgramStationMessageError("");
+    try {
+      const currentResult = await supabase.from(PROGRAM_STATION_MESSAGE_TABLE).update({
+        is_active:false, updated_at:nowIso, updated_by_worker_id:Number(activeWorker.id), updated_by_worker_name:workerName
+      }).eq("scope_key", scopeKey);
+      if (currentResult.error) throw currentResult.error;
+      const historyResult = await supabase.from(PROGRAM_STATION_MESSAGE_HISTORY_TABLE).insert({
+        scope_key:scopeKey, scope_type:String(previous.scope_type || (programStationMessageStation ? "STATION":"GLOBAL")),
+        station_name:programStationMessageStation || null, action:"TORLES",
+        previous_message:String(previous.message || ""), new_message:null, changed_at:nowIso,
+        changed_by_worker_id:Number(activeWorker.id), changed_by_worker_name:workerName,
+      });
+      if (historyResult.error) throw historyResult.error;
+      setProgramStationMessageModalOpen(false);
+      await loadProgramStationMessages();
+    } catch (error) { setProgramStationMessageError(normalizeError(error)); }
+    finally { setProgramStationMessageBusy(false); }
+  }
+
+  async function persistProgramStationMessageTheme(scopeKey: string, theme: OfficeThemeConfig): Promise<void> {
+    if (!supabase || !activeWorker || !isAdmin(activeWorker)) return;
+    const result = await supabase.from(PROGRAM_STATION_MESSAGE_SETTINGS_TABLE).upsert({
+      scope_key: scopeKey, theme_json: theme, updated_at:new Date().toISOString(),
+      updated_by_worker_id:Number(activeWorker.id), updated_by_worker_name:String(activeWorker["Teljes nev"] || "").trim()
+    }, { onConflict:"scope_key" });
+    if (result.error) console.warn("Üzenetbox globális megjelenés mentési hiba:", result.error);
+  }
+
+  async function loadTerminalProgramMessages(stationName: string): Promise<void> {
+    if (!supabase) return;
+    const station = String(stationName || "").trim();
+    if (!station) return;
+    try {
+      const scopeKeys = ["GLOBAL", programMessageScopeKey(station)];
+      const [messagesResult, settingsResult] = await Promise.all([
+        supabase.from(PROGRAM_STATION_MESSAGE_TABLE)
+          .select("scope_key,scope_type,station_name,message,is_active,updated_at")
+          .in("scope_key", scopeKeys).eq("is_active", true),
+        supabase.from(PROGRAM_STATION_MESSAGE_SETTINGS_TABLE)
+          .select("scope_key,theme_json").in("scope_key", ["terminal-station-message","terminal-global-message"]),
+      ]);
+      if (messagesResult.error) throw messagesResult.error;
+      setTerminalProgramMessages((messagesResult.data || []) as Array<Record<string, unknown>>);
+      if (!settingsResult.error) {
+        const themes: Record<string, OfficeThemeConfig> = {};
+        ((settingsResult.data || []) as Array<Record<string, unknown>>).forEach((row) => {
+          const key = String(row.scope_key || "");
+          if (key) themes[key] = ensureReadableOfficeTheme({ ...getOfficeTheme("program-error-reports"), ...((row.theme_json || {}) as Partial<OfficeThemeConfig>) });
+        });
+        setTerminalProgramMessageThemes(themes);
+      }
+    } catch (error) {
+      console.warn("Munkaállomási üzenetek betöltési hiba:", error);
+    }
+  }
+
   async function loadProgramErrorRowsForStation(openModal = false): Promise<void> {
     if (!supabase) return;
     const station = String(machineId || "").trim();
@@ -53528,11 +53732,7 @@ body {
       <div
         style={{
           width: "100%",
-          maxWidth: terminalEntryLayoutRuntimeActive
-            ? "none"
-            : flowStage === "dashboard" || flowStage === "carpenter-printer-settings" || flowStage === "carpenter-reprint-requests"
-              ? "none"
-              : (step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId) ? 1700 : 960),
+          maxWidth: "none",
           overflowAnchor: "none",
         }}
       >
@@ -53559,6 +53759,27 @@ body {
             >
               Hibabejelentés
             </button>
+            {terminalProgramMessages.length > 0 && (
+              <div style={{ display:"grid", gap:8, marginTop:10 }}>
+                {terminalProgramMessages
+                  .slice()
+                  .sort((a,b) => String(a.scope_type || "") === "GLOBAL" ? -1 : String(b.scope_type || "") === "GLOBAL" ? 1 : 0)
+                  .map((row) => {
+                    const isGlobal = String(row.scope_type || "").toUpperCase() === "GLOBAL";
+                    const themeKey = isGlobal ? "terminal-global-message" : "terminal-station-message";
+                    const messageTheme = terminalProgramMessageThemes[themeKey] || ensureReadableOfficeTheme({
+                      ...getOfficeTheme("program-error-reports"),
+                      panelBackground: isGlobal ? "#facc15" : "#fde047",
+                      borderColor: isGlobal ? "#ca8a04" : "#eab308",
+                      textColor: "#422006",
+                    });
+                    return <div key={String(row.scope_key)} data-office-window={`program-error-reports:${themeKey}`} style={{ background:messageTheme.panelBackground, color:messageTheme.textColor, border:`${messageTheme.borderWidth}px solid ${messageTheme.borderColor}`, borderRadius:messageTheme.borderRadius, padding:"12px 14px", fontWeight:900, whiteSpace:"pre-wrap" }}>
+                      {isGlobal ? <div style={{ fontSize:11, marginBottom:4, opacity:.8 }}>GLOBÁL</div> : null}
+                      {String(row.message || "")}
+                    </div>;
+                  })}
+              </div>
+            )}
           </div>
         )}
 
