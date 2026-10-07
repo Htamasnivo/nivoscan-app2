@@ -10547,6 +10547,8 @@ export default function Page() {
   const [programStationMessageScopeKey, setProgramStationMessageScopeKey] = useState("");
   const [programStationMessageStation, setProgramStationMessageStation] = useState("");
   const [programStationMessageDraft, setProgramStationMessageDraft] = useState("");
+  const [programStationMessageCreateOpen, setProgramStationMessageCreateOpen] = useState(false);
+  const [programStationMessageReporterWorkerId, setProgramStationMessageReporterWorkerId] = useState("");
   const [programStationMessageBusy, setProgramStationMessageBusy] = useState(false);
   const [programStationMessageError, setProgramStationMessageError] = useState("");
   const [terminalProgramMessages, setTerminalProgramMessages] = useState<Array<Record<string, unknown>>>([]);
@@ -30746,28 +30748,67 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           </div>
           {programStationMessageError && <div style={{ marginBottom:10, padding:9, borderRadius:8, background:"#450a0a", color:"#fecaca", border:"1px solid #dc2626" }}>{programStationMessageError}</div>}
           <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:10 }}>
-            <button type="button" onClick={() => openProgramStationMessageEditor("")} style={{ ...buttonSecondary, minHeight:72, fontWeight:900 }}>
-              Globál{programStationMessages.some((row) => String(row.scope_key || "") === "GLOBAL" && row.is_active !== false) ? " • van üzenet" : ""}
-            </button>
-            {getProgramMessageStationNames().map((station) => {
-              const hasMessage = programStationMessages.some((row) => String(row.scope_key || "") === programMessageScopeKey(station) && row.is_active !== false);
-              return <button key={station} type="button" onClick={() => openProgramStationMessageEditor(station)} style={{ ...buttonSecondary, minHeight:72, fontWeight:900 }}>{station}{hasMessage ? " • van üzenet" : ""}</button>;
+            {["", ...getProgramMessageStationNames()].map((station) => {
+              const scopeKey = programMessageScopeKey(station);
+              const activeMessages = programStationMessages.filter((row) => String(row.scope_key || "") === scopeKey && row.is_active !== false);
+              return <button key={scopeKey} type="button" onClick={() => openProgramStationMessageEditor(station)} style={{ ...buttonSecondary, minHeight:72, fontWeight:900, textAlign:"left" }}>
+                <div style={{ textAlign:"center", marginBottom:activeMessages.length ? 7 : 0 }}>{station || "Globál"}</div>
+                {activeMessages.map((row) => <div key={String(row.id)} style={{ fontSize:11, fontWeight:600, whiteSpace:"normal", overflowWrap:"anywhere", marginTop:3 }}>
+                  {String(row.created_by_worker_name || row.updated_by_worker_name || "–")}: {String(row.message || "")}
+                </div>)}
+              </button>;
             })}
           </div>
         </div>
 
         {programStationMessageModalOpen && (
           <div style={{ position:"fixed", inset:0, zIndex:95000, background:"rgba(15,23,42,.86)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
-            <div style={{ width:"min(720px,96vw)", background:theme.panelBackground, color:theme.textColor, border:`2px solid ${theme.borderColor}`, borderRadius:16, padding:20, boxShadow:"0 28px 90px rgba(0,0,0,.75)" }}>
-              <h3 style={{ marginTop:0 }}>{programStationMessageStation ? programStationMessageStation : "Globál"} üzenet</h3>
-              <textarea value={programStationMessageDraft} onChange={(e)=>setProgramStationMessageDraft(e.target.value)} rows={8} style={{ width:"100%", boxSizing:"border-box", resize:"vertical", ...fieldStyle }} placeholder="Írd ide a munkaállomáson megjelenő megjegyzést..." />
-              {programStationMessageError && <div style={{ marginTop:10, padding:9, borderRadius:8, background:"#450a0a", color:"#fecaca", border:"1px solid #dc2626" }}>{programStationMessageError}</div>}
-              <div style={{ display:"flex", justifyContent:"space-between", gap:8, flexWrap:"wrap", marginTop:14 }}>
-                <button type="button" onClick={() => void deleteProgramStationMessage()} disabled={programStationMessageBusy} style={{ ...buttonSecondary, borderColor:"#ef4444" }}>Törlés</button>
-                <div style={{ display:"flex", gap:8 }}>
-                  <button type="button" onClick={()=>setProgramStationMessageModalOpen(false)} disabled={programStationMessageBusy} style={buttonSecondary}>Mégse</button>
-                  <button type="button" onClick={()=>void saveProgramStationMessage()} disabled={programStationMessageBusy} style={buttonPrimary}>{programStationMessageBusy ? "Mentés..." : "Mentés"}</button>
+            <div style={{ width:"min(900px,96vw)", background:"#0f172a", color:"#f8fafc", border:"2px solid #7c3aed", borderRadius:16, padding:20, boxShadow:"0 28px 90px rgba(0,0,0,.75)" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+                <div>
+                  <h3 style={{ margin:"0 0 4px" }}>Hibabejelentés</h3>
+                  <div style={{ fontSize:12, color:"#cbd5e1" }}>Munkaállomás: {programStationMessageStation || "Globál"}</div>
                 </div>
+                <div style={{ display:"flex", gap:8 }}>
+                  <button type="button" onClick={()=>{setProgramStationMessageCreateOpen(true);setProgramStationMessageDraft("");setProgramStationMessageReporterWorkerId("");setProgramStationMessageError("");}} style={{...buttonPrimary,background:"#7c3aed"}}>+ Új hibabejelentés</button>
+                  <button type="button" onClick={()=>setProgramStationMessageModalOpen(false)} style={buttonSecondary}>Bezárás</button>
+                </div>
+              </div>
+
+              {programStationMessageCreateOpen && (
+                <div style={{ marginTop:16, padding:14, border:"1px solid #475569", borderRadius:12 }}>
+                  <select value={programStationMessageReporterWorkerId} onChange={(e)=>setProgramStationMessageReporterWorkerId(e.target.value)} style={{...fieldStyle,width:"100%",marginBottom:10}}>
+                    <option value="">Név kiválasztása...</option>
+                    {workers.map((worker)=><option key={String(worker.id)} value={String(worker.id)}>{String(worker["Teljes nev"] || "")}</option>)}
+                  </select>
+                  <textarea value={programStationMessageDraft} onChange={(e)=>setProgramStationMessageDraft(e.target.value)} rows={5} style={{ width:"100%", boxSizing:"border-box", resize:"vertical", ...fieldStyle }} placeholder="Megjegyzés..." />
+                  {programStationMessageError && <div style={{ marginTop:10, padding:9, borderRadius:8, background:"#450a0a", color:"#fecaca", border:"1px solid #dc2626" }}>{programStationMessageError}</div>}
+                  <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:10}}>
+                    <button type="button" onClick={()=>setProgramStationMessageCreateOpen(false)} disabled={programStationMessageBusy} style={buttonSecondary}>Mégse</button>
+                    <button type="button" onClick={()=>void saveProgramStationMessage()} disabled={programStationMessageBusy} style={buttonPrimary}>{programStationMessageBusy?"Mentés...":"Mentés"}</button>
+                  </div>
+                </div>
+              )}
+
+              <div style={{ overflowX:"auto", marginTop:16 }}>
+                <table style={{width:"100%",borderCollapse:"collapse",minWidth:700}}>
+                  <thead><tr>{["Sorszám","Név","Megjegyzés","Leadás ideje","Státusz","Művelet"].map((label)=><th key={label} style={{padding:9,textAlign:"left",borderBottom:"1px solid #475569"}}>{label}</th>)}</tr></thead>
+                  <tbody>
+                    {programStationMessages.filter((row)=>String(row.scope_key||"")===programStationMessageScopeKey(programStationMessageStation) && row.is_active!==false).map((row,index)=>(
+                      <tr key={String(row.id)}>
+                        <td style={{padding:9,borderBottom:"1px solid #334155",fontWeight:900}}>{index+1}</td>
+                        <td style={{padding:9,borderBottom:"1px solid #334155"}}>{String(row.created_by_worker_name||row.updated_by_worker_name||"–")}</td>
+                        <td style={{padding:9,borderBottom:"1px solid #334155",whiteSpace:"pre-wrap"}}>{String(row.message||"")}</td>
+                        <td style={{padding:9,borderBottom:"1px solid #334155"}}>{row.created_at?formatDateTime(String(row.created_at)):row.updated_at?formatDateTime(String(row.updated_at)):"–"}</td>
+                        <td style={{padding:9,borderBottom:"1px solid #334155",color:"#86efac",fontWeight:900}}>Aktív</td>
+                        <td style={{padding:9,borderBottom:"1px solid #334155"}}><button type="button" onClick={()=>void deleteProgramStationMessage(row)} disabled={programStationMessageBusy} style={{...buttonSecondary,borderColor:"#ef4444"}}>Törlés</button></td>
+                      </tr>
+                    ))}
+                    {programStationMessages.filter((row)=>String(row.scope_key||"")===programMessageScopeKey(programStationMessageStation) && row.is_active!==false).length===0 && (
+                      <tr><td colSpan={6} style={{padding:24,textAlign:"center",color:"#cbd5e1"}}>Még nincs aktív üzenet.</td></tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -33872,11 +33913,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const station = String(machineId || "").trim();
     if (!station) return;
     void loadTerminalProgramMessages(station);
-    const intervalId = window.setInterval(() => {
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-      void loadTerminalProgramMessages(station);
-    }, 10 * 60 * 1000);
-    return () => window.clearInterval(intervalId);
+    const channel = supabase
+      .channel(`program-station-messages-${normalizeLooseText(station)}`)
+      .on("postgres_changes", { event:"*", schema:"public", table:PROGRAM_STATION_MESSAGE_TABLE }, () => {
+        void loadTerminalProgramMessages(station);
+      })
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
   }, [supabase, machineId, terminalView]);
 
   const previousManagementSectionForAtvetelRef = useRef(managementSection);
@@ -43857,8 +43900,9 @@ body {
     setProgramStationMessageError("");
     try {
       const { data, error } = await supabase.from(PROGRAM_STATION_MESSAGE_TABLE)
-        .select("scope_key,scope_type,station_name,message,is_active,updated_at,updated_by_worker_id,updated_by_worker_name")
-        .order("scope_key", { ascending:true });
+        .select("id,scope_key,scope_type,station_name,message,is_active,created_at,created_by_worker_id,created_by_worker_name,updated_at,updated_by_worker_id,updated_by_worker_name")
+        .eq("is_active", true)
+        .order("created_at", { ascending:false });
       if (error) throw error;
       setProgramStationMessages((data || []) as Array<Record<string, unknown>>);
     } catch (error) {
@@ -43867,11 +43911,11 @@ body {
   }
 
   function openProgramStationMessageEditor(stationName: string): void {
-    const scopeKey = programMessageScopeKey(stationName);
-    const existing = programStationMessages.find((row) => String(row.scope_key || "") === scopeKey && row.is_active !== false);
-    setProgramStationMessageScopeKey(scopeKey);
+    setProgramStationMessageScopeKey(programMessageScopeKey(stationName));
     setProgramStationMessageStation(String(stationName || "").trim());
-    setProgramStationMessageDraft(String(existing?.message || ""));
+    setProgramStationMessageDraft("");
+    setProgramStationMessageReporterWorkerId("");
+    setProgramStationMessageCreateOpen(false);
     setProgramStationMessageError("");
     setProgramStationMessageModalOpen(true);
   }
@@ -43879,60 +43923,63 @@ body {
   async function saveProgramStationMessage(): Promise<void> {
     if (!supabase || !activeWorker || !isAdmin(activeWorker)) return;
     const messageText = programStationMessageDraft.trim();
+    if (!programStationMessageReporterWorkerId) { setProgramStationMessageError("A név kiválasztása kötelező."); return; }
     if (!messageText) { setProgramStationMessageError("A megjegyzés nem lehet üres."); return; }
-    const scopeKey = programStationMessageScopeKey(programStationMessageStation);
-    const previous = programStationMessages.find((row) => String(row.scope_key || "") === scopeKey);
+    const selectedWorker = workers.find((worker) => String(worker.id) === programStationMessageReporterWorkerId);
+    if (!selectedWorker) { setProgramStationMessageError("A kiválasztott dolgozó nem található."); return; }
+    const scopeKey = programMessageScopeKey(programStationMessageStation);
     const nowIso = new Date().toISOString();
-    const workerName = String(activeWorker["Teljes nev"] || "").trim();
+    const reporterName = String(selectedWorker["Teljes nev"] || "").trim();
     setProgramStationMessageBusy(true); setProgramStationMessageError("");
     try {
-      const payload = {
+      const insertResult = await supabase.from(PROGRAM_STATION_MESSAGE_TABLE).insert({
         scope_key: scopeKey,
         scope_type: programStationMessageStation ? "STATION" : "GLOBAL",
         station_name: programStationMessageStation || null,
         message: messageText,
         is_active: true,
+        created_at: nowIso,
+        created_by_worker_id: Number(selectedWorker.id),
+        created_by_worker_name: reporterName,
         updated_at: nowIso,
-        updated_by_worker_id: Number(activeWorker.id),
-        updated_by_worker_name: workerName,
-      };
-      const currentResult = await supabase.from(PROGRAM_STATION_MESSAGE_TABLE).upsert(payload, { onConflict:"scope_key" });
-      if (currentResult.error) throw currentResult.error;
+        updated_by_worker_id: Number(selectedWorker.id),
+        updated_by_worker_name: reporterName,
+      });
+      if (insertResult.error) throw insertResult.error;
       const historyResult = await supabase.from(PROGRAM_STATION_MESSAGE_HISTORY_TABLE).insert({
-        scope_key: scopeKey, scope_type: payload.scope_type, station_name: payload.station_name,
-        action: previous ? "MODOSITAS" : "LETREHOZAS",
-        previous_message: previous ? String(previous.message || "") : null,
-        new_message: messageText, changed_at: nowIso,
-        changed_by_worker_id: Number(activeWorker.id), changed_by_worker_name: workerName,
+        scope_key: scopeKey, scope_type: programStationMessageStation ? "STATION" : "GLOBAL",
+        station_name: programStationMessageStation || null, action:"LETREHOZAS",
+        previous_message:null, new_message:messageText, changed_at:nowIso,
+        changed_by_worker_id:Number(selectedWorker.id), changed_by_worker_name:reporterName,
       });
       if (historyResult.error) throw historyResult.error;
-      setProgramStationMessageModalOpen(false);
+      setProgramStationMessageDraft("");
+      setProgramStationMessageReporterWorkerId("");
+      setProgramStationMessageCreateOpen(false);
       await loadProgramStationMessages();
     } catch (error) { setProgramStationMessageError(normalizeError(error)); }
     finally { setProgramStationMessageBusy(false); }
   }
 
-  async function deleteProgramStationMessage(): Promise<void> {
+  async function deleteProgramStationMessage(row: Record<string, unknown>): Promise<void> {
     if (!supabase || !activeWorker || !isAdmin(activeWorker)) return;
-    const scopeKey = programMessageScopeKey(programStationMessageStation);
-    const previous = programStationMessages.find((row) => String(row.scope_key || "") === scopeKey);
-    if (!previous) { setProgramStationMessageModalOpen(false); return; }
+    const id = String(row.id || "");
+    if (!id) return;
     const nowIso = new Date().toISOString();
     const workerName = String(activeWorker["Teljes nev"] || "").trim();
     setProgramStationMessageBusy(true); setProgramStationMessageError("");
     try {
       const currentResult = await supabase.from(PROGRAM_STATION_MESSAGE_TABLE).update({
         is_active:false, updated_at:nowIso, updated_by_worker_id:Number(activeWorker.id), updated_by_worker_name:workerName
-      }).eq("scope_key", scopeKey);
+      }).eq("id", id);
       if (currentResult.error) throw currentResult.error;
       const historyResult = await supabase.from(PROGRAM_STATION_MESSAGE_HISTORY_TABLE).insert({
-        scope_key:scopeKey, scope_type:String(previous.scope_type || (programStationMessageStation ? "STATION":"GLOBAL")),
-        station_name:programStationMessageStation || null, action:"TORLES",
-        previous_message:String(previous.message || ""), new_message:null, changed_at:nowIso,
+        scope_key:String(row.scope_key || ""), scope_type:String(row.scope_type || ""),
+        station_name:row.station_name || null, action:"TORLES",
+        previous_message:String(row.message || ""), new_message:null, changed_at:nowIso,
         changed_by_worker_id:Number(activeWorker.id), changed_by_worker_name:workerName,
       });
       if (historyResult.error) throw historyResult.error;
-      setProgramStationMessageModalOpen(false);
       await loadProgramStationMessages();
     } catch (error) { setProgramStationMessageError(normalizeError(error)); }
     finally { setProgramStationMessageBusy(false); }
@@ -43952,16 +43999,20 @@ body {
     const station = String(stationName || "").trim();
     if (!station) return;
     try {
-      const scopeKeys = ["GLOBAL", programMessageScopeKey(station)];
       const [messagesResult, settingsResult] = await Promise.all([
         supabase.from(PROGRAM_STATION_MESSAGE_TABLE)
-          .select("scope_key,scope_type,station_name,message,is_active,updated_at")
-          .in("scope_key", scopeKeys).eq("is_active", true),
+          .select("id,scope_key,scope_type,station_name,message,is_active,created_at,created_by_worker_name,updated_at")
+          .eq("is_active", true),
         supabase.from(PROGRAM_STATION_MESSAGE_SETTINGS_TABLE)
           .select("scope_key,theme_json").in("scope_key", ["terminal-station-message","terminal-global-message"]),
       ]);
       if (messagesResult.error) throw messagesResult.error;
-      setTerminalProgramMessages((messagesResult.data || []) as Array<Record<string, unknown>>);
+      const stationKey = getStationPlanIdentityKey(station);
+      const visibleMessages = ((messagesResult.data || []) as Array<Record<string, unknown>>).filter((row) => {
+        if (String(row.scope_type || "").toUpperCase() === "GLOBAL") return true;
+        return getStationPlanIdentityKey(String(row.station_name || "")) === stationKey;
+      });
+      setTerminalProgramMessages(visibleMessages);
       if (!settingsResult.error) {
         const themes: Record<string, OfficeThemeConfig> = {};
         ((settingsResult.data || []) as Array<Record<string, unknown>>).forEach((row) => {
