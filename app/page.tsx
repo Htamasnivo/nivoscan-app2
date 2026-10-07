@@ -28501,8 +28501,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       setMessage({ type: "error", text: "A Rendelésszám formátuma kötelezően: nagy R + pontosan 9 számjegy (pl. R260918123)." });
       return;
     }
-    if (draft.muhely !== "Asztalos" && draft.muhely !== "Lakatos") {
-      setMessage({ type: "error", text: "A Műhely mezőben válaszd ki az Asztalos vagy Lakatos értéket." });
+    if (draft.muhely !== "Asztalos" && draft.muhely !== "Lakatos" && draft.muhely !== "Üveg") {
+      setMessage({ type: "error", text: "A Műhely mezőben válaszd ki az Asztalos, Lakatos vagy Üveg értéket." });
       return;
     }
     if (!draft.gyartandoTetelek.trim()) {
