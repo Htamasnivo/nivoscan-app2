@@ -10722,6 +10722,7 @@ export default function Page() {
   const [reklamacioLoading, setReklamacioLoading] = useState(false);
   const [reklamacioSavingKey, setReklamacioSavingKey] = useState("");
   const [reklamacioUvegDateDrafts, setReklamacioUvegDateDrafts] = useState<Record<string, string>>({});
+  const [reklamacioUvegDateEditing, setReklamacioUvegDateEditing] = useState<Record<string, boolean>>({});
   const [reklamacioUvegDateSavingKey, setReklamacioUvegDateSavingKey] = useState("");
   const [reklamacioLastUpdatedAt, setReklamacioLastUpdatedAt] = useState("");
   const [reklamacioTableEditMode, setReklamacioTableEditMode] = useState(false);
@@ -28237,7 +28238,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       const orderNumbers = Array.from(new Set(dbRows.map((row) => String(row.rendelesszam || "").trim()).filter(Boolean)));
 
       const reklamacioAtvetelByOrder = new Map<string, { vevoNeve: string; teljesCim: string; szerelesiIdopont: string }>();
-      const baseOrderNumbers = Array.from(new Set(orderNumbers.map((value) => value.replace(/_REK$/i, "").trim()).filter(Boolean)));
+      const baseOrderNumbers = Array.from(new Set(orderNumbers.map((value) => value.replace(/_REK\d*$/i, "").trim()).filter(Boolean)));
       for (let index = 0; index < baseOrderNumbers.length; index += 100) {
         const chunk = baseOrderNumbers.slice(index, index + 100);
         const atvetelResponse = await supabase.from("atvetel_adat").select("*").in("rendelesszam", chunk).limit(10000);
@@ -28294,7 +28295,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
       const nextRows: ReklamacioViewRow[] = dbRows.map((dbRow) => {
         const orderNumber = String(dbRow.rendelesszam || "").trim();
-        const atvetelOrderNumber = orderNumber.replace(/_REK$/i, "").trim();
+        const atvetelOrderNumber = orderNumber.replace(/_REK\d*$/i, "").trim();
         const atvetelDetails = reklamacioAtvetelByOrder.get(normalizeLooseText(atvetelOrderNumber)) || null;
         const savedDrawings = drawingsByReklamacioId.get(String(dbRow.id)) || [];
         const legacyDrawingUrl = String(dbRow.rajz_url || "");
@@ -28313,7 +28314,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         const workshop: ReklamacioWorkshop = dbRow.muhely === "Asztalos" || dbRow.muhely === "Lakatos" || dbRow.muhely === "Üveg" ? dbRow.muhely : "";
         const required = workshop ? REKLAMACIO_STATIONS[workshop] : [];
         const normalizedOrderNumber = normalizeLooseText(orderNumber);
-        const gyartasbaTerveDatum = required.reduce((latestDate, station) => {
+        const gyartasbaTerveDatum = workshop === "Üveg" ? String(dbRow.uveg_gyartasba_datum || "").slice(0, 10) : required.reduce((latestDate, station) => {
           const stationKey = getStationPlanIdentityKey(station.stationName);
           const stationDate = planLatestDates.get(stationKey)?.get(normalizedOrderNumber) || "";
           return stationDate > latestDate ? stationDate : latestDate;
@@ -28352,6 +28353,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           mentesDatum: String(dbRow.mentes_datum || ""),
           szerkesztesZarolva: Boolean(dbRow.szerkesztes_zarolva),
           gyartasbaTerveDatum,
+          uvegGyartasbaDatum: String(dbRow.uveg_gyartasba_datum || "").slice(0, 10),
+          uvegGyartasbaMentveAt: String(dbRow.uveg_gyartasba_mentve_at || ""),
+          uvegGyartasbaMentetteWorkerName: String(dbRow.uveg_gyartasba_mentette_worker_name || ""),
           keszDatum: String(dbRow.kesz_datum || ""),
           vevoNeve: atvetelDetails?.vevoNeve || "",
           teljesCim: atvetelDetails?.teljesCim || "",
@@ -28480,7 +28484,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       if (u.error) throw u.error;
       const h = await supabase.from(REKLAMACIO_UVEG_GYARTASBA_NAPLO_TABLE).insert({ reklamacio_id:row.id, rendelesszam:row.rendelesszam, elozo_datum:row.uvegGyartasbaDatum||null, uj_datum:selectedDate, mentette_worker_id:Number.isFinite(workerId)?workerId:null, mentette_worker_name:workerName||null, mentve_at:nowIso });
       if (h.error) throw h.error;
-      setReklamacioUvegDateDrafts(c=>({...c,[row.key]:selectedDate})); await loadReklamacioRows({quiet:true});
+      setReklamacioUvegDateDrafts(c=>({...c,[row.key]:selectedDate}));
+      setReklamacioUvegDateEditing(c=>({...c,[row.key]:false}));
+      await loadReklamacioRows({quiet:true});
     } catch(error) {
       const errorMessage = error && typeof error === "object" && "message" in error
         ? String((error as { message?: unknown }).message || "")
@@ -28541,7 +28547,21 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
     setReklamacioSavingKey(row.key);
     try {
-      const fullOrderNumber = row.isNew ? `${rawBase}_REK` : row.rendelesszam;
+      let fullOrderNumber = row.rendelesszam;
+      if (row.isNew) {
+        const existingResponse = await supabase.from(REKLAMACIO_TABLE).select("rendelesszam").eq("alap_rendelesszam", rawBase).limit(10000);
+        if (existingResponse.error) throw existingResponse.error;
+        let maxRekSequence = -1;
+        ((existingResponse.data || []) as Array<{ rendelesszam?: string | null }>).forEach((item) => {
+          const savedOrder = String(item.rendelesszam || "").trim().toUpperCase();
+          if (savedOrder === `${rawBase}_REK`) { maxRekSequence = Math.max(maxRekSequence, 0); return; }
+          const prefix = `${rawBase}_REK`;
+          if (!savedOrder.startsWith(prefix)) return;
+          const suffix = savedOrder.slice(prefix.length);
+          if (/^\d+$/.test(suffix)) maxRekSequence = Math.max(maxRekSequence, Number(suffix));
+        });
+        fullOrderNumber = maxRekSequence < 0 ? `${rawBase}_REK` : `${rawBase}_REK${maxRekSequence + 1}`;
+      }
       const nowIso = new Date().toISOString();
       const workerIdNumber = Number(activeWorker?.id);
       const workerId = Number.isFinite(workerIdNumber) ? workerIdNumber : null;
@@ -29924,7 +29944,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       const disabled = row.lezart || row.szerkesztesZarolva || reklamacioSavingKey === row.key;
       let content: React.ReactNode = null;
       if (column.id === "rendelesszam") {
-        content = row.isNew ? <input value={draft.rendelesszam} maxLength={10} placeholder="R + 9 számjegy" onChange={(event) => updateReklamacioDraft(row.key, { rendelesszam: event.target.value.toUpperCase().replace(/[^R0-9]/g, "").slice(0, 10) })} style={tableInputStyle} /> : <strong>{row.rendelesszam}</strong>;
+        content = row.isNew ? <input value={draft.rendelesszam} maxLength={10} placeholder="R + 9 számjegy" onChange={(event) => {
+          const rawValue = event.target.value.toUpperCase();
+          if (!rawValue) { updateReklamacioDraft(row.key, { rendelesszam: "" }); return; }
+          const digits = rawValue.replace(/^R/, "").replace(/\D/g, "").slice(0, 9);
+          updateReklamacioDraft(row.key, { rendelesszam: `R${digits}` });
+        }} style={tableInputStyle} /> : <strong>{row.rendelesszam}</strong>;
       } else if (column.id === "vevoNeve") {
         content = row.vevoNeve || "–";
       } else if (column.id === "teljesCim") {
@@ -29977,7 +30002,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         if (row.muhely === "Üveg" && !row.isNew && !row.lezart) {
           const glassDateValue = reklamacioUvegDateDrafts[row.key] ?? row.uvegGyartasbaDatum ?? "";
           const glassSaving = reklamacioUvegDateSavingKey === row.key;
-          content = <div style={{display:"grid",gap:6}}><input type="date" value={glassDateValue} disabled={glassSaving} onChange={(e)=>setReklamacioUvegDateDrafts(c=>({...c,[row.key]:e.target.value}))} style={{...tableInputStyle,colorScheme:"dark"}}/><button type="button" disabled={glassSaving||!glassDateValue} onClick={()=>void saveReklamacioUvegGyartasbaDatum(row)} style={{...buttonPrimary,padding:"6px 9px"}}>{glassSaving?"Mentés...":"Mentés"}</button>{row.uvegGyartasbaMentveAt?<span style={{fontSize:10,color:officeTheme.mutedText}}>Utolsó mentés: {formatDateTimeMinute(row.uvegGyartasbaMentveAt)}{row.uvegGyartasbaMentetteWorkerName?` · ${row.uvegGyartasbaMentetteWorkerName}`:""}</span>:null}</div>;
+          const glassEditing = !row.uvegGyartasbaDatum || Boolean(reklamacioUvegDateEditing[row.key]);
+          content = glassEditing ? <div style={{display:"grid",gap:6}}><input type="date" value={glassDateValue} disabled={glassSaving} onChange={(e)=>setReklamacioUvegDateDrafts(c=>({...c,[row.key]:e.target.value}))} style={{...tableInputStyle,colorScheme:"dark"}}/><button type="button" disabled={glassSaving||!glassDateValue} onClick={()=>void saveReklamacioUvegGyartasbaDatum(row)} style={{...buttonPrimary,padding:"6px 9px"}}>{glassSaving?"Mentés...":"Mentés"}</button></div> : <div style={{display:"grid",gap:6}}><span>{formatDateOnly(row.uvegGyartasbaDatum)}</span><button type="button" onClick={()=>{setReklamacioUvegDateDrafts(c=>({...c,[row.key]:row.uvegGyartasbaDatum}));setReklamacioUvegDateEditing(c=>({...c,[row.key]:true}));}} style={{...buttonSecondary,padding:"6px 9px"}}>Szerkesztés</button></div>;
         } else content = row.gyartasbaTerveDatum ? formatDateOnly(row.gyartasbaTerveDatum) : "-";
       } else if (column.id === "keszDatum") {
         content = row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "–";
