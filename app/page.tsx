@@ -33903,7 +33903,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   }, [managementSection, activeWorker?.id, supabase]);
 
   useEffect(() => {
-    if (!supabase || terminalView !== "scanner") return;
+    if (!supabase) return;
     const station = String(machineId || "").trim();
     if (!station) return;
     void loadTerminalProgramMessages(station);
@@ -33914,7 +33914,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       })
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [supabase, machineId, terminalView]);
+  }, [supabase, machineId, machineIdRows, terminalView]);
 
   const previousManagementSectionForAtvetelRef = useRef(managementSection);
   useEffect(() => {
@@ -43996,10 +43996,16 @@ body {
           .select("scope_key,theme_json").in("scope_key", ["terminal-station-message","terminal-global-message"]),
       ]);
       if (messagesResult.error) throw messagesResult.error;
-      const stationKey = getStationPlanIdentityKey(station);
+      // Match the workstation by its saved machine identity and registered aliases,
+      // not only the current browser's displayed machineId string.
+      const stationAliases = getProductionCardStationAliases(station, machineIdRows);
+      const stationKey = getProductionCardStationMatchKey(station);
+      stationAliases.add(stationKey);
       const visibleMessages = ((messagesResult.data || []) as Array<Record<string, unknown>>).filter((row) => {
         if (String(row.scope_type || "").toUpperCase() === "GLOBAL") return true;
-        return getStationPlanIdentityKey(String(row.station_name || "")) === stationKey;
+        const target = String(row.station_name || "").trim()
+          || String(row.scope_key || "").replace(/^STATION:/i, "").trim();
+        return stationAliases.has(getProductionCardStationMatchKey(target));
       });
       setTerminalProgramMessages(visibleMessages);
       if (!settingsResult.error) {
