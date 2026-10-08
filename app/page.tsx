@@ -29106,14 +29106,22 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     }
     setReklamacioDrawingSaving(true);
     try {
-      const uploaded = await uploadReklamacioDrawing(dataUrl, row.rendelesszam);
+      // A rajz mindig a mentett reklamáció teljes (_REK, _REK1, ...) azonosítóját kapja.
+      const parentResponse = await supabase.from(REKLAMACIO_TABLE)
+        .select("rendelesszam").eq("id", row.id).single();
+      if (parentResponse.error) throw parentResponse.error;
+      const fullReklamacioOrder = String(parentResponse.data?.rendelesszam || "").trim();
+      if (!/^R\d{9}_REK\d*$/i.test(fullReklamacioOrder)) {
+        throw new Error("A reklamáció teljes rendelésszáma nem található.");
+      }
+      const uploaded = await uploadReklamacioDrawing(dataUrl, fullReklamacioOrder);
       if (!uploaded.url) throw new Error("A rajz feltöltése nem adott vissza publikus URL-t.");
       const workerIdNumber = Number(activeWorker?.id);
       const workerId = Number.isFinite(workerIdNumber) ? workerIdNumber : null;
       const workerName = activeWorker?.["Teljes nev"] || null;
       const payload = {
         reklamacio_id: row.id,
-        rendelesszam: row.rendelesszam,
+        rendelesszam: fullReklamacioOrder,
         nev: name,
         rajz_url: uploaded.url,
         storage_path: uploaded.path,
