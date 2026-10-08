@@ -13757,13 +13757,17 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   ): Promise<ReportDeliveryBeepitesRow[]> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     const orderFilters = parseReportDeliveryOrderFilters(profile.orderFilter);
-    const latest = new Map<string, { orderNumber: string; timestamp: number; installationAt: string }>();
-    // A legutolsó dátum kiválasztása a teljes atvetel_adat táblán történik;
-    // a dátumszűrőt csak azután alkalmazzuk, hogy minden rendelésből 1 sor maradt.
+    const from = Date.parse(range.startIso);
+    const to = Date.parse(range.endIso);
+    const matchingRows: Array<{ orderNumber: string; timestamp: number; installationAt: string }> = [];
+
+    // Minden forrásrekordot külön megőrzünk, azonos rendelésszám és időpont esetén is.
+    // A dátumszűrés soronként történik, nem rendelésenkénti összevonás után.
     for (let start = 0; ; start += 1000) {
       const response = await supabase.from("atvetel_adat")
         .select("rendelesszam,szerelesi_idopont")
-        .not("szerelesi_idopont", "is", null).range(start, start + 999);
+        .not("szerelesi_idopont", "is", null)
+        .range(start, start + 999);
       if (response.error) throw response.error;
       const page = (response.data || []) as Array<Record<string, unknown>>;
       page.forEach((row) => {
@@ -13771,18 +13775,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         if (!orderNumber || (orderFilters.length && !matchesDashboardOrderFilters(orderNumber, orderFilters))) return;
         const timestamp = getAtvetelDetailsSzerelesTimestampRank(row);
         if (timestamp === null || !Number.isFinite(timestamp)) return;
-        const key = normalizeLooseText(orderNumber);
-        const previous = latest.get(key);
-        if (!previous || timestamp > previous.timestamp) {
-          latest.set(key, { orderNumber, timestamp, installationAt: new Date(timestamp).toISOString() });
+        if (timestamp >= from && timestamp < to) {
+          matchingRows.push({ orderNumber, timestamp, installationAt: new Date(timestamp).toISOString() });
         }
       });
       if (page.length < 1000) break;
     }
-    const from = Date.parse(range.startIso);
-    const to = Date.parse(range.endIso);
-    return Array.from(latest.values())
-      .filter((row) => row.timestamp >= from && row.timestamp < to)
+    return matchingRows
       .sort((a, b) => a.timestamp - b.timestamp || a.orderNumber.localeCompare(b.orderNumber, "hu"))
       .map(({ orderNumber, installationAt }) => ({ orderNumber, installationAt }));
   }
