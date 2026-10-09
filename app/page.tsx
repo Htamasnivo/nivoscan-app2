@@ -12314,7 +12314,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     // Gyorskód/részleges gyorskód esetén a szerveren előszűrünk az év + hónap
     // részre, majd kliensoldalon a getDashboardQuickOrderCode alapján pontosítunk.
     // Pl. 07178 -> R26 07 ... 178.
-    let serverPattern = `%${normalizedSearch}%`;
+    let serverPattern = `%${normalizedSearch.split("").join("%")}%`;
     if (/^\d{2,5}$/.test(normalizedSearch)) {
       serverPattern = `R26${normalizedSearch.slice(0, 2)}%`;
     }
@@ -37700,7 +37700,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         // Teljes/részleges rendelésszámnál normál részszöveges keresés.
         const likePattern = /^\d{5}$/.test(normalizedFilter)
           ? `R26${normalizedFilter.slice(0, 2)}%${normalizedFilter.slice(-3)}`
-          : `%${normalizedFilter}%`;
+          : `%${normalizedFilter.split("").join("%")}%`;
 
         let historyResponse = await supabase
           .from("work_logs")
@@ -38375,7 +38375,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         // Teljes vagy részleges rendelésszám: részszöveges keresés.
         const likePattern = /^\d{5}$/.test(normalizedFilter)
           ? `R26${normalizedFilter.slice(0, 2)}%${normalizedFilter.slice(-3)}`
-          : `%${normalizedFilter}%`;
+          : `%${normalizedFilter.split("").join("%")}%`;
 
         let historyResponse = await supabase
           .from("work_logs")
