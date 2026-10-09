@@ -12314,54 +12314,42 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     // Gyorskód/részleges gyorskód esetén a szerveren előszűrünk az év + hónap
     // részre, majd kliensoldalon a getDashboardQuickOrderCode alapján pontosítunk.
     // Pl. 07178 -> R26 07 ... 178.
-    let serverPattern = `%${normalizedSearch.split("").join("%")}%`;
+    let serverPattern = `%${normalizedSearch}%`;
     if (/^\d{2,5}$/.test(normalizedSearch)) {
       serverPattern = `R26${normalizedSearch.slice(0, 2)}%`;
     }
 
-    let response = await supabase
-      .from("work_logs")
-      .select("order_number, created_at")
-      .ilike("order_number", serverPattern)
-      .order("created_at", { ascending: false })
-      .limit(2500);
-
-    if (response.error) {
-      response = await supabase
-        .from("work_log")
-        .select("order_number, created_at")
-        .ilike("order_number", serverPattern)
-        .order("created_at", { ascending: false })
-        .limit(2500);
-    }
-
-    if (response.error) {
-      console.warn("Rendelésszám-javaslatok betöltési hibája:", response.error);
-      return [];
-    }
-
+    // Kizárólag a work_logs.order_number mezőből keresünk; a találatokat
+    // lapozva olvassuk, így a legújabb 2500 sor nem korlátozza a keresést.
     const selectedKeys = new Set(
       dashboardOrderFiltersRef.current.map(normalizeDashboardOrderSearch)
     );
     const seen = new Set<string>();
     const suggestions: string[] = [];
-
-    for (const row of (response.data || []) as Array<{ order_number?: string | null }>) {
-      const orderNumber = String(row.order_number || "").trim();
-      if (!orderNumber) continue;
-
-      // KIZÁRÓLAG order_number kerülhet a listába.
-      if (!matchesDashboardOrderFilters(orderNumber, [rawSearch])) continue;
-
-      const normalizedOrder = normalizeDashboardOrderSearch(orderNumber);
-      if (!normalizedOrder || selectedKeys.has(normalizedOrder) || seen.has(normalizedOrder)) continue;
-
-      seen.add(normalizedOrder);
-      suggestions.push(orderNumber);
-
-      if (suggestions.length >= 50) break;
+    const pageSize = 500;
+    for (let offset = 0; ; offset += pageSize) {
+      const response = await supabase
+        .from("work_logs")
+        .select("order_number")
+        .ilike("order_number", serverPattern)
+        .order("id", { ascending: true })
+        .range(offset, offset + pageSize - 1);
+      if (response.error) {
+        console.warn("Rendelésszám-javaslatok betöltési hibája:", response.error);
+        break;
+      }
+      const rows = (response.data || []) as Array<{ order_number?: string | null }>;
+      for (const row of rows) {
+        const orderNumber = String(row.order_number || "").trim();
+        if (!orderNumber || !matchesDashboardOrderFilters(orderNumber, [rawSearch])) continue;
+        const key = normalizeDashboardOrderSearch(orderNumber);
+        if (!key || selectedKeys.has(key) || seen.has(key)) continue;
+        seen.add(key);
+        suggestions.push(orderNumber);
+        if (suggestions.length >= 50) return suggestions;
+      }
+      if (rows.length < pageSize) break;
     }
-
     return suggestions;
   }
 
@@ -38328,7 +38316,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     // a Napi / Heti / Havi / Egyedi nézettől és a kiválasztott dátumtól.
     let periodLogs: WorkLogRow[] = [];
 
-    if (planFieldTargetsDate) {
+    if (planFieldTargetsDate && !hasOrderFilter) {
       // Dátum típusú _terv mezőnél a Dátumtól / Dátumig NEM a work_logs időpontját
       // szűri. Előbb kiválasztjuk a tervmező alapján a rendeléseket, majd azok teljes
       // work_logs történetét töltjük be, hogy minden munkaállomás állapota látható maradjon.
@@ -38364,7 +38352,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
     let fullOrderHistoryLogs: WorkLogRow[] = [];
 
-    if (hasOrderFilter && !planFieldTargetsDate) {
+    if (hasOrderFilter) {
       const historyGroups: WorkLogRow[][] = [];
 
       for (const rawFilter of orderFilters) {
@@ -38375,43 +38363,36 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         // Teljes vagy részleges rendelésszám: részszöveges keresés.
         const likePattern = /^\d{5}$/.test(normalizedFilter)
           ? `R26${normalizedFilter.slice(0, 2)}%${normalizedFilter.slice(-3)}`
-          : `%${normalizedFilter.split("").join("%")}%`;
+          : `%${normalizedFilter}%`;
 
-        let historyResponse = await supabase
-          .from("work_logs")
-          .select(selectColumns)
-          .ilike("order_number", likePattern)
-          .order("created_at", { ascending: true })
-          .limit(10000);
-
-        if (historyResponse.error) {
-          historyResponse = await supabase
-            .from("work_log")
+        // Minden megfelelő work_logs sor lekérése lapozva, dátumkorlát nélkül.
+        const pageSize = 500;
+        for (let offset = 0; ; offset += pageSize) {
+          const historyResponse = await supabase
+            .from("work_logs")
             .select(selectColumns)
             .ilike("order_number", likePattern)
-            .order("created_at", { ascending: true })
-            .limit(10000);
+            .order("id", { ascending: true })
+            .range(offset, offset + pageSize - 1);
+          if (historyResponse.error) throw historyResponse.error;
+          const rows = (historyResponse.data || []) as WorkLogRow[];
+          historyGroups.push(rows);
+          if (rows.length < pageSize) break;
         }
-
-        if (historyResponse.error) {
-          console.warn("Rendelés teljes work_logs előzményének betöltési hibája:", historyResponse.error);
-          continue;
-        }
-
-        historyGroups.push(((historyResponse.data || []) as WorkLogRow[]));
       }
+
 
       fullOrderHistoryLogs = mergeDashboardLogs(...historyGroups)
         .filter((log) => matchesDashboardOrderFilters(log.order_number, orderFilters));
     }
 
-    const allFetchedLogs = planFieldTargetsDate
+    const allFetchedLogs = planFieldTargetsDate && !hasOrderFilter
       ? periodLogs
       : hasOrderFilter
         ? mergeDashboardLogs(periodLogs, fullOrderHistoryLogs)
         : periodLogs;
 
-    const planFilteredFetchedLogs = planFieldMatch.active
+    const planFilteredFetchedLogs = planFieldMatch.active && !hasOrderFilter
       ? allFetchedLogs.filter((log) => matchesPlanFieldOrder(log.order_number))
       : allFetchedLogs;
 
