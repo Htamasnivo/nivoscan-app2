@@ -33910,6 +33910,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     void loadProgramStationMessages();
   }, [managementSection, activeWorker?.id, supabase]);
 
+  const terminalProgramMessagesRequestRef = useRef(0);
   useEffect(() => {
     if (!supabase) return;
     const station = String(machineId || "").trim();
@@ -33921,7 +33922,11 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         void loadTerminalProgramMessages(station);
       })
       .subscribe();
-    return () => { void supabase.removeChannel(channel); };
+    return () => {
+      // Invalidate in-flight requests for the previous workstation on F5/rehydration.
+      terminalProgramMessagesRequestRef.current += 1;
+      void supabase.removeChannel(channel);
+    };
   }, [supabase, machineId, machineIdRows, terminalView]);
 
   const previousManagementSectionForAtvetelRef = useRef(managementSection);
@@ -43995,6 +44000,7 @@ body {
     if (!supabase) return;
     const station = String(stationName || "").trim();
     if (!station) return;
+    const requestId = ++terminalProgramMessagesRequestRef.current;
     try {
       const [messagesResult, settingsResult] = await Promise.all([
         supabase.from(PROGRAM_STATION_MESSAGE_TABLE)
@@ -44015,6 +44021,8 @@ body {
           || String(row.scope_key || "").replace(/^STATION:/i, "").trim();
         return stationAliases.has(getProductionCardStationMatchKey(target));
       });
+      // Do not allow an older asynchronous response to overwrite the restored station's messages.
+      if (requestId !== terminalProgramMessagesRequestRef.current) return;
       setTerminalProgramMessages(visibleMessages);
       if (!settingsResult.error) {
         const themes: Record<string, OfficeThemeConfig> = {};
@@ -53834,7 +53842,7 @@ body {
                       borderColor: isGlobal ? "#ca8a04" : "#eab308",
                       textColor: "#422006",
                     });
-                    return <div key={String(row.scope_key)} data-office-window={`program-error-reports:${themeKey}`} style={{ background:messageTheme.panelBackground, color:messageTheme.textColor, border:`${messageTheme.borderWidth}px solid ${messageTheme.borderColor}`, borderRadius:messageTheme.borderRadius, padding:"12px 14px", fontWeight:900, whiteSpace:"pre-wrap" }}>
+                    return <div key={String(row.id ?? row.scope_key)} data-office-window={`program-error-reports:${themeKey}`} style={{ background:messageTheme.panelBackground, color:messageTheme.textColor, border:`${messageTheme.borderWidth}px solid ${messageTheme.borderColor}`, borderRadius:messageTheme.borderRadius, padding:"12px 14px", fontWeight:900, whiteSpace:"pre-wrap" }}>
                       {isGlobal ? <div style={{ fontSize:11, marginBottom:4, opacity:.8 }}>GLOBÁL</div> : null}
                       {String(row.message || "")}
                     </div>;
