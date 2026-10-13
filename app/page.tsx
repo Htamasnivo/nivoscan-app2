@@ -587,7 +587,7 @@ type DashboardData = {
 };
 
 type DashboardFilterMode = "daily" | "weekly" | "monthly" | "custom";
-type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "pause-report" | "reproduction-report" | "atvetel" | "reklamacio" | "label-printer" | "executive-report" | "report-delivery" | "data-upload" | "admin" | "program-error-reports";
+type ManagementSection = "dashboard" | "production-plan" | "production-monitor" | "production-card" | "pause-report" | "reproduction-report" | "atvetel" | "reklamacio" | "label-printer" | "executive-report" | "report-delivery" | "data-upload" | "admin";
 type OfficePageKey = ManagementSection;
 
 type PausedSzerelesRow = {
@@ -951,11 +951,11 @@ function createDefaultOfficeThemeMap(): Record<OfficePageKey, OfficeThemeConfig>
   const base = OFFICE_THEME_PRESETS["industrial-night"].theme;
   return {
     dashboard: cloneOfficeTheme(base), "production-plan": cloneOfficeTheme(base), "production-monitor": cloneOfficeTheme(base),
-    "production-card": cloneOfficeTheme(base), "pause-report": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "atvetel": cloneOfficeTheme(base), "reklamacio": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "executive-report": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base), "data-upload": cloneOfficeTheme(base), "admin": cloneOfficeTheme(base), "program-error-reports": cloneOfficeTheme(base),
+    "production-card": cloneOfficeTheme(base), "pause-report": cloneOfficeTheme(base), "reproduction-report": cloneOfficeTheme(base), "atvetel": cloneOfficeTheme(base), "reklamacio": cloneOfficeTheme(base), "label-printer": cloneOfficeTheme(base), "executive-report": cloneOfficeTheme(base), "report-delivery": cloneOfficeTheme(base), "data-upload": cloneOfficeTheme(base), "admin": cloneOfficeTheme(base),
   };
 }
 function createDefaultOfficeThemePresetMap(): Record<OfficePageKey, OfficeThemePresetId> {
-  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "pause-report":"industrial-night", "reproduction-report":"industrial-night", "atvetel":"industrial-night", "reklamacio":"industrial-night", "label-printer":"industrial-night", "executive-report":"industrial-night", "report-delivery":"industrial-night", "data-upload":"industrial-night", "admin":"industrial-night", "program-error-reports":"industrial-night" };
+  return { dashboard:"industrial-night", "production-plan":"industrial-night", "production-monitor":"industrial-night", "production-card":"industrial-night", "pause-report":"industrial-night", "reproduction-report":"industrial-night", "atvetel":"industrial-night", "reklamacio":"industrial-night", "label-printer":"industrial-night", "executive-report":"industrial-night", "report-delivery":"industrial-night", "data-upload":"industrial-night", "admin":"industrial-night" };
 }
 
 const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]> = {
@@ -1015,14 +1015,6 @@ const OFFICE_WINDOW_DEFINITIONS: Record<OfficePageKey, OfficeWindowDefinition[]>
     { id:"machines", label:"Gépek aktivitása" }, { id:"emergency", label:"Vészleállítás" },
     { id:"quarantine-alerts", label:"Automatikus karantén" }, { id:"quarantine-notifications", label:"Karantén e-mail értesítések" },
     { id:"machine-activity-cards", label:"Munkaállomások aktivitási boxai" },
-  ],
-  "program-error-reports": [
-    { id:"navigation", label:"Felső menüsor" },
-    { id:"header", label:"Hibajelentések fejléc" },
-    { id:"station-messages", label:"Munkaállomás üzenet boxok" },
-    { id:"terminal-station-message", label:"Munkaállomási sárga üzenet" },
-    { id:"terminal-global-message", label:"Globál eltérő sárga üzenet" },
-    { id:"table", label:"Hibajelentések táblázata" },
   ],
 };
 
@@ -1376,31 +1368,19 @@ function createDefaultAtvetelTableColumns(): AtvetelTableColumnConfig[] {
 }
 
 
-type ReklamacioWorkshop = "" | "Asztalos" | "Lakatos" | "Üveg";
-type ReklamacioHibaTipus = "Felmérés" | "Gyártás" | "Összeszerelés" | "Beszerelés" | "Termékhiba" | "Egyéb";
-const REKLAMACIO_HIBA_TIPUSOK: ReklamacioHibaTipus[] = ["Felmérés", "Gyártás", "Összeszerelés", "Beszerelés", "Termékhiba", "Egyéb"];
+type ReklamacioWorkshop = "" | "Asztalos" | "Lakatos";
 
 type ReklamacioDbRow = {
   id: string;
   rendelesszam: string;
   alap_rendelesszam: string;
-  muhely: "Asztalos" | "Lakatos" | "Üveg";
+  muhely: "Asztalos" | "Lakatos";
   gyartando_tetelek: string;
-  uveg_gyartasba_datum?: string | null;
-  uveg_gyartasba_mentve_at?: string | null;
-  uveg_gyartasba_mentette_worker_id?: number | string | null;
-  uveg_gyartasba_mentette_worker_name?: string | null;
-  hibatipus?: string[] | null;
   kert_datum: string;
   rajz_url?: string | null;
   mentes_datum?: string | null;
-  szerkesztes_zarolva?: boolean | null;
   kesz_datum?: string | null;
   lezart?: boolean | null;
-  lezart_at?: string | null;
-  lezarta_worker_id?: number | string | null;
-  lezarta_worker_name?: string | null;
-  lezaras_mod?: "kezi" | "automatikus" | null;
   created_by_worker_id?: number | string | null;
   created_by_worker_name?: string | null;
   updated_by_worker_id?: number | string | null;
@@ -1443,20 +1423,12 @@ type ReklamacioViewRow = {
   alapRendelesszam: string;
   muhely: ReklamacioWorkshop;
   gyartandoTetelek: string;
-  hibatipus: ReklamacioHibaTipus[];
   kertDatum: string;
   rajzUrl: string;
   drawings: ReklamacioSavedDrawing[];
   mentesDatum: string;
-  szerkesztesZarolva: boolean;
   gyartasbaTerveDatum: string;
-  uvegGyartasbaDatum: string;
-  uvegGyartasbaMentveAt: string;
-  uvegGyartasbaMentetteWorkerName: string;
   keszDatum: string;
-  vevoNeve: string;
-  teljesCim: string;
-  szerelesiIdopont: string;
   lezart: boolean;
   createdAt: string;
   updatedAt: string;
@@ -1466,16 +1438,12 @@ type ReklamacioViewRow = {
 
 type ReklamacioReportRow = ReklamacioViewRow & {
   createdByWorkerName: string;
-  lezartAt: string;
-  lezartaWorkerName: string;
-  lezarasMod: "" | "kezi" | "automatikus";
 };
 
 type ReklamacioDraft = {
   rendelesszam: string;
   muhely: ReklamacioWorkshop;
   gyartandoTetelek: string;
-  hibatipus: ReklamacioHibaTipus[];
   kertDatum: string;
   rajzDataUrl: string;
   pendingDrawings: ReklamacioPendingDrawing[];
@@ -1484,12 +1452,8 @@ type ReklamacioDraft = {
 
 type ReklamacioTableColumnId =
   | "rendelesszam"
-  | "vevoNeve"
-  | "teljesCim"
-  | "szerelesiIdopont"
   | "muhely"
   | "gyartandoTetelek"
-  | "hibatipus"
   | "kertDatum"
   | "rajz"
   | "munkaallomasAllapot"
@@ -1532,12 +1496,8 @@ type ReklamacioFilterMenuState = { columnId: ReklamacioTableColumnId; x: number;
 const REKLAMACIO_TABLE_CONFIG_PAGE_KEY = "__reklamacio_table_config_v1__";
 const DEFAULT_REKLAMACIO_TABLE_COLUMNS: ReklamacioTableColumnConfig[] = [
   { id: "rendelesszam", label: "Rendelésszám", width: 185, visible: true, align: "left" },
-  { id: "vevoNeve", label: "Vevő neve", width: 210, visible: true, align: "left" },
-  { id: "teljesCim", label: "Cím", width: 300, visible: true, align: "left" },
-  { id: "szerelesiIdopont", label: "Szerelési időpont", width: 165, visible: true, align: "left" },
   { id: "muhely", label: "Műhely", width: 145, visible: true, align: "left" },
   { id: "gyartandoTetelek", label: "Gyártandó tételek", width: 300, visible: true, align: "left" },
-  { id: "hibatipus", label: "Hibatípus", width: 250, visible: true, align: "left" },
   { id: "kertDatum", label: "Kért Dátum", width: 165, visible: true, align: "left" },
   { id: "rajz", label: "Rajz", width: 185, visible: true, align: "center" },
   { id: "munkaallomasAllapot", label: "Munkaállomások állapota", width: 430, visible: true, align: "left" },
@@ -1722,15 +1682,6 @@ type ScrapReplacementRoute = {
 };
 
 type EventFiveRepairAction = "" | "Javítás" | "Újragyártás";
-
-const EVENT_FIVE_ISSUE_REPORT_TABLE = "event5_hibajelentesek";
-const EVENT_FIVE_ISSUE_TARGET_TABLE = "event5_hibajelentes_celallomasok";
-const EVENT_FIVE_ISSUE_STATUS_AUDIT_TABLE = "event5_hibajelentes_allapotnaplo";
-const PROGRAM_ERROR_REPORT_TABLE = "program_hibajelentesek";
-const PROGRAM_STATION_MESSAGE_TABLE = "program_munkaallomas_uzenetek";
-const PROGRAM_STATION_MESSAGE_HISTORY_TABLE = "program_munkaallomas_uzenet_naplo";
-const PROGRAM_STATION_MESSAGE_SETTINGS_TABLE = "program_munkaallomas_uzenet_beallitasok";
-const EVENT_FIVE_ISSUE_STATIONS = ["Asztalos", "Fényező", "Fóliázó"] as const;
 
 const EVENT_FIVE_REPAIR_STATION_OPTIONS = [
   { identityKey: "csolezer", label: "Csőlézer" },
@@ -2312,7 +2263,6 @@ type ReportDeliveryReportType =
   | "worker-comparison"
   | "reproduction"
   | "scrap-replacement"
-  | "event5-issue"
   | "station-performance"
   | "plan-vs-completed"
   | "closed-orders"
@@ -2337,7 +2287,6 @@ type ReportDeliveryBlock =
   | "worker-comparison"
   | "reproduction"
   | "scrap-replacement"
-  | "event5-issue"
   | "station-performance"
   | "plan-vs-completed"
   | "closed-orders";
@@ -2464,7 +2413,6 @@ const REPORT_DELIVERY_REPORT_TYPE_LABELS: Record<ReportDeliveryReportType, strin
   "worker-comparison": "Dolgozói összehasonlítás",
   reproduction: "Újragyártási riport",
   "scrap-replacement": "Selejtpótlási riport",
-  "event5-issue": "Hibajelentések / felhasználások",
   "station-performance": "Munkaállomás teljesítmény",
   "plan-vs-completed": "Termelési terv vs. elkészült",
   "closed-orders": "Lezárt rendelések",
@@ -2493,7 +2441,6 @@ const REPORT_DELIVERY_BLOCK_OPTIONS: Array<{ id: ReportDeliveryBlock; label: str
   { id: "worker-comparison", label: "Dolgozói összehasonlítás" },
   { id: "reproduction", label: "Újragyártási riport" },
   { id: "scrap-replacement", label: "Selejtpótlási riport" },
-  { id: "event5-issue", label: "Hibajelentések / felhasználások" },
   { id: "station-performance", label: "Munkaállomás teljesítmény" },
   { id: "plan-vs-completed", label: "Termelési terv vs. elkészült" },
   { id: "closed-orders", label: "Lezárt rendelések" },
@@ -2688,7 +2635,6 @@ const ATVETEL_SOURCE_STATION = "Szereles";
 const REKLAMACIO_TABLE = "reklamacio_adat";
 const REKLAMACIO_DRAWING_BUCKET = "reklamacio-rajzok";
 const REKLAMACIO_DRAWINGS_TABLE = "reklamacio_rajzok";
-const REKLAMACIO_UVEG_GYARTASBA_NAPLO_TABLE = "reklamacio_uveg_gyartasba_naplo";
 const MAX_REKLAMACIO_DRAWINGS = 2;
 type ReklamacioDrawingTextBox = {
   id: string;
@@ -2710,7 +2656,6 @@ const REKLAMACIO_STATIONS: Record<Exclude<ReklamacioWorkshop, "">, Array<{ stati
     { stationName: "Lakatos", label: "Lakatos" },
     { stationName: "Kézi szinter", label: "Kézi szinter" },
   ],
-  Üveg: [],
 };
 const PRODUCTION_CARD_ORDER_FIELD_ID = "__card_order_number__";
 const PRODUCTION_CARD_PRODUCT_FIELD_ID = "__card_product_name__";
@@ -7557,12 +7502,6 @@ function getExactProductionCardPlanTableName(stationName: string): string {
 function usesPlanRunSequence(stationName: string | null | undefined): boolean {
   const key = getStationPlanIdentityKey(stationName);
   if (!key) return false;
-
-  // A Raktár is saját raktar_terv.futo_sorszam értéket használ.
-  // Ezt explicit engedélyezzük, hogy minden meglévő START/END és köteg
-  // mentési útvonal ugyanazzal a terv-futósorszám logikával működjön.
-  if (key === "raktar") return true;
-
   return STATION_PLAN_MASTER_SHEET_NAMES.some(
     (masterName) => getStationPlanIdentityKey(masterName) === key
   );
@@ -8291,42 +8230,6 @@ function getBundleTenExactBatchRowMeta(
   const exactKey = getBundleTenBatchRowMetaKey(row.orderNumber, row.key);
   const exactMeta = productionMeta?.[exactKey];
   return exactMeta ? normalizeOrderProductionMeta(exactMeta) : null;
-}
-
-type BundleTenBatchItemIdentity = {
-  orderNumber: string;
-  itemKey: string;
-  stateKey: string;
-  meta: OrderProductionMeta;
-};
-
-function getBundleTenBatchItemIdentities(batch: ProductionBatchRow): BundleTenBatchItemIdentity[] {
-  const exactByOrder = new Map<string, Array<{ itemKey: string; meta: OrderProductionMeta }>>();
-  Object.entries(batch.production_meta || {}).forEach(([savedKey, rawMeta]) => {
-    if (!savedKey.startsWith(BUNDLE_TEN_BATCH_ROW_META_PREFIX)) return;
-    const meta = normalizeOrderProductionMeta(rawMeta);
-    const itemKey = String(meta.visual_source_item_key || "").trim();
-    const encodedOrder = savedKey.slice(BUNDLE_TEN_BATCH_ROW_META_PREFIX.length).split("::")[0] || "";
-    const orderFromKey = decodeURIComponent(encodedOrder).trim();
-    if (!orderFromKey || !itemKey) return;
-    const normalized = normalizeLooseText(orderFromKey);
-    const list = exactByOrder.get(normalized) || [];
-    list.push({ itemKey, meta });
-    exactByOrder.set(normalized, list);
-  });
-
-  const used = new Map<string, number>();
-  return (batch.order_ids || []).map((rawOrder, index) => {
-    const orderNumber = String(rawOrder || "").trim();
-    const normalized = normalizeLooseText(orderNumber);
-    const occurrence = used.get(normalized) || 0;
-    used.set(normalized, occurrence + 1);
-    const exact = exactByOrder.get(normalized)?.[occurrence] || null;
-    const meta = exact?.meta || getProductionMetaForOrder(batch.production_meta, orderNumber);
-    const itemKey = exact?.itemKey || `${orderNumber}#${occurrence + 1}`;
-    const runSequence = parsePlanRunSequence(meta.terv_futo_sorszam);
-    return { orderNumber, itemKey, stateKey: `bundle10:${itemKey}:${runSequence || "no-run"}:${index}`, meta };
-  });
 }
 
 function resolveLogStation(log: WorkLogRow, workerRows: Worker[]): string {
@@ -10513,45 +10416,6 @@ export default function Page() {
   const [eventScanError, setEventScanError] = useState("");
   const [orderTypeInput, setOrderTypeInput] = useState("");
   const [orderTypeScanError, setOrderTypeScanError] = useState("");
-  // 5-ös esemény – Hibajelentés / felhasználás. Külön állapot, a meglévő munkafolyamatot nem módosítja.
-  const [eventFiveIssueOpen, setEventFiveIssueOpen] = useState(false);
-  const [eventFiveIssueOrder, setEventFiveIssueOrder] = useState("");
-  const [eventFiveIssueSize, setEventFiveIssueSize] = useState("");
-  const [eventFiveIssueNote, setEventFiveIssueNote] = useState("");
-  const [eventFiveIssueStations, setEventFiveIssueStations] = useState<string[]>([]);
-  const [eventFiveIssueBusy, setEventFiveIssueBusy] = useState(false);
-  const [eventFiveIssueError, setEventFiveIssueError] = useState("");
-  const [eventFiveIssueHistoryOpen, setEventFiveIssueHistoryOpen] = useState(false);
-  const [eventFiveIssueHistoryBusy, setEventFiveIssueHistoryBusy] = useState(false);
-  const [eventFiveIssueHistoryError, setEventFiveIssueHistoryError] = useState("");
-  const [eventFiveIssueHistoryRows, setEventFiveIssueHistoryRows] = useState<Array<Record<string, unknown>>>([]);
-  const [eventFiveStationIssueOpen, setEventFiveStationIssueOpen] = useState(false);
-  const [eventFiveStationIssueBusy, setEventFiveStationIssueBusy] = useState(false);
-  const [eventFiveStationIssueError, setEventFiveStationIssueError] = useState("");
-  const [eventFiveStationIssueRows, setEventFiveStationIssueRows] = useState<Array<Record<string, unknown>>>([]);
-  // Általános program-hibabejelentés – teljesen külön a termelési/selejt folyamatoktól.
-  const [programErrorOpen, setProgramErrorOpen] = useState(false);
-  const [programErrorCreateOpen, setProgramErrorCreateOpen] = useState(false);
-  const [programErrorReporterWorkerId, setProgramErrorReporterWorkerId] = useState("");
-  const [programErrorNote, setProgramErrorNote] = useState("");
-  const [programErrorRows, setProgramErrorRows] = useState<Array<Record<string, unknown>>>([]);
-  const [programErrorBusy, setProgramErrorBusy] = useState(false);
-  const [programErrorError, setProgramErrorError] = useState("");
-  const [programErrorAdminRows, setProgramErrorAdminRows] = useState<Array<Record<string, unknown>>>([]);
-  const [programErrorAdminBusy, setProgramErrorAdminBusy] = useState(false);
-  const [programErrorAdminError, setProgramErrorAdminError] = useState("");
-  const [programErrorRepairNotices, setProgramErrorRepairNotices] = useState<Array<Record<string, unknown>>>([]);
-  const programErrorNoticeLoadedForMachineRef = useRef<Set<string>>(new Set());
-  const [programStationMessages, setProgramStationMessages] = useState<Array<Record<string, unknown>>>([]);
-  const [programStationMessageModalOpen, setProgramStationMessageModalOpen] = useState(false);
-  const [programStationMessageScopeKey, setProgramStationMessageScopeKey] = useState("");
-  const [programStationMessageStation, setProgramStationMessageStation] = useState("");
-  const [programStationMessageDraft, setProgramStationMessageDraft] = useState("");
-  const [programStationMessageCreateOpen, setProgramStationMessageCreateOpen] = useState(false);
-  const [programStationMessageBusy, setProgramStationMessageBusy] = useState(false);
-  const [programStationMessageError, setProgramStationMessageError] = useState("");
-  const [terminalProgramMessages, setTerminalProgramMessages] = useState<Array<Record<string, unknown>>>([]);
-  const [terminalProgramMessageThemes, setTerminalProgramMessageThemes] = useState<Record<string, OfficeThemeConfig>>({});
   const [incompleteBatches, setIncompleteBatches] = useState<IncompleteBatchRow[]>([]);
   const [showIncompleteBatches, setShowIncompleteBatches] = useState(false);
   const [activeProductionBatches, setActiveProductionBatches] = useState<ProductionBatchRow[]>([]);
@@ -10737,9 +10601,6 @@ export default function Page() {
   const [reklamacioDrafts, setReklamacioDrafts] = useState<Record<string, ReklamacioDraft>>({});
   const [reklamacioLoading, setReklamacioLoading] = useState(false);
   const [reklamacioSavingKey, setReklamacioSavingKey] = useState("");
-  const [reklamacioUvegDateDrafts, setReklamacioUvegDateDrafts] = useState<Record<string, string>>({});
-  const [reklamacioUvegDateEditing, setReklamacioUvegDateEditing] = useState<Record<string, boolean>>({});
-  const [reklamacioUvegDateSavingKey, setReklamacioUvegDateSavingKey] = useState("");
   const [reklamacioLastUpdatedAt, setReklamacioLastUpdatedAt] = useState("");
   const [reklamacioTableEditMode, setReklamacioTableEditMode] = useState(false);
   const [reklamacioTableColumns, setReklamacioTableColumns] = useState<ReklamacioTableColumnConfig[]>(createDefaultReklamacioTableColumns());
@@ -11175,17 +11036,6 @@ export default function Page() {
   );
 
   const [machineId, setMachineId] = useState<MachineIdOption>("iroda");
-
-  // Program-hibajavítási értesítések: csak egyszer töltjük le az adott
-  // munkaállomás felületének megnyitásakor. Fontos: ez az effect csak azután
-  // szerepelhet, hogy terminalView, machineId és a használt ref-ek inicializálódtak.
-  useEffect(() => {
-    if (terminalView !== "scanner") return;
-    const station = String(machineId || "").trim();
-    if (!station) return;
-    void loadProgramErrorRepairNoticesOnce(station);
-  }, [machineId, terminalView]);
-
   nivoCurrentTabMachineId = machineId;
   const [nivoDuplicateTabBlocked, setNivoDuplicateTabBlocked] = useState(false);
   const [nivoDuplicateTabMachine, setNivoDuplicateTabMachine] = useState("");
@@ -12194,9 +12044,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     setOfficeWindowPresetByKey((current) => ({ ...current, [stateKey]: "custom" }));
     setOfficeWindowThemeByKey((current) => ({ ...current, [stateKey]: nextTheme }));
     queueOfficeUiPreferenceSave(officeWindowDbKey(pageKey, windowKey), "custom", nextTheme);
-    if (pageKey === "program-error-reports" && (windowKey === "terminal-station-message" || windowKey === "terminal-global-message")) {
-      void persistProgramStationMessageTheme(windowKey, nextTheme);
-    }
   }
 
   async function restorePreviousOfficeUiPreference(pageKey: OfficePageKey, windowKey?: string): Promise<void> {
@@ -12319,37 +12166,49 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       serverPattern = `R26${normalizedSearch.slice(0, 2)}%`;
     }
 
-    // Kizárólag a work_logs.order_number mezőből keresünk; a találatokat
-    // lapozva olvassuk, így a legújabb 2500 sor nem korlátozza a keresést.
+    let response = await supabase
+      .from("work_logs")
+      .select("order_number, created_at")
+      .ilike("order_number", serverPattern)
+      .order("created_at", { ascending: false })
+      .limit(2500);
+
+    if (response.error) {
+      response = await supabase
+        .from("work_log")
+        .select("order_number, created_at")
+        .ilike("order_number", serverPattern)
+        .order("created_at", { ascending: false })
+        .limit(2500);
+    }
+
+    if (response.error) {
+      console.warn("Rendelésszám-javaslatok betöltési hibája:", response.error);
+      return [];
+    }
+
     const selectedKeys = new Set(
       dashboardOrderFiltersRef.current.map(normalizeDashboardOrderSearch)
     );
     const seen = new Set<string>();
     const suggestions: string[] = [];
-    const pageSize = 500;
-    for (let offset = 0; ; offset += pageSize) {
-      const response = await supabase
-        .from("work_logs")
-        .select("order_number")
-        .ilike("order_number", serverPattern)
-        .order("id", { ascending: true })
-        .range(offset, offset + pageSize - 1);
-      if (response.error) {
-        console.warn("Rendelésszám-javaslatok betöltési hibája:", response.error);
-        break;
-      }
-      const rows = (response.data || []) as Array<{ order_number?: string | null }>;
-      for (const row of rows) {
-        const orderNumber = String(row.order_number || "").trim();
-        if (!orderNumber || !matchesDashboardOrderFilters(orderNumber, [rawSearch])) continue;
-        const key = normalizeDashboardOrderSearch(orderNumber);
-        if (!key || selectedKeys.has(key) || seen.has(key)) continue;
-        seen.add(key);
-        suggestions.push(orderNumber);
-        if (suggestions.length >= 50) return suggestions;
-      }
-      if (rows.length < pageSize) break;
+
+    for (const row of (response.data || []) as Array<{ order_number?: string | null }>) {
+      const orderNumber = String(row.order_number || "").trim();
+      if (!orderNumber) continue;
+
+      // KIZÁRÓLAG order_number kerülhet a listába.
+      if (!matchesDashboardOrderFilters(orderNumber, [rawSearch])) continue;
+
+      const normalizedOrder = normalizeDashboardOrderSearch(orderNumber);
+      if (!normalizedOrder || selectedKeys.has(normalizedOrder) || seen.has(normalizedOrder)) continue;
+
+      seen.add(normalizedOrder);
+      suggestions.push(orderNumber);
+
+      if (suggestions.length >= 50) break;
     }
+
     return suggestions;
   }
 
@@ -13370,20 +13229,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   async function fetchReklamacioReportRows(
     profile: ReportDeliveryProfile,
     range: { startIso: string; endIso: string },
-    scope: "range" | "open-and-today-completed" | "open" | "closed-range" = "range"
+    scope: "range" | "open-and-today-completed" = "range"
   ): Promise<ReklamacioReportRow[]> {
     if (!supabase) return [];
-    const reklamacioSelectColumns = "id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, hibatipus, kert_datum, rajz_url, mentes_datum, szerkesztes_zarolva, uveg_gyartasba_datum, uveg_gyartasba_mentve_at, uveg_gyartasba_mentette_worker_id, uveg_gyartasba_mentette_worker_name, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, lezaras_mod, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at";
+    const reklamacioSelectColumns = "id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at";
     let sourceRows: ReklamacioDbRow[] = [];
-    if (scope === "open") {
-      const response = await supabase.from(REKLAMACIO_TABLE).select(reklamacioSelectColumns).or("lezart.eq.false,lezart.is.null").order("created_at", { ascending: true }).limit(10000);
-      if (response.error) throw response.error;
-      sourceRows = (response.data || []) as ReklamacioDbRow[];
-    } else if (scope === "closed-range") {
-      const response = await supabase.from(REKLAMACIO_TABLE).select(reklamacioSelectColumns).eq("lezart", true).gte("lezart_at", range.startIso).lt("lezart_at", range.endIso).order("lezart_at", { ascending: true }).limit(10000);
-      if (response.error) throw response.error;
-      sourceRows = (response.data || []) as ReklamacioDbRow[];
-    } else if (scope === "open-and-today-completed") {
+    if (scope === "open-and-today-completed") {
       const todayKey = getSafeReportDeliveryTodayKey();
       const todayRange = getDashboardDateRange("custom", todayKey, todayKey);
       const [openResponse, completedTodayResponse] = await Promise.all([
@@ -13414,8 +13265,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const dbRows = sourceRows.filter((row) => {
       const orderNumber = String(row.rendelesszam || "").trim();
       if (!orderNumber) return false;
-      if (scope !== "open-and-today-completed" && orderFilters.length > 0 && !matchesDashboardOrderFilters(orderNumber, orderFilters)) return false;
-      if (scope !== "open-and-today-completed" && profile.workerFilter !== "all" && normalizeLooseText(String(row.created_by_worker_name || "")) !== normalizeLooseText(profile.workerFilter)) return false;
+      if (scope === "range" && orderFilters.length > 0 && !matchesDashboardOrderFilters(orderNumber, orderFilters)) return false;
+      if (scope === "range" && profile.workerFilter !== "all" && normalizeLooseText(String(row.created_by_worker_name || "")) !== normalizeLooseText(profile.workerFilter)) return false;
       return true;
     });
 
@@ -13482,10 +13333,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         id: `legacy-${reklamacioId}`, reklamacioId, rendelesszam: orderNumber, name: "Rajz 1", url: legacyDrawingUrl,
         storagePath: "", orderIndex: 0, createdAt: String(dbRow.created_at || ""), updatedAt: String(dbRow.updated_at || ""), isLegacy: true,
       }];
-      const workshop: ReklamacioWorkshop = dbRow.muhely === "Asztalos" || dbRow.muhely === "Lakatos" || dbRow.muhely === "Üveg" ? dbRow.muhely : "";
+      const workshop: ReklamacioWorkshop = dbRow.muhely === "Asztalos" || dbRow.muhely === "Lakatos" ? dbRow.muhely : "";
       const required = workshop ? REKLAMACIO_STATIONS[workshop] : [];
       const normalizedOrderNumber = normalizeLooseText(orderNumber);
-      const gyartasbaTerveDatum = workshop === "Üveg" ? String(dbRow.uveg_gyartasba_datum || "").slice(0, 10) : required.reduce((latestDate, station) => {
+      const gyartasbaTerveDatum = required.reduce((latestDate, station) => {
         const stationDate = planLatestDates.get(getStationPlanIdentityKey(station.stationName))?.get(normalizedOrderNumber) || "";
         return stationDate > latestDate ? stationDate : latestDate;
       }, "");
@@ -13498,25 +13349,16 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         const stationBatches = batchStarts.filter((batch) => getProductionCardStationMatchKey(batch.machine_id) === wantedStationKey
           && Array.isArray(batch.order_ids) && batch.order_ids.some((orderId) => normalizeLooseText(String(orderId)) === normalizedOrderNumber));
         const cell = getMonitorCellFromLogs(stationLogs, stationBatches, orderNumber);
-        if (cell.status === "done") return { stationName: station.stationName, label: station.label, status: cell.status, statusLabel: cell.label };
-        return { stationName: station.stationName, label: station.label, status: "in-progress", statusLabel: "Folyamatban" };
+        return { stationName: station.stationName, label: station.label, status: cell.status, statusLabel: cell.label };
       });
-      if (workshop === "Üveg") {
-        const glassDate = String(dbRow.uveg_gyartasba_datum || "").slice(0, 10);
-        stationStates.push({ stationName: "Üveg", label: "Üveg", status: glassDate ? "in-progress" : "waiting", statusLabel: glassDate ? "Folyamatban" : "Várakozik" });
-      }
       const presentStates = stationStates.filter((state) => state.status !== "not-required");
       return {
         key: reklamacioId, id: reklamacioId, isNew: false, rendelesszam: orderNumber,
         alapRendelesszam: String(dbRow.alap_rendelesszam || "").trim(), muhely: workshop,
-        gyartandoTetelek: String(dbRow.gyartando_tetelek || ""), hibatipus: Array.isArray(dbRow.hibatipus) ? dbRow.hibatipus.filter((value): value is ReklamacioHibaTipus => REKLAMACIO_HIBA_TIPUSOK.includes(value as ReklamacioHibaTipus)) : [], kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
-        rajzUrl: legacyDrawingUrl, drawings, mentesDatum: String(dbRow.mentes_datum || ""), szerkesztesZarolva: Boolean(dbRow.szerkesztes_zarolva), gyartasbaTerveDatum,
-        uvegGyartasbaDatum: String(dbRow.uveg_gyartasba_datum || "").slice(0, 10), uvegGyartasbaMentveAt: String(dbRow.uveg_gyartasba_mentve_at || ""), uvegGyartasbaMentetteWorkerName: String(dbRow.uveg_gyartasba_mentette_worker_name || ""),
+        gyartandoTetelek: String(dbRow.gyartando_tetelek || ""), kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
+        rajzUrl: legacyDrawingUrl, drawings, mentesDatum: String(dbRow.mentes_datum || ""), gyartasbaTerveDatum,
         keszDatum: String(dbRow.kesz_datum || ""), lezart: Boolean(dbRow.lezart), createdAt: String(dbRow.created_at || ""),
         updatedAt: String(dbRow.updated_at || ""), createdByWorkerName: String(dbRow.created_by_worker_name || "").trim(), stationStates,
-        lezartAt: String(dbRow.lezart_at || dbRow.kesz_datum || ""),
-        lezartaWorkerName: String(dbRow.lezarta_worker_name || ""),
-        lezarasMod: dbRow.lezaras_mod === "kezi" || dbRow.lezaras_mod === "automatikus" ? dbRow.lezaras_mod : "",
         canClose: presentStates.length > 0 && presentStates.every((state) => state.status === "done"),
       };
     });
@@ -13556,18 +13398,16 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     const orderFilters = parseReportDeliveryOrderFilters(profile.orderFilter);
     const completedLogs: WorkLogRow[] = [];
-    const selectColumns = "id,order_number,machine_id,worker_id,worker_name,action,created_at,start_time,start_timestamp,end_time,end_timestamp,terv_futo_sorszam";
+    const selectColumns = "order_number,machine_id,worker_id,worker_name,action,created_at,start_time,start_timestamp,end_time,end_timestamp";
 
     // Az időszakot KIZÁRÓLAG a tényleges befejezési idő alapján szűrjük.
-    // Nem szűrünk action='END'-re: minden ténylegesen befejezett work_logs sor
-    // bekerül, akkor is, ha egy régebbi mentési útvonal az action mezőt START-on
-    // hagyta. A terv_futo_sorszam lehet NULL vagy kitöltött; egyik sem kizáró ok.
-    // A két lekérdezés átfedésmentes: az első az end_time-os, a második kizárólag
-    // az end_time nélküli, de end_timestamp-pal rendelkező lezárásokat olvassa.
+    // A régebbi soroknál előfordulhat, hogy az END az end_timestamp mezőben van,
+    // ezért mindkét tárolási formát külön lekérjük, átfedés nélkül.
     const loadPageRange = async (useEndTimestamp: boolean): Promise<void> => {
       for (let start = 0; ; start += 1000) {
         let query = supabase.from("work_logs")
-          .select(selectColumns);
+          .select(selectColumns)
+          .eq("action", "END");
         // A kiválasztott munkaállomást már a Supabase lekérdezésben is
         // pontosan a work_logs.machine_id mezőre szűrjük. Így pl. Lakatos
         // esetén más munkaállomás sora nem kerülhet az exportba.
@@ -13575,8 +13415,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           query = query.eq("machine_id", profile.stationFilter);
         }
         query = useEndTimestamp
-          ? query.is("end_time", null).not("end_timestamp", "is", null).gte("end_timestamp", range.startIso).lt("end_timestamp", range.endIso).order("end_timestamp", { ascending: true })
-          : query.not("end_time", "is", null).gte("end_time", range.startIso).lt("end_time", range.endIso).order("end_time", { ascending: true });
+          ? query.is("end_time", null).gte("end_timestamp", range.startIso).lt("end_timestamp", range.endIso).order("end_timestamp", { ascending: true })
+          : query.gte("end_time", range.startIso).lt("end_time", range.endIso).order("end_time", { ascending: true });
         const response = await query.range(start, start + 999);
         if (response.error) throw response.error;
         const page = (response.data || []) as WorkLogRow[];
@@ -13745,17 +13585,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   ): Promise<ReportDeliveryBeepitesRow[]> {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     const orderFilters = parseReportDeliveryOrderFilters(profile.orderFilter);
-    const from = Date.parse(range.startIso);
-    const to = Date.parse(range.endIso);
-    const matchingRows: Array<{ orderNumber: string; timestamp: number; installationAt: string }> = [];
-
-    // Minden forrásrekordot külön megőrzünk, azonos rendelésszám és időpont esetén is.
-    // A dátumszűrés soronként történik, nem rendelésenkénti összevonás után.
+    const latest = new Map<string, { orderNumber: string; timestamp: number; installationAt: string }>();
+    // A legutolsó dátum kiválasztása a teljes atvetel_adat táblán történik;
+    // a dátumszűrőt csak azután alkalmazzuk, hogy minden rendelésből 1 sor maradt.
     for (let start = 0; ; start += 1000) {
       const response = await supabase.from("atvetel_adat")
         .select("rendelesszam,szerelesi_idopont")
-        .not("szerelesi_idopont", "is", null)
-        .range(start, start + 999);
+        .not("szerelesi_idopont", "is", null).range(start, start + 999);
       if (response.error) throw response.error;
       const page = (response.data || []) as Array<Record<string, unknown>>;
       page.forEach((row) => {
@@ -13763,13 +13599,18 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         if (!orderNumber || (orderFilters.length && !matchesDashboardOrderFilters(orderNumber, orderFilters))) return;
         const timestamp = getAtvetelDetailsSzerelesTimestampRank(row);
         if (timestamp === null || !Number.isFinite(timestamp)) return;
-        if (timestamp >= from && timestamp < to) {
-          matchingRows.push({ orderNumber, timestamp, installationAt: new Date(timestamp).toISOString() });
+        const key = normalizeLooseText(orderNumber);
+        const previous = latest.get(key);
+        if (!previous || timestamp > previous.timestamp) {
+          latest.set(key, { orderNumber, timestamp, installationAt: new Date(timestamp).toISOString() });
         }
       });
       if (page.length < 1000) break;
     }
-    return matchingRows
+    const from = Date.parse(range.startIso);
+    const to = Date.parse(range.endIso);
+    return Array.from(latest.values())
+      .filter((row) => row.timestamp >= from && row.timestamp < to)
       .sort((a, b) => a.timestamp - b.timestamp || a.orderNumber.localeCompare(b.orderNumber, "hu"))
       .map(({ orderNumber, installationAt }) => ({ orderNumber, installationAt }));
   }
@@ -14289,8 +14130,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
     const addReklamacioReport = async (): Promise<void> => {
       const [rows, statusRows] = await Promise.all([
-        fetchReklamacioReportRows(profile, range, "open"),
-        fetchReklamacioReportRows(profile, range, "closed-range"),
+        fetchReklamacioReportRows(profile, range, "range"),
+        fetchReklamacioReportRows(profile, range, "open-and-today-completed"),
       ]);
       const openCount = rows.filter((row) => !row.lezart).length;
       const closedCount = rows.filter((row) => row.lezart).length;
@@ -14397,14 +14238,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
       y = drawSummaryBlockAt(y);
       addReklamacioDetailTable(
-        "Reklamáció nyitott",
-        [["Sorszám", "Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"]],
+        "Az adott időszakban felvett reklamációk",
+        [["Sorszám", "Rendelésszám", "Műhely", "Gyártandó tételek", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"]],
         rows.map((row, index) => [
           index + 1,
           row.rendelesszam || "-",
           row.muhely || "-",
           row.gyartandoTetelek || "-",
-          row.hibatipus.length ? row.hibatipus.join(", ") : "-",
           row.kertDatum || "-",
           row.createdAt ? formatDateTimeMinute(row.createdAt) : "-",
           row.createdByWorkerName || "-",
@@ -14414,14 +14254,19 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       );
 
       addReklamacioDetailTable(
-        "Reklamáció lezárt",
-        [["Sorszám", "Rendelésszám", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Lezárás", "Lezárás módja", "Lezáró"]],
+        "Gyártási és munkaállomás állapotok",
+        [["Sorszám", "Rendelésszám", "Munkaállomások állapota", "Felvétel", "Kért dátum", "Gyártásba téve", "Kész dátum", "Állapot"]],
         statusRows.map((row, index) => [
-          index + 1, row.rendelesszam || "-", row.gyartandoTetelek || "-",
-          row.hibatipus.length ? row.hibatipus.join(", ") : "-", row.kertDatum || "-",
-          row.lezartAt ? formatDateTimeMinute(row.lezartAt) : "-",
-          row.lezarasMod === "kezi" ? "Kézi" : row.lezarasMod === "automatikus" ? "Automatikus" : "-",
-          row.lezartaWorkerName || "-",
+          index + 1,
+          row.rendelesszam || "-",
+          row.stationStates.length > 0
+            ? row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join("\n")
+            : "-",
+          row.createdAt ? formatDateTimeMinute(row.createdAt) : "-",
+          row.kertDatum || "-",
+          row.gyartasbaTerveDatum ? formatDateOnly(row.gyartasbaTerveDatum) : "-",
+          row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "-",
+          row.lezart ? "Kész" : "Nyitott",
         ]),
         true
       );
@@ -14475,34 +14320,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           }
         } catch { /* fallback to work_logs */ }
         addSection("Selejtpótlási riport", [["Rendelés", "Forrás", "Dolgozó", "Időpont", "Megjegyzés"]], rows);
-      } else if (blockId === "event5-issue") {
-        let rows: Array<Array<string | number>> = [];
-        if (supabase) {
-          const response = await supabase
-            .from(EVENT_FIVE_ISSUE_REPORT_TABLE)
-            .select("id,futo_sorszam,order_number,meret,megjegyzes,reported_by_worker_name,source_station,reported_at,status,completed_at,event5_hibajelentes_celallomasok(target_station,status,completed_at,completed_by_worker_name)")
-            .gte("reported_at", range.startIso)
-            .lt("reported_at", range.endIso)
-            .order("reported_at", { ascending: false })
-            .limit(5000);
-          if (response.error) throw response.error;
-          rows = (response.data || []).flatMap((raw: any) => {
-            const targets = Array.isArray(raw.event5_hibajelentes_celallomasok) ? raw.event5_hibajelentes_celallomasok : [];
-            return targets.length > 0 ? targets.map((target: any) => [
-              raw.futo_sorszam ?? "-",
-              raw.order_number || "-",
-              raw.meret || "-",
-              raw.megjegyzes || "-",
-              raw.reported_by_worker_name || "-",
-              raw.reported_at ? formatDateTime(String(raw.reported_at)) : "-",
-              target.target_station || "-",
-              target.status || "-",
-              target.completed_by_worker_name || "-",
-              target.completed_at ? formatDateTime(String(target.completed_at)) : "-",
-            ]) : [[raw.futo_sorszam ?? "-", raw.order_number || "-", raw.meret || "-", raw.megjegyzes || "-", raw.reported_by_worker_name || "-", raw.reported_at ? formatDateTime(String(raw.reported_at)) : "-", "-", raw.status || "-", "-", "-"]];
-          });
-        }
-        addSection("Hibajelentések / felhasználások", [["Futó #", "Rendelés", "Méret", "Megjegyzés", "Jelentő", "Jelentés ideje", "Célállomás", "Státusz", "Befejező", "Befejezés"]], rows);
       } else if (blockId === "station-performance" || blockId === "plan-vs-completed") {
         const stationRows = sourceData.stationEfficiencyRows.filter((row) =>
           profile.stationFilter === "all" || normalizeLooseText(row.stationName) === normalizeLooseText(profile.stationFilter)
@@ -14687,17 +14504,16 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         Array.from(monthly.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => [month, count]));
     } else if (profile.reportType === "reklamacio") {
       const [rows, statusRows] = await Promise.all([
-        fetchReklamacioReportRows(profile, range, "open"),
-        fetchReklamacioReportRows(profile, range, "closed-range"),
+        fetchReklamacioReportRows(profile, range, "range"),
+        fetchReklamacioReportRows(profile, range, "open-and-today-completed"),
       ]);
-      addSheet("Reklamáció nyitott", ["Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Mentés", "Munkaállomások állapota"],
-        rows.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.hibatipus.join(", "), row.kertDatum,
-          row.createdAt ? formatDateTime(row.createdAt) : "", row.createdByWorkerName, row.mentesDatum ? formatDateTime(row.mentesDatum) : "",
-          row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join(" | ")]));
-      addSheet("Reklamáció lezárt", ["Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Lezárás", "Lezárás módja", "Lezáró"],
-        statusRows.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.hibatipus.join(", "), row.kertDatum,
-          row.createdAt ? formatDateTime(row.createdAt) : "", row.createdByWorkerName, row.lezartAt ? formatDateTime(row.lezartAt) : "",
-          row.lezarasMod === "kezi" ? "Kézi" : row.lezarasMod === "automatikus" ? "Automatikus" : "", row.lezartaWorkerName]));
+      addSheet("Reklamáció", ["Rendelésszám", "Műhely", "Gyártandó tételek", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"],
+        rows.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.kertDatum,
+          row.createdAt ? formatDateTime(row.createdAt) : "", row.createdByWorkerName, row.mentesDatum ? formatDateTime(row.mentesDatum) : ""]));
+      addSheet("Reklamáció állapotok", ["Rendelésszám", "Munkaállomások állapota", "Felvétel", "Kért dátum", "Gyártásba téve", "Kész dátum", "Állapot"],
+        statusRows.map((row) => [row.rendelesszam, row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join(" | "),
+          row.createdAt ? formatDateTime(row.createdAt) : "", row.kertDatum, row.gyartasbaTerveDatum, row.keszDatum,
+          row.lezart ? "Kész" : "Nyitott"]));
     } else {
       const data = await getData();
       const logs = filterReportDeliveryLogs(data, profile);
@@ -17209,13 +17025,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   function ManagementNavigation(): React.JSX.Element {
     const allItems: Array<{ id: ManagementSection; label: string }> = [
       { id:"dashboard", label:"Vezetői műszerfal" }, { id:"production-plan", label:"Termelés tervezése" }, { id:"production-monitor", label:"Termelési monitor" },
-      { id:"production-card", label:"Termelési kártya" }, { id:"pause-report", label:"Szüneteltetés" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"reklamacio", label:"Reklamáció" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" }, { id:"data-upload", label:"Adat feltöltés" }, { id:"admin", label:"Admin" }, { id:"program-error-reports", label:"Hibajelentés" },
+      { id:"production-card", label:"Termelési kártya" }, { id:"pause-report", label:"Szüneteltetés" }, { id:"reproduction-report", label:"Újragyártási sorok" }, { id:"atvetel", label:"Átvétel" }, { id:"reklamacio", label:"Reklamáció" }, { id:"label-printer", label:"Címkenyomtató" }, { id:"executive-report", label:"Vezetői jelentés" }, { id:"report-delivery", label:"Riport küldések" }, { id:"data-upload", label:"Adat feltöltés" }, { id:"admin", label:"Admin" },
     ];
 
     // Esemeny_Koteg = 9: csak ez a három irodai menüpont látható.
     // Esemeny_Koteg = 11: a külön irodai profil kizárólag a kért 9 funkciót látja.
     // A Megjelenés/Profi szerkesztő funkció mindkét korlátozott irodai profilnál megmarad.
-    const permittedItems = allItems.filter((item) => (item.id !== "admin" && item.id !== "program-error-reports") || isAdmin(activeWorker));
+    const permittedItems = allItems.filter((item) => item.id !== "admin" || isAdmin(activeWorker));
     const items = isLimitedOfficeWorker(activeWorker)
       ? permittedItems.filter(
           (item) => item.id === "atvetel" || item.id === "production-monitor" || item.id === "reklamacio"
@@ -17309,7 +17125,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
               else if (item.id === "report-delivery") void loadReportDeliveryProfiles();
               else if (item.id === "data-upload") void loadDataUploadView();
               else if (item.id === "admin") void loadNivoAdminActivity();
-              else if (item.id === "program-error-reports") { void loadProgramErrorAdminRows(); void loadProgramStationMessages(); }
             }} style={{ border:active ? `1px solid ${currentTheme.accentColor}` : "1px solid transparent", background:active ? currentTheme.navActiveBackground : "transparent", color:active ? currentTheme.textColor : currentTheme.navText, borderRadius:Math.max(4,currentTheme.borderRadius-5), padding:"10px 14px", fontWeight:800, cursor:"pointer", fontFamily:currentTheme.fontFamily }}>{item.label}</button>;
           })}
           <button
@@ -20785,16 +20600,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           const time = new Date(value).getTime();
           return Number.isFinite(time) && time >= selectedDateStart.getTime() && time < selectedDateEnd.getTime();
         };
-        const eventFiveIssueStationName = EVENT_FIVE_ISSUE_STATIONS.find(
-          (station) => getStationPlanIdentityKey(station) === getStationPlanIdentityKey(cleanStationName)
-        ) || null;
-        const eventFiveIssueRows = eventFiveIssueStationName
-          ? await fetchEventFiveIssueScrapRows(eventFiveIssueStationName)
-          : [];
-        const allNormalizedRows = [
-          ...((replacementData || []) as ScrapReplacementRow[]).map(normalizeScrapReplacementRow),
-          ...eventFiveIssueRows,
-        ];
+        const allNormalizedRows = ((replacementData || []) as ScrapReplacementRow[]).map(normalizeScrapReplacementRow);
         const normalizedStationKey = normalizeLooseText(cleanStationName);
 
         if (getStationPlanIdentityKey(cleanStationName) === "szereles") {
@@ -20828,7 +20634,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         const normalizedReplacementRows = allNormalizedRows
           .filter((row) => {
             const targetMatches = row.target_station
-              ? getStationPlanIdentityKey(row.target_station) === getStationPlanIdentityKey(cleanStationName)
+              ? normalizeLooseText(row.target_station) === normalizedStationKey
               : isCarpenterStationName(cleanStationName); // legacy: csak Asztalos
             return targetMatches
               && row.order_number
@@ -21206,40 +21012,60 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       // A 10-es kattintásos kiválasztó sem építhet külön lemaradási listát:
       // pontosan ugyanabból a backlogRows eredményből dolgozik, mint a monitor.
       const overdueOrderNumbers = Array.from(new Set(overdueSourceRows.map((row) => row.orderNumber)));
-      const szinterPlanRowCounts = new Map<string, number>();
-      if (getStationPlanIdentityKey(cleanStationName) === "szinter") {
+      const backlogPlanRowCounts = new Map<string, number>();
+      {
         for (let index = 0; index < overdueOrderNumbers.length; index += 100) {
           const { data: allPlanRows, error: allPlanError } = await supabase.from(tableName)
             .select("id,sorszam").in("sorszam", overdueOrderNumbers.slice(index, index + 100)).limit(10000);
           if (allPlanError) throw allPlanError;
           for (const row of (allPlanRows || []) as Array<{ id: string | number; sorszam: string }>) {
             const key = normalizeLooseText(String(row.sorszam || ""));
-            szinterPlanRowCounts.set(key, (szinterPlanRowCounts.get(key) || 0) + 1);
+            backlogPlanRowCounts.set(key, (backlogPlanRowCounts.get(key) || 0) + 1);
           }
         }
       }
+      // A régi naplók rendelési azonosítójához szín / anyag megnevezés is
+      // hozzá lehet fűzve (pl. 2557/26S7016 Antracit). A tervben csak 2557/26 van.
+      // Csak betűvel / szóközzel kezdődő utótagot fogadunk el, hogy a
+      // 2557/26 és 2557/260 eltérő rendelések ne keveredjenek.
+      const matchesOverduePlanOrder = (logOrder: string | null | undefined, planOrder: string): boolean => {
+        const logged = normalizeLooseText(logOrder);
+        const planned = normalizeLooseText(planOrder);
+        if (!planned || !logged.startsWith(planned)) return false;
+        const suffix = logged.slice(planned.length);
+        return !suffix || /^[\s\p{L}]/u.test(suffix);
+      };
       const overdueLogs: WorkLogRow[] = [];
       const overdueStationAliases = getProductionCardStationAliases(cleanStationName, machineIdRows);
       for (let index = 0; index < overdueOrderNumbers.length; index += 100) {
         const chunk = overdueOrderNumbers.slice(index, index + 100);
-        const pageSize = 1000;
-        for (let offset = 0; ; offset += pageSize) {
-          const { data: overdueLogData, error: overdueLogError } = await supabase
-            .from("work_logs")
-            .select(`id,${selectColumns}`)
-            .in("order_number", chunk)
-            .order("created_at", { ascending: true })
-            .order("id", { ascending: true })
-            .range(offset, offset + pageSize - 1);
+        // Prefix-keresés a régi, utótagos rendelési azonosítók miatt.
+        // Kis csoportokban kérjük le, hogy az URL ne legyen túl hosszú.
+        for (let chunkIndex = 0; chunkIndex < chunk.length; chunkIndex += 20) {
+          const orderGroup = chunk.slice(chunkIndex, chunkIndex + 20);
+          const orderFilter = orderGroup.map((order) =>
+            `order_number.ilike.${String(order).replace(/[%,()]/g, "")}*`
+          ).join(",");
+          const pageSize = 1000;
+          for (let offset = 0; ; offset += pageSize) {
+            const { data: overdueLogData, error: overdueLogError } = await supabase
+              .from("work_logs")
+              .select(`id,${selectColumns}`)
+              .or(orderFilter)
+              .order("created_at", { ascending: true })
+              .order("id", { ascending: true })
+              .range(offset, offset + pageSize - 1);
           if (overdueLogError) throw overdueLogError;
           const page = (overdueLogData || []) as WorkLogRow[];
-          overdueLogs.push(...page
-            .filter((log) => isProductionCardStationMachineId(log.machine_id, overdueStationAliases))
-            .map((log) => ({
-              ...log,
-              worker_name: log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || null,
-            })));
-          if (page.length < pageSize) break;
+            overdueLogs.push(...page
+              .filter((log) => isProductionCardStationMachineId(log.machine_id, overdueStationAliases))
+              .filter((log) => orderGroup.some((order) => matchesOverduePlanOrder(log.order_number, order)))
+              .map((log) => ({
+                ...log,
+                worker_name: log.worker_name || workers.find((worker) => Number(worker.id) === Number(log.worker_id))?.["Teljes nev"] || null,
+              })));
+            if (page.length < pageSize) break;
+          }
         }
       }
 
@@ -21324,7 +21150,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         });
         const orderNumber = groupRows[0].orderNumber;
         const rowLogs = overdueLogs
-          .filter((log) => normalizeLooseText(log.order_number) === normalizeLooseText(orderNumber))
+          .filter((log) => matchesOverduePlanOrder(log.order_number, orderNumber))
           .filter((log) => !isExecutiveCompletionLog(log))
           .filter((log) => {
             const timestamp = timestampOfLog(log);
@@ -21373,7 +21199,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           const isCsolezerRunScopedBacklog =
             getStationPlanIdentityKey(cleanStationName) === "csolezer"
             && Boolean(runSequence);
-          const sameOrderRowCount = szinterPlanRowCounts.get(normalizeLooseText(orderNumber)) || groupRows.length;
+          const sameOrderRowCount = backlogPlanRowCounts.get(normalizeLooseText(orderNumber)) || groupRows.length;
           const bundleTenScopedRowLogs = filterBundleTenVisualLogsForCardRow(
             rowLogs,
             "backlog",
@@ -21402,16 +21228,33 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
               )
             : [];
 
+          // Régi END sorok terv_futo_sorszam=NULL értékkel készültek.
+          // Csak egyértelmű, egyetlen tervsoros rendelésnél engedjük a régi
+          // naplókat vissza; több tervsor esetén sosem zárunk le találgatással.
+          const hasExplicitRunActivity = rowLogs.some((log) =>
+            parsePlanRunSequence(log.terv_futo_sorszam) !== null
+          ) || rowBatchStarts.some((batch) =>
+            parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam) !== null
+          );
+          const allowLegacyRunFallback = Boolean(runSequence)
+            && sameOrderRowCount === 1
+            && !hasExplicitRunActivity
+            && !hasBundleTenScopedGroupActivity
+            && !isOpenQuantityRemainder;
           const runScopedRowLogs = runSequence
-            ? bundleTenScopedRowLogs.filter((log) => parsePlanRunSequence(log.terv_futo_sorszam) === runSequence)
+            ? bundleTenScopedRowLogs.filter((log) =>
+                parsePlanRunSequence(log.terv_futo_sorszam) === runSequence
+                || (allowLegacyRunFallback && parsePlanRunSequence(log.terv_futo_sorszam) === null)
+              )
             : bundleTenScopedRowLogs;
           const runScopedRowBatchStarts = runSequence
-            ? bundleTenScopedRowBatchStarts.filter((batch) =>
-                parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam) === runSequence
-              )
+            ? bundleTenScopedRowBatchStarts.filter((batch) => {
+                const batchRun = parsePlanRunSequence(getProductionMetaForOrder(batch.production_meta, orderNumber).terv_futo_sorszam);
+                return batchRun === runSequence || (allowLegacyRunFallback && batchRun === null);
+              })
             : bundleTenScopedRowBatchStarts;
           const effectiveRowLogs = isCsolezerRunScopedBacklog
-            ? csolezerExactRunLogs
+            ? (allowLegacyRunFallback ? runScopedRowLogs : csolezerExactRunLogs)
             : isRunScopedBacklog
               ? runScopedRowLogs
               : isExactSzinterBacklog
@@ -21420,7 +21263,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                   ? filterWorkLogsForQuantityPlanLifecycle(runScopedRowLogs, planRow.planData)
                   : runScopedRowLogs;
           const effectiveRowBatchStarts = isCsolezerRunScopedBacklog
-            ? csolezerExactRunBatchStarts
+            ? (allowLegacyRunFallback ? runScopedRowBatchStarts : csolezerExactRunBatchStarts)
             : isRunScopedBacklog
               ? runScopedRowBatchStarts
               : isExactSzinterBacklog
@@ -28128,18 +27971,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       alapRendelesszam: "",
       muhely: "",
       gyartandoTetelek: "",
-      hibatipus: [],
       kertDatum: "",
       rajzUrl: "",
       drawings: [],
       mentesDatum: "",
-      szerkesztesZarolva: false,
       gyartasbaTerveDatum: "",
-      uvegGyartasbaDatum: "", uvegGyartasbaMentveAt: "", uvegGyartasbaMentetteWorkerName: "",
       keszDatum: "",
-      vevoNeve: "",
-      teljesCim: "",
-      szerelesiIdopont: "",
       lezart: false,
       createdAt: "",
       updatedAt: "",
@@ -28149,7 +27986,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     setReklamacioRows((previous) => [row, ...previous]);
     setReklamacioDrafts((previous) => ({
       ...previous,
-      [key]: { rendelesszam: "", muhely: "", gyartandoTetelek: "", hibatipus: [], kertDatum: "", rajzDataUrl: "", pendingDrawings: [], dirty: true },
+      [key]: { rendelesszam: "", muhely: "", gyartandoTetelek: "", kertDatum: "", rajzDataUrl: "", pendingDrawings: [], dirty: true },
     }));
   }
 
@@ -28205,7 +28042,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     try {
       const response = await supabase
         .from(REKLAMACIO_TABLE)
-        .select("id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, hibatipus, kert_datum, rajz_url, mentes_datum, szerkesztes_zarolva, uveg_gyartasba_datum, uveg_gyartasba_mentve_at, uveg_gyartasba_mentette_worker_id, uveg_gyartasba_mentette_worker_name, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, lezaras_mod, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
+        .select("id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, kert_datum, rajz_url, mentes_datum, kesz_datum, lezart, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
         .order("created_at", { ascending: false })
         .limit(10000);
       if (response.error) throw response.error;
@@ -28242,32 +28079,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         });
       }
       const orderNumbers = Array.from(new Set(dbRows.map((row) => String(row.rendelesszam || "").trim()).filter(Boolean)));
-
-      const reklamacioAtvetelByOrder = new Map<string, { vevoNeve: string; teljesCim: string; szerelesiIdopont: string }>();
-      const baseOrderNumbers = Array.from(new Set(orderNumbers.map((value) => value.replace(/_REK\d*$/i, "").trim()).filter(Boolean)));
-      for (let index = 0; index < baseOrderNumbers.length; index += 100) {
-        const chunk = baseOrderNumbers.slice(index, index + 100);
-        const atvetelResponse = await supabase.from("atvetel_adat").select("*").in("rendelesszam", chunk).limit(10000);
-        if (atvetelResponse.error) throw atvetelResponse.error;
-        const grouped = new Map<string, Record<string, unknown>[]>();
-        ((atvetelResponse.data || []) as Record<string, unknown>[]).forEach((item) => {
-          const order = getAtvetelDetailsOrderNumber(item);
-          if (!order) return;
-          const key = normalizeLooseText(order);
-          grouped.set(key, [...(grouped.get(key) || []), item]);
-        });
-        chunk.forEach((order) => {
-          const matches = grouped.get(normalizeLooseText(order)) || [];
-          if (matches.length !== 1) return;
-          const item = matches[0];
-          reklamacioAtvetelByOrder.set(normalizeLooseText(order), {
-            vevoNeve: getAtvetelDetailsName(item),
-            teljesCim: getAtvetelDetailsFullAddress(item),
-            szerelesiIdopont: getAtvetelDetailsShippingDate(item),
-          });
-        });
-      }
-
       const { presence: planPresence, latestDates: planLatestDates } = await fetchReklamacioPlanPresence(orderNumbers);
 
       const logs: WorkLogRow[] = [];
@@ -28301,8 +28112,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
       const nextRows: ReklamacioViewRow[] = dbRows.map((dbRow) => {
         const orderNumber = String(dbRow.rendelesszam || "").trim();
-        const atvetelOrderNumber = orderNumber.replace(/_REK\d*$/i, "").trim();
-        const atvetelDetails = reklamacioAtvetelByOrder.get(normalizeLooseText(atvetelOrderNumber)) || null;
         const savedDrawings = drawingsByReklamacioId.get(String(dbRow.id)) || [];
         const legacyDrawingUrl = String(dbRow.rajz_url || "");
         const drawings = savedDrawings.length > 0 || !legacyDrawingUrl ? savedDrawings : [{
@@ -28317,10 +28126,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           updatedAt: String(dbRow.updated_at || ""),
           isLegacy: true,
         }];
-        const workshop: ReklamacioWorkshop = dbRow.muhely === "Asztalos" || dbRow.muhely === "Lakatos" || dbRow.muhely === "Üveg" ? dbRow.muhely : "";
+        const workshop: ReklamacioWorkshop = dbRow.muhely === "Asztalos" || dbRow.muhely === "Lakatos" ? dbRow.muhely : "";
         const required = workshop ? REKLAMACIO_STATIONS[workshop] : [];
         const normalizedOrderNumber = normalizeLooseText(orderNumber);
-        const gyartasbaTerveDatum = workshop === "Üveg" ? String(dbRow.uveg_gyartasba_datum || "").slice(0, 10) : required.reduce((latestDate, station) => {
+        const gyartasbaTerveDatum = required.reduce((latestDate, station) => {
           const stationKey = getStationPlanIdentityKey(station.stationName);
           const stationDate = planLatestDates.get(stationKey)?.get(normalizedOrderNumber) || "";
           return stationDate > latestDate ? stationDate : latestDate;
@@ -28340,11 +28149,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           const cell = getMonitorCellFromLogs(stationLogs, stationBatches, orderNumber);
           return { stationName: station.stationName, label: station.label, status: cell.status, statusLabel: cell.label };
         });
-        if (workshop === "Üveg") {
-        const glassDate = String(dbRow.uveg_gyartasba_datum || "").slice(0, 10);
-        stationStates.push({ stationName: "Üveg", label: "Üveg", status: glassDate ? "in-progress" : "waiting", statusLabel: glassDate ? "Folyamatban" : "Várakozik" });
-      }
-      const presentStates = stationStates.filter((state) => state.status !== "not-required");
+        const presentStates = stationStates.filter((state) => state.status !== "not-required");
         const canClose = presentStates.length > 0 && presentStates.every((state) => state.status === "done");
         return {
           key: String(dbRow.id), id: String(dbRow.id), isNew: false,
@@ -28352,20 +28157,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           alapRendelesszam: String(dbRow.alap_rendelesszam || "").trim(),
           muhely: workshop,
           gyartandoTetelek: String(dbRow.gyartando_tetelek || ""),
-          hibatipus: Array.isArray(dbRow.hibatipus) ? dbRow.hibatipus.filter((value): value is ReklamacioHibaTipus => REKLAMACIO_HIBA_TIPUSOK.includes(value as ReklamacioHibaTipus)) : [],
           kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
           rajzUrl: String(dbRow.rajz_url || ""),
           drawings,
           mentesDatum: String(dbRow.mentes_datum || ""),
-          szerkesztesZarolva: Boolean(dbRow.szerkesztes_zarolva),
           gyartasbaTerveDatum,
-          uvegGyartasbaDatum: String(dbRow.uveg_gyartasba_datum || "").slice(0, 10),
-          uvegGyartasbaMentveAt: String(dbRow.uveg_gyartasba_mentve_at || ""),
-          uvegGyartasbaMentetteWorkerName: String(dbRow.uveg_gyartasba_mentette_worker_name || ""),
           keszDatum: String(dbRow.kesz_datum || ""),
-          vevoNeve: atvetelDetails?.vevoNeve || "",
-          teljesCim: atvetelDetails?.teljesCim || "",
-          szerelesiIdopont: atvetelDetails?.szerelesiIdopont || "",
           lezart: Boolean(dbRow.lezart),
           createdAt: String(dbRow.created_at || ""),
           updatedAt: String(dbRow.updated_at || ""),
@@ -28383,10 +28180,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         const closeResponse = await supabase.from(REKLAMACIO_TABLE).update({
           lezart: true,
           kesz_datum: nowIso,
-          lezart_at: nowIso,
-          lezarta_worker_id: Number.isFinite(workerIdNumber) ? workerIdNumber : null,
-          lezarta_worker_name: activeWorker?.["Teljes nev"] || "Automatikus rendszer",
-          lezaras_mod: "automatikus",
           mentes_datum: nowIso,
           updated_at: nowIso,
           updated_by_worker_id: Number.isFinite(workerIdNumber) ? workerIdNumber : null,
@@ -28414,7 +28207,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             rendelesszam: row.rendelesszam,
             muhely: row.muhely,
             gyartandoTetelek: row.gyartandoTetelek,
-            hibatipus: row.hibatipus,
             kertDatum: row.kertDatum,
             rajzDataUrl: "",
             pendingDrawings: [],
@@ -28479,37 +28271,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     return urls;
   }
 
-  async function saveReklamacioUvegGyartasbaDatum(row: ReklamacioViewRow): Promise<void> {
-    if (!supabase || !row.id || row.muhely !== "Üveg" || row.lezart) return;
-    const selectedDate = String(reklamacioUvegDateDrafts[row.key] ?? row.uvegGyartasbaDatum ?? "").trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) { setMessage({ type: "error", text: "Válassz érvényes Gyártásba téve dátumot." }); return; }
-    const workerId = Number(activeWorker?.id), workerName = String(activeWorker?.["Teljes nev"] || "").trim(), nowIso = new Date().toISOString();
-    setReklamacioUvegDateSavingKey(row.key);
-    try {
-      const u = await supabase.from(REKLAMACIO_TABLE).update({ uveg_gyartasba_datum:selectedDate, uveg_gyartasba_mentve_at:nowIso, uveg_gyartasba_mentette_worker_id:Number.isFinite(workerId)?workerId:null, uveg_gyartasba_mentette_worker_name:workerName||null }).eq("id",row.id);
-      if (u.error) throw u.error;
-      const h = await supabase.from(REKLAMACIO_UVEG_GYARTASBA_NAPLO_TABLE).insert({ reklamacio_id:row.id, rendelesszam:row.rendelesszam, elozo_datum:row.uvegGyartasbaDatum||null, uj_datum:selectedDate, mentette_worker_id:Number.isFinite(workerId)?workerId:null, mentette_worker_name:workerName||null, mentve_at:nowIso });
-      if (h.error) throw h.error;
-      setReklamacioUvegDateDrafts(c=>({...c,[row.key]:selectedDate}));
-      setReklamacioUvegDateEditing(c=>({...c,[row.key]:false}));
-      await loadReklamacioRows({quiet:true});
-    } catch(error) {
-      const errorMessage = error && typeof error === "object" && "message" in error
-        ? String((error as { message?: unknown }).message || "")
-        : "";
-      setMessage({type:"error",text:errorMessage || "Az Üveg dátum mentése sikertelen."});
-    }
-    finally { setReklamacioUvegDateSavingKey(""); }
-  }
-
   async function saveReklamacioRow(row: ReklamacioViewRow, closeAfterSave = false): Promise<void> {
     if (!supabase) return;
     if (row.lezart) {
       setMessage({ type: "error", text: "A lezárt reklamáció már nem módosítható." });
-      return;
-    }
-    if (row.szerkesztesZarolva && !closeAfterSave) {
-      setMessage({ type: "error", text: "A reklamáció mentve van, ezért már nem szerkeszthető." });
       return;
     }
     const draft = getReklamacioDraft(row);
@@ -28518,23 +28283,16 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       setMessage({ type: "error", text: "A Rendelésszám formátuma kötelezően: nagy R + pontosan 9 számjegy (pl. R260918123)." });
       return;
     }
-    if (draft.muhely !== "Asztalos" && draft.muhely !== "Lakatos" && draft.muhely !== "Üveg") {
-      setMessage({ type: "error", text: "A Műhely mezőben válaszd ki az Asztalos, Lakatos vagy Üveg értéket." });
+    if (draft.muhely !== "Asztalos" && draft.muhely !== "Lakatos") {
+      setMessage({ type: "error", text: "A Műhely mezőben válaszd ki az Asztalos vagy Lakatos értéket." });
       return;
     }
     if (!draft.gyartandoTetelek.trim()) {
       setMessage({ type: "error", text: "A Gyártandó tételek mező kitöltése kötelező." });
       return;
     }
-    if ((row.isNew || draft.dirty) && draft.hibatipus.length === 0) {
-      setMessage({ type: "error", text: "Legalább egy Hibatípus kiválasztása kötelező." });
-      return;
-    }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.kertDatum)) {
       setMessage({ type: "error", text: "A Kért Dátum kitöltése kötelező." });
-      return;
-    }
-    if (!closeAfterSave && typeof window !== "undefined" && !window.confirm("Biztosan mented a reklamációt? Mentés után a sor már nem szerkeszthető.")) {
       return;
     }
     if (closeAfterSave) {
@@ -28546,28 +28304,15 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         setMessage({ type: "error", text: "A Műhely módosítását előbb mentsd el, utána zárható le a reklamáció." });
         return;
       }
-      if (typeof window !== "undefined" && !window.confirm("Biztosan lezárod ezt a reklamációt? A lezárás után a sor többé nem módosítható.")) {
+      if (!row.canClose) {
+        setMessage({ type: "error", text: "A reklamáció csak akkor zárható le, ha minden tervben szereplő szükséges munkaállomás Kész." });
         return;
       }
     }
 
     setReklamacioSavingKey(row.key);
     try {
-      let fullOrderNumber = row.rendelesszam;
-      if (row.isNew) {
-        const existingResponse = await supabase.from(REKLAMACIO_TABLE).select("rendelesszam").eq("alap_rendelesszam", rawBase).limit(10000);
-        if (existingResponse.error) throw existingResponse.error;
-        let maxRekSequence = -1;
-        ((existingResponse.data || []) as Array<{ rendelesszam?: string | null }>).forEach((item) => {
-          const savedOrder = String(item.rendelesszam || "").trim().toUpperCase();
-          if (savedOrder === `${rawBase}_REK`) { maxRekSequence = Math.max(maxRekSequence, 0); return; }
-          const prefix = `${rawBase}_REK`;
-          if (!savedOrder.startsWith(prefix)) return;
-          const suffix = savedOrder.slice(prefix.length);
-          if (/^\d+$/.test(suffix)) maxRekSequence = Math.max(maxRekSequence, Number(suffix));
-        });
-        fullOrderNumber = maxRekSequence < 0 ? `${rawBase}_REK` : `${rawBase}_REK${maxRekSequence + 1}`;
-      }
+      const fullOrderNumber = row.isNew ? `${rawBase}_REK` : row.rendelesszam;
       const nowIso = new Date().toISOString();
       const workerIdNumber = Number(activeWorker?.id);
       const workerId = Number.isFinite(workerIdNumber) ? workerIdNumber : null;
@@ -28577,17 +28322,11 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         alap_rendelesszam: rawBase,
         muhely: draft.muhely,
         gyartando_tetelek: draft.gyartandoTetelek.trim(),
-        hibatipus: draft.hibatipus,
         kert_datum: draft.kertDatum,
         rajz_url: row.rajzUrl || null,
         mentes_datum: nowIso,
-        szerkesztes_zarolva: true,
         lezart: closeAfterSave,
         kesz_datum: closeAfterSave ? nowIso : (row.keszDatum || null),
-        lezart_at: closeAfterSave ? nowIso : null,
-        lezarta_worker_id: closeAfterSave ? workerId : null,
-        lezarta_worker_name: closeAfterSave ? workerName : null,
-        lezaras_mod: closeAfterSave ? "kezi" : null,
         updated_by_worker_id: workerId,
         updated_by_worker_name: workerName,
         updated_at: nowIso,
@@ -29094,22 +28833,14 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     }
     setReklamacioDrawingSaving(true);
     try {
-      // A rajz mindig a mentett reklamáció teljes (_REK, _REK1, ...) azonosítóját kapja.
-      const parentResponse = await supabase.from(REKLAMACIO_TABLE)
-        .select("rendelesszam").eq("id", row.id).single();
-      if (parentResponse.error) throw parentResponse.error;
-      const fullReklamacioOrder = String(parentResponse.data?.rendelesszam || "").trim();
-      if (!/^R\d{9}_REK\d*$/i.test(fullReklamacioOrder)) {
-        throw new Error("A reklamáció teljes rendelésszáma nem található.");
-      }
-      const uploaded = await uploadReklamacioDrawing(dataUrl, fullReklamacioOrder);
+      const uploaded = await uploadReklamacioDrawing(dataUrl, row.rendelesszam);
       if (!uploaded.url) throw new Error("A rajz feltöltése nem adott vissza publikus URL-t.");
       const workerIdNumber = Number(activeWorker?.id);
       const workerId = Number.isFinite(workerIdNumber) ? workerIdNumber : null;
       const workerName = activeWorker?.["Teljes nev"] || null;
       const payload = {
         reklamacio_id: row.id,
-        rendelesszam: fullReklamacioOrder,
+        rendelesszam: row.rendelesszam,
         nev: name,
         rajz_url: uploaded.url,
         storage_path: uploaded.path,
@@ -29894,12 +29625,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const getCellText = (row: ReklamacioViewRow, columnId: ReklamacioTableColumnId): string => {
       const draft = getReklamacioDraft(row);
       if (columnId === "rendelesszam") return row.isNew ? draft.rendelesszam : row.rendelesszam;
-      if (columnId === "vevoNeve") return row.vevoNeve || "—";
-      if (columnId === "teljesCim") return row.teljesCim || "—";
-      if (columnId === "szerelesiIdopont") return row.szerelesiIdopont ? formatDateOnly(row.szerelesiIdopont) : "—";
       if (columnId === "muhely") return draft.muhely || "—";
       if (columnId === "gyartandoTetelek") return draft.gyartandoTetelek || "—";
-      if (columnId === "hibatipus") return draft.hibatipus.length ? draft.hibatipus.join(", ") : "";
       if (columnId === "kertDatum") return draft.kertDatum || "—";
       if (columnId === "rajz") {
         const drawingCount = getReklamacioDrawingItems(row).length;
@@ -29955,38 +29682,14 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
     const renderCell = (row: ReklamacioViewRow, column: ReklamacioTableColumnConfig): React.JSX.Element => {
       const draft = getReklamacioDraft(row);
-      const disabled = row.lezart || row.szerkesztesZarolva || reklamacioSavingKey === row.key;
+      const disabled = row.lezart || reklamacioSavingKey === row.key;
       let content: React.ReactNode = null;
       if (column.id === "rendelesszam") {
-        content = row.isNew ? <input value={draft.rendelesszam} maxLength={10} placeholder="R + 9 számjegy" onChange={(event) => {
-          const rawValue = event.target.value.toUpperCase();
-          if (!rawValue) { updateReklamacioDraft(row.key, { rendelesszam: "" }); return; }
-          const digits = rawValue.replace(/^R/, "").replace(/\D/g, "").slice(0, 9);
-          updateReklamacioDraft(row.key, { rendelesszam: `R${digits}` });
-        }} style={tableInputStyle} /> : <strong>{row.rendelesszam}</strong>;
-      } else if (column.id === "vevoNeve") {
-        content = row.vevoNeve || "–";
-      } else if (column.id === "teljesCim") {
-        content = row.teljesCim || "–";
-      } else if (column.id === "szerelesiIdopont") {
-        content = row.szerelesiIdopont ? formatDateOnly(row.szerelesiIdopont) : "–";
+        content = row.isNew ? <input value={draft.rendelesszam} maxLength={10} placeholder="R + 9 számjegy" onChange={(event) => updateReklamacioDraft(row.key, { rendelesszam: event.target.value.toUpperCase().replace(/[^R0-9]/g, "").slice(0, 10) })} style={tableInputStyle} /> : <strong>{row.rendelesszam}</strong>;
       } else if (column.id === "muhely") {
-        content = <select value={draft.muhely} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { muhely: event.target.value as ReklamacioWorkshop })} style={tableInputStyle}><option value="">Válassz...</option><option value="Asztalos">Asztalos</option><option value="Lakatos">Lakatos</option><option value="Üveg">Üveg</option></select>;
+        content = <select value={draft.muhely} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { muhely: event.target.value as ReklamacioWorkshop })} style={tableInputStyle}><option value="">Válassz...</option><option value="Asztalos">Asztalos</option><option value="Lakatos">Lakatos</option></select>;
       } else if (column.id === "gyartandoTetelek") {
         content = <textarea value={draft.gyartandoTetelek} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { gyartandoTetelek: event.target.value })} rows={2} placeholder="Gyártandó tételek" style={{ ...tableInputStyle, resize: "vertical", minHeight: 56 }} />;
-      } else if (column.id === "hibatipus") {
-        content = <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: "5px 8px" }}>
-          {REKLAMACIO_HIBA_TIPUSOK.map((tipus) => {
-            const checked = draft.hibatipus.includes(tipus);
-            return <label key={tipus} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 800, cursor: disabled ? "default" : "pointer" }}>
-              <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => {
-                const next = event.target.checked ? Array.from(new Set([...draft.hibatipus, tipus])) : draft.hibatipus.filter((value) => value !== tipus);
-                updateReklamacioDraft(row.key, { hibatipus: next });
-              }} />
-              <span>{tipus}</span>
-            </label>;
-          })}
-        </div>;
       } else if (column.id === "kertDatum") {
         content = <input type="date" value={draft.kertDatum} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { kertDatum: event.target.value })} style={{ ...tableInputStyle, colorScheme: "dark" }} />;
       } else if (column.id === "rajz") {
@@ -29995,16 +29698,16 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         content = <div style={{ display: "grid", gap: 6 }}>
           <button
             type="button"
-            disabled={disabled || !canAddDrawing}
+            disabled={!canAddDrawing}
             onClick={() => openReklamacioDrawing(row)}
             title={canAddDrawing ? "+ Új rajz" : `Maximum ${MAX_REKLAMACIO_DRAWINGS} rajz készíthető`}
-            style={{ ...buttonSecondary, padding: "6px 9px", opacity: (!disabled && canAddDrawing) ? 1 : 0.65, cursor: (!disabled && canAddDrawing) ? "pointer" : "not-allowed" }}
+            style={{ ...buttonSecondary, padding: "6px 9px", opacity: canAddDrawing ? 1 : 0.65, cursor: canAddDrawing ? "pointer" : "not-allowed" }}
           >{canAddDrawing ? "+ Új rajz" : `Maximum ${MAX_REKLAMACIO_DRAWINGS} rajz készíthető`}</button>
           {drawings.map((drawing, index) => <div key={drawing.key} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto auto auto", gap: 4, alignItems: "center", padding: 4, borderRadius: 6, background: officeTheme.panelAltBackground }}>
             <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left" }}>{index + 1}. {drawing.name}</strong>
             <a href={drawing.source} target="_blank" rel="noreferrer" style={{ color: officeTheme.accentColor, fontWeight: 900 }}>Megnyitás</a>
-            <button type="button" disabled={disabled} onClick={() => openReklamacioDrawing(row, drawing)} style={{ ...buttonSecondary, padding: "4px 7px" }}>Szerkesztés</button>
-            <button type="button" disabled={disabled} onClick={() => void deleteReklamacioDrawing(row, drawing)} style={{ ...buttonSecondary, padding: "4px 7px", color: "#fca5a5" }}>Törlés</button>
+            <button type="button" onClick={() => openReklamacioDrawing(row, drawing)} style={{ ...buttonSecondary, padding: "4px 7px" }}>Szerkesztés</button>
+            <button type="button" disabled={reklamacioSavingKey === row.key} onClick={() => void deleteReklamacioDrawing(row, drawing)} style={{ ...buttonSecondary, padding: "4px 7px", color: "#fca5a5" }}>Törlés</button>
           </div>)}
           {drawings.length > 0 && <span style={{ color: officeTheme.mutedText, fontSize: 10 }}>{drawings.length} külön PNG · Power BI publikus URL</span>}
         </div>;
@@ -30013,17 +29716,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       } else if (column.id === "mentesDatum") {
         content = row.mentesDatum ? formatDateTimeMinute(row.mentesDatum) : "–";
       } else if (column.id === "gyartasbaTerveDatum") {
-        if (row.muhely === "Üveg" && !row.isNew && !row.lezart) {
-          const glassDateValue = reklamacioUvegDateDrafts[row.key] ?? row.uvegGyartasbaDatum ?? "";
-          const glassSaving = reklamacioUvegDateSavingKey === row.key;
-          const glassEditing = !row.uvegGyartasbaDatum || Boolean(reklamacioUvegDateEditing[row.key]);
-          content = glassEditing ? <div style={{display:"grid",gap:6}}><input type="date" value={glassDateValue} disabled={glassSaving} onChange={(e)=>setReklamacioUvegDateDrafts(c=>({...c,[row.key]:e.target.value}))} style={{...tableInputStyle,colorScheme:"dark"}}/><button type="button" disabled={glassSaving||!glassDateValue} onClick={()=>void saveReklamacioUvegGyartasbaDatum(row)} style={{...buttonPrimary,padding:"6px 9px"}}>{glassSaving?"Mentés...":"Mentés"}</button></div> : <div style={{display:"grid",gap:6}}><span>{formatDateOnly(row.uvegGyartasbaDatum)}</span><button type="button" onClick={()=>{setReklamacioUvegDateDrafts(c=>({...c,[row.key]:row.uvegGyartasbaDatum}));setReklamacioUvegDateEditing(c=>({...c,[row.key]:true}));}} style={{...buttonSecondary,padding:"6px 9px"}}>Szerkesztés</button></div>;
-        } else content = row.gyartasbaTerveDatum ? formatDateOnly(row.gyartasbaTerveDatum) : "-";
+        content = row.gyartasbaTerveDatum ? formatDateOnly(row.gyartasbaTerveDatum) : "-";
       } else if (column.id === "keszDatum") {
         content = row.keszDatum ? formatDateTimeMinute(row.keszDatum) : "–";
       } else if (column.id === "actions") {
         const saving = reklamacioSavingKey === row.key;
-        content = row.lezart ? <span style={{ display: "inline-flex", padding: "7px 10px", borderRadius: 8, background: "#166534", color: "white", fontWeight: 900 }}>✓ Elkészült</span> : <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}><button type="button" disabled={saving || row.isNew} onClick={() => void saveReklamacioRow(row, true)} style={{ ...buttonSecondary, padding: "7px 10px" }}>Lezárás</button>{row.szerkesztesZarolva ? <span style={{ display: "inline-flex", padding: "7px 10px", borderRadius: 8, background: "#334155", color: "white", fontWeight: 900 }}>✓ Mentve</span> : <button type="button" disabled={saving} onClick={() => void saveReklamacioRow(row, false)} style={{ ...buttonPrimary, padding: "7px 12px" }}>{saving ? "Mentés..." : "Mentés"}</button>}</div>;
+        content = row.lezart ? <span style={{ display: "inline-flex", padding: "7px 10px", borderRadius: 8, background: "#166534", color: "white", fontWeight: 900 }}>Lezárva</span> : <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}><button type="button" disabled={saving || row.isNew || !row.canClose} onClick={() => void saveReklamacioRow(row, true)} style={{ ...buttonSecondary, padding: "7px 10px" }}>Lezárás</button><button type="button" disabled={saving} onClick={() => void saveReklamacioRow(row, false)} style={{ ...buttonPrimary, padding: "7px 12px" }}>{saving ? "Mentés..." : "Mentés"}</button></div>;
       }
       return <td key={column.id} style={{ ...tableCellStyle, width: column.width, minWidth: column.width, maxWidth: column.width, textAlign: column.align }}>{content}</td>;
     };
@@ -30097,7 +29795,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                 const filterActive = hasActiveFilter(column.id);
                 return <th key={column.id} style={{ ...tableHeaderStyle, textAlign: column.align, width: column.width }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 4 }}><button type="button" data-preserve-action-color="true" onClick={() => cycleSort(column.id)} style={{ flex: 1, minWidth: 0, border: 0, background: "transparent", color: reklamacioTableStyle.headerTextColor, fontFamily: reklamacioTableStyle.fontFamily, fontSize: reklamacioTableStyle.headerFontSize, fontWeight: reklamacioTableStyle.headerFontWeight, cursor: "pointer", textAlign: column.align, padding: 0 }}>{column.label}{sortMark}</button><button type="button" data-preserve-action-color="true" data-reklamacio-filter-trigger="true" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setReklamacioFilterMenu((current) => current?.columnId === column.id ? null : { columnId: column.id, x: rect.left, y: rect.bottom + 5 }); }} style={{ border: `1px solid ${filterActive ? officeTheme.accentColor : reklamacioTableStyle.borderColor}`, background: filterActive ? officeTheme.navActiveBackground : reklamacioTableStyle.headerBackground, color: reklamacioTableStyle.headerTextColor, borderRadius: 4, padding: "1px 5px", cursor: "pointer", fontWeight: 900 }}>▾</button></div></th>;
               })}</tr></thead>
-              <tbody>{visibleRows.length === 0 ? <tr><td colSpan={visibleColumns.length} style={{ ...tableCellStyle, textAlign: "center", padding: 30 }}>{reklamacioLoading ? "Reklamációk betöltése..." : "Nincs megjeleníthető reklamáció."}</td></tr> : visibleRows.map((row, index) => <tr key={row.key} style={{ background: row.lezart ? "rgba(22,163,74,0.22)" : row.gyartasbaTerveDatum ? "rgba(245,158,11,0.24)" : index % 2 === 0 ? reklamacioTableStyle.alternateCellBackground : reklamacioTableStyle.cellBackground }}>{visibleColumns.map((column) => renderCell(row, column))}</tr>)}</tbody>
+              <tbody>{visibleRows.length === 0 ? <tr><td colSpan={visibleColumns.length} style={{ ...tableCellStyle, textAlign: "center", padding: 30 }}>{reklamacioLoading ? "Reklamációk betöltése..." : "Nincs megjeleníthető reklamáció."}</td></tr> : visibleRows.map((row, index) => <tr key={row.key} style={{ background: row.lezart ? "rgba(22,163,74,0.22)" : index % 2 === 0 ? reklamacioTableStyle.alternateCellBackground : reklamacioTableStyle.cellBackground }}>{visibleColumns.map((column) => renderCell(row, column))}</tr>)}</tbody>
             </table>
           </div>}
         </section>
@@ -30719,138 +30417,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     );
   }
 
-  function ProgramErrorReportsAdmin(): React.JSX.Element {
-    const theme = getOfficeTheme("program-error-reports");
-    return (
-      <div style={{ width:"100%", minHeight:"100vh", padding:10, boxSizing:"border-box", background:theme.pageBackground, color:theme.textColor }}>
-        <ManagementNavigation />
-
-        <div data-office-window="program-error-reports:header" style={{ background:theme.panelBackground, border:`${theme.borderWidth}px solid ${theme.borderColor}`, borderRadius:theme.borderRadius, padding:16, marginBottom:12 }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
-            <div>
-              <h2 style={{ margin:0, color:theme.textColor }}>Hibajelentések</h2>
-              <div style={{ marginTop:5, color:theme.mutedText, fontSize:12 }}>A munkaállomásokról leadott programhibák teljes, megmaradó listája.</div>
-            </div>
-            <button type="button" onClick={() => void loadProgramErrorAdminRows()} disabled={programErrorAdminBusy} style={buttonSecondary}>Frissítés</button>
-          </div>
-        </div>
-
-        <div data-office-window="program-error-reports:station-messages" style={{ background:theme.panelBackground, border:`${theme.borderWidth}px solid ${theme.borderColor}`, borderRadius:theme.borderRadius, padding:16, marginBottom:12 }}>
-          <div style={{ display:"flex", justifyContent:"space-between", gap:10, alignItems:"center", flexWrap:"wrap", marginBottom:12 }}>
-            <div><strong>Munkaállomási üzenetek</strong><div style={{ color:theme.mutedText, fontSize:12, marginTop:4 }}>Kattints egy munkaállomásra vagy a Globál boxra az üzenet szerkesztéséhez.</div></div>
-            <button type="button" onClick={() => void loadProgramStationMessages()} disabled={programStationMessageBusy} style={buttonSecondary}>Üzenetek frissítése</button>
-          </div>
-          {programStationMessageError && <div style={{ marginBottom:10, padding:9, borderRadius:8, background:"#450a0a", color:"#fecaca", border:"1px solid #dc2626" }}>{programStationMessageError}</div>}
-          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))", gap:10 }}>
-            {["", ...getProgramMessageStationNames()].map((station) => {
-              const scopeKey = programMessageScopeKey(station);
-              const activeMessages = programStationMessages.filter((row) => String(row.scope_key || "") === scopeKey && row.is_active !== false);
-              return <button key={scopeKey} type="button" onClick={() => openProgramStationMessageEditor(station)} style={{ ...buttonSecondary, minHeight:72, fontWeight:900, textAlign:"left" }}>
-                <div style={{ textAlign:"center", marginBottom:activeMessages.length ? 7 : 0 }}>{station || "Globál"}</div>
-                {activeMessages.map((row) => <div key={String(row.id)} style={{ fontSize:11, fontWeight:600, whiteSpace:"normal", overflowWrap:"anywhere", marginTop:3 }}>
-                  {String(row.created_by_worker_name || row.updated_by_worker_name || "–")}: {String(row.message || "")}
-                </div>)}
-              </button>;
-            })}
-          </div>
-        </div>
-
-        {programStationMessageModalOpen && (
-          <div style={{ position:"fixed", inset:0, zIndex:95000, background:"rgba(15,23,42,.86)", display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
-            <div style={{ width:"min(900px,96vw)", background:"#0f172a", color:"#f8fafc", border:"2px solid #7c3aed", borderRadius:16, padding:20, boxShadow:"0 28px 90px rgba(0,0,0,.75)" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
-                <div>
-                  <h3 style={{ margin:"0 0 4px" }}>Munkaállomási üzenetek</h3>
-                  <div style={{ fontSize:12, color:"#cbd5e1" }}>Munkaállomás: {programStationMessageStation || "Globál"}</div>
-                </div>
-                <div style={{ display:"flex", gap:8 }}>
-                  <button type="button" onClick={()=>{setProgramStationMessageCreateOpen(true);setProgramStationMessageDraft("");setProgramStationMessageError("");}} style={{...buttonPrimary,background:"#7c3aed"}}>+ Új üzenet</button>
-                  <button type="button" onClick={()=>setProgramStationMessageModalOpen(false)} style={buttonSecondary}>Bezárás</button>
-                </div>
-              </div>
-
-              {programStationMessageCreateOpen && (
-                <div style={{ marginTop:16, padding:14, border:"1px solid #475569", borderRadius:12 }}>
-                  <textarea value={programStationMessageDraft} onChange={(e)=>setProgramStationMessageDraft(e.target.value)} rows={5} style={{ width:"100%", boxSizing:"border-box", resize:"vertical", ...fieldStyle }} placeholder="Megjegyzés..." />
-                  {programStationMessageError && <div style={{ marginTop:10, padding:9, borderRadius:8, background:"#450a0a", color:"#fecaca", border:"1px solid #dc2626" }}>{programStationMessageError}</div>}
-                  <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:10}}>
-                    <button type="button" onClick={()=>setProgramStationMessageCreateOpen(false)} disabled={programStationMessageBusy} style={buttonSecondary}>Mégse</button>
-                    <button type="button" onClick={()=>void saveProgramStationMessage()} disabled={programStationMessageBusy} style={buttonPrimary}>{programStationMessageBusy?"Mentés...":"Mentés"}</button>
-                  </div>
-                </div>
-              )}
-
-              <div style={{ overflowX:"auto", marginTop:16 }}>
-                <table style={{width:"100%",borderCollapse:"collapse",minWidth:700}}>
-                  <thead><tr>{["Sorszám","Név","Megjegyzés","Leadás ideje","Státusz","Művelet"].map((label)=><th key={label} style={{padding:9,textAlign:"left",borderBottom:"1px solid #475569"}}>{label}</th>)}</tr></thead>
-                  <tbody>
-                    {programStationMessages.filter((row)=>String(row.scope_key||"")===programMessageScopeKey(programStationMessageStation) && row.is_active!==false).map((row,index)=>(
-                      <tr key={String(row.id)}>
-                        <td style={{padding:9,borderBottom:"1px solid #334155",fontWeight:900}}>{index+1}</td>
-                        <td style={{padding:9,borderBottom:"1px solid #334155"}}>{String(row.created_by_worker_name||row.updated_by_worker_name||"–")}</td>
-                        <td style={{padding:9,borderBottom:"1px solid #334155",whiteSpace:"pre-wrap"}}>{String(row.message||"")}</td>
-                        <td style={{padding:9,borderBottom:"1px solid #334155"}}>{row.created_at?formatDateTime(String(row.created_at)):row.updated_at?formatDateTime(String(row.updated_at)):"–"}</td>
-                        <td style={{padding:9,borderBottom:"1px solid #334155",color:"#86efac",fontWeight:900}}>Aktív</td>
-                        <td style={{padding:9,borderBottom:"1px solid #334155"}}><button type="button" onClick={()=>void deleteProgramStationMessage(row)} disabled={programStationMessageBusy} style={{...buttonSecondary,borderColor:"#ef4444"}}>Törlés</button></td>
-                      </tr>
-                    ))}
-                    {programStationMessages.filter((row)=>String(row.scope_key||"")===programMessageScopeKey(programStationMessageStation) && row.is_active!==false).length===0 && (
-                      <tr><td colSpan={6} style={{padding:24,textAlign:"center",color:"#cbd5e1"}}>Még nincs aktív üzenet.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div data-office-window="program-error-reports:table" style={{ background:theme.panelBackground, border:`${theme.borderWidth}px solid ${theme.borderColor}`, borderRadius:theme.borderRadius, padding:16 }}>
-          {programErrorAdminError && <div style={{ marginBottom:12, padding:10, borderRadius:9, background:"#450a0a", color:"#fecaca", border:"1px solid #dc2626" }}>{programErrorAdminError}</div>}
-          <div style={{ overflowX:"auto" }}>
-            <table style={{ width:"100%", borderCollapse:"collapse", minWidth:1250 }}>
-              <thead>
-                <tr>
-                  {["Sorszám","Munkaállomás","Név","Megjegyzés","Leadás ideje","Státusz","Kész ideje","Készre állító","Művelet"].map((label) => (
-                    <th key={label} style={{ padding:9, textAlign:"left", borderBottom:`1px solid ${theme.borderColor}`, color:theme.textColor }}>{label}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {programErrorAdminRows.map((row) => {
-                  const done = String(row.status || "").toUpperCase() === "KESZ";
-                  const responseActive = Boolean(row.show_response) && row.response_visible_until && new Date(String(row.response_visible_until)).getTime() > Date.now();
-                  return (
-                    <tr key={String(row.id)}>
-                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}`, fontWeight:900 }}>{String(row.issue_number ?? row.id)}</td>
-                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}` }}>{String(row.station_name || "–")}</td>
-                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}` }}>{String(row.reporter_name || "–")}</td>
-                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}`, whiteSpace:"pre-wrap", minWidth:300 }}>{String(row.note || "–")}</td>
-                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}` }}>{row.reported_at ? formatDateTime(String(row.reported_at)) : "–"}</td>
-                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}`, fontWeight:900, color:done ? "#86efac" : "#fbbf24" }}>{done ? "Kész" : "Nyitott"}</td>
-                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}` }}>{row.completed_at ? formatDateTime(String(row.completed_at)) : "–"}</td>
-                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}` }}>{String(row.completed_by_worker_name || "–")}</td>
-                      <td style={{ padding:9, borderBottom:`1px solid ${theme.borderColor}` }}>
-                        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-                          <button type="button" disabled={programErrorAdminBusy || done} onClick={() => void completeProgramErrorReport(row)} style={{ ...buttonPrimary, opacity:done ? 0.55 : 1 }}>Kész</button>
-                          <button type="button" disabled={programErrorAdminBusy || !done || responseActive} onClick={() => void showProgramErrorRepairNotice(row)} style={{ ...buttonSecondary, borderColor:"#8b5cf6", color:"#ddd6fe", opacity:(!done || responseActive) ? 0.55 : 1 }}>
-                            {responseActive ? "Válasz aktív 24 óráig" : "Válasz megjelenítése a munkaállomáson"}
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {!programErrorAdminBusy && programErrorAdminRows.length === 0 && (
-                  <tr><td colSpan={9} style={{ padding:24, textAlign:"center", color:theme.mutedText }}>Még nincs hibajelentés.</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   function ManagementDashboard(): React.JSX.Element {
     // A 9-es korlátozott irodai dolgozó más managementSection értéket
     // sem közvetlen állapotból, sem későbbi új funkcióból nem nyithat meg.
@@ -30873,7 +30439,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     if (managementSection === "report-delivery") return ReportDeliveryAdmin();
     if (managementSection === "data-upload") return DataUploadAdmin();
     if (managementSection === "admin") return isAdmin(activeWorker) ? NivoAdminActivityAdmin() : AtvetelAdmin();
-    if (managementSection === "program-error-reports") return isAdmin(activeWorker) ? ProgramErrorReportsAdmin() : AtvetelAdmin();
 
     const dashboardRange = getDashboardDateRange("custom", dashboardDate, dashboardDateTo);
     const hasDashboardOrderSearch = dashboardOrderFilters.some(
@@ -33889,34 +33454,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
 
 
-  // A Hibajelentés admin lista betöltése a fő komponens hook-sorrendjében történik.
-  // Így a menüpontra váltás nem hoz létre feltételes hookot (React #310).
-  useEffect(() => {
-    if (managementSection !== "program-error-reports") return;
-    if (!activeWorker || !isAdmin(activeWorker)) return;
-    void loadProgramErrorAdminRows();
-    void loadProgramStationMessages();
-  }, [managementSection, activeWorker?.id, supabase]);
-
-  const terminalProgramMessagesRequestRef = useRef(0);
-  useEffect(() => {
-    if (!supabase) return;
-    const station = String(machineId || "").trim();
-    if (!station) return;
-    void loadTerminalProgramMessages(station);
-    const channel = supabase
-      .channel(`program-station-messages-${normalizeLooseText(station)}`)
-      .on("postgres_changes", { event:"*", schema:"public", table:PROGRAM_STATION_MESSAGE_TABLE }, () => {
-        void loadTerminalProgramMessages(station);
-      })
-      .subscribe();
-    return () => {
-      // Invalidate in-flight requests for the previous workstation on F5/rehydration.
-      terminalProgramMessagesRequestRef.current += 1;
-      void supabase.removeChannel(channel);
-    };
-  }, [supabase, machineId, machineIdRows, terminalView]);
-
   const previousManagementSectionForAtvetelRef = useRef(managementSection);
   useEffect(() => {
     const previousSection = previousManagementSectionForAtvetelRef.current;
@@ -36898,12 +36435,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         // a monitorba kizárólag az ehhez tartozó atvetel_adat rendelések kerülnek.
         if (!isInsideSelectedRange) return null;
 
-        const backlogDays = aggregate.filterDate <= todayKey
-          ? Math.max(1, productionMonitorDateDiffDays(aggregate.filterDate, todayKey))
+        const backlogDays = aggregate.completionDate <= todayKey
+          ? productionMonitorDateDiffDays(aggregate.completionDate, todayKey)
           : null;
-        const backlogLabel = aggregate.filterDate === todayKey
-          ? "Mai nap"
-          : backlogDays !== null
+        const backlogLabel = aggregate.completionDate === todayKey
+          ? "Mai"
+          : backlogDays !== null && backlogDays > 0
             ? `${backlogDays} nap`
             : "–";
 
@@ -37688,7 +37225,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         // Teljes/részleges rendelésszámnál normál részszöveges keresés.
         const likePattern = /^\d{5}$/.test(normalizedFilter)
           ? `R26${normalizedFilter.slice(0, 2)}%${normalizedFilter.slice(-3)}`
-          : `%${normalizedFilter.split("").join("%")}%`;
+          : `%${normalizedFilter}%`;
 
         let historyResponse = await supabase
           .from("work_logs")
@@ -38316,7 +37853,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     // a Napi / Heti / Havi / Egyedi nézettől és a kiválasztott dátumtól.
     let periodLogs: WorkLogRow[] = [];
 
-    if (planFieldTargetsDate && !hasOrderFilter) {
+    if (planFieldTargetsDate) {
       // Dátum típusú _terv mezőnél a Dátumtól / Dátumig NEM a work_logs időpontját
       // szűri. Előbb kiválasztjuk a tervmező alapján a rendeléseket, majd azok teljes
       // work_logs történetét töltjük be, hogy minden munkaállomás állapota látható maradjon.
@@ -38352,7 +37889,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
     let fullOrderHistoryLogs: WorkLogRow[] = [];
 
-    if (hasOrderFilter) {
+    if (hasOrderFilter && !planFieldTargetsDate) {
       const historyGroups: WorkLogRow[][] = [];
 
       for (const rawFilter of orderFilters) {
@@ -38365,34 +37902,41 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           ? `R26${normalizedFilter.slice(0, 2)}%${normalizedFilter.slice(-3)}`
           : `%${normalizedFilter}%`;
 
-        // Minden megfelelő work_logs sor lekérése lapozva, dátumkorlát nélkül.
-        const pageSize = 500;
-        for (let offset = 0; ; offset += pageSize) {
-          const historyResponse = await supabase
-            .from("work_logs")
+        let historyResponse = await supabase
+          .from("work_logs")
+          .select(selectColumns)
+          .ilike("order_number", likePattern)
+          .order("created_at", { ascending: true })
+          .limit(10000);
+
+        if (historyResponse.error) {
+          historyResponse = await supabase
+            .from("work_log")
             .select(selectColumns)
             .ilike("order_number", likePattern)
-            .order("id", { ascending: true })
-            .range(offset, offset + pageSize - 1);
-          if (historyResponse.error) throw historyResponse.error;
-          const rows = (historyResponse.data || []) as WorkLogRow[];
-          historyGroups.push(rows);
-          if (rows.length < pageSize) break;
+            .order("created_at", { ascending: true })
+            .limit(10000);
         }
-      }
 
+        if (historyResponse.error) {
+          console.warn("Rendelés teljes work_logs előzményének betöltési hibája:", historyResponse.error);
+          continue;
+        }
+
+        historyGroups.push(((historyResponse.data || []) as WorkLogRow[]));
+      }
 
       fullOrderHistoryLogs = mergeDashboardLogs(...historyGroups)
         .filter((log) => matchesDashboardOrderFilters(log.order_number, orderFilters));
     }
 
-    const allFetchedLogs = planFieldTargetsDate && !hasOrderFilter
+    const allFetchedLogs = planFieldTargetsDate
       ? periodLogs
       : hasOrderFilter
         ? mergeDashboardLogs(periodLogs, fullOrderHistoryLogs)
         : periodLogs;
 
-    const planFilteredFetchedLogs = planFieldMatch.active && !hasOrderFilter
+    const planFilteredFetchedLogs = planFieldMatch.active
       ? allFetchedLogs.filter((log) => matchesPlanFieldOrder(log.order_number))
       : allFetchedLogs;
 
@@ -42972,12 +42516,10 @@ body {
   }
 
   function getBundleTenSourceMeta(row: BundleTenSelectableRow): Partial<OrderProductionMeta> {
-    const exactRunSequence = getPlanRunSequenceFromPlanData(row.planData);
     return {
       visual_source: row.source,
       visual_source_row_id: row.sourceRowId || null,
       visual_source_item_key: row.key,
-      ...(exactRunSequence ? { terv_futo_sorszam: exactRunSequence } : {}),
       ...((row.source === "production-plan" || row.source === "backlog") && row.sourceRowId
         ? { terv_sor_id: row.sourceRowId, terv_megnevezes: row.productName || null }
         : {}),
@@ -43867,554 +43409,6 @@ body {
     );
   }
 
-  function getProgramMessageStationNames(): string[] {
-    const values = new Set<string>();
-    machineIdRows.forEach((row) => {
-      const name = String(row.name ?? row.Name ?? row.machine_name ?? row.machine_id ?? row.megnevezes ?? "").trim();
-      if (name && normalizeLooseText(name) !== "iroda" && normalizeLooseText(name) !== "mobil eszkoz") values.add(name);
-    });
-    getOrderedDashboardStations().forEach((name) => { if (String(name || "").trim()) values.add(String(name).trim()); });
-    return Array.from(values).sort((a,b) => a.localeCompare(b, "hu"));
-  }
-
-  function programMessageScopeKey(stationName: string): string {
-    const clean = String(stationName || "").trim();
-    return clean ? `STATION:${clean}` : "GLOBAL";
-  }
-
-  async function loadProgramStationMessages(): Promise<void> {
-    if (!supabase || !isAdmin(activeWorker)) return;
-    setProgramStationMessageBusy(true);
-    setProgramStationMessageError("");
-    try {
-      const { data, error } = await supabase.from(PROGRAM_STATION_MESSAGE_TABLE)
-        .select("id,scope_key,scope_type,station_name,message,is_active,created_at,created_by_worker_id,created_by_worker_name,updated_at,updated_by_worker_id,updated_by_worker_name")
-        .eq("is_active", true)
-        .order("created_at", { ascending:false });
-      if (error) throw error;
-      setProgramStationMessages((data || []) as Array<Record<string, unknown>>);
-    } catch (error) {
-      setProgramStationMessageError(normalizeError(error));
-    } finally { setProgramStationMessageBusy(false); }
-  }
-
-  function openProgramStationMessageEditor(stationName: string): void {
-    setProgramStationMessageScopeKey(programMessageScopeKey(stationName));
-    setProgramStationMessageStation(String(stationName || "").trim());
-    setProgramStationMessageDraft("");
-    setProgramStationMessageCreateOpen(false);
-    setProgramStationMessageError("");
-    setProgramStationMessageModalOpen(true);
-  }
-
-  async function saveProgramStationMessage(): Promise<void> {
-    if (!supabase || !activeWorker || !isAdmin(activeWorker)) return;
-    const messageText = programStationMessageDraft.trim();
-    if (!messageText) { setProgramStationMessageError("A megjegyzés nem lehet üres."); return; }
-    const scopeKey = programMessageScopeKey(programStationMessageStation);
-    const nowIso = new Date().toISOString();
-    const reporterName = String(activeWorker["Teljes nev"] || "").trim();
-    setProgramStationMessageBusy(true); setProgramStationMessageError("");
-    try {
-      const insertResult = await supabase.from(PROGRAM_STATION_MESSAGE_TABLE).insert({
-        scope_key: scopeKey,
-        scope_type: programStationMessageStation ? "STATION" : "GLOBAL",
-        station_name: programStationMessageStation || null,
-        message: messageText,
-        is_active: true,
-        created_at: nowIso,
-        created_by_worker_id: Number(activeWorker.id),
-        created_by_worker_name: reporterName,
-        updated_at: nowIso,
-        updated_by_worker_id: Number(activeWorker.id),
-        updated_by_worker_name: reporterName,
-      });
-      if (insertResult.error) throw insertResult.error;
-      const historyResult = await supabase.from(PROGRAM_STATION_MESSAGE_HISTORY_TABLE).insert({
-        scope_key: scopeKey, scope_type: programStationMessageStation ? "STATION" : "GLOBAL",
-        station_name: programStationMessageStation || null, action:"LETREHOZAS",
-        previous_message:null, new_message:messageText, changed_at:nowIso,
-        changed_by_worker_id:Number(activeWorker.id), changed_by_worker_name:reporterName,
-      });
-      if (historyResult.error) throw historyResult.error;
-      setProgramStationMessageDraft("");
-      setProgramStationMessageCreateOpen(false);
-      await loadProgramStationMessages();
-    } catch (error) { setProgramStationMessageError(normalizeError(error)); }
-    finally { setProgramStationMessageBusy(false); }
-  }
-
-  async function deleteProgramStationMessage(row: Record<string, unknown>): Promise<void> {
-    if (!supabase || !activeWorker || !isAdmin(activeWorker)) return;
-    const id = String(row.id || "");
-    if (!id) return;
-    const nowIso = new Date().toISOString();
-    const workerName = String(activeWorker["Teljes nev"] || "").trim();
-    setProgramStationMessageBusy(true); setProgramStationMessageError("");
-    try {
-      const currentResult = await supabase.from(PROGRAM_STATION_MESSAGE_TABLE).update({
-        is_active:false, updated_at:nowIso, updated_by_worker_id:Number(activeWorker.id), updated_by_worker_name:workerName
-      }).eq("id", id);
-      if (currentResult.error) throw currentResult.error;
-      const historyResult = await supabase.from(PROGRAM_STATION_MESSAGE_HISTORY_TABLE).insert({
-        scope_key:String(row.scope_key || ""), scope_type:String(row.scope_type || ""),
-        station_name:row.station_name || null, action:"TORLES",
-        previous_message:String(row.message || ""), new_message:null, changed_at:nowIso,
-        changed_by_worker_id:Number(activeWorker.id), changed_by_worker_name:workerName,
-      });
-      if (historyResult.error) throw historyResult.error;
-      await loadProgramStationMessages();
-    } catch (error) { setProgramStationMessageError(normalizeError(error)); }
-    finally { setProgramStationMessageBusy(false); }
-  }
-
-  async function persistProgramStationMessageTheme(scopeKey: string, theme: OfficeThemeConfig): Promise<void> {
-    if (!supabase || !activeWorker || !isAdmin(activeWorker)) return;
-    const result = await supabase.from(PROGRAM_STATION_MESSAGE_SETTINGS_TABLE).upsert({
-      scope_key: scopeKey, theme_json: theme, updated_at:new Date().toISOString(),
-      updated_by_worker_id:Number(activeWorker.id), updated_by_worker_name:String(activeWorker["Teljes nev"] || "").trim()
-    }, { onConflict:"scope_key" });
-    if (result.error) console.warn("Üzenetbox globális megjelenés mentési hiba:", result.error);
-  }
-
-  async function loadTerminalProgramMessages(stationName: string): Promise<void> {
-    if (!supabase) return;
-    const station = String(stationName || "").trim();
-    if (!station) return;
-    const requestId = ++terminalProgramMessagesRequestRef.current;
-    try {
-      const [messagesResult, settingsResult] = await Promise.all([
-        supabase.from(PROGRAM_STATION_MESSAGE_TABLE)
-          .select("id,scope_key,scope_type,station_name,message,is_active,created_at,created_by_worker_name,updated_at")
-          .eq("is_active", true),
-        supabase.from(PROGRAM_STATION_MESSAGE_SETTINGS_TABLE)
-          .select("scope_key,theme_json").in("scope_key", ["terminal-station-message","terminal-global-message"]),
-      ]);
-      if (messagesResult.error) throw messagesResult.error;
-      // Match the workstation by its saved machine identity and registered aliases,
-      // not only the current browser's displayed machineId string.
-      const stationAliases = getProductionCardStationAliases(station, machineIdRows);
-      const stationKey = getProductionCardStationMatchKey(station);
-      stationAliases.add(stationKey);
-      const visibleMessages = ((messagesResult.data || []) as Array<Record<string, unknown>>).filter((row) => {
-        if (String(row.scope_type || "").toUpperCase() === "GLOBAL") return true;
-        const target = String(row.station_name || "").trim()
-          || String(row.scope_key || "").replace(/^STATION:/i, "").trim();
-        return stationAliases.has(getProductionCardStationMatchKey(target));
-      });
-      // Do not allow an older asynchronous response to overwrite the restored station's messages.
-      if (requestId !== terminalProgramMessagesRequestRef.current) return;
-      setTerminalProgramMessages(visibleMessages);
-      if (!settingsResult.error) {
-        const themes: Record<string, OfficeThemeConfig> = {};
-        ((settingsResult.data || []) as Array<Record<string, unknown>>).forEach((row) => {
-          const key = String(row.scope_key || "");
-          if (key) themes[key] = ensureReadableOfficeTheme({ ...getOfficeTheme("program-error-reports"), ...((row.theme_json || {}) as Partial<OfficeThemeConfig>) });
-        });
-        setTerminalProgramMessageThemes(themes);
-      }
-    } catch (error) {
-      console.warn("Munkaállomási üzenetek betöltési hiba:", error);
-    }
-  }
-
-  async function loadProgramErrorRowsForStation(openModal = false): Promise<void> {
-    if (!supabase) return;
-    const station = String(machineId || "").trim();
-    if (!station) return;
-    if (openModal) setProgramErrorOpen(true);
-    setProgramErrorBusy(true);
-    setProgramErrorError("");
-    try {
-      const { data, error } = await supabase
-        .from(PROGRAM_ERROR_REPORT_TABLE)
-        .select("id,issue_number,station_name,reporter_worker_id,reporter_name,note,status,reported_at,completed_at,completed_by_worker_id,completed_by_worker_name,show_response,response_visible_from,response_visible_until")
-        .eq("station_name", station)
-        .order("issue_number", { ascending: false })
-        .limit(1000);
-      if (error) throw error;
-      setProgramErrorRows((data || []) as Array<Record<string, unknown>>);
-    } catch (error) {
-      setProgramErrorError(normalizeError(error));
-      setProgramErrorRows([]);
-    } finally {
-      setProgramErrorBusy(false);
-    }
-  }
-
-  async function saveProgramErrorReport(): Promise<void> {
-    if (!supabase) return;
-    const workerId = Number(programErrorReporterWorkerId);
-    const reporter = workers.find((worker) => Number(worker.id) === workerId) || null;
-    const note = programErrorNote.trim();
-    const station = String(machineId || "").trim();
-    if (!reporter) {
-      setProgramErrorError("A név kiválasztása kötelező.");
-      return;
-    }
-    if (!note) {
-      setProgramErrorError("A hiba pontos leírása kötelező.");
-      return;
-    }
-    if (!station) {
-      setProgramErrorError("A munkaállomás nem azonosítható.");
-      return;
-    }
-    setProgramErrorBusy(true);
-    setProgramErrorError("");
-    try {
-      const { error } = await supabase
-        .from(PROGRAM_ERROR_REPORT_TABLE)
-        .insert([{
-          station_name: station,
-          reporter_worker_id: Number(reporter.id),
-          reporter_name: String(reporter["Teljes nev"] || "").trim(),
-          note,
-          status: "NYITOTT",
-          reported_at: new Date().toISOString(),
-          show_response: false,
-        }]);
-      if (error) throw error;
-      setProgramErrorReporterWorkerId("");
-      setProgramErrorNote("");
-      setProgramErrorCreateOpen(false);
-      await loadProgramErrorRowsForStation(false);
-    } catch (error) {
-      setProgramErrorError(normalizeError(error));
-    } finally {
-      setProgramErrorBusy(false);
-    }
-  }
-
-  async function loadProgramErrorAdminRows(): Promise<void> {
-    if (!supabase || !isAdmin(activeWorker)) return;
-    setProgramErrorAdminBusy(true);
-    setProgramErrorAdminError("");
-    try {
-      const { data, error } = await supabase
-        .from(PROGRAM_ERROR_REPORT_TABLE)
-        .select("id,issue_number,station_name,reporter_worker_id,reporter_name,note,status,reported_at,completed_at,completed_by_worker_id,completed_by_worker_name,show_response,response_visible_from,response_visible_until")
-        .order("issue_number", { ascending: false })
-        .limit(5000);
-      if (error) throw error;
-      setProgramErrorAdminRows((data || []) as Array<Record<string, unknown>>);
-    } catch (error) {
-      setProgramErrorAdminError(normalizeError(error));
-      setProgramErrorAdminRows([]);
-    } finally {
-      setProgramErrorAdminBusy(false);
-    }
-  }
-
-  async function completeProgramErrorReport(row: Record<string, unknown>): Promise<void> {
-    if (!supabase || !activeWorker || !isAdmin(activeWorker)) return;
-    if (String(row.status || "").toUpperCase() === "KESZ") return;
-    setProgramErrorAdminBusy(true);
-    setProgramErrorAdminError("");
-    try {
-      const nowIso = new Date().toISOString();
-      const { error } = await supabase
-        .from(PROGRAM_ERROR_REPORT_TABLE)
-        .update({
-          status: "KESZ",
-          completed_at: nowIso,
-          completed_by_worker_id: Number(activeWorker.id),
-          completed_by_worker_name: String(activeWorker["Teljes nev"] || ""),
-        })
-        .eq("id", row.id);
-      if (error) throw error;
-      await loadProgramErrorAdminRows();
-    } catch (error) {
-      setProgramErrorAdminError(normalizeError(error));
-    } finally {
-      setProgramErrorAdminBusy(false);
-    }
-  }
-
-  async function showProgramErrorRepairNotice(row: Record<string, unknown>): Promise<void> {
-    if (!supabase || !activeWorker || !isAdmin(activeWorker)) return;
-    if (String(row.status || "").toUpperCase() !== "KESZ") return;
-    setProgramErrorAdminBusy(true);
-    setProgramErrorAdminError("");
-    try {
-      const from = new Date();
-      const until = new Date(from.getTime() + 24 * 60 * 60 * 1000);
-      const { error } = await supabase
-        .from(PROGRAM_ERROR_REPORT_TABLE)
-        .update({
-          show_response: true,
-          response_visible_from: from.toISOString(),
-          response_visible_until: until.toISOString(),
-        })
-        .eq("id", row.id);
-      if (error) throw error;
-      await loadProgramErrorAdminRows();
-    } catch (error) {
-      setProgramErrorAdminError(normalizeError(error));
-    } finally {
-      setProgramErrorAdminBusy(false);
-    }
-  }
-
-  async function loadProgramErrorRepairNoticesOnce(stationName: string): Promise<void> {
-    if (!supabase) return;
-    const station = String(stationName || "").trim();
-    if (!station || programErrorNoticeLoadedForMachineRef.current.has(station)) return;
-    programErrorNoticeLoadedForMachineRef.current.add(station);
-    try {
-      const nowIso = new Date().toISOString();
-      const { data, error } = await supabase
-        .from(PROGRAM_ERROR_REPORT_TABLE)
-        .select("id,issue_number,station_name,status,response_visible_until")
-        .eq("station_name", station)
-        .eq("status", "KESZ")
-        .eq("show_response", true)
-        .gt("response_visible_until", nowIso)
-        .order("issue_number", { ascending: false });
-      if (error) throw error;
-      setProgramErrorRepairNotices((data || []) as Array<Record<string, unknown>>);
-    } catch {
-      // Ez csak egyszeri munkaállomási értesítés; hiba esetén nem zavarjuk a termelési folyamatot.
-      setProgramErrorRepairNotices([]);
-    }
-  }
-
-  function getCurrentEventFiveTargetStation(): string | null {
-    const machineKey = getProductionCardStationMatchKey(machineId);
-    return EVENT_FIVE_ISSUE_STATIONS.find((station) => {
-      const aliases = getProductionCardStationAliases(station, machineIdRows);
-      return aliases.has(machineKey);
-    }) || null;
-  }
-
-  async function loadEventFiveStationIssues(openModal = false): Promise<void> {
-    if (!supabase) return;
-    const targetStation = getCurrentEventFiveTargetStation();
-    if (!targetStation) return;
-    if (openModal) setEventFiveStationIssueOpen(true);
-    setEventFiveStationIssueBusy(true);
-    setEventFiveStationIssueError("");
-    try {
-      const { data, error } = await supabase
-        .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
-        .select("id,report_id,target_station,status,started_at,completed_at,completed_by_worker_id,completed_by_worker_name,created_at,updated_at,event5_hibajelentesek(id,futo_sorszam,order_number,meret,megjegyzes,reported_by_worker_id,reported_by_worker_name,reported_at,status)")
-        .eq("target_station", targetStation)
-        .neq("status", "KESZ")
-        .order("created_at", { ascending: false })
-        .limit(5000);
-      if (error) throw error;
-      setEventFiveStationIssueRows((data || []) as Array<Record<string, unknown>>);
-    } catch (error) {
-      setEventFiveStationIssueError(normalizeError(error));
-      setEventFiveStationIssueRows([]);
-    } finally {
-      setEventFiveStationIssueBusy(false);
-    }
-  }
-
-  async function setEventFiveStationIssueStatus(
-    targetRow: Record<string, unknown>,
-    nextStatus: "FOLYAMATBAN" | "KESZ"
-  ): Promise<void> {
-    if (!supabase || !activeWorker) return;
-    const targetStation = getCurrentEventFiveTargetStation();
-    if (!targetStation) return;
-    const targetId = String(targetRow.id || "").trim();
-    const reportId = String(targetRow.report_id || "").trim();
-    const oldStatus = String(targetRow.status || "VARAKOZIK").trim().toUpperCase();
-    if (!targetId || !reportId || oldStatus === "KESZ" || oldStatus === nextStatus) return;
-
-    setEventFiveStationIssueBusy(true);
-    setEventFiveStationIssueError("");
-    try {
-      const nowIso = new Date().toISOString();
-      const payload: Record<string, unknown> = {
-        status: nextStatus,
-        updated_at: nowIso,
-      };
-      if (nextStatus === "FOLYAMATBAN") {
-        payload.started_at = targetRow.started_at || nowIso;
-      } else {
-        payload.completed_at = nowIso;
-        payload.completed_by_worker_id = Number(activeWorker.id);
-        payload.completed_by_worker_name = activeWorker["Teljes nev"];
-      }
-
-      const { error: updateError } = await supabase
-        .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
-        .update(payload)
-        .eq("id", targetId)
-        .eq("target_station", targetStation);
-      if (updateError) throw updateError;
-
-      const { error: auditError } = await supabase
-        .from(EVENT_FIVE_ISSUE_STATUS_AUDIT_TABLE)
-        .insert([{
-          report_id: Number(reportId),
-          target_id: Number(targetId),
-          target_station: targetStation,
-          old_status: oldStatus,
-          new_status: nextStatus,
-          changed_by_worker_id: Number(activeWorker.id),
-          changed_by_worker_name: activeWorker["Teljes nev"],
-          changed_at: nowIso,
-        }]);
-      if (auditError) throw auditError;
-
-      const { data: targetStates, error: targetStatesError } = await supabase
-        .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
-        .select("status")
-        .eq("report_id", reportId);
-      if (targetStatesError) throw targetStatesError;
-      const allDone = (targetStates || []).length > 0
-        && (targetStates || []).every((item) => String(item.status || "").toUpperCase() === "KESZ");
-      const { error: reportError } = await supabase
-        .from(EVENT_FIVE_ISSUE_REPORT_TABLE)
-        .update({ status: allDone ? "KESZ" : "NYITOTT", completed_at: allDone ? nowIso : null })
-        .eq("id", reportId);
-      if (reportError) throw reportError;
-
-      await loadEventFiveStationIssues(false);
-    } catch (error) {
-      setEventFiveStationIssueError(normalizeError(error));
-    } finally {
-      setEventFiveStationIssueBusy(false);
-    }
-  }
-
-  async function openEventFiveIssueHistory(): Promise<void> {
-    if (!supabase) return;
-    setEventFiveIssueHistoryOpen(true);
-    setEventFiveIssueHistoryBusy(true);
-    setEventFiveIssueHistoryError("");
-    try {
-      const { data, error } = await supabase
-        .from(EVENT_FIVE_ISSUE_REPORT_TABLE)
-        .select("id,futo_sorszam,order_number,meret,megjegyzes,reported_by_worker_name,reported_at,status,completed_at,event5_hibajelentes_celallomasok(id,target_station,status,started_at,completed_at,completed_by_worker_name,updated_at)")
-        .order("reported_at", { ascending: false })
-        .limit(5000);
-      if (error) throw error;
-      setEventFiveIssueHistoryRows((data || []) as Array<Record<string, unknown>>);
-    } catch (error) {
-      setEventFiveIssueHistoryError(normalizeError(error));
-      setEventFiveIssueHistoryRows([]);
-    } finally {
-      setEventFiveIssueHistoryBusy(false);
-    }
-  }
-
-  function getEventFiveIssueTargetStatusLabel(value: unknown): string {
-    const status = String(value || "").trim().toUpperCase();
-    if (status === "KESZ") return "Kész";
-    if (status === "FOLYAMATBAN") return "Folyamatban";
-    return "Várakozik";
-  }
-
-  useEffect(() => {
-    if (!supabase || (!eventFiveIssueHistoryOpen && !eventFiveStationIssueOpen)) return;
-    const channel = supabase
-      .channel(`event5-hibajelentes-status-${machineId}`)
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: EVENT_FIVE_ISSUE_TARGET_TABLE },
-        () => {
-          if (eventFiveIssueHistoryOpen && getStationPlanIdentityKey(machineId) === "szereles") {
-            void openEventFiveIssueHistory();
-          }
-          if (eventFiveStationIssueOpen && getCurrentEventFiveTargetStation()) {
-            void loadEventFiveStationIssues(false);
-          }
-        }
-      )
-      .subscribe();
-    return () => {
-      void supabase.removeChannel(channel);
-    };
-  }, [supabase, eventFiveIssueHistoryOpen, eventFiveStationIssueOpen, machineId]);
-
-  function resetEventFiveIssueForm(): void {
-    setEventFiveIssueOrder("");
-    setEventFiveIssueSize("");
-    setEventFiveIssueNote("");
-    setEventFiveIssueStations([]);
-    setEventFiveIssueError("");
-  }
-
-  function toggleEventFiveIssueStation(station: string): void {
-    setEventFiveIssueStations((current) =>
-      current.includes(station) ? current.filter((item) => item !== station) : [...current, station]
-    );
-  }
-
-  async function saveEventFiveIssueReport(): Promise<void> {
-    if (!supabase || !activeWorker || Number(getWorkerEsemenyKotegValue(activeWorker)) !== 5) return;
-    const order = eventFiveIssueOrder.trim().toUpperCase();
-    const size = eventFiveIssueSize.trim();
-    const note = eventFiveIssueNote.trim();
-    if (!/^R\d{9}$/.test(order)) {
-      setEventFiveIssueError("A rendelésszám kötelező formátuma: R + pontosan 9 számjegy (például R123456789).");
-      return;
-    }
-    if (eventFiveIssueStations.length === 0) {
-      setEventFiveIssueError("Legalább egy cél munkaállomást ki kell választani.");
-      return;
-    }
-    const stationText = eventFiveIssueStations.join(", ");
-    if (!window.confirm(
-      `Hibajelentés / felhasználás mentése?\n\nRendelés: ${order}\nMéret: ${size || "–"}\nMegjegyzés: ${note || "–"}\nCélállomás: ${stationText}`
-    )) return;
-
-    setEventFiveIssueBusy(true);
-    setEventFiveIssueError("");
-    try {
-      const nowIso = new Date().toISOString();
-
-      // A fő tábla identity futó_sorszám mezője adja a teljesen egyedi, riportálható sorszámot.
-      const { data: report, error: reportError } = await supabase
-        .from(EVENT_FIVE_ISSUE_REPORT_TABLE)
-        .insert([{
-          order_number: order,
-          meret: size || null,
-          megjegyzes: note || null,
-          reported_by_worker_id: Number(activeWorker.id),
-          reported_by_worker_name: activeWorker["Teljes nev"],
-          source_station: getCurrentMachineIdForInsert(),
-          reported_at: nowIso,
-          status: "NYITOTT",
-        }])
-        .select("id,futo_sorszam")
-        .single();
-      if (reportError) throw reportError;
-      if (!report?.id) throw new Error("A hibajelentés nem kapott adatbázis-azonosítót.");
-
-      const targetRows = eventFiveIssueStations.map((station) => ({
-        report_id: report.id,
-        futo_sorszam: report.futo_sorszam,
-        target_station: station,
-        status: "VARAKOZIK",
-        created_at: nowIso,
-        updated_at: nowIso,
-      }));
-      const { error: targetError } = await supabase.from(EVENT_FIVE_ISSUE_TARGET_TABLE).insert(targetRows);
-      if (targetError) throw targetError;
-
-      // Az új Hibajelentés / felhasználás nem kerül a régi
-      // asztalos_selejt_potlas táblába. Annak lap_check szabálya csak valódi
-      // lap/tokléc selejtre vonatkozik. A kártya az új célállomás táblából olvassa.
-
-      setEventFiveIssueOpen(false);
-      resetEventFiveIssueForm();
-      setMessage({
-        type: "success",
-        text: `Hibajelentés / felhasználás #${report.futo_sorszam} elmentve. Célállomás: ${stationText}.`,
-      });
-    } catch (error) {
-      setEventFiveIssueError(normalizeError(error));
-    } finally {
-      setEventFiveIssueBusy(false);
-    }
-  }
-
   function handleOrderTypeSelection(mode: WorkflowMode): void {
     if (activeWorker && Number(getWorkerEsemenyKotegValue(activeWorker)) === 6 && mode !== "single") {
       setOrderTypeScanError("A 6-os esemény csak egyedi rendelésként jelenthető.");
@@ -44919,92 +43913,7 @@ body {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     const {data,error}=await supabase.rpc("nivo_szereles_allapot",{p_order_number:order,p_machine_id:machine});
     if(error) throw error;
-    const normalizedState = normalizeSzerelesOrderState(data);
-
-    // Kizárólag az 5-ös Szerelés eseménynél: a szüneteltetési audit END sor nem
-    // zárhatja le a tényleges Nyíló/Tok START sort. Ha a work_logs-ban a rész
-    // továbbra is nyitott, a képernyőn is folyamatban marad és befejezhető.
-    if (Number(getWorkerEsemenyKotegValue(activeWorker)) !== 5 || !requiresSzerelesStartParts(activeWorker)) {
-      return normalizedState;
-    }
-
-    const { data: openRows, error: openRowsError } = await supabase
-      .from("work_logs")
-      .select("id, worker_name, note, created_at, start_time, start_timestamp, szereles_resz, szereles_ciklus_id, terv_futo_sorszam")
-      .eq("order_number", order)
-      .eq("machine_id", machine)
-      .eq("action", "START")
-      .is("end_time", null)
-      .in("szereles_resz", ["nyilo", "tok"])
-      .order("created_at", { ascending: false })
-      .limit(100);
-    if (openRowsError) throw openRowsError;
-
-    const restoredState: SzerelesOrderState = {
-      ...normalizedState,
-      parts: {
-        nyilo: { ...normalizedState.parts.nyilo },
-        tok: { ...normalizedState.parts.tok },
-      },
-    };
-
-    (openRows || []).forEach((raw) => {
-      const row = raw as Record<string, unknown>;
-      const part = row.szereles_resz === "nyilo" || row.szereles_resz === "tok"
-        ? row.szereles_resz as SzerelesPart
-        : null;
-      if (!part || restoredState.parts[part].state === "in_progress") return;
-      const noteMeta = getStructuredNoteMetadata(String(row.note || ""));
-      restoredState.parts[part] = {
-        ...restoredState.parts[part],
-        state: "in_progress",
-        done: false,
-        open_id: row.id == null ? null : String(row.id),
-        started_at: String(row.start_time || row.start_timestamp || row.created_at || "") || null,
-        ended_at: null,
-        start_worker_name: String(noteMeta.start_worker_name || row.worker_name || restoredState.parts[part].start_worker_name || ""),
-        end_worker_name: "",
-      };
-      if (!restoredState.cycle_id && row.szereles_ciklus_id) {
-        restoredState.cycle_id = String(row.szereles_ciklus_id);
-      }
-    });
-
-    restoredState.done_count = Number(restoredState.parts.nyilo.done) + Number(restoredState.parts.tok.done);
-    restoredState.is_complete = restoredState.done_count === 2;
-    if (!restoredState.is_complete) restoredState.full_end = null;
-    return restoredState;
-  }
-
-  async function resolveEventFiveSzerelesRunSequence(
-    order: string,
-    machine: string,
-    state?: SzerelesOrderState | null
-  ): Promise<number | null> {
-    if (!supabase) return null;
-
-    const openIds = state
-      ? (["nyilo", "tok"] as SzerelesPart[])
-          .map((part) => state.parts[part].open_id)
-          .filter((id): id is string => Boolean(id))
-      : [];
-
-    if (openIds.length > 0) {
-      const { data: openRunRows, error: openRunError } = await supabase
-        .from("work_logs")
-        .select("id, terv_futo_sorszam")
-        .in("id", openIds)
-        .not("terv_futo_sorszam", "is", null)
-        .limit(100);
-      if (openRunError) throw openRunError;
-      const inherited = (openRunRows || [])
-        .map((row) => parsePlanRunSequence((row as Record<string, unknown>).terv_futo_sorszam))
-        .find((value): value is number => value !== null);
-      if (inherited !== undefined) return inherited;
-    }
-
-    const identity = await resolvePlanRunIdentityForOrder(machine, order);
-    return identity?.runSequence ?? null;
+    return normalizeSzerelesOrderState(data);
   }
   async function openSzerelesOrderChoice(order: string): Promise<void> {
     if(!supabase || !activeWorker) return;
@@ -45191,62 +44100,6 @@ body {
       if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
     } catch { /* fallback below */ }
     return `SCRAP-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  }
-
-  function eventFiveIssueTargetToScrapReplacementRow(raw: Record<string, unknown>): ScrapReplacementRow | null {
-    const joined = raw.event5_hibajelentesek;
-    const report = Array.isArray(joined)
-      ? joined[0] as Record<string, unknown> | undefined
-      : joined && typeof joined === "object" ? joined as Record<string, unknown> : undefined;
-    if (!report) return null;
-    const targetStatus = String(raw.status || "VARAKOZIK").toUpperCase();
-    const size = String(report.meret || "").trim();
-    const note = String(report.megjegyzes || "").trim();
-    return normalizeScrapReplacementRow({
-      id: `E5TARGET:${String(raw.id || "")}`,
-      order_number: String(report.order_number || "").trim(),
-      kulso_lap_selejt: false,
-      belso_lap_selejt: false,
-      toklec_selejt: false,
-      megjegyzes: [note, size ? `Méret: ${size}` : ""].filter(Boolean).join(" | ") || null,
-      source_station: String(report.source_station || "Szerelés"),
-      source_work_log_id: null,
-      status: targetStatus === "KESZ" ? "KESZ" : targetStatus === "FOLYAMATBAN" ? "SZABAS_FOLYAMATBAN" : "VARAKOZIK",
-      reported_by_worker_id: report.reported_by_worker_id as number | string | null,
-      reported_by_worker_name: String(report.reported_by_worker_name || "") || null,
-      reported_at: String(report.reported_at || report.created_at || new Date().toISOString()),
-      started_at: raw.started_at ? String(raw.started_at) : null,
-      completed_at: raw.completed_at ? String(raw.completed_at) : null,
-      last_worker_name: String(raw.completed_by_worker_name || "") || null,
-      updated_at: raw.updated_at ? String(raw.updated_at) : null,
-      event_id: `E5-HIBA-${String(raw.report_id || report.id || "")}`,
-      target_station: String(raw.target_station || "").trim(),
-      route_sequence: null,
-      previous_target_station: null,
-      source_group: "event5-hibajelentes",
-      generic_scrap: true,
-      scrap_kind: "Hibajelentés / felhasználás",
-      termelesi_kartya_adatok: {
-        hibajelentes_id: raw.report_id || report.id || null,
-        hibajelentes_futo_sorszam: report.futo_sorszam ?? null,
-        hibajelentes_meret: report.meret ?? null,
-        hibajelentes_megjegyzes: report.megjegyzes ?? null,
-      },
-    } as ScrapReplacementRow);
-  }
-
-  async function fetchEventFiveIssueScrapRows(stationName: string): Promise<ScrapReplacementRow[]> {
-    if (!supabase) return [];
-    const { data, error } = await supabase
-      .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
-      .select("id,report_id,target_station,status,started_at,completed_by_worker_id,completed_by_worker_name,completed_at,created_at,updated_at,event5_hibajelentesek(id,futo_sorszam,order_number,meret,megjegyzes,reported_by_worker_id,reported_by_worker_name,source_station,reported_at,created_at)")
-      .eq("target_station", stationName)
-      .order("created_at", { ascending: false })
-      .limit(5000);
-    if (error) throw error;
-    return ((data || []) as Array<Record<string, unknown>>)
-      .map(eventFiveIssueTargetToScrapReplacementRow)
-      .filter((row): row is ScrapReplacementRow => Boolean(row));
   }
 
   function normalizeScrapReplacementRow(rawRow: ScrapReplacementRow): ScrapReplacementRow {
@@ -45772,24 +44625,6 @@ body {
         if (rowInProgress && !existingInProgress) result.set(key, row);
       });
     }
-    if (EVENT_FIVE_ISSUE_STATIONS.some((station) => getStationPlanIdentityKey(station) === getStationPlanIdentityKey(cleanStation))) {
-      const eventFiveCanonicalStation = EVENT_FIVE_ISSUE_STATIONS.find(
-        (station) => getStationPlanIdentityKey(station) === getStationPlanIdentityKey(cleanStation)
-      ) || cleanStation;
-      const eventFiveRows = await fetchEventFiveIssueScrapRows(eventFiveCanonicalStation);
-      eventFiveRows
-        .filter((row) => row.status !== "KESZ" && cleanOrders.includes(String(row.order_number || "").trim()))
-        .forEach((row) => {
-          const key = normalizeLooseText(row.order_number);
-          if (!key) return;
-          const existing = result.get(key);
-          const rowInProgress = row.status !== "VARAKOZIK" && row.status !== "KESZ" || Boolean(row.started_at);
-          const existingInProgress = existing
-            ? (existing.status !== "VARAKOZIK" && existing.status !== "KESZ" || Boolean(existing.started_at))
-            : false;
-          if (!existing || (rowInProgress && !existingInProgress)) result.set(key, row);
-        });
-    }
     return result;
   }
 
@@ -45843,13 +44678,6 @@ body {
         return targetMatches && (row.generic_scrap || row.kulso_lap_selejt || row.belso_lap_selejt || row.toklec_selejt);
       });
 
-    if (rows.length === 0 && EVENT_FIVE_ISSUE_STATIONS.some(
-      (station) => normalizeLooseText(station) === normalizeLooseText(cleanStation)
-    )) {
-      const eventFiveRows = (await fetchEventFiveIssueScrapRows(cleanStation))
-        .filter((row) => row.status !== "KESZ" && normalizeLooseText(row.order_number) === normalizeLooseText(cleanOrderNumber));
-      if (eventFiveRows.length > 0) return eventFiveRows.find((row) => row.status !== "VARAKOZIK" || Boolean(row.started_at)) || eventFiveRows[0];
-    }
     if (rows.length === 0) return null;
 
     const inProgress = rows
@@ -45891,41 +44719,6 @@ body {
     timestamp: string
   ): Promise<void> {
     if (!supabase || !row) return;
-    const eventFiveTargetId = String(row.id || "").startsWith("E5TARGET:")
-      ? String(row.id).slice("E5TARGET:".length)
-      : "";
-    if (eventFiveTargetId) {
-      const targetStatus = status === "KESZ" ? "KESZ" : status === "VARAKOZIK" ? "VARAKOZIK" : "FOLYAMATBAN";
-      const targetPayload: Record<string, unknown> = { status: targetStatus, updated_at: timestamp };
-      if (targetStatus === "FOLYAMATBAN") targetPayload.started_at = row.started_at || timestamp;
-      if (targetStatus === "KESZ") {
-        targetPayload.completed_at = timestamp;
-        targetPayload.completed_by_worker_id = activeWorker?.id ?? null;
-        targetPayload.completed_by_worker_name = activeWorker?.["Teljes nev"] || null;
-      }
-      const { error: targetError } = await supabase
-        .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
-        .update(targetPayload)
-        .eq("id", eventFiveTargetId);
-      if (targetError) throw targetError;
-
-      const reportId = String(row.event_id || "").replace(/^E5-HIBA-/, "");
-      if (reportId) {
-        const { data: targetStates, error: targetStatesError } = await supabase
-          .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
-          .select("status")
-          .eq("report_id", reportId);
-        if (targetStatesError) throw targetStatesError;
-        const allDone = (targetStates || []).length > 0
-          && (targetStates || []).every((item) => String(item.status || "").toUpperCase() === "KESZ");
-        const { error: reportError } = await supabase
-          .from(EVENT_FIVE_ISSUE_REPORT_TABLE)
-          .update({ status: allDone ? "KESZ" : "NYITOTT", completed_at: allDone ? timestamp : null })
-          .eq("id", reportId);
-        if (reportError) throw reportError;
-      }
-      return;
-    }
     if (status === "SZABAS_FOLYAMATBAN" || status === "MARAS_FOLYAMATBAN") {
       await assertScrapReplacementRouteReady(row);
     }
@@ -45965,8 +44758,6 @@ body {
     }
     const ids = openRows.map((row) => row.id);
     if (ids.length === 0) return;
-    const eventFiveRows = openRows.filter((row) => String(row.id || "").startsWith("E5TARGET:"));
-    const legacyIds = openRows.filter((row) => !String(row.id || "").startsWith("E5TARGET:")).map((row) => row.id);
     const nowIso = new Date().toISOString();
     const payload: Record<string, unknown> = {
       status,
@@ -45985,62 +44776,8 @@ body {
       if (!Object.prototype.hasOwnProperty.call(payload, "completed_at")) payload.completed_at = nowIso;
       payload.last_worker_name = activeWorker?.["Teljes nev"] || null;
     }
-    if (legacyIds.length > 0) {
-      const { error } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).update(payload).in("id", legacyIds);
-      if (error) throw error;
-      await syncEventFiveIssueTargetFromScrapRows(legacyIds, status, status === "KESZ" ? String(payload.completed_at || nowIso) : null);
-    }
-    for (const eventFiveRow of eventFiveRows) {
-      await updateSingleScrapReplacement(eventFiveRow, status, nowIso);
-    }
-  }
-
-  async function syncEventFiveIssueTargetFromScrapRows(
-    ids: Array<string | number>,
-    status: ScrapReplacementStatus,
-    completedAt?: string | null
-  ): Promise<void> {
-    if (!supabase || ids.length === 0) return;
-    const { data, error } = await supabase
-      .from(CARPENTER_SCRAP_REPLACEMENT_TABLE)
-      .select("event_id,target_station")
-      .in("id", ids);
+    const { error } = await supabase.from(CARPENTER_SCRAP_REPLACEMENT_TABLE).update(payload).in("id", ids);
     if (error) throw error;
-
-    for (const row of (data || []) as Array<{ event_id?: string | null; target_station?: string | null }>) {
-      const eventId = String(row.event_id || "");
-      if (!eventId.startsWith("E5-HIBA-")) continue;
-      const reportId = eventId.slice("E5-HIBA-".length);
-      const station = String(row.target_station || "").trim();
-      if (!reportId || !station) continue;
-      const payload: Record<string, unknown> = {
-        status,
-        updated_at: new Date().toISOString(),
-      };
-      if (status === "KESZ") {
-        payload.completed_at = completedAt || new Date().toISOString();
-        payload.completed_by_worker_id = activeWorker?.id ?? null;
-        payload.completed_by_worker_name = activeWorker?.["Teljes nev"] || null;
-      }
-      const { error: targetError } = await supabase
-        .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
-        .update(payload)
-        .eq("report_id", reportId)
-        .eq("target_station", station);
-      if (targetError) throw targetError;
-
-      const { data: remaining, error: remainingError } = await supabase
-        .from(EVENT_FIVE_ISSUE_TARGET_TABLE)
-        .select("status")
-        .eq("report_id", reportId);
-      if (remainingError) throw remainingError;
-      const allDone = (remaining || []).length > 0 && (remaining || []).every((item) => String(item.status || "").toUpperCase() === "KESZ");
-      const { error: reportUpdateError } = await supabase
-        .from(EVENT_FIVE_ISSUE_REPORT_TABLE)
-        .update({ status: allDone ? "KESZ" : "NYITOTT", completed_at: allDone ? (completedAt || new Date().toISOString()) : null })
-        .eq("id", reportId);
-      if (reportUpdateError) throw reportUpdateError;
-    }
   }
 
   async function createScrapReplacementFromSheetScrap(params: {
@@ -47995,7 +46732,6 @@ body {
           state:pauseItem.state,
           reason:pauseItem.reason,
           batchCode:batch.batch_code,
-          planRunSequence:parsePlanRunSequence(getProductionMetaForOrder(meta, pauseItem.order).terv_futo_sorszam),
         });
         pauseAuditResults.push({order:pauseItem.order,pauseNumber:pauseAudit.pauseNumber});
         committed=true;
@@ -48309,12 +47045,9 @@ body {
       return;
     }
 
-    const bundleTenBatchItems = isEventTenVisualWorker() ? getBundleTenBatchItemIdentities(selectedEndBatch) : [];
     const allOrders = selectedEndBatch.order_ids.map((order) => String(order).trim()).filter(Boolean);
-    const readyBundleTenItems = bundleTenBatchItems.filter((item) => !!endReadyMap[item.stateKey]);
-    const remainingBundleTenItems = bundleTenBatchItems.filter((item) => !endReadyMap[item.stateKey]);
-    const readyOrders = isEventTenVisualWorker() ? readyBundleTenItems.map((item) => item.orderNumber) : allOrders.filter((order) => !!endReadyMap[order]);
-    const remainingOrders = isEventTenVisualWorker() ? remainingBundleTenItems.map((item) => item.orderNumber) : allOrders.filter((order) => !endReadyMap[order]);
+    const readyOrders = allOrders.filter((order) => !!endReadyMap[order]);
+    const remainingOrders = allOrders.filter((order) => !endReadyMap[order]);
 
     if (readyOrders.length === 0) {
       setMessage({ type: "error", text: "Nincs készre jelölt tétel. Legalább egy rendelést pipálj be, vagy használd az ALL-READY kódot." });
@@ -48366,13 +47099,9 @@ body {
       const operationLabel = operationCode === "SZABAS" ? "Szabás" : operationCode === "MARAS" ? "Marás" : "Köteg";
       const scrapReplacementMap = await fetchOpenScrapReplacementMap(allOrders);
 
-      const endItemsForLogs = isEventTenVisualWorker()
-        ? readyBundleTenItems
-        : readyOrders.map((order) => ({ orderNumber: order, itemKey: order, stateKey: order, meta: getProductionMetaForOrder(selectedEndBatch.production_meta, order) }));
-      const logs = endItemsForLogs.map((batchItem) => {
-        const order = batchItem.orderNumber;
-        const orderNoteClean = (endOrderNotes[batchItem.stateKey] || "").trim();
-        const orderProductionMeta = batchItem.meta;
+      const logs = readyOrders.map((order) => {
+        const orderNoteClean = (endOrderNotes[order] || "").trim();
+        const orderProductionMeta = getProductionMetaForOrder(selectedEndBatch.production_meta, order);
         const reportedDarab = reportedQuantityByOrder[order] ?? finalDarab;
         return {
           worker_id: activeWorker.id,
@@ -48452,11 +47181,6 @@ body {
           const remainderProductionMeta = Object.fromEntries(
             remainingOrders.map((order) => [order, getProductionMetaForOrder(selectedEndBatch.production_meta, order)])
           ) as Record<string, OrderProductionMeta>;
-          if (isEventTenVisualWorker()) {
-            remainingBundleTenItems.forEach((item) => {
-              remainderProductionMeta[getBundleTenBatchRowMetaKey(item.orderNumber, item.itemKey)] = item.meta;
-            });
-          }
           const { error: insertRemainderError } = await supabase.from("production_batches").insert([{
             batch_code: newBatchCode,
             order_ids: remainingOrders,
@@ -49429,11 +48153,6 @@ body {
       const currentMachineId = getCurrentMachineIdForInsert();
       const nowIso = getLocalTimestampWithOffset();
 
-      // 8-as gyorsjelentés: az aktuálisan bejelentkezett munkaállomás saját
-      // *_terv táblájából kérjük le a konkrét rendelés futó sorszámát.
-      const eventEightPlanRunIdentity = await resolvePlanRunIdentityForOrder(currentMachineId, finalOrder);
-      const eventEightPlanRunSequence = eventEightPlanRunIdentity?.runSequence ?? null;
-
       const existingOpen = await findOpenWorkLogForOrderAtCurrentMachine(finalOrder);
 
       if (existingOpen?.id !== null && existingOpen?.id !== undefined) {
@@ -49444,7 +48163,6 @@ body {
           .update({
             end_time: nowIso,
             end_timestamp: nowIso,
-            terv_futo_sorszam: parsePlanRunSequence(existingOpen.terv_futo_sorszam) ?? eventEightPlanRunSequence,
             event_name: "8-as Raktár azonnali készre jelentés",
             event_code: "ESEMENY-8",
             note: buildStructuredNote("8-as Raktár gyorsjelentés", {
@@ -49456,7 +48174,6 @@ body {
               order_number: finalOrder,
               start_time: existingOpen.start_time || existingOpen.start_timestamp || existingOpen.created_at || nowIso,
               end_time: nowIso,
-              terv_futo_sorszam: parsePlanRunSequence(existingOpen.terv_futo_sorszam) ?? eventEightPlanRunSequence,
             }),
           })
           .eq("id", existingOpen.id);
@@ -49505,7 +48222,6 @@ body {
             ujragyartas_sorszam: productionDecision.meta.ujragyartas_sorszam,
             gyartas_tipus: productionDecision.meta.gyartas_tipus,
             gyartasi_kor: productionDecision.meta.gyartasi_kor,
-            terv_futo_sorszam: eventEightPlanRunSequence ?? productionDecision.meta.terv_futo_sorszam ?? null,
             note: buildStructuredNote("8-as Raktár gyorsjelentés", {
               event_bundle: 8,
               instant_completion: true,
@@ -49515,7 +48231,6 @@ body {
               order_number: finalOrder,
               start_time: nowIso,
               end_time: nowIso,
-              terv_futo_sorszam: eventEightPlanRunSequence ?? productionDecision.meta.terv_futo_sorszam ?? null,
             }),
             scrap_qty: null,
             darab: null,
@@ -49982,12 +48697,6 @@ body {
         if (exactMeta) meta[getBundleTenBatchRowMetaKey(row.orderNumber, row.key)] = exactMeta;
       });
     }
-    if (Number(getWorkerEsemenyKotegValue(activeWorker)) === 5) {
-      for (const order of orders) {
-        const runSequence = await resolveEventFiveSzerelesRunSequence(order, machine, null);
-        meta[order] = { ...meta[order], terv_futo_sorszam: runSequence };
-      }
-    }
     const items=isEventTenVisualWorker() && bundleTenRowsForSave.length === orders.length
       ? bundleTenRowsForSave.map((row)=>{
           const rowMeta=getBundleTenExactBatchRowMeta(meta,row)||getProductionMetaForOrder(meta,row.orderNumber);
@@ -50068,7 +48777,7 @@ body {
       ])
     ) as Record<string, OrderProductionMeta>;
 
-    if (usesPlanRunSequence(currentMachineId) && !isEventTenVisualWorker()) {
+    if (usesPlanRunSequence(currentMachineId)) {
       for (const order of ordersForSave) {
         productionMetaForSave[order] = await attachPlanRunIdentityToMeta(currentMachineId, order, productionMetaForSave[order]);
       }
@@ -50078,11 +48787,7 @@ body {
       bundleTenRowsForSave.forEach((row) => {
         const exactMeta = getBundleTenExactBatchRowMeta(batchOrderProductionMeta, row);
         if (exactMeta) {
-          const exactRunSequence = getPlanRunSequenceFromPlanData(row.planData);
-          productionMetaForSave[getBundleTenBatchRowMetaKey(row.orderNumber, row.key)] = {
-            ...exactMeta,
-            ...(exactRunSequence ? { terv_futo_sorszam: exactRunSequence } : {}),
-          };
+          productionMetaForSave[getBundleTenBatchRowMetaKey(row.orderNumber, row.key)] = exactMeta;
         }
       });
     }
@@ -51154,7 +49859,6 @@ body {
     state: SzerelesOrderState;
     reason: string;
     batchCode?: string | null;
-    planRunSequence?: number | null;
   }): Promise<{
     id: string | number;
     createdAt: string;
@@ -51214,7 +49918,6 @@ body {
       closed_by_worker_name: activeWorker["Teljes nev"],
       machine_id: machine,
       order_number: order,
-      terv_futo_sorszam: params.planRunSequence ?? null,
     };
 
     const { data: auditRow, error: auditError } = await supabase
@@ -51237,7 +49940,6 @@ body {
         ujragyartas_sorszam: params.state.reproduction_number || null,
         gyartas_tipus: "egyedi",
         gyartasi_kor: null,
-        terv_futo_sorszam: params.planRunSequence ?? null,
         // Szándékosan nincs szereles_resz: a Nyíló/Tok eredeti START sora nyitva marad.
         szereles_resz: null,
         szereles_ciklus_id: params.state.cycle_id,
@@ -51414,7 +50116,6 @@ body {
       if(action==="START"&&routed)await assertScrapReplacementRouteReady(routed);
       const scrapRoute=hasScrap?await buildEventFiveSzerelesSheetScrapRouteTargets(order,machine):null;
       const repairRoute=hasRepair?await buildEventFiveManualRepairRouteTargets(order,machine,eventFiveRepairStationKeys):null;
-      const eventFivePlanRunSequence = await resolveEventFiveSzerelesRunSequence(order, machine, state);
       const bundleTenAutomaticMeta = bundleTenSelectionForSzerelesStart
         ? await prepareBundleTenAutomaticProductionMeta(bundleTenSelectionForSzerelesStart)
         : null;
@@ -51425,7 +50126,6 @@ body {
           gyartas_tipus:"egyedi",
           gyartasi_kor:null,
         }),
-        terv_futo_sorszam:eventFivePlanRunSequence,
         szereles_start_reszek:parts,
         szereles_scrap_hold_parts:scrapHoldParts,
         szereles_scrap_tok_meret:toklecScrap?cleanTokSize:null,
@@ -51456,7 +50156,6 @@ body {
           state,
           reason:pauseReason,
           batchCode:null,
-          planRunSequence:eventFivePlanRunSequence,
         });
         savedPauseNumber=pauseAudit.pauseNumber;
         committed=true;
@@ -51515,7 +50214,6 @@ body {
           ujragyartas_sorszam:state.reproduction_number||null,
           gyartas_tipus:"egyedi",
           gyartasi_kor:null,
-          terv_futo_sorszam:eventFivePlanRunSequence,
           // Szándékosan NULL: a selejt audit nem egy Nyíló/Tok befejezés.
           // Így a régebbi szerelés-állapot RPC sem tudja véletlenül készre zárni a részt.
           szereles_resz:null,
@@ -51591,7 +50289,6 @@ body {
           ujragyartas_sorszam:state.reproduction_number||null,
           gyartas_tipus:"egyedi",
           gyartasi_kor:null,
-          terv_futo_sorszam:eventFivePlanRunSequence,
           szereles_resz:null,
           szereles_ciklus_id:state.cycle_id,
           szereles_start_reszek:runningParts,
@@ -51622,88 +50319,12 @@ body {
           }],
         };
       }else{
-        // 5-ös esemény: szüneteltetés után a képernyőn visszaállított konkrét
-        // Nyíló/Tok START sorokat közvetlenül zárjuk le. A szüneteltetési audit
-        // END sor nem számít a rész lezárásának, ezért az RPC állapotellenőrzését
-        // csak ebben a célzott esetben kerüljük meg.
-        const eventFivePausedCompletion = action==="END"
-          && !legacyClose
-          && !hasScrap
-          && !hasRepair
-          && !hasPause
-          && Number(getWorkerEsemenyKotegValue(activeWorker))===5
-          && parts.length>0
-          && parts.every(part=>Boolean(state.parts[part].open_id));
-
-        if(eventFivePausedCompletion){
-          const nowIso=new Date().toISOString();
-          const savedRows:Array<{id:string|number;part:SzerelesPart;started_at:string;ended_at?:string}>=[];
-          for(const part of parts){
-            const openId=state.parts[part].open_id!;
-            const {data:openRow,error:openError}=await supabase
-              .from("work_logs")
-              .select("id, action, start_time, start_timestamp, created_at, end_time, end_timestamp, terv_futo_sorszam")
-              .eq("id",openId)
-              .eq("order_number",order)
-              .eq("machine_id",machine)
-              .eq("action","START")
-              .eq("szereles_resz",part)
-              .is("end_time",null)
-              .maybeSingle();
-            if(openError)throw openError;
-            if(!openRow)throw new Error(`${part}: nincs a kiválasztott START-hoz tartozó nyitott munkamenet. Frissítsd a rendelést.`);
-
-            const inheritedRunSequence=parsePlanRunSequence(openRow.terv_futo_sorszam)??eventFivePlanRunSequence;
-            const {error:closeError}=await supabase
-              .from("work_logs")
-              .update({
-                action:"END",
-                end_time:nowIso,
-                end_timestamp:nowIso,
-                worker_name:activeWorker["Teljes nev"],
-                terv_futo_sorszam:inheritedRunSequence,
-                note:buildStructuredNote(note,{
-                  ...meta,
-                  closed_by_worker_id:Number(activeWorker.id),
-                  closed_by_worker_name:activeWorker["Teljes nev"],
-                  start_worker_name:state.parts[part].start_worker_name||null,
-                  end_worker_name:activeWorker["Teljes nev"],
-                  szereles_resz:part,
-                  terv_futo_sorszam:inheritedRunSequence,
-                }),
-              })
-              .eq("id",openId)
-              .is("end_time",null);
-            if(closeError)throw closeError;
-            savedRows.push({
-              id:openRow.id,
-              part,
-              started_at:String(openRow.start_time||openRow.start_timestamp||openRow.created_at||nowIso),
-              ended_at:nowIso,
-            });
-          }
-          const freshState=await fetchSzerelesOrderState(order,machine);
-          result={state:freshState,saved_rows:savedRows};
-        }else{
-          result=legacyClose
-            ? await runSzerelesLegacyClose(parts,{order,expectedId:state.legacy_open_id!,note,meta,logFields})
-            : await runSzerelesSession(action,parts,{order,meta,expected,newCycle,rework,note:action==="END"?note:null,logFields});
-        }
+        result=legacyClose
+          ? await runSzerelesLegacyClose(parts,{order,expectedId:state.legacy_open_id!,note,meta,logFields})
+          : await runSzerelesSession(action,parts,{order,meta,expected,newCycle,rework,note:action==="END"?note:null,logFields});
       }
 
       committed=true;
-      if (eventFivePlanRunSequence !== null && result.saved_rows.length > 0) {
-        const savedEventFiveIds = result.saved_rows
-          .map((row) => row.id)
-          .filter((id) => id !== null && id !== undefined);
-        if (savedEventFiveIds.length > 0) {
-          const { error: runSequenceSaveError } = await supabase
-            .from("work_logs")
-            .update({ terv_futo_sorszam: eventFivePlanRunSequence })
-            .in("id", savedEventFiveIds);
-          if (runSequenceSaveError) throw runSequenceSaveError;
-        }
-      }
       // A sikeres adatbázis-mentés után még NE töröljük a képernyő állapotát.
       // A selejtpipák / END állapot csak akkor ürülhet, ha a kapcsolódó mentések,
       // a tartós visszaellenőrzés és a három kártya frissítése is sikerült.
@@ -52224,11 +50845,6 @@ body {
           || (isThreePartEnd && threePartCompletionPercent < 100);
 
         const linkedStartMetadata = getStructuredNoteMetadata(openLog.note);
-        const linkedStartRunSequence =
-          parsePlanRunSequence(openLog.terv_futo_sorszam)
-          ?? parsePlanRunSequence(linkedStartMetadata.terv_futo_sorszam);
-        const endPlanRunIdentity = linkedStartRunSequence ? null : await resolvePlanRunIdentityForOrder(currentMachineId, finalOrderNumber);
-        const endPlanRunSequence = linkedStartRunSequence ?? endPlanRunIdentity?.runSequence ?? null;
         bundleTenBacklogEndSaved =
           Number(linkedStartMetadata.event_bundle) === 10
           && String(linkedStartMetadata.visual_source || "").trim() === "backlog"
@@ -52260,7 +50876,7 @@ body {
           start_timestamp: linkedStartTime,
           end_time: nowForSave,
           end_timestamp: nowForSave,
-          terv_futo_sorszam: endPlanRunSequence,
+          terv_futo_sorszam: openLog.terv_futo_sorszam ?? null,
           szereles_start_reszek: isDoorTwoPartEnd ? (linkedStartParts.length ? linkedStartParts : null) : null,
           note: buildStructuredNote(finalNote, {
             ...auditMetadata,
@@ -52274,7 +50890,7 @@ body {
                   terv_megnevezes: linkedStartMetadata.terv_megnevezes || null,
                 }
               : {}),
-            terv_futo_sorszam: endPlanRunSequence,
+            terv_futo_sorszam: openLog.terv_futo_sorszam ?? linkedStartMetadata.terv_futo_sorszam ?? null,
             ...(linkedStartMetadata.visual_source ? {
               visual_source: linkedStartMetadata.visual_source,
               visual_source_label: linkedStartMetadata.visual_source_label || null,
@@ -52550,7 +51166,7 @@ body {
       const savedEventFiveRepairText = eventFiveManualRepairSelected && preparedEventFiveRepairRouteForEnd
         ? ` | ${eventFiveRepairAction}: ${preparedEventFiveRepairRouteForEnd.targets.map((target) => target.stationName).join(", ")}`
         : "";
-      if ((action === "END" && bundleTenBacklogEndSaved) || getStationPlanIdentityKey(currentMachineId) === "raktar") {
+      if (action === "END" && bundleTenBacklogEndSaved) {
         await loadTerminalProductionCard(currentMachineId);
       }
 
@@ -53775,14 +52391,11 @@ body {
       <div
         style={{
           width: "100%",
-          maxWidth: (() => {
-            const stationKey = normalizeLooseText(String(machineId || ""));
-            return stationKey === "iroda" || stationKey === "mobil eszkoz" || stationKey === "mobileszkoz"
-              ? (flowStage === "dashboard" || flowStage === "carpenter-printer-settings" || flowStage === "carpenter-reprint-requests"
-                  ? "none"
-                  : (step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId) ? 1700 : 960))
-              : "none";
-          })(),
+          maxWidth: terminalEntryLayoutRuntimeActive
+            ? "none"
+            : flowStage === "dashboard" || flowStage === "carpenter-printer-settings" || flowStage === "carpenter-reprint-requests"
+              ? "none"
+              : (step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId) ? 1700 : 960),
           overflowAnchor: "none",
         }}
       >
@@ -53790,115 +52403,6 @@ body {
         <p style={{ color: "#cbd5e1", marginBottom: 24, textAlign: "center" }}>
           Név azonosítás, jelszó ahol kell, majd egyesével jelentés vagy műhely esetén köteg létrehozás, a meglévő scanneres sebesség megtartásával
         </p>
-
-        {terminalView === "scanner" && (
-          <div style={{ marginBottom: 16 }}>
-            {programErrorRepairNotices.length > 0 && (
-              <div style={{ display: "grid", gap: 7, marginBottom: 10 }}>
-                {programErrorRepairNotices.map((row) => (
-                  <div key={String(row.id)} style={{ background: "#166534", border: "1px solid #22c55e", color: "#dcfce7", borderRadius: 10, padding: "10px 14px", fontWeight: 900, textAlign: "center" }}>
-                    {String(row.issue_number ?? row.id)}. hiba javítva
-                  </div>
-                ))}
-              </div>
-            )}
-            <button
-              type="button"
-              onClick={() => void loadProgramErrorRowsForStation(true)}
-              style={{ ...buttonPrimary, width: "100%", background: "#7c3aed", border: "1px solid #a78bfa", color: "#fff", fontWeight: 900 }}
-            >
-              Hibabejelentés
-            </button>
-            {terminalProgramMessages.length > 0 && (
-              <div style={{ display:"grid", gap:8, marginTop:10 }}>
-                {terminalProgramMessages
-                  .slice()
-                  .sort((a,b) => String(a.scope_type || "") === "GLOBAL" ? -1 : String(b.scope_type || "") === "GLOBAL" ? 1 : 0)
-                  .map((row) => {
-                    const isGlobal = String(row.scope_type || "").toUpperCase() === "GLOBAL";
-                    const themeKey = isGlobal ? "terminal-global-message" : "terminal-station-message";
-                    const messageTheme = terminalProgramMessageThemes[themeKey] || ensureReadableOfficeTheme({
-                      ...getOfficeTheme("program-error-reports"),
-                      panelBackground: isGlobal ? "#D2B48C" : "#fde047",
-                      borderColor: isGlobal ? "#ca8a04" : "#eab308",
-                      textColor: "#422006",
-                    });
-                    return <div key={String(row.id ?? row.scope_key)} data-office-window={`program-error-reports:${themeKey}`} style={{ background:messageTheme.panelBackground, color:messageTheme.textColor, border:`${messageTheme.borderWidth}px solid ${messageTheme.borderColor}`, borderRadius:messageTheme.borderRadius, padding:"12px 14px", fontWeight:900, whiteSpace:"pre-wrap" }}>
-                      {isGlobal ? <div style={{ fontSize:11, marginBottom:4, opacity:.8 }}>GLOBÁL</div> : null}
-                      {String(row.message || "")}
-                    </div>;
-                  })}
-              </div>
-            )}
-          </div>
-        )}
-
-        {programErrorOpen && terminalView === "scanner" && (
-          <div style={{ position: "fixed", inset: 0, zIndex: 90000, background: "rgba(55,65,81,0.92)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-            <div style={{ width: "min(1000px, 96vw)", maxHeight: "92vh", overflowY: "auto", background: "#0f172a", border: "2px solid #8b5cf6", borderRadius: 18, padding: 20, boxShadow: "0 30px 100px rgba(0,0,0,.78)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                <div>
-                  <h2 style={{ margin: 0, color: "#ddd6fe" }}>Hibabejelentés</h2>
-                  <div style={{ marginTop: 5, color: "#94a3b8", fontSize: 12 }}>Munkaállomás: {String(machineId || "–")}</div>
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button type="button" onClick={() => { setProgramErrorError(""); setProgramErrorCreateOpen(true); }} style={{ ...buttonPrimary, background: "#7c3aed", borderColor: "#a78bfa" }}>+ Új hibabejelentés</button>
-                  <button type="button" onClick={() => { setProgramErrorOpen(false); setProgramErrorCreateOpen(false); }} style={buttonSecondary}>Bezárás</button>
-                </div>
-              </div>
-
-              {programErrorError && <div style={{ marginTop: 12, padding: 10, borderRadius: 9, background: "#450a0a", color: "#fecaca", border: "1px solid #dc2626" }}>{programErrorError}</div>}
-
-              <div style={{ overflowX: "auto", marginTop: 14 }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
-                  <thead>
-                    <tr>
-                      {["Sorszám","Név","Megjegyzés","Leadás ideje","Státusz"].map((label) => <th key={label} style={{ padding: 9, textAlign: "left", borderBottom: "1px solid #334155", color: "#ddd6fe" }}>{label}</th>)}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {programErrorRows.map((row) => (
-                      <tr key={String(row.id)}>
-                        <td style={{ padding: 9, borderBottom: "1px solid #1e293b", fontWeight: 900 }}>{String(row.issue_number ?? row.id)}</td>
-                        <td style={{ padding: 9, borderBottom: "1px solid #1e293b" }}>{String(row.reporter_name || "–")}</td>
-                        <td style={{ padding: 9, borderBottom: "1px solid #1e293b", whiteSpace: "pre-wrap" }}>{String(row.note || "–")}</td>
-                        <td style={{ padding: 9, borderBottom: "1px solid #1e293b" }}>{row.reported_at ? formatDateTime(String(row.reported_at)) : "–"}</td>
-                        <td style={{ padding: 9, borderBottom: "1px solid #1e293b", fontWeight: 900, color: String(row.status || "").toUpperCase() === "KESZ" ? "#86efac" : "#fbbf24" }}>{String(row.status || "").toUpperCase() === "KESZ" ? "Kész" : "Nyitott"}</td>
-                      </tr>
-                    ))}
-                    {!programErrorBusy && programErrorRows.length === 0 && <tr><td colSpan={5} style={{ padding: 22, textAlign: "center", color: "#94a3b8" }}>Erről a munkaállomásról még nincs hibajelentés.</td></tr>}
-                  </tbody>
-                </table>
-              </div>
-
-              {programErrorCreateOpen && (
-                <div style={{ position: "fixed", inset: 0, zIndex: 90010, background: "rgba(55,65,81,0.94)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-                  <div style={{ width: "min(680px, 95vw)", background: "#0f172a", border: "2px solid #8b5cf6", borderRadius: 16, padding: 20, boxShadow: "0 30px 100px rgba(0,0,0,.8)" }}>
-                    <h3 style={{ marginTop: 0, color: "#ddd6fe" }}>Új hibabejelentés</h3>
-                    <label style={{ display: "grid", gap: 6, marginBottom: 14 }}>
-                      <strong>Név *</strong>
-                      <select value={programErrorReporterWorkerId} onChange={(event) => setProgramErrorReporterWorkerId(event.target.value)} style={fieldStyle}>
-                        <option value="">– válassz nevet –</option>
-                        {workers.slice().sort((a,b) => String(a["Teljes nev"] || "").localeCompare(String(b["Teljes nev"] || ""), "hu")).map((worker) => (
-                          <option key={String(worker.id)} value={String(worker.id)}>{String(worker["Teljes nev"] || "")}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label style={{ display: "grid", gap: 6, marginBottom: 14 }}>
-                      <strong>Megjegyzés / a programhiba pontos leírása *</strong>
-                      <textarea value={programErrorNote} onChange={(event) => setProgramErrorNote(event.target.value)} rows={7} style={{ ...fieldStyle, resize: "vertical" }} placeholder="Írd le pontosan, mi a hiba a programmal..." />
-                    </label>
-                    {programErrorError && <div style={{ marginBottom: 12, padding: 10, borderRadius: 9, background: "#450a0a", color: "#fecaca", border: "1px solid #dc2626" }}>{programErrorError}</div>}
-                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-                      <button type="button" onClick={() => { setProgramErrorCreateOpen(false); setProgramErrorError(""); }} style={buttonSecondary}>Mégse</button>
-                      <button type="button" disabled={programErrorBusy} onClick={() => void saveProgramErrorReport()} style={{ ...buttonPrimary, background: "#7c3aed", borderColor: "#a78bfa" }}>Mentés</button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
 
         {entryPermissionDenied && (
           <div
@@ -54157,9 +52661,6 @@ body {
             ...(step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId)
               ? getTerminalEntryLayoutWindowStyle("worker-entry")
               : {}),
-            ...(eventFiveIssueHistoryOpen
-              ? { zIndex: 60000, overflow: "visible" as const }
-              : {}),
           }}
         >
           {step === 1 && terminalView === "scanner" && isUsableProductionCardStation(machineId)
@@ -54243,99 +52744,6 @@ body {
               </div>
             </div>
           </div>
-
-          {step === 1 && terminalView === "scanner" && getStationPlanIdentityKey(machineId) === "szereles" && (
-            <div style={{ marginBottom: 16 }}>
-              <button
-                type="button"
-                onClick={() => void openEventFiveIssueHistory()}
-                style={{
-                  ...buttonPrimary,
-                  width: "100%",
-                  background: "#f59e0b",
-                  border: "1px solid #fbbf24",
-                  color: "#111827",
-                  fontWeight: 900,
-                }}
-              >
-                Leadott folyamatban lévő hibajelentés / felhasználás
-              </button>
-            </div>
-          )}
-
-          {eventFiveIssueHistoryOpen && getStationPlanIdentityKey(machineId) === "szereles" && (
-            <div style={{ position: "fixed", inset: 0, zIndex: 70000, background: "rgba(31,41,55,0.90)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-              <div style={{ width: "min(1180px, 97vw)", maxHeight: "92vh", overflowY: "auto", background: "#0f172a", border: "2px solid #f59e0b", borderRadius: 18, padding: 20, boxShadow: "0 24px 80px rgba(0,0,0,.58)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
-                  <div>
-                    <h2 style={{ margin: 0, color: "#fde68a" }}>Leadott hibajelentések / felhasználások</h2>
-                    <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 5 }}>A kész sorok is megmaradnak. Az állomások állapota külön-külön látható.</div>
-                  </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button type="button" onClick={() => void openEventFiveIssueHistory()} disabled={eventFiveIssueHistoryBusy} style={{ ...buttonSecondary, borderColor: "#f59e0b", color: "#fde68a" }}>Frissítés</button>
-                    <button type="button" onClick={() => setEventFiveIssueHistoryOpen(false)} style={buttonSecondary}>Bezárás</button>
-                  </div>
-                </div>
-
-                {eventFiveIssueHistoryError && (
-                  <div style={{ color: "#fecaca", background: "#450a0a", border: "1px solid #dc2626", borderRadius: 10, padding: 10, marginBottom: 12 }}>{eventFiveIssueHistoryError}</div>
-                )}
-
-                {eventFiveIssueHistoryBusy ? (
-                  <div style={{ color: "#cbd5e1", padding: 20, textAlign: "center" }}>Betöltés...</div>
-                ) : eventFiveIssueHistoryRows.length === 0 ? (
-                  <div style={{ color: "#94a3b8", padding: 20, textAlign: "center" }}>Még nincs leadott hibajelentés / felhasználás.</div>
-                ) : (
-                  <div style={{ overflowX: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
-                      <thead>
-                        <tr style={{ color: "#fde68a", textAlign: "left" }}>
-                          {["Futó #", "Rendelés", "Méret", "Megjegyzés", "Leadó", "Leadás", "Munkaállomások állapota", "Összesített állapot"].map((label) => (
-                            <th key={label} style={{ padding: "10px 8px", borderBottom: "1px solid #475569" }}>{label}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {eventFiveIssueHistoryRows.map((raw) => {
-                          const targetsRaw = raw.event5_hibajelentes_celallomasok;
-                          const targets = Array.isArray(targetsRaw) ? targetsRaw as Array<Record<string, unknown>> : [];
-                          const allDone = targets.length > 0 && targets.every((target) => String(target.status || "").toUpperCase() === "KESZ");
-                          return (
-                            <tr key={String(raw.id)} style={{ background: allDone ? "rgba(22,101,52,.22)" : undefined }}>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 900 }}>{String(raw.futo_sorszam ?? "–")}</td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{String(raw.order_number || "–")}</td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{String(raw.meret || "–")}</td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", whiteSpace: "pre-wrap" }}>{String(raw.megjegyzes || "–")}</td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{String(raw.reported_by_worker_name || "–")}</td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{raw.reported_at ? formatDateTime(String(raw.reported_at)) : "–"}</td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
-                                <div style={{ display: "grid", gap: 5 }}>
-                                  {targets.map((target) => {
-                                    const label = getEventFiveIssueTargetStatusLabel(target.status);
-                                    const done = label === "Kész";
-                                    const active = label === "Folyamatban";
-                                    return (
-                                      <div key={String(target.id)} style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "5px 8px", borderRadius: 8, background: done ? "#14532d" : active ? "#92400e" : "#1e293b", color: done ? "#bbf7d0" : active ? "#fef3c7" : "#e2e8f0" }}>
-                                        <strong>{String(target.target_station || "–")}</strong>
-                                        <span>{label}</span>
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 900, color: allDone ? "#86efac" : "#fbbf24" }}>
-                                {allDone ? "Kész" : "Folyamatban"}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
 
           {step === 1 && (
             <div>
@@ -54549,109 +52957,6 @@ body {
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                 <button onClick={() => void handleForgotPasswordReset()} disabled={busy} style={buttonPrimary}>Jelszó visszaállítása</button>
                 <button onClick={handleCancelFullReset} style={buttonSecondary}>Mégse</button>
-              </div>
-            </div>
-          )}
-
-          {step >= 2 && activeWorker && !isManagementDashboardWorker(activeWorker) && terminalView === "scanner" && getCurrentEventFiveTargetStation() && (
-            <div style={{ marginBottom: 16 }}>
-              <button
-                type="button"
-                onClick={() => void loadEventFiveStationIssues(true)}
-                style={{
-                  ...buttonPrimary,
-                  width: "100%",
-                  background: "#f59e0b",
-                  border: "1px solid #fbbf24",
-                  color: "#111827",
-                  fontWeight: 900,
-                }}
-              >
-                Leadott folyamatban lévő hibajelentés / felhasználás
-              </button>
-            </div>
-          )}
-
-          {eventFiveStationIssueOpen && activeWorker && getCurrentEventFiveTargetStation() && (
-            <div style={{ position: "fixed", inset: 0, zIndex: 70000, background: "rgba(31,41,55,0.90)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-              <div style={{ width: "min(1180px, 97vw)", maxHeight: "92vh", overflowY: "auto", background: "#0f172a", border: "2px solid #f59e0b", borderRadius: 18, padding: 20, boxShadow: "0 24px 80px rgba(0,0,0,.75)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
-                  <div>
-                    <h2 style={{ margin: 0, color: "#fde68a" }}>Leadott hibajelentések / felhasználások – {getCurrentEventFiveTargetStation()}</h2>
-                    <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 5 }}>A státuszt közvetlenül a Folyamatban vagy Kész gombbal állíthatod.</div>
-                  </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button type="button" onClick={() => void loadEventFiveStationIssues(false)} disabled={eventFiveStationIssueBusy} style={{ ...buttonSecondary, borderColor: "#f59e0b", color: "#fde68a" }}>Frissítés</button>
-                    <button type="button" onClick={() => setEventFiveStationIssueOpen(false)} style={buttonSecondary}>Bezárás</button>
-                  </div>
-                </div>
-
-                {eventFiveStationIssueError && (
-                  <div style={{ color: "#fecaca", background: "#450a0a", border: "1px solid #dc2626", borderRadius: 10, padding: 10, marginBottom: 12 }}>{eventFiveStationIssueError}</div>
-                )}
-
-                {eventFiveStationIssueBusy && eventFiveStationIssueRows.length === 0 ? (
-                  <div style={{ color: "#cbd5e1", padding: 20, textAlign: "center" }}>Betöltés...</div>
-                ) : eventFiveStationIssueRows.length === 0 ? (
-                  <div style={{ color: "#94a3b8", padding: 20, textAlign: "center" }}>Erre a munkaállomásra még nincs leadott hibajelentés / felhasználás.</div>
-                ) : (
-                  <div style={{ overflowX: "auto" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1080 }}>
-                      <thead>
-                        <tr style={{ color: "#fde68a", textAlign: "left" }}>
-                          {["Futó #", "Rendelés", "Méret", "Megjegyzés", "Leadó", "Leadás", "Állapot", "Művelet"].map((label) => (
-                            <th key={label} style={{ padding: "10px 8px", borderBottom: "1px solid #475569" }}>{label}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {eventFiveStationIssueRows.map((target) => {
-                          const joined = target.event5_hibajelentesek;
-                          const report = Array.isArray(joined)
-                            ? (joined[0] as Record<string, unknown> | undefined)
-                            : (joined && typeof joined === "object" ? joined as Record<string, unknown> : undefined);
-                          if (!report) return null;
-                          const status = String(target.status || "VARAKOZIK").toUpperCase();
-                          const isProgress = status === "FOLYAMATBAN";
-                          const isDone = status === "KESZ";
-                          return (
-                            <tr key={String(target.id)} style={{ background: isDone ? "rgba(22,101,52,.20)" : undefined }}>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 900 }}>{String(report.futo_sorszam ?? "–")}</td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 800 }}>{String(report.order_number || "–")}</td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{String(report.meret || "–")}</td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", whiteSpace: "pre-wrap" }}>{String(report.megjegyzes || "–")}</td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{String(report.reported_by_worker_name || "–")}</td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>{report.reported_at ? formatDateTime(String(report.reported_at)) : "–"}</td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b", fontWeight: 900, color: isDone ? "#86efac" : isProgress ? "#fbbf24" : "#cbd5e1" }}>
-                                {getEventFiveIssueTargetStatusLabel(status)}
-                              </td>
-                              <td style={{ padding: 8, borderBottom: "1px solid #1e293b" }}>
-                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                  <button
-                                    type="button"
-                                    disabled={eventFiveStationIssueBusy || isProgress || isDone}
-                                    onClick={() => void setEventFiveStationIssueStatus(target, "FOLYAMATBAN")}
-                                    style={{ ...buttonSecondary, background: isProgress ? "#92400e" : "#1e293b", color: isProgress ? "#fef3c7" : "#f8fafc", opacity: (isProgress || isDone) ? 0.65 : 1 }}
-                                  >
-                                    Folyamatban
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={eventFiveStationIssueBusy || isDone}
-                                    onClick={() => void setEventFiveStationIssueStatus(target, "KESZ")}
-                                    style={{ ...buttonPrimary, background: isDone ? "#166534" : "#16a34a", opacity: isDone ? 0.65 : 1 }}
-                                  >
-                                    Kész
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
               </div>
             </div>
           )}
@@ -55005,77 +53310,6 @@ body {
                     })}
                   </div>
 
-                  {workerEventKoteg === 5 && (
-                    <div style={{ marginBottom: 18, background: "rgba(127,29,29,0.24)", border: "2px solid #dc2626", borderRadius: 14, padding: 16 }}>
-                      <div style={{ fontWeight: 900, color: "#fecaca", fontSize: 17, marginBottom: 6 }}>Hibajelentés / felhasználás</div>
-                      <div style={{ color: "#fca5a5", fontSize: 12, marginBottom: 12 }}>
-                        Külön hibajelentés rögzítése az Asztalos, Fényező vagy Fóliázó Selejtpótlás kártyájára.
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => { resetEventFiveIssueForm(); setEventFiveIssueOpen(true); }}
-                        style={{ ...buttonPrimary, background: "#dc2626", border: "1px solid #ef4444" }}
-                      >
-                        Hibajelentés / felhasználás
-                      </button>
-                    </div>
-                  )}
-
-                  {eventFiveIssueOpen && workerEventKoteg === 5 && (
-                    <div style={{ position: "fixed", inset: 0, zIndex: 10050, background: "rgba(2,6,23,0.82)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-                      <div style={{ width: "min(760px, 96vw)", maxHeight: "92vh", overflowY: "auto", background: "#0f172a", border: "2px solid #dc2626", borderRadius: 18, padding: 22, boxShadow: "0 24px 70px rgba(0,0,0,.55)" }}>
-                        <h2 style={{ margin: "0 0 18px", color: "#fecaca" }}>Hibajelentés / felhasználás</h2>
-
-                        <label style={{ display: "block", color: "#e2e8f0", fontWeight: 800, marginBottom: 6 }}>Rendelésszám *</label>
-                        <input
-                          value={eventFiveIssueOrder}
-                          onChange={(e) => { setEventFiveIssueOrder(e.target.value.toUpperCase().replace(/\s+/g, "")); setEventFiveIssueError(""); }}
-                          placeholder="R123456789"
-                          maxLength={10}
-                          style={{ ...fieldStyle, width: "100%", marginBottom: 14, background: "#020617", color: "#f8fafc" }}
-                          autoFocus
-                        />
-
-                        <label style={{ display: "block", color: "#e2e8f0", fontWeight: 800, marginBottom: 6 }}>Méret</label>
-                        <textarea
-                          value={eventFiveIssueSize}
-                          onChange={(e) => setEventFiveIssueSize(e.target.value)}
-                          placeholder="Méret megadása"
-                          rows={2}
-                          style={{ ...fieldStyle, width: "100%", marginBottom: 14, background: "#020617", color: "#f8fafc", resize: "vertical" }}
-                        />
-
-                        <label style={{ display: "block", color: "#e2e8f0", fontWeight: 800, marginBottom: 6 }}>Megjegyzés</label>
-                        <textarea
-                          value={eventFiveIssueNote}
-                          onChange={(e) => setEventFiveIssueNote(e.target.value)}
-                          placeholder="Megjegyzés"
-                          rows={4}
-                          style={{ ...fieldStyle, width: "100%", marginBottom: 16, background: "#020617", color: "#f8fafc", resize: "vertical" }}
-                        />
-
-                        <div style={{ color: "#e2e8f0", fontWeight: 900, marginBottom: 8 }}>Cél munkaállomás *</div>
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10, marginBottom: 16 }}>
-                          {EVENT_FIVE_ISSUE_STATIONS.map((station) => (
-                            <label key={station} style={{ display: "flex", gap: 9, alignItems: "center", padding: 13, borderRadius: 12, border: eventFiveIssueStations.includes(station) ? "2px solid #ef4444" : "1px solid #475569", background: "#1e293b", color: "#f8fafc", fontWeight: 800, cursor: "pointer" }}>
-                              <input type="checkbox" checked={eventFiveIssueStations.includes(station)} onChange={() => toggleEventFiveIssueStation(station)} />
-                              {station}
-                            </label>
-                          ))}
-                        </div>
-
-                        {!!eventFiveIssueError && <div style={{ color: "#fecaca", background: "#450a0a", border: "1px solid #dc2626", borderRadius: 10, padding: 10, marginBottom: 14 }}>{eventFiveIssueError}</div>}
-
-                        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
-                          <button type="button" disabled={eventFiveIssueBusy} onClick={() => { setEventFiveIssueOpen(false); resetEventFiveIssueForm(); }} style={buttonSecondary}>Mégse</button>
-                          <button type="button" disabled={eventFiveIssueBusy} onClick={() => void saveEventFiveIssueReport()} style={{ ...buttonPrimary, background: "#dc2626" }}>
-                            {eventFiveIssueBusy ? "Mentés..." : "Mentés"}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
                   {workerEventKoteg === 3 && (
                     <div style={{ marginBottom: 18, background: "linear-gradient(135deg, rgba(14,116,144,0.18), rgba(15,23,42,0.96))", border: "1px solid #0e7490", borderRadius: 14, padding: 16 }}>
                       <div style={{ fontWeight: 900, color: "#7dd3fc", marginBottom: 10 }}>Asztalos szabász kiegészítő funkciók</div>
@@ -55377,18 +53611,12 @@ body {
                               ? `${selectedEndBatch.order_ids.filter((order) => { const state = endEventFiveOrderStateMap[String(order)] || EMPTY_EVENT_FIVE_BATCH_ORDER_STATE; return state.tokKesz && state.nyiloKesz; }).length} teljes • ${selectedEndBatch.order_ids.filter((order) => { const state = endEventFiveOrderStateMap[String(order)] || EMPTY_EVENT_FIVE_BATCH_ORDER_STATE; return state.tokKesz !== state.nyiloKesz; }).length} félkész`
                               : isEventSixBatchWorker()
                                 ? `${selectedEndBatch.order_ids.filter((order) => { const state = endEventSixOrderStateMap[String(order)] || EMPTY_EVENT_SIX_BATCH_ORDER_STATE; return state.ajtolapokKesz && state.toklecKesz; }).length} teljes • ${selectedEndBatch.order_ids.filter((order) => { const state = endEventSixOrderStateMap[String(order)] || EMPTY_EVENT_SIX_BATCH_ORDER_STATE; return state.ajtolapokKesz !== state.toklecKesz; }).length} félkész`
-                                : isEventTenVisualWorker()
-                                  ? `${getBundleTenBatchItemIdentities(selectedEndBatch).filter((item) => endReadyMap[item.stateKey]).length} / ${selectedEndBatch.order_ids.length} kész`
-                                  : `${selectedEndBatch.order_ids.filter((order) => endReadyMap[order]).length} / ${selectedEndBatch.order_ids.length} kész`}
+                                : `${selectedEndBatch.order_ids.filter((order) => endReadyMap[order]).length} / ${selectedEndBatch.order_ids.length} kész`}
                           </span>
                         </div>
                         <div style={{ display: "grid", gap: 10 }}>
-                          {selectedEndBatch.order_ids.map((rawOrder, batchOrderIndex) => {
+                          {selectedEndBatch.order_ids.map((rawOrder) => {
                             const order = String(rawOrder);
-                            const bundleTenBatchItem = isEventTenVisualWorker()
-                              ? getBundleTenBatchItemIdentities(selectedEndBatch)[batchOrderIndex] || null
-                              : null;
-                            const endStateKey = bundleTenBatchItem?.stateKey || order;
                             if (isEventFiveBatchWorker()) {
                               const state = endEventFiveOrderStateMap[order] || { ...EMPTY_EVENT_FIVE_BATCH_ORDER_STATE };
                               const percent = getTwoPartCompletionPercent(state.tokKesz, state.nyiloKesz);
@@ -55620,9 +53848,9 @@ body {
                               );
                             }
 
-                            const ready = !!endReadyMap[endStateKey];
+                            const ready = !!endReadyMap[order];
                             return (
-                              <div key={endStateKey} style={{ border: "1px solid #334155", borderRadius: 12, padding: 12, background: ready ? "rgba(22,163,74,0.15)" : "#0f172a" }}>
+                              <div key={order} style={{ border: "1px solid #334155", borderRadius: 12, padding: 12, background: ready ? "rgba(22,163,74,0.15)" : "#0f172a" }}>
                                 <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
                                   <div>
                                     <div style={{ fontSize: 18, fontWeight: 900 }}>{order}</div>
@@ -55636,12 +53864,12 @@ body {
                                         : getBatchOperationStatusLabel(selectedEndBatch)}
                                     </div>
                                   </div>
-                                  <button type="button" onClick={() => setEndReadyMap((prev) => ({ ...prev, [endStateKey]: !prev[endStateKey] }))} style={{ ...buttonSecondary, minWidth: 92 }}>
+                                  <button type="button" onClick={() => setEndReadyMap((prev) => ({ ...prev, [order]: !prev[order] }))} style={{ ...buttonSecondary, minWidth: 92 }}>
                                     {ready ? "✓ Kész" : "□ Pipa"}
                                   </button>
                                 </div>
                                 {renderRequiredBatchQuantityInput(order)}
-                                <textarea value={endOrderNotes[endStateKey] || ""} onChange={(e) => setEndOrderNotes((prev) => ({ ...prev, [endStateKey]: e.target.value }))} placeholder="Egyedi megjegyzés ehhez a rendeléshez" style={{ ...textareaStyle, marginTop: 10, minHeight: 54 }} />
+                                <textarea value={endOrderNotes[order] || ""} onChange={(e) => setEndOrderNotes((prev) => ({ ...prev, [order]: e.target.value }))} placeholder="Egyedi megjegyzés ehhez a rendeléshez" style={{ ...textareaStyle, marginTop: 10, minHeight: 54 }} />
                               </div>
                             );
                           })}
