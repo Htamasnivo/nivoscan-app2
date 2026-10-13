@@ -21234,9 +21234,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       for (let index = 0; index < overdueOrderNumbers.length; index += 100) {
         const chunk = overdueOrderNumbers.slice(index, index + 100);
         // Prefix-keresés a régi, utótagos rendelési azonosítók miatt.
-        // Kis csoportokban kérjük le, hogy az URL ne legyen túl hosszú.
-        for (let chunkIndex = 0; chunkIndex < chunk.length; chunkIndex += 20) {
-          const orderGroup = chunk.slice(chunkIndex, chunkIndex + 20);
+        // Nagyobb csoportokkal kevesebb Supabase-kérés szükséges; a 100-as
+        // külső korlát és az 1000 soros lapozás továbbra is változatlan.
+        for (let chunkIndex = 0; chunkIndex < chunk.length; chunkIndex += 80) {
+          const orderGroup = chunk.slice(chunkIndex, chunkIndex + 80);
           const orderFilter = orderGroup.map((order) =>
             `order_number.ilike.${String(order).replace(/[%,()]/g, "")}*`
           ).join(",");
