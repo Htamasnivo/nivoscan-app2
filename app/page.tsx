@@ -22119,6 +22119,42 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     }
   }
 
+  // START mentés után kizárólag a helyi kártya állapotát frissítjük.
+  // Nincs új Supabase-lekérdezés; az automatikus szinkron változatlanul megmarad.
+  function showSavedStartOnTerminalCard(
+    stationName: string,
+    order: string,
+    workerName: string,
+    startedAt: string,
+    planRunSequence?: number | null
+  ): void {
+    const stationKey = getStationPlanIdentityKey(stationName);
+    const normalizedOrder = normalizeLooseText(order);
+    setTerminalProductionCardData((previous) => {
+      if (getStationPlanIdentityKey(previous.stationName) !== stationKey) return previous;
+      const matchingRows = previous.rows.filter((row) =>
+        normalizeLooseText(row.orderNumber) === normalizedOrder &&
+        (planRunSequence == null || row.planRunSequence === planRunSequence)
+      );
+      // Több azonos rendelésszámú tervsor esetén nem találgatjuk a tételt.
+      if (matchingRows.length !== 1) return previous;
+      const target = matchingRows[0];
+      // A részfolyamatos és már kész tételek állapotát a meglévő logika számolja.
+      if (target.status === "done" || target.doorWorkflow || target.panelWorkflow || target.threePartWorkflow) return previous;
+      return {
+        ...previous,
+        rows: previous.rows.map((row) => row === target ? {
+          ...row,
+          status: "in-progress" as ProductionMonitorStatus,
+          statusLabel: "Folyamatban",
+          startWorkerName: workerName,
+          startedAt,
+        } : row),
+        lastUpdatedAt: startedAt,
+      };
+    });
+  }
+
   async function loadTerminalProductionCard(
     stationName = machineId,
     forceSettingsRefresh = false
@@ -49979,6 +50015,9 @@ body {
         await loadTerminalProductionCard(currentMachineId);
       }
 
+      showSavedStartOnTerminalCard(currentMachineId, finalOrder, workerNameForSave, nowIso,
+        parsePlanRunSequence(orderProductionMeta.terv_futo_sorszam));
+
       const singleStartSuccessText = activeScrapReplacement
         ? `${getSingleScrapReplacementPartLabel(activeScrapReplacement)} selejtpótlás egyedi rendelésként sikeresen elindítva.`
         : orderProductionMeta.ujragyartas
@@ -52590,6 +52629,10 @@ body {
         : "";
       if ((action === "END" && bundleTenBacklogEndSaved) || getStationPlanIdentityKey(currentMachineId) === "raktar") {
         await loadTerminalProductionCard(currentMachineId);
+      }
+
+      if (action === "START") {
+        showSavedStartOnTerminalCard(currentMachineId, savedOrder, savedWorker, new Date().toISOString());
       }
 
       resetAfterSave();
