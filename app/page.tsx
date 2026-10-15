@@ -13380,9 +13380,35 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       if (response.error) throw response.error;
       sourceRows = (response.data || []) as ReklamacioDbRow[];
     } else if (scope === "closed-range") {
-      const response = await supabase.from(REKLAMACIO_TABLE).select(reklamacioSelectColumns).eq("lezart", true).gte("lezart_at", range.startIso).lt("lezart_at", range.endIso).order("lezart_at", { ascending: true }).limit(10000);
-      if (response.error) throw response.error;
-      sourceRows = (response.data || []) as ReklamacioDbRow[];
+      // A korábbi lezárásoknál a lezart_at üres lehet, miközben a kesz_datum rögzítve van.
+      // Csak a riport olvasási logikáját egészítjük ki; a lezárás állapotát nem változtatjuk.
+      const [closedAtResponse, legacyClosedResponse] = await Promise.all([
+        supabase.from(REKLAMACIO_TABLE).select(reklamacioSelectColumns)
+          .eq("lezart", true).gte("lezart_at", range.startIso).lt("lezart_at", range.endIso)
+          .order("lezart_at", { ascending: true }).limit(10000),
+        supabase.from(REKLAMACIO_TABLE).select(reklamacioSelectColumns)
+          .eq("lezart", true).is("lezart_at", null).not("kesz_datum", "is", null)
+          .order("created_at", { ascending: true }).limit(10000),
+      ]);
+      if (closedAtResponse.error) throw closedAtResponse.error;
+      if (legacyClosedResponse.error) throw legacyClosedResponse.error;
+      const startTime = new Date(range.startIso).getTime();
+      const endTime = new Date(range.endIso).getTime();
+      const legacyRows = ((legacyClosedResponse.data || []) as ReklamacioDbRow[]).filter((row) => {
+        const completedDate = String(row.kesz_datum || "").trim();
+        if (!completedDate) return false;
+        // A dátum típusú mező (YYYY-MM-DD) és az időbélyeg is támogatott.
+        const timestamp = /^\d{4}-\d{2}-\d{2}$/.test(completedDate)
+          ? new Date(`${completedDate}T12:00:00`).getTime()
+          : new Date(completedDate).getTime();
+        return Number.isFinite(timestamp) && timestamp >= startTime && timestamp < endTime;
+      });
+      const uniqueClosed = new Map<string, ReklamacioDbRow>();
+      [...((closedAtResponse.data || []) as ReklamacioDbRow[]), ...legacyRows].forEach((row) => {
+        const key = String(row.id || row.rendelesszam || "").trim();
+        if (key) uniqueClosed.set(key, row);
+      });
+      sourceRows = Array.from(uniqueClosed.values());
     } else if (scope === "open-and-today-completed") {
       const todayKey = getSafeReportDeliveryTodayKey();
       const todayRange = getDashboardDateRange("custom", todayKey, todayKey);
