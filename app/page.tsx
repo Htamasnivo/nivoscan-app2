@@ -14288,10 +14288,14 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     };
 
     const addReklamacioReport = async (): Promise<void> => {
+      const todayKey = getSafeReportDeliveryTodayKey();
+      const todayRange = getDashboardDateRange("custom", todayKey, todayKey);
       const [rows, statusRows] = await Promise.all([
         fetchReklamacioReportRows(profile, range, "open"),
-        fetchReklamacioReportRows(profile, range, "closed-range"),
+        fetchReklamacioReportRows(profile, todayRange, "closed-range"),
       ]);
+      const waitingRows = rows.filter((row) => !row.gyartasbaTerveDatum);
+      const inProgressRows = rows.filter((row) => Boolean(row.gyartasbaTerveDatum));
       const openCount = rows.filter((row) => !row.lezart).length;
       const closedCount = rows.filter((row) => row.lezart).length;
 
@@ -14396,32 +14400,24 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       };
 
       y = drawSummaryBlockAt(y);
-      addReklamacioDetailTable(
-        "Reklamáció nyitott",
-        [["Sorszám", "Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"]],
-        rows.map((row, index) => [
-          index + 1,
-          row.rendelesszam || "-",
-          row.muhely || "-",
-          row.gyartandoTetelek || "-",
-          row.hibatipus.length ? row.hibatipus.join(", ") : "-",
-          row.kertDatum || "-",
-          row.createdAt ? formatDateTimeMinute(row.createdAt) : "-",
-          row.createdByWorkerName || "-",
-          row.mentesDatum ? formatDateTimeMinute(row.mentesDatum) : "-",
-        ]),
-        false
-      );
+      const reklamacioActiveColumns = [["Sorszám", "Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"]];
+      const reklamacioActiveCells = (items: ReklamacioReportRow[]) => items.map((row, index) => [
+        index + 1, row.rendelesszam || "-", row.muhely || "-", row.gyartandoTetelek || "-",
+        row.hibatipus.length ? row.hibatipus.join(", ") : "-", row.kertDatum || "-",
+        row.createdAt ? formatDateTimeMinute(row.createdAt) : "-",
+        row.createdByWorkerName || "-", row.mentesDatum ? formatDateTimeMinute(row.mentesDatum) : "-",
+      ]);
+      addReklamacioDetailTable("Reklamáció várakozik", reklamacioActiveColumns, reklamacioActiveCells(waitingRows), false);
+      addReklamacioDetailTable("Reklamáció folyamatban", reklamacioActiveColumns, reklamacioActiveCells(inProgressRows), true);
 
       addReklamacioDetailTable(
         "Reklamáció lezárt",
-        [["Sorszám", "Rendelésszám", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Lezárás", "Lezárás módja", "Lezáró"]],
+        [["Sorszám", "Rendelésszám", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Lezárás", "Lezárás módja"]],
         statusRows.map((row, index) => [
           index + 1, row.rendelesszam || "-", row.gyartandoTetelek || "-",
           row.hibatipus.length ? row.hibatipus.join(", ") : "-", row.kertDatum || "-",
           row.lezartAt ? formatDateTimeMinute(row.lezartAt) : "-",
           row.lezarasMod === "kezi" ? "Kézi" : row.lezarasMod === "automatikus" ? "Automatikus" : "-",
-          row.lezartaWorkerName || "-",
         ]),
         true
       );
@@ -14686,18 +14682,25 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       addSheet("Havi lezárások", ["Hónap", "Lezárt rendelések száma"],
         Array.from(monthly.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([month, count]) => [month, count]));
     } else if (profile.reportType === "reklamacio") {
+      const todayKey = getSafeReportDeliveryTodayKey();
+      const todayRange = getDashboardDateRange("custom", todayKey, todayKey);
       const [rows, statusRows] = await Promise.all([
         fetchReklamacioReportRows(profile, range, "open"),
-        fetchReklamacioReportRows(profile, range, "closed-range"),
+        fetchReklamacioReportRows(profile, todayRange, "closed-range"),
       ]);
-      addSheet("Reklamáció nyitott", ["Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Mentés", "Munkaállomások állapota"],
-        rows.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.hibatipus.join(", "), row.kertDatum,
-          row.createdAt ? formatDateTime(row.createdAt) : "", row.createdByWorkerName, row.mentesDatum ? formatDateTime(row.mentesDatum) : "",
-          row.stationStates.map((state) => `${state.label}: ${state.statusLabel}`).join(" | ")]));
-      addSheet("Reklamáció lezárt", ["Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Lezárás", "Lezárás módja", "Lezáró"],
+      const waitingRows = rows.filter((row) => !row.gyartasbaTerveDatum);
+      const inProgressRows = rows.filter((row) => Boolean(row.gyartasbaTerveDatum));
+      const reklamacioActiveHeaders = ["Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Mentés", "Állapot"];
+      const reklamacioActiveExcelRows = (items: ReklamacioReportRow[], state: string) =>
+        items.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.hibatipus.join(", "), row.kertDatum,
+          row.createdAt ? formatDateTime(row.createdAt) : "", row.createdByWorkerName,
+          row.mentesDatum ? formatDateTime(row.mentesDatum) : "", state]);
+      addSheet("Reklamáció várakozik", reklamacioActiveHeaders, reklamacioActiveExcelRows(waitingRows, "Várakozik"));
+      addSheet("Reklamáció folyamatban", reklamacioActiveHeaders, reklamacioActiveExcelRows(inProgressRows, "Folyamatban"));
+      addSheet("Reklamáció lezárt", ["Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Lezárás", "Lezárás módja"],
         statusRows.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.hibatipus.join(", "), row.kertDatum,
-          row.createdAt ? formatDateTime(row.createdAt) : "", row.createdByWorkerName, row.lezartAt ? formatDateTime(row.lezartAt) : "",
-          row.lezarasMod === "kezi" ? "Kézi" : row.lezarasMod === "automatikus" ? "Automatikus" : "", row.lezartaWorkerName]));
+          row.lezartAt ? formatDateTime(row.lezartAt) : "",
+          row.lezarasMod === "kezi" ? "Kézi" : row.lezarasMod === "automatikus" ? "Automatikus" : ""]));
     } else {
       const data = await getData();
       const logs = filterReportDeliveryLogs(data, profile);
