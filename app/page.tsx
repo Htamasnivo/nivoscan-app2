@@ -1779,6 +1779,7 @@ type ScrapReplacementRow = {
   // A selejtpótlási kártya ugyanazokat a munkaállomás-specifikus mezőket is
   // meg tudja jeleníteni, mint a normál termelési kártya.
   crossStationStatuses?: Record<string, ProductionMonitorStatus>;
+  fenyezoPartStatuses?: string[];
   crossStationScrapFlags?: Record<string, boolean>;
 };
 
@@ -1974,6 +1975,7 @@ type ProductionCardPriorityRow = {
   szerelesPauseReason?: string;
   szerelesPauseAt?: string | null;
   crossStationStatuses?: Record<string, ProductionMonitorStatus>;
+  fenyezoPartStatuses?: string[];
   crossStationScrapFlags?: Record<string, boolean>;
 };
 
@@ -2022,6 +2024,7 @@ type ProductionCardBacklogRow = {
   // jeleníthetők meg, mint a normál napi termelési kártyán.
   planData: Record<string, unknown>;
   crossStationStatuses?: Record<string, ProductionMonitorStatus>;
+  fenyezoPartStatuses?: string[];
   crossStationScrapFlags?: Record<string, boolean>;
 };
 
@@ -2096,6 +2099,7 @@ type ProductionCardRow = {
   // gyártási szám + megnevezés párhoz. Ez csak plusz oszlopadat,
   // a jelenlegi kártya saját *_terv sorait nem módosítja.
   crossStationStatuses: Record<string, ProductionMonitorStatus>;
+  fenyezoPartStatuses?: string[];
   crossStationScrapFlags?: Record<string, boolean>;
 
   planData: Record<string, unknown>;
@@ -9012,10 +9016,8 @@ function restoreNivoScrollSnapshotAfterRender(snapshot: NivoScrollSnapshot): voi
 
 const NIVO_BACKGROUND_REFRESH_MS = 10 * 1000;
 // A Termelési monitor teljes frissítése sok táblát olvas, ezért nem futhat 5 másodpercenként.
-// A Realtime továbbra is frissít, de legfeljebb 20 másodpercenként indíthat teljes monitor-újratöltést.
+// A termelési monitor 60 másodpercenként frissül, Realtime-alapú teljes újratöltés nélkül.
 const PRODUCTION_MONITOR_BACKGROUND_REFRESH_MS = 60 * 1000;
-const PRODUCTION_MONITOR_REALTIME_MIN_REFRESH_MS = 20 * 1000;
-const PRODUCTION_MONITOR_REALTIME_DEBOUNCE_MS = 2 * 1000;
 // A dolgozói terminál teljes termelési kártya-betöltése több Supabase olvasást végez.
 // Realtime események továbbra is azonnal frissítenek; ez csak a biztonsági polling ritkítása.
 const TERMINAL_PRODUCTION_CARD_BACKGROUND_REFRESH_MS = 60 * 1000;
@@ -21708,6 +21710,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     // ugyanaz a sorszám/gyártási szám + megnevezés pár valóban szerepel.
     // ==========================================================
     const crossStationStatusesByPlanKey = new Map<string, Record<string, ProductionMonitorStatus>>();
+    // Csak a Szerelés kártyán: Fényező háromrészes END részletei.
+    const fenyezoPartStatusesByPlanKey = new Map<string, string[]>();
     const crossStatusSourceRows = [
       ...planRows,
       ...backlogRows.map((row) => ({ orderNumber: row.orderNumber, productName: row.productName })),
@@ -21946,6 +21950,20 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           ).status;
 
           const currentStatuses = crossStationStatusesByPlanKey.get(key) || {};
+          if (getStationPlanIdentityKey(cleanStationName) === "szereles"
+              && getStationPlanIdentityKey(otherStationName) === "fenyezo") {
+            // A már lekért munkanaplóból dolgozunk; nem indítunk új DB-lekérdezést.
+            const snapshot = resolveThreePartCompletionSnapshot(stationLogs);
+            if (snapshot.isThreePartWorkflow) {
+              const hasOpenStart = stationStatus === "in-progress";
+              const partLabel = (done: boolean) => done ? "Kész" : hasOpenStart ? "Folyamatban" : "Nincs kész";
+              fenyezoPartStatusesByPlanKey.set(key, [
+                `Külső lap: ${partLabel(snapshot.kulsoLapKesz)}`,
+                `Belső lap: ${partLabel(snapshot.belsoLapKesz)}`,
+                `Tokléc: ${partLabel(snapshot.lapToklecKesz)}`,
+              ]);
+            }
+          }
           currentStatuses[otherStationName] = stationStatus;
           crossStationStatusesByPlanKey.set(key, currentStatuses);
         });
@@ -21955,10 +21973,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     priorityRows.forEach((row) => {
       const productName = String(getProductionCardPlanValue(row.data, "termek") || getProductionCardPlanValue(row.data, "megnevezes") || "");
       row.crossStationStatuses = crossStationStatusesByPlanKey.get(productionCardPlanRowKey({ orderNumber: row.orderNumber, productName })) || {};
+      row.fenyezoPartStatuses = fenyezoPartStatusesByPlanKey.get(productionCardPlanRowKey({ orderNumber: row.orderNumber, productName }));
       row.crossStationScrapFlags = crossStationScrapFlagsByOrder.get(normalizeLooseText(row.orderNumber)) || {};
     });
     backlogRows.forEach((row) => {
       row.crossStationStatuses = crossStationStatusesByPlanKey.get(productionCardPlanRowKey(row)) || {};
+      row.fenyezoPartStatuses = fenyezoPartStatusesByPlanKey.get(productionCardPlanRowKey(row));
       row.crossStationScrapFlags = crossStationScrapFlagsByOrder.get(normalizeLooseText(row.orderNumber)) || {};
     });
     scrapReplacementRows.forEach((row) => {
@@ -21971,6 +21991,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         orderNumber: row.order_number,
         productName,
       })) || {};
+      row.fenyezoPartStatuses = fenyezoPartStatusesByPlanKey.get(productionCardPlanRowKey({
+        orderNumber: row.order_number,
+        productName,
+      }));
       row.crossStationScrapFlags = crossStationScrapFlagsByOrder.get(normalizeLooseText(row.order_number)) || {};
     });
 
@@ -21998,6 +22022,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           szerelesPauseReason: rowPauseSnapshot.reason,
           szerelesPauseAt: rowPauseSnapshot.pausedAt,
           crossStationStatuses:{},
+          fenyezoPartStatuses: fenyezoPartStatusesByPlanKey.get(productionCardPlanRowKey(planRow)),
           crossStationScrapFlags:crossStationScrapFlagsByOrder.get(normalizeLooseText(planRow.orderNumber))||{}
         };
       }
@@ -22074,6 +22099,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         szerelesPauseAt: rowPauseSnapshot.pausedAt,
         crossStationStatuses:
           crossStationStatusesByPlanKey.get(productionCardPlanRowKey(planRow)) || {},
+        fenyezoPartStatuses: fenyezoPartStatusesByPlanKey.get(productionCardPlanRowKey(planRow)),
         crossStationScrapFlags:
           crossStationScrapFlagsByOrder.get(normalizeLooseText(planRow.orderNumber)) || {},
       };
@@ -24006,6 +24032,11 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                               : backlogRow
                                 ? getBacklogCardFieldValue(backlogRow, fieldId)
                                 : getProductionCardFieldValue(productionRow!, fieldId);
+                          const fenyezoPartStatuses = isCrossStationStatusField
+                            && getStationPlanIdentityKey(data.stationName) === "szereles"
+                            && getStationPlanIdentityKey(crossStationName) === "fenyezo"
+                            ? (productionRow?.fenyezoPartStatuses || priorityRow?.fenyezoPartStatuses || backlogRow?.fenyezoPartStatuses || scrapRow?.fenyezoPartStatuses)
+                            : undefined;
                           const displayedValue = fieldId === `${PRODUCTION_CARD_PLAN_FIELD_PREFIX}sos`
                             ? (rowSos ? "SOS" : "–") : value;
                           const title = priorityRow
@@ -24130,7 +24161,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                               }}
                             >
                               {rowSos && isOrder ? <span style={{ color: PRODUCTION_CARD_SOS_ROW_TEXT, fontWeight: 900, marginRight: 6 }}>SOS</span> : null}
-                              {displayedValue === "" ? "–" : displayedValue}
+                              {fenyezoPartStatuses?.length
+                                ? fenyezoPartStatuses.map((part) => <div key={part}>{part}</div>)
+                                : (displayedValue === "" ? "–" : displayedValue)}
                             </td>
                           );
                         })}
@@ -33018,79 +33051,6 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     activeProductionMonitorProfile.dateBasis,
   ]);
 
-  useEffect(() => {
-    if (!supabase) return;
-    const monitorVisible = standaloneProductionMonitor || (
-      Boolean(activeWorker && isManagementDashboardWorker(activeWorker)) &&
-      terminalView === "management" &&
-      flowStage === "dashboard" &&
-      managementSection === "production-monitor"
-    );
-    if (!monitorVisible) return;
-
-    let refreshTimerId: number | null = null;
-
-    const runRealtimeRefresh = (): void => {
-      refreshTimerId = null;
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-      productionMonitorLastBackgroundRefreshAtRef.current = Date.now();
-      void runNivoBackgroundRefresh(
-        () => loadProductionMonitor(
-          productionMonitorDate,
-          activeProductionMonitorProfile.planStatusFilter,
-          productionMonitorDateTo,
-          "kiszallitasi_datum"
-        ),
-        "production-monitor"
-      );
-    };
-
-    const scheduleRealtimeRefresh = (): void => {
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-      if (refreshTimerId !== null) return;
-
-      const sinceLastRefresh = Date.now() - productionMonitorLastBackgroundRefreshAtRef.current;
-      const throttleWait = Math.max(0, PRODUCTION_MONITOR_REALTIME_MIN_REFRESH_MS - sinceLastRefresh);
-      const delay = Math.max(PRODUCTION_MONITOR_REALTIME_DEBOUNCE_MS, throttleWait);
-      refreshTimerId = window.setTimeout(runRealtimeRefresh, delay);
-    };
-
-    let channel = supabase
-      .channel(`production-monitor-${productionMonitorDate}-${productionMonitorDateTo}-${activeProductionMonitorProfile.planStatusFilter}-${activeProductionMonitorProfile.dateBasis}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, scheduleRealtimeRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, scheduleRealtimeRefresh)
-      .on("postgres_changes", { event: "*", schema: "public", table: ATVETEL_DETAILS_TABLE }, scheduleRealtimeRefresh);
-
-    // A Termelési monitor sorforrása atvetel_adat, az állomás-relevanciát pedig
-    // a saját *_terv táblák adják. A régi production_plans / production_plan_items
-    // már nem adatforrás, ezért azok változása nem indít felesleges teljes újratöltést.
-    getOrderedDashboardStations().forEach((station) => {
-      channel = channel.on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: buildStationPlanTableName(station) },
-        scheduleRealtimeRefresh
-      );
-    });
-
-    channel.subscribe();
-
-    return () => {
-      if (refreshTimerId !== null) window.clearTimeout(refreshTimerId);
-      void supabase.removeChannel(channel);
-    };
-  }, [
-    standaloneProductionMonitor,
-    activeWorker?.id,
-    terminalView,
-    flowStage,
-    managementSection,
-    productionMonitorDate,
-    productionMonitorDateTo,
-    activeProductionMonitorProfile.planStatusFilter,
-    activeProductionMonitorProfile.dateBasis,
-    machineIdRows.length,
-    machineOptions.length,
-  ]);
 
 
   useEffect(() => {
