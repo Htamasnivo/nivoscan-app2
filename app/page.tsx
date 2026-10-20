@@ -21271,8 +21271,17 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         // külső korlát és az 1000 soros lapozás továbbra is változatlan.
         for (let chunkIndex = 0; chunkIndex < chunk.length; chunkIndex += 80) {
           const orderGroup = chunk.slice(chunkIndex, chunkIndex + 80);
-          const orderFilter = orderGroup.map((order) =>
-            `order_number.ilike.${String(order).replace(/[%,()]/g, "")}*`
+          // Az egymást lefedő prefixeket csak az SQL előszűrésből vonjuk össze.
+          // A végső találatokat továbbra is az eredeti orderGroup +
+          // matchesOverduePlanOrder ellenőrzi, ezért az üzleti egyezés nem változik.
+          const serverPrefixes = Array.from(new Set(orderGroup.map((order) =>
+            String(order).replace(/[%,()]/g, "").toLocaleLowerCase()
+          ))).filter(Boolean).sort((a, b) => a.length - b.length);
+          const minimalPrefixes = serverPrefixes.filter((prefix, index) =>
+            !serverPrefixes.slice(0, index).some((previous) => prefix.startsWith(previous))
+          );
+          const orderFilter = minimalPrefixes.map((prefix) =>
+            `order_number.ilike.${prefix}*`
           ).join(",");
           const pageSize = 1000;
           for (let offset = 0; ; offset += pageSize) {
@@ -31309,18 +31318,16 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                 autoCorrect="off"
                 spellCheck={false}
                 onFocus={() => {
-                  if (dashboardOrderInput.trim()) {
-                    setDashboardOrderSuggestionsOpen(true);
-                  }
+                  // A már lekért javaslatok megnyithatók új hálózati kérés nélkül.
+                  if (dashboardOrderSuggestions.length > 0) setDashboardOrderSuggestionsOpen(true);
                 }}
                 onChange={(event) => {
+                  // A korábbi keresés érvénytelenítése: ne induljon további lapozás.
+                  dashboardOrderSuggestionRequestRef.current += 1;
                   setDashboardOrderInput(event.target.value);
-                  if (event.target.value.trim()) {
-                    setDashboardOrderSuggestionsOpen(true);
-                  } else {
-                    setDashboardOrderSuggestions([]);
-                    setDashboardOrderSuggestionsOpen(false);
-                  }
+                  setDashboardOrderSuggestions([]);
+                  setDashboardOrderSuggestionsOpen(false);
+                  setDashboardOrderSuggestionsLoading(false);
                 }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
@@ -31335,6 +31342,12 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                 aria-label="Rendelésszám szűrése"
                 aria-expanded={dashboardOrderSuggestionsOpen}
               />
+              <button
+                type="button"
+                onClick={() => { void searchDashboardOrderSuggestions(); }}
+                style={{ ...fieldStyle, cursor: "pointer", width: "auto", padding: "8px 12px" }}
+                aria-label="Rendelésszám keresése"
+              >Keresés</button>
 
               {dashboardOrderSuggestionsOpen && dashboardOrderInput.trim() && (
                 <div data-nivo-scroll-region="source-21833"
@@ -32307,41 +32320,41 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     dashboardOrderFiltersRef.current = [...dashboardOrderFilters];
   }, [dashboardOrderFilters]);
 
-  useEffect(() => {
+  // A vezetői munkaszám-javaslatok csak kifejezett Keresés kattintásra indulnak.
+  // Gépeléskor és fókuszváltáskor nem történik adatbázis-lekérdezés.
+  async function searchDashboardOrderSuggestions(): Promise<void> {
     const rawSearch = dashboardOrderInput.trim();
-
+    const requestId = ++dashboardOrderSuggestionRequestRef.current;
     if (managementSection !== "dashboard" || !rawSearch) {
       setDashboardOrderSuggestions([]);
       setDashboardOrderSuggestionsOpen(false);
       setDashboardOrderSuggestionsLoading(false);
       return;
     }
+    setDashboardOrderSuggestionsLoading(true);
+    setDashboardOrderSuggestionsOpen(true);
+    try {
+      const suggestions = await fetchDashboardOrderNumberSuggestions(
+        rawSearch,
+        () => dashboardOrderSuggestionRequestRef.current !== requestId
+      );
+      if (dashboardOrderSuggestionRequestRef.current !== requestId) return;
+      setDashboardOrderSuggestions(suggestions);
+    } finally {
+      if (dashboardOrderSuggestionRequestRef.current === requestId) {
+        setDashboardOrderSuggestionsLoading(false);
+      }
+    }
+  }
 
-    const requestId = dashboardOrderSuggestionRequestRef.current + 1;
-    dashboardOrderSuggestionRequestRef.current = requestId;
-
-    const timeoutId = window.setTimeout(() => {
-      setDashboardOrderSuggestionsLoading(true);
-
-      void fetchDashboardOrderNumberSuggestions(rawSearch, () => dashboardOrderSuggestionRequestRef.current !== requestId)
-        .then((suggestions) => {
-          if (dashboardOrderSuggestionRequestRef.current !== requestId) return;
-          setDashboardOrderSuggestions(suggestions);
-          setDashboardOrderSuggestionsOpen(true);
-        })
-        .finally(() => {
-          if (dashboardOrderSuggestionRequestRef.current === requestId) {
-            setDashboardOrderSuggestionsLoading(false);
-          }
-        });
-    }, 550);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-      // A korábbi, már futó lapozott keresés ne indítson újabb kéréseket.
-      if (dashboardOrderSuggestionRequestRef.current === requestId) dashboardOrderSuggestionRequestRef.current += 1;
-    };
-  }, [dashboardOrderInput, managementSection]);
+  useEffect(() => {
+    // Az elavult keresések lapozása álljon le, ha másik nézet nyílik meg.
+    if (managementSection !== "dashboard") {
+      dashboardOrderSuggestionRequestRef.current += 1;
+      setDashboardOrderSuggestionsOpen(false);
+      setDashboardOrderSuggestionsLoading(false);
+    }
+  }, [managementSection]);
 
   useEffect(() => {
     if (!dashboardOrderSuggestionsOpen) return;
