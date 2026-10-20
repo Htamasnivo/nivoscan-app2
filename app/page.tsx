@@ -12306,7 +12306,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     finally { setOfficeThemeSaving(false); }
   }
 
-  async function fetchDashboardOrderNumberSuggestions(rawValue: string): Promise<string[]> {
+  async function fetchDashboardOrderNumberSuggestions(rawValue: string, isStale: () => boolean = () => false): Promise<string[]> {
     if (!supabase) return [];
 
     const rawSearch = String(rawValue || "").trim();
@@ -12330,6 +12330,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const suggestions: string[] = [];
     const pageSize = 500;
     for (let offset = 0; ; offset += pageSize) {
+      if (isStale()) return [];
       const response = await supabase
         .from("work_logs")
         .select("order_number")
@@ -12340,6 +12341,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         console.warn("Rendelésszám-javaslatok betöltési hibája:", response.error);
         break;
       }
+      if (isStale()) return [];
       const rows = (response.data || []) as Array<{ order_number?: string | null }>;
       for (const row of rows) {
         const orderNumber = String(row.order_number || "").trim();
@@ -32321,7 +32323,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const timeoutId = window.setTimeout(() => {
       setDashboardOrderSuggestionsLoading(true);
 
-      void fetchDashboardOrderNumberSuggestions(rawSearch)
+      void fetchDashboardOrderNumberSuggestions(rawSearch, () => dashboardOrderSuggestionRequestRef.current !== requestId)
         .then((suggestions) => {
           if (dashboardOrderSuggestionRequestRef.current !== requestId) return;
           setDashboardOrderSuggestions(suggestions);
@@ -32332,9 +32334,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             setDashboardOrderSuggestionsLoading(false);
           }
         });
-    }, 220);
+    }, 550);
 
-    return () => window.clearTimeout(timeoutId);
+    return () => {
+      window.clearTimeout(timeoutId);
+      // A korábbi, már futó lapozott keresés ne indítson újabb kéréseket.
+      if (dashboardOrderSuggestionRequestRef.current === requestId) dashboardOrderSuggestionRequestRef.current += 1;
+    };
   }, [dashboardOrderInput, managementSection]);
 
   useEffect(() => {
@@ -33239,33 +33245,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     return () => { void supabase.removeChannel(channel); };
   }, [supabase, managementSection, productionCardAdminStation, productionCardDate]);
 
-  useEffect(() => {
-    if (!isUsableProductionCardStation(machineId)) return;
-    if (activeWorker && isManagementDashboardWorker(activeWorker)) return;
-
-    const refreshIfVisible = (): void => {
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-      void runNivoBackgroundRefresh(() => loadTerminalProductionCard(machineId), "production-card-terminal");
-    };
-
-    void loadTerminalProductionCard(machineId);
-
-    const intervalId = window.setInterval(
-      refreshIfVisible,
-      TERMINAL_PRODUCTION_CARD_BACKGROUND_REFRESH_MS
-    );
-
-    const handleVisibilityChange = (): void => {
-      if (document.visibilityState === "visible") refreshIfVisible();
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    return () => {
-      window.clearInterval(intervalId);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [machineId, activeWorker?.id, workers.length, supabase]);
-
+  // Eseményvezérelt terminálfrissítés minden gyártási munkaállomáson.
+  // Az üzleti mentésekhez, selejtezéshez és reklamációhoz nem nyúlunk.
   useEffect(() => {
     if (!supabase || !isUsableProductionCardStation(machineId)) return;
     if (activeWorker && isManagementDashboardWorker(activeWorker)) return;
@@ -33273,72 +33254,100 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const today = getLocalDateKey(new Date());
     const tableName = getExactProductionCardPlanTableName(machineId);
     let refreshTimerId: number | null = null;
+    let fallbackIntervalId: number | null = null;
+    let realtimeReady = false;
+    let disposed = false;
     let forceSettingsRefresh = false;
 
-    const scheduleRefresh = (forceSettings = false): void => {
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-      forceSettingsRefresh = forceSettingsRefresh || forceSettings;
+    const refreshIfVisible = (forceSettings = false): void => {
+      if (disposed || document.visibilityState !== "visible") return;
+      void runNivoBackgroundRefresh(
+        () => loadTerminalProductionCard(machineId, forceSettings),
+        "production-card-terminal"
+      );
+    };
 
+    const startFallback = (): void => {
+      if (fallbackIntervalId !== null) return;
+      // Ha a Realtime nem érhető el, az eredeti 60 mp-es frissítés megmarad.
+      fallbackIntervalId = window.setInterval(
+        () => refreshIfVisible(),
+        TERMINAL_PRODUCTION_CARD_BACKGROUND_REFRESH_MS
+      );
+    };
+    const stopFallback = (): void => {
+      if (fallbackIntervalId !== null) window.clearInterval(fallbackIntervalId);
+      fallbackIntervalId = null;
+    };
+    const scheduleRefresh = (forceSettings = false): void => {
+      if (disposed || document.visibilityState !== "visible") return;
+      forceSettingsRefresh = forceSettingsRefresh || forceSettings;
       if (refreshTimerId !== null) window.clearTimeout(refreshTimerId);
       refreshTimerId = window.setTimeout(() => {
         refreshTimerId = null;
         const force = forceSettingsRefresh;
         forceSettingsRefresh = false;
-        void runNivoBackgroundRefresh(
-          () => loadTerminalProductionCard(machineId, force),
-          "production-card-terminal"
-        );
+        refreshIfVisible(force);
       }, TERMINAL_PRODUCTION_CARD_REALTIME_DEBOUNCE_MS);
     };
-
-    const refreshData = () => scheduleRefresh(false);
-    const refreshSettings = () => {
+    const refreshSettings = (): void => {
       const stationKey = getStationPlanIdentityKey(machineId) || normalizeLooseText(machineId);
       terminalProductionCardSettingsLoadedRef.current.delete(stationKey);
       terminalProductionCardSettingsRetryAfterRef.current.delete(stationKey);
       scheduleRefresh(true);
     };
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState === "visible") refreshIfVisible(true);
+    };
+    const handleOnline = (): void => refreshIfVisible(true);
 
+    let channel = supabase.channel(`production-card-terminal-${normalizeLooseText(machineId)}-${today}`);
     const isFoliazoTerminal = getStationPlanIdentityKey(machineId) === "foliazo";
-
-    let channel = supabase
-      .channel(`production-card-terminal-${normalizeLooseText(machineId)}-${today}`);
-
     if (isFoliazoTerminal) {
       channel = channel
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "work_logs", filter: `machine_id=eq.${machineId}` },
-          refreshData
-        )
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "production_batches", filter: `machine_id=eq.${machineId}` },
-          refreshData
-        )
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: CARPENTER_SCRAP_REPLACEMENT_TABLE, filter: `target_station=eq.${machineId}` },
-          refreshData
-        );
+        .on("postgres_changes", { event: "*", schema: "public", table: "work_logs", filter: `machine_id=eq.${machineId}` }, () => scheduleRefresh())
+        .on("postgres_changes", { event: "*", schema: "public", table: "production_batches", filter: `machine_id=eq.${machineId}` }, () => scheduleRefresh())
+        .on("postgres_changes", { event: "*", schema: "public", table: CARPENTER_SCRAP_REPLACEMENT_TABLE, filter: `target_station=eq.${machineId}` }, () => scheduleRefresh());
     } else {
+      // Más állomások egymás munkáira is támaszkodnak: a függőségi
+      // lekérdezéseket változatlanul hagyjuk, csak esemény indítja őket.
       channel = channel
-        .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refreshData)
-        .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, refreshData)
-        .on("postgres_changes", { event: "*", schema: "public", table: CARPENTER_SCRAP_REPLACEMENT_TABLE }, refreshData);
+        .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, () => scheduleRefresh())
+        .on("postgres_changes", { event: "*", schema: "public", table: "production_batches" }, () => scheduleRefresh())
+        .on("postgres_changes", { event: "*", schema: "public", table: CARPENTER_SCRAP_REPLACEMENT_TABLE }, () => scheduleRefresh());
     }
-
     channel = channel
-      .on("postgres_changes", { event: "*", schema: "public", table: tableName }, refreshData)
+      .on("postgres_changes", { event: "*", schema: "public", table: tableName }, () => scheduleRefresh())
       .on("postgres_changes", { event: "*", schema: "public", table: PRODUCTION_CARD_SETTINGS_TABLE, filter: `station_name=eq.${machineId}` }, refreshSettings);
 
-    channel.subscribe();
+    // Amíg nincs visszaigazolt Realtime-kapcsolat, a korábbi tartalék frissítés fut.
+    startFallback();
+    void loadTerminalProductionCard(machineId);
+    channel.subscribe((status: string) => {
+      if (disposed) return;
+      if (status === "SUBSCRIBED") {
+        const wasDisconnected = !realtimeReady;
+        realtimeReady = true;
+        stopFallback();
+        // Az újracsatlakozás alatt kimaradt események teljes szinkronja.
+        if (wasDisconnected) refreshIfVisible(true);
+      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+        realtimeReady = false;
+        startFallback();
+      }
+    });
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("online", handleOnline);
 
     return () => {
+      disposed = true;
       if (refreshTimerId !== null) window.clearTimeout(refreshTimerId);
+      stopFallback();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("online", handleOnline);
       void supabase.removeChannel(channel);
     };
-  }, [supabase, machineId, activeWorker?.id]);
+  }, [supabase, machineId, activeWorker?.id, workers.length]);
 
 
   function getWorkLogWorkerName(log: WorkLogRow): string {
@@ -34927,6 +34936,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         ? safeRow.adat as Record<string, unknown>
         : {};
 
+      // Az Excel szerinti változatlan tervsort nem írjuk újra.
+      // Az egyéb, kézzel kezelt mezők továbbra is megmaradnak.
+      if (getStationPlanTemplateFingerprint(stationName, safeRow) === getStationPlanTemplateFingerprint(stationName, existing)) {
+        actions.push({ ...safeRow, futo_sorszam: run, action: "skip", existing_id: existing.id });
+        continue;
+      }
+
       actions.push({
         ...safeRow,
         futo_sorszam: run,
@@ -34945,17 +34961,28 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const tableName = buildStationPlanTableName(stationName);
     let processed = 0;
     let skipped = 0;
+    // Az új tervsorok egyenkénti INSERT-je helyett kis, soros kötegek.
+    // Az UPDATE/ADD útvonal változatlan: azonosító és részleges mezőmegőrzés miatt
+    // ezeket nem lehet biztonságosan egyszerű UPSERT-re cserélni.
+    const insertRows = actions.filter((item) => item.action === "insert");
+    const nowForInsert = new Date().toISOString();
+    const insertChunkSize = 75;
+    for (let index = 0; index < insertRows.length; index += insertChunkSize) {
+      const chunk = insertRows.slice(index, index + insertChunkSize).map(({ action: _action, existing_id: _id, ...row }) => ({
+        ...row,
+        imported_at: nowForInsert,
+        updated_at: nowForInsert,
+      }));
+      const { error } = await supabase.from(tableName).insert(chunk);
+      if (error) throw error;
+      processed += chunk.length;
+    }
+
     for (const actionRow of actions) {
       const { action, existing_id, ...row } = actionRow;
       if (action === "skip") { skipped += 1; continue; }
+      if (action === "insert") continue;
       const nowIso = new Date().toISOString();
-      if (action === "insert") {
-        const payload = { ...row, imported_at: nowIso, updated_at: nowIso };
-        const { error } = await supabase.from(tableName).insert(payload);
-        if (error) throw error;
-        processed += 1;
-        continue;
-      }
       if (existing_id === null || existing_id === undefined || existing_id === "") throw new Error(`${stationName}: hiányzik a frissítendő tervsor azonosítója.`);
       if (action === "add") {
         const szerelesPricePatch: Record<string, unknown> = {};
