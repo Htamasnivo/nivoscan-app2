@@ -30093,9 +30093,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     const renderStationStates = (row: ReklamacioViewRow): React.JSX.Element => (
       <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
         {row.stationStates.length === 0 ? <span>–</span> : row.stationStates.map((state) => {
-          const background = state.status === "done" ? "#16a34a" : state.status === "in-progress" ? "#f59e0b" : state.status === "waiting" ? "#475569" : "#111827";
-          const color = state.status === "in-progress" ? "#111827" : "#ffffff";
-          return <span key={`${row.key}-${state.stationName}`} style={{ display: "inline-flex", gap: 4, alignItems: "center", padding: "5px 8px", borderRadius: 999, background, color, fontWeight: 900, whiteSpace: "nowrap" }}><span>{state.label}</span><span>·</span><span>{state.statusLabel}</span></span>;
+          const background = state.status === "done" || state.status === "in-progress" ? "#7dd3fc" : state.status === "waiting" ? "#475569" : "#111827";
+          const color = state.status === "done" || state.status === "in-progress" ? "#000000" : "#ffffff";
+          return <span key={`${row.key}-${state.stationName}`} style={{ display: "inline-flex", gap: 4, alignItems: "center", padding: "5px 8px", borderRadius: 999, background, color, border: state.status === "done" || state.status === "in-progress" ? "1px solid #38bdf8" : "1px solid transparent", fontWeight: 900, whiteSpace: "nowrap" }}><span>{state.label}</span><span>·</span><span>{state.statusLabel}</span></span>;
         })}
       </div>
     );
@@ -30172,7 +30172,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         const saving = reklamacioSavingKey === row.key;
         content = row.lezart ? <span style={{ display: "inline-flex", padding: "7px 10px", borderRadius: 8, background: "#166534", color: "white", fontWeight: 900 }}>✓ Elkészült</span> : <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", alignItems: "center" }}><button type="button" disabled={saving || row.isNew} onClick={() => void saveReklamacioRow(row, true)} style={{ ...buttonSecondary, padding: "7px 10px" }}>Lezárás</button>{row.szerkesztesZarolva ? <span style={{ display: "inline-flex", padding: "7px 10px", borderRadius: 8, background: "#334155", color: "white", fontWeight: 900 }}>✓ Mentve</span> : <button type="button" disabled={saving} onClick={() => void saveReklamacioRow(row, false)} style={{ ...buttonPrimary, padding: "7px 12px" }}>{saving ? "Mentés..." : "Mentés"}</button>}</div>;
       }
-      return <td key={column.id} style={{ ...tableCellStyle, width: column.width, minWidth: column.width, maxWidth: column.width, textAlign: column.align }}>{content}</td>;
+      return <td key={column.id} style={{ ...tableCellStyle, color: row.lezart || row.gyartasbaTerveDatum ? "#000000" : tableCellStyle.color, width: column.width, minWidth: column.width, maxWidth: column.width, textAlign: column.align }}>{content}</td>;
     };
 
     return (
@@ -30244,7 +30244,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                 const filterActive = hasActiveFilter(column.id);
                 return <th key={column.id} style={{ ...tableHeaderStyle, textAlign: column.align, width: column.width }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 4 }}><button type="button" data-preserve-action-color="true" onClick={() => cycleSort(column.id)} style={{ flex: 1, minWidth: 0, border: 0, background: "transparent", color: reklamacioTableStyle.headerTextColor, fontFamily: reklamacioTableStyle.fontFamily, fontSize: reklamacioTableStyle.headerFontSize, fontWeight: reklamacioTableStyle.headerFontWeight, cursor: "pointer", textAlign: column.align, padding: 0 }}>{column.label}{sortMark}</button><button type="button" data-preserve-action-color="true" data-reklamacio-filter-trigger="true" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setReklamacioFilterMenu((current) => current?.columnId === column.id ? null : { columnId: column.id, x: rect.left, y: rect.bottom + 5 }); }} style={{ border: `1px solid ${filterActive ? officeTheme.accentColor : reklamacioTableStyle.borderColor}`, background: filterActive ? officeTheme.navActiveBackground : reklamacioTableStyle.headerBackground, color: reklamacioTableStyle.headerTextColor, borderRadius: 4, padding: "1px 5px", cursor: "pointer", fontWeight: 900 }}>▾</button></div></th>;
               })}</tr></thead>
-              <tbody>{visibleRows.length === 0 ? <tr><td colSpan={visibleColumns.length} style={{ ...tableCellStyle, textAlign: "center", padding: 30 }}>{reklamacioLoading ? "Reklamációk betöltése..." : "Nincs megjeleníthető reklamáció."}</td></tr> : visibleRows.map((row, index) => <tr key={row.key} style={{ background: row.lezart ? "rgba(22,163,74,0.22)" : row.gyartasbaTerveDatum ? "rgba(245,158,11,0.24)" : index % 2 === 0 ? reklamacioTableStyle.alternateCellBackground : reklamacioTableStyle.cellBackground }}>{visibleColumns.map((column) => renderCell(row, column))}</tr>)}</tbody>
+              <tbody>{visibleRows.length === 0 ? <tr><td colSpan={visibleColumns.length} style={{ ...tableCellStyle, textAlign: "center", padding: 30 }}>{reklamacioLoading ? "Reklamációk betöltése..." : "Nincs megjeleníthető reklamáció."}</td></tr> : visibleRows.map((row, index) => <tr key={row.key} style={{ background: row.lezart ? "#16a34a" : row.gyartasbaTerveDatum ? "#f59e0b" : index % 2 === 0 ? reklamacioTableStyle.alternateCellBackground : reklamacioTableStyle.cellBackground }}>{visibleColumns.map((column) => renderCell(row, column))}</tr>)}</tbody>
             </table>
           </div>}
         </section>
