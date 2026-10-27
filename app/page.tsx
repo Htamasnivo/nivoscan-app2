@@ -10748,6 +10748,8 @@ export default function Page() {
   const [reklamacioTableStyle, setReklamacioTableStyle] = useState<ReklamacioTableStyleConfig>(createDefaultReklamacioTableStyle());
   const [reklamacioColumnFilters, setReklamacioColumnFilters] = useState<Partial<Record<ReklamacioTableColumnId, ReklamacioColumnFilter>>>({});
   const [reklamacioSortState, setReklamacioSortState] = useState<ReklamacioSortState>(null);
+  const [reklamacioStatusFilter, setReklamacioStatusFilter] = useState<"all" | "uploaded" | "progress" | "done">("all");
+  const [reklamacioExporting, setReklamacioExporting] = useState(false);
   const [reklamacioFilterMenu, setReklamacioFilterMenu] = useState<ReklamacioFilterMenuState>(null);
   const reklamacioDraggedColumnIdRef = useRef<ReklamacioTableColumnId | null>(null);
   const reklamacioFilterMenuRef = useRef<HTMLDivElement | null>(null);
@@ -30070,7 +30072,11 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       const filter = reklamacioColumnFilters[columnId];
       return Boolean(filter?.text.trim()) || filter?.selectedValues !== null && filter?.selectedValues !== undefined;
     };
+    // A státusz ugyanazt a logikát követi, mint a táblázat meglévő sorszínezése.
+    const getReklamacioRowStatus = (row: ReklamacioViewRow): "uploaded" | "progress" | "done" =>
+      row.lezart ? "done" : row.gyartasbaTerveDatum ? "progress" : "uploaded";
     const baseRows = reklamacioRows.filter((row) => {
+      if (reklamacioStatusFilter !== "all" && getReklamacioRowStatus(row) !== reklamacioStatusFilter) return false;
       for (const column of reklamacioTableColumns) {
         const filter = reklamacioColumnFilters[column.id];
         if (!filter) continue;
@@ -30089,6 +30095,35 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     });
     const uniqueValues = (columnId: ReklamacioTableColumnId): string[] => Array.from(new Set<string>(reklamacioRows.map((row) => getCellText(row, columnId)))).sort((a, b) => a.localeCompare(b, "hu", { numeric: true }));
     const cycleSort = (columnId: ReklamacioTableColumnId): void => setReklamacioSortState((current) => current?.columnId !== columnId ? { columnId, direction: "asc" } : current.direction === "asc" ? { columnId, direction: "desc" } : null);
+
+    const exportReklamacioExcel = async (): Promise<void> => {
+      if (reklamacioExporting) return;
+      setReklamacioExporting(true);
+      try {
+        // A már betöltött, összes szűrővel és rendezéssel feldolgozott sorokat használjuk.
+        // Nem kérdezünk le újra a Supabase-ből, és nem korlátozunk a képernyőn látható sorokra.
+        const XLSX = await waitForXlsx();
+        const columns = reklamacioTableColumns;
+        const matrix: string[][] = [
+          columns.map((column) => column.label),
+          ...visibleRows.map((row) => columns.map((column) => getCellText(row, column.id))),
+        ];
+        const sheet = XLSX.utils.aoa_to_sheet(matrix) as Record<string, any>;
+        sheet["!cols"] = columns.map((column) => ({ wch: Math.max(14, Math.min(65, Math.round(column.width / 8))) }));
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, sheet, "Reklamációk");
+        const output = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+        downloadBlob(
+          `Reklamaciok_${new Date().toISOString().slice(0, 10)}.xlsx`,
+          output,
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        );
+      } catch (error) {
+        setMessage({ type: "error", text: `Reklamáció Excel-export hiba: ${normalizeError(error)}` });
+      } finally {
+        setReklamacioExporting(false);
+      }
+    };
 
     const renderStationStates = (row: ReklamacioViewRow): React.JSX.Element => (
       <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
@@ -30194,7 +30229,19 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         <section data-office-window="reklamacio:table" style={{ ...pagePanel, padding: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
             <div><h3 style={{ margin: 0, fontSize: 21 }}>Reklamációs sorok</h3><div style={{ color: officeTheme.mutedText, fontSize: 11 }}>{visibleRows.length} megjelenített sor · Excel-szerű szűrés és rendezés</div></div>
-            <button type="button" onClick={() => setReklamacioTableEditMode((value) => !value)} style={reklamacioTableEditMode ? buttonPrimary : buttonSecondary}>{reklamacioTableEditMode ? "Profi szerkesztő bezárása" : "Profi szerkesztő"}</button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <label style={{ display: "flex", gap: 6, alignItems: "center", fontWeight: 800, fontSize: 12 }}>
+                Státusz
+                <select aria-label="Reklamáció státuszszűrő" value={reklamacioStatusFilter} onChange={(event) => setReklamacioStatusFilter(event.target.value as typeof reklamacioStatusFilter)} style={{ ...fieldStyle, width: 150 }}>
+                  <option value="all">Összes</option>
+                  <option value="uploaded">Feltöltve</option>
+                  <option value="progress">Folyamatban</option>
+                  <option value="done">Kész</option>
+                </select>
+              </label>
+              <button type="button" onClick={() => void exportReklamacioExcel()} disabled={reklamacioExporting} style={buttonSecondary}>{reklamacioExporting ? "Exportálás..." : "Excel export"}</button>
+              <button type="button" onClick={() => setReklamacioTableEditMode((value) => !value)} style={reklamacioTableEditMode ? buttonPrimary : buttonSecondary}>{reklamacioTableEditMode ? "Profi szerkesztő bezárása" : "Profi szerkesztő"}</button>
+            </div>
           </div>
 
           {reklamacioTableEditMode && (
