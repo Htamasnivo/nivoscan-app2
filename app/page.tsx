@@ -21838,7 +21838,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             // megnevezés kulcs miatt a Csőlézer állapot tévesen "–" maradt.
             if (isOsszeallitasCsolezerStatus) {
               let matchedCurrentPlanRow = false;
-              planRows.forEach((planRow) => {
+              crossStatusSourceRows.forEach((planRow) => {
                 if (normalizeLooseText(planRow.orderNumber) !== normalizeLooseText(otherOrderNumber)) return;
                 const key = productionCardPlanRowKey(planRow);
                 if (!crossStationStatusesByPlanKey.has(key)) return;
@@ -22034,7 +22034,11 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           szerelesPauseCount: rowPauseSnapshot.count,
           szerelesPauseReason: rowPauseSnapshot.reason,
           szerelesPauseAt: rowPauseSnapshot.pausedAt,
-          crossStationStatuses:{},
+          crossStationStatuses: getStationPlanIdentityKey(cleanStationName) === "osszeallitas"
+            ? (crossStationStatusesByPlanKey.get(productionCardPlanRowKey(planRow))?.Csolezer
+              ? { Csolezer: crossStationStatusesByPlanKey.get(productionCardPlanRowKey(planRow))!.Csolezer }
+              : {})
+            : {},
           fenyezoPartStatuses: fenyezoPartStatusesByPlanKey.get(productionCardPlanRowKey(planRow)),
           crossStationScrapFlags:crossStationScrapFlagsByOrder.get(normalizeLooseText(planRow.orderNumber))||{}
         };
