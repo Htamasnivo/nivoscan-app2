@@ -20714,9 +20714,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
     // A tervséma és az ismétlődő/prioritási adatok egymástól függetlenek.
     // A két ág párhuzamosítása rövidíti a kártya első betöltését.
-    const [priorityRows] = await Promise.all([
+    const [[recurringSnapshot, priorityRows]] = await Promise.all([
       readRecurringCardSnapshot(cleanStationName)
-        .then((snapshot) => fetchPriorityRowsForStation(cleanStationName, snapshot)),
+        .then(async (snapshot) => [snapshot, await fetchPriorityRowsForStation(cleanStationName, snapshot)] as const),
       loadStationPlanSchemaForStation(cleanStationName),
     ]);
     if (!cleanStationName || !dateKey) {
