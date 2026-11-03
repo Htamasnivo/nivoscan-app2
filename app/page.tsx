@@ -17339,7 +17339,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                 const stations = getOrderedDashboardStations();
                 const nextStation = executiveReportStation || stations[0] || "";
                 if (nextStation && nextStation !== executiveReportStation) setExecutiveReportStation(nextStation);
-                if (nextStation) void loadExecutiveReportView(nextStation, executiveReportDateFrom, executiveReportDateTo);
+                // Az adatbetöltést az executive-report useEffect indítja el.
+                // Itt külön indítva ugyanaz a kérés kétszer futott a megnyitáskor.
               }
               else if (item.id === "report-delivery") void loadReportDeliveryProfiles();
               else if (item.id === "data-upload") void loadDataUploadView();
@@ -20711,9 +20712,13 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     //   Kézi szinter -> public.kezi_szinter_terv
     const tableName = getExactProductionCardPlanTableName(cleanStationName);
     if (!supabase) throw new Error("Nincs Supabase kapcsolat.");
-    const recurringSnapshot=await readRecurringCardSnapshot(cleanStationName);
-    const priorityRows = await fetchPriorityRowsForStation(cleanStationName,recurringSnapshot);
-    await loadStationPlanSchemaForStation(cleanStationName);
+    // A tervséma és az ismétlődő/prioritási adatok egymástól függetlenek.
+    // A két ág párhuzamosítása rövidíti a kártya első betöltését.
+    const [priorityRows] = await Promise.all([
+      readRecurringCardSnapshot(cleanStationName)
+        .then((snapshot) => fetchPriorityRowsForStation(cleanStationName, snapshot)),
+      loadStationPlanSchemaForStation(cleanStationName),
+    ]);
     if (!cleanStationName || !dateKey) {
       return { stationName: cleanStationName, dateKey, tableName, rows: [], lastUpdatedAt: new Date().toISOString(), errorMessage: "" };
     }
@@ -24723,10 +24728,18 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       };
     }
 
-    const chunks: ProductionCardData[] = [];
-    for (const day of dates) {
-      chunks.push(await fetchProductionCardData(cleanStation, day));
-    }
+    // A napok egymástól függetlenek: a korábbi soros betöltés minden nap
+    // teljes lekérdezési idejét összeadta. Korlátozott párhuzamosság mellett
+    // a friss adatokat továbbra is közvetlenül a Supabase-ből kérjük.
+    const chunks: ProductionCardData[] = new Array(dates.length);
+    const workerCount = Math.min(3, dates.length);
+    let nextIndex = 0;
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextIndex < dates.length) {
+        const index = nextIndex++;
+        chunks[index] = await fetchProductionCardData(cleanStation, dates[index]);
+      }
+    }));
     return combineExecutiveReportProductionCardData(cleanStation, dateFrom, dateTo, chunks);
   }
 
@@ -33190,7 +33203,35 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   useEffect(() => {
     if (!supabase || managementSection !== "executive-report" || !executiveReportStation) return;
     const tableName = getExactProductionCardPlanTableName(executiveReportStation);
-    const refresh = () => void runNivoBackgroundRefresh(() => loadExecutiveReportView(executiveReportStation, executiveReportDateFrom, executiveReportDateTo));
+    // Egy Supabase tranzakció több táblát is módosíthat. Ezeket egyetlen
+    // frissítésbe vonjuk össze, különben párhuzamosan indulnak azonos kérések.
+    // Nem cache: minden tényleges frissítés friss adatokat olvas.
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    let refreshRunning = false;
+    let refreshPending = false;
+    let disposed = false;
+    const runRefresh = async () => {
+      if (disposed || refreshRunning) { refreshPending = !disposed; return; }
+      refreshRunning = true;
+      try {
+        await runNivoBackgroundRefresh(() => loadExecutiveReportView(executiveReportStation, executiveReportDateFrom, executiveReportDateTo));
+      } finally {
+        refreshRunning = false;
+        if (refreshPending && !disposed) {
+          refreshPending = false;
+          scheduleRefresh();
+        }
+      }
+    };
+    const scheduleRefresh = () => {
+      if (disposed) return;
+      if (refreshTimer !== null) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        void runRefresh();
+      }, 250);
+    };
+    const refresh = () => scheduleRefresh();
     const channel = supabase
       .channel(`executive-report-${normalizeLooseText(executiveReportStation)}-${executiveReportDateFrom}-${executiveReportDateTo}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "work_logs" }, refresh)
@@ -33203,7 +33244,11 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       .on("postgres_changes", { event: "*", schema: "public", table: PRODUCTION_CARD_SETTINGS_TABLE }, refresh)
       .on("postgres_changes", { event: "*", schema: "public", table: tableName }, refresh)
       .subscribe();
-    return () => { void supabase.removeChannel(channel); };
+    return () => {
+      disposed = true;
+      if (refreshTimer !== null) clearTimeout(refreshTimer);
+      void supabase.removeChannel(channel);
+    };
   }, [supabase, managementSection, executiveReportStation, executiveReportDateFrom, executiveReportDateTo]);
 
   useEffect(() => {
