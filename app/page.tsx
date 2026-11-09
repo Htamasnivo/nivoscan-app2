@@ -10624,6 +10624,8 @@ export default function Page() {
   const standaloneProductionMonitorWindowInteractionRef = useRef<StandaloneProductionMonitorWindowInteraction | null>(null);
   const standaloneProductionMonitorWindowCleanupRef = useRef<(() => void) | null>(null);
   const [productionPlanDate, setProductionPlanDate] = useState(getLocalDateKey(new Date()));
+  // Szerelés: a holnapi terv külön megtekinthető, az eredeti tervdátum változatlan.
+  const [szerelesTerminalPlanDate, setSzerelesTerminalPlanDate] = useState(getLocalDateKey(new Date()));
   const [productionPlanName, setProductionPlanName] = useState("Napi termelési terv");
   const [productionPlanFileName, setProductionPlanFileName] = useState("");
   const [productionPlanPreview, setProductionPlanPreview] = useState<ProductionPlanUploadRow[]>([]);
@@ -22250,6 +22252,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     terminalProductionCardLoadInFlightRef.current.add(stationKey);
     const requestSequence = ++terminalProductionCardLoadSequenceRef.current;
     const today = getLocalDateKey(new Date());
+    const cardDate = stationKey === "szereles" ? szerelesTerminalPlanDate : today;
     const settingsRetryAfter = terminalProductionCardSettingsRetryAfterRef.current.get(stationKey) || 0;
     const shouldLoadSettings = forceSettingsRefresh
       || (!terminalProductionCardSettingsLoadedRef.current.has(stationKey) && settingsRetryAfter <= Date.now());
@@ -22294,7 +22297,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       } else {
         [settingsResult, dataResult] = await Promise.all([
           settingsPromise,
-          fetchProductionCardData(cleanStationName, today),
+          fetchProductionCardData(cleanStationName, cardDate),
         ]);
       }
 
@@ -22322,7 +22325,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       if (!backgroundRefresh) {
         setTerminalProductionCardData({
           stationName: cleanStationName,
-          dateKey: today,
+          dateKey: cardDate,
           tableName: buildStationPlanTableName(cleanStationName),
           rows: [],
           priorityRows: [],
@@ -26209,6 +26212,17 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
   function TerminalProductionCardPanel(): React.JSX.Element | null {
     if (!isUsableProductionCardStation(machineId)) return null;
 
+    const isSzerelesTerminal = getStationPlanIdentityKey(machineId) === "szereles";
+    const todayForSzereles = getLocalDateKey(new Date());
+    const tomorrowForSzereles = getLocalDateKey(new Date(Date.now() + 24 * 60 * 60 * 1000));
+    const szerelesDateControls = isSzerelesTerminal ? (
+      <div style={{ display: "flex", gap: 8, padding: 10, background: "#0f172a", color: "#fff", alignItems: "center", flexWrap: "wrap" }}>
+        <strong>Termelési terv:</strong>
+        <button type="button" onClick={() => setSzerelesTerminalPlanDate(todayForSzereles)} disabled={szerelesTerminalPlanDate === todayForSzereles}>Mai terv</button>
+        <button type="button" onClick={() => setSzerelesTerminalPlanDate(tomorrowForSzereles)} disabled={szerelesTerminalPlanDate === tomorrowForSzereles}>Holnapi terv · Előregyártás</button>
+        {szerelesTerminalPlanDate !== todayForSzereles && <strong style={{ color: "#fbbf24" }}>ELŐREGYÁRTÁS – {szerelesTerminalPlanDate}</strong>}
+      </div>
+    ) : null;
     const cardContent = loadingTerminalProductionCard
       && !terminalProductionCardData.lastUpdatedAt
       && !terminalEntryLayoutRuntimeActive ? (
@@ -26233,7 +26247,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     // Ilyenkor nem lehet őket egy közös sticky/scroll keretbe zárni, mert szabadon
     // át kell húzhatók legyenek a dolgozói beléptető mellé vagy fölé.
     if (terminalEntryLayoutRuntimeActive) {
-      return <>{cardContent}</>;
+      return <>{szerelesDateControls}{cardContent}</>;
     }
 
     // Normál, alapértelmezett nézet: az eredeti sticky és scroll viselkedés változatlan.
@@ -26253,6 +26267,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           boxShadow: "0 18px 45px rgba(0,0,0,0.28)",
         }}
       >
+        {szerelesDateControls}
         {cardContent}
       </NivoPersistentProductionCardScrollContainer>
     );
@@ -33353,6 +33368,11 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
   }, [supabase, managementSection, productionCardAdminStation, productionCardDate]);
+
+  useEffect(() => {
+    if (getStationPlanIdentityKey(machineId) !== "szereles") return;
+    void loadTerminalProductionCard(machineId);
+  }, [szerelesTerminalPlanDate]);
 
   // Eseményvezérelt terminálfrissítés minden gyártási munkaállomáson.
   // Az üzleti mentésekhez, selejtezéshez és reklamációhoz nem nyúlunk.
@@ -49314,7 +49334,7 @@ body {
     };
 
     const unused = planRows.filter((row) => !completed.has(row.runSequence) && !active.has(row.runSequence)).sort(compareRank);
-    const selected = unused[0]
+    let selected = unused[0]
       || [...planRows].sort((left, right) => {
           const leftToday = left.completionDate === today ? 1 : 0;
           const rightToday = right.completionDate === today ? 1 : 0;
@@ -49323,6 +49343,30 @@ body {
           return dateDiff !== 0 ? dateDiff : right.runSequence - left.runSequence;
         })[0];
 
+    if (getStationPlanIdentityKey(stationName) === "szereles") {
+      // A kártyán kiválasztott dátumhoz tartozó tervsor az elsődleges.
+      // Több azonos rendelés esetén soha nem találgatunk futósorszámot.
+      const dateRows = unused.filter((row) => row.completionDate === szerelesTerminalPlanDate);
+      if (dateRows.length === 1) selected = dateRows[0];
+      else if (dateRows.length > 1 && typeof window !== "undefined") {
+        const answer = window.prompt(
+          `A(z) ${cleanOrder} rendeléshez több tervsor tartozik (${szerelesTerminalPlanDate}).\n` +
+          `Add meg a pontos futósorszámot:\n` +
+          dateRows.map((row) => `${row.runSequence} – ${row.productName}`).join("\n"),
+          String(dateRows[0].runSequence)
+        );
+        if (answer === null) throw new Error("A futósorszám kiválasztása megszakítva. A munka nem lett elindítva.");
+        const chosen = dateRows.find((row) => String(row.runSequence) === answer.trim());
+        if (!chosen) throw new Error("Érvénytelen futósorszám. Válaszd ki a tervben szereplő sorszámot.");
+        selected = chosen;
+      } else if (dateRows.length === 0) {
+        const futureOrPastRows = unused;
+        if (futureOrPastRows.length === 1) selected = futureOrPastRows[0];
+        else if (futureOrPastRows.length > 1) {
+          throw new Error(`A(z) ${cleanOrder} rendeléshez több tervsor tartozik. Nyisd meg a megfelelő napi termelési tervet a Szerelés kártyáján.`);
+        }
+      }
+    }
     return selected
       ? { rowId: selected.rowId, runSequence: selected.runSequence, productName: selected.productName, completionDate: selected.completionDate }
       : null;
@@ -49335,7 +49379,12 @@ body {
   ): Promise<OrderProductionMeta> {
     if (!usesPlanRunSequence(stationName) || parsePlanRunSequence(meta.terv_futo_sorszam)) return meta;
     const identity = await resolvePlanRunIdentityForOrder(stationName, orderId);
-    if (!identity) return meta;
+    if (!identity) {
+      if (getStationPlanIdentityKey(stationName) === "szereles") {
+        throw new Error(`A(z) ${orderId} rendeléshez nem található futósorszámmal rendelkező Szerelés tervsor. Ellenőrizd a mai/holnapi termelési tervet.`);
+      }
+      return meta;
+    }
     return {
       ...meta,
       terv_futo_sorszam: identity.runSequence,
@@ -51617,6 +51666,9 @@ body {
       const scrapRoute=hasScrap?await buildEventFiveSzerelesSheetScrapRouteTargets(order,machine):null;
       const repairRoute=hasRepair?await buildEventFiveManualRepairRouteTargets(order,machine,eventFiveRepairStationKeys):null;
       const eventFivePlanRunSequence = await resolveEventFiveSzerelesRunSequence(order, machine, state);
+      if (action === "START" && eventFivePlanRunSequence === null) {
+        throw new Error(`A(z) ${order} rendeléshez nincs azonosítható Szerelés terv-futósorszám. Válaszd ki a megfelelő napi tervet, vagy ellenőrizd a szereles_terv táblát.`);
+      }
       const bundleTenAutomaticMeta = bundleTenSelectionForSzerelesStart
         ? await prepareBundleTenAutomaticProductionMeta(bundleTenSelectionForSzerelesStart)
         : null;
