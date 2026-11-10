@@ -1378,6 +1378,8 @@ function createDefaultAtvetelTableColumns(): AtvetelTableColumnConfig[] {
 
 type ReklamacioWorkshop = "" | "Asztalos" | "Lakatos" | "Üveg";
 type ReklamacioHibaTipus = "Felmérés" | "Gyártás" | "Összeszerelés" | "Beszerelés" | "Termékhiba" | "Egyéb";
+type ReklamacioUjragyartasTipus = "Külső lap" | "Belső lap" | "Tokléc" | "Egyéb";
+const REKLAMACIO_UJRAGYARTAS_TIPUSOK: ReklamacioUjragyartasTipus[] = ["Külső lap", "Belső lap", "Tokléc", "Egyéb"];
 const REKLAMACIO_HIBA_TIPUSOK: ReklamacioHibaTipus[] = ["Felmérés", "Gyártás", "Összeszerelés", "Beszerelés", "Termékhiba", "Egyéb"];
 
 type ReklamacioDbRow = {
@@ -1391,6 +1393,7 @@ type ReklamacioDbRow = {
   uveg_gyartasba_mentette_worker_id?: number | string | null;
   uveg_gyartasba_mentette_worker_name?: string | null;
   hibatipus?: string[] | null;
+  ujragyartas_tipusa?: string[] | null;
   kert_datum: string;
   rajz_url?: string | null;
   mentes_datum?: string | null;
@@ -1444,6 +1447,7 @@ type ReklamacioViewRow = {
   muhely: ReklamacioWorkshop;
   gyartandoTetelek: string;
   hibatipus: ReklamacioHibaTipus[];
+  ujragyartasTipusa: ReklamacioUjragyartasTipus[];
   kertDatum: string;
   rajzUrl: string;
   drawings: ReklamacioSavedDrawing[];
@@ -1476,6 +1480,7 @@ type ReklamacioDraft = {
   muhely: ReklamacioWorkshop;
   gyartandoTetelek: string;
   hibatipus: ReklamacioHibaTipus[];
+  ujragyartasTipusa: ReklamacioUjragyartasTipus[];
   kertDatum: string;
   rajzDataUrl: string;
   pendingDrawings: ReklamacioPendingDrawing[];
@@ -1489,6 +1494,7 @@ type ReklamacioTableColumnId =
   | "szerelesiIdopont"
   | "muhely"
   | "gyartandoTetelek"
+  | "ujragyartasTipusa"
   | "hibatipus"
   | "kertDatum"
   | "rajz"
@@ -1537,6 +1543,7 @@ const DEFAULT_REKLAMACIO_TABLE_COLUMNS: ReklamacioTableColumnConfig[] = [
   { id: "szerelesiIdopont", label: "Szerelési időpont", width: 165, visible: true, align: "left" },
   { id: "muhely", label: "Műhely", width: 145, visible: true, align: "left" },
   { id: "gyartandoTetelek", label: "Gyártandó tételek", width: 300, visible: true, align: "left" },
+  { id: "ujragyartasTipusa", label: "Újragyártás típusa", width: 230, visible: true, align: "left" },
   { id: "hibatipus", label: "Hibatípus", width: 250, visible: true, align: "left" },
   { id: "kertDatum", label: "Kért Dátum", width: 165, visible: true, align: "left" },
   { id: "rajz", label: "Rajz", width: 185, visible: true, align: "center" },
@@ -1630,6 +1637,10 @@ function normalizeReklamacioTableColumns(value: unknown): ReklamacioTableColumnC
   });
   defaults.forEach((column) => {
     if (seen.has(column.id)) return;
+    if (column.id === "ujragyartasTipusa") {
+      const itemsIndex = normalized.findIndex((item) => item.id === "gyartandoTetelek");
+      if (itemsIndex >= 0) { normalized.splice(itemsIndex + 1, 0, column); return; }
+    }
     if (column.id === "gyartasbaTerveDatum") {
       const saveDateIndex = normalized.findIndex((item) => item.id === "mentesDatum");
       if (saveDateIndex >= 0) {
@@ -13381,7 +13392,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     scope: "range" | "open-and-today-completed" | "open" | "closed-range" = "range"
   ): Promise<ReklamacioReportRow[]> {
     if (!supabase) return [];
-    const reklamacioSelectColumns = "id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, hibatipus, kert_datum, rajz_url, mentes_datum, szerkesztes_zarolva, uveg_gyartasba_datum, uveg_gyartasba_mentve_at, uveg_gyartasba_mentette_worker_id, uveg_gyartasba_mentette_worker_name, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, lezaras_mod, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at";
+    const reklamacioSelectColumns = "id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, hibatipus, ujragyartas_tipusa, kert_datum, rajz_url, mentes_datum, szerkesztes_zarolva, uveg_gyartasba_datum, uveg_gyartasba_mentve_at, uveg_gyartasba_mentette_worker_id, uveg_gyartasba_mentette_worker_name, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, lezaras_mod, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at";
     let sourceRows: ReklamacioDbRow[] = [];
     if (scope === "open") {
       const response = await supabase.from(REKLAMACIO_TABLE).select(reklamacioSelectColumns).or("lezart.eq.false,lezart.is.null").order("created_at", { ascending: true }).limit(10000);
@@ -13543,7 +13554,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       return {
         key: reklamacioId, id: reklamacioId, isNew: false, rendelesszam: orderNumber,
         alapRendelesszam: String(dbRow.alap_rendelesszam || "").trim(), muhely: workshop,
-        gyartandoTetelek: String(dbRow.gyartando_tetelek || ""), hibatipus: Array.isArray(dbRow.hibatipus) ? dbRow.hibatipus.filter((value): value is ReklamacioHibaTipus => REKLAMACIO_HIBA_TIPUSOK.includes(value as ReklamacioHibaTipus)) : [], kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
+        gyartandoTetelek: String(dbRow.gyartando_tetelek || ""), ujragyartasTipusa: Array.isArray(dbRow.ujragyartas_tipusa) ? dbRow.ujragyartas_tipusa.filter((value): value is ReklamacioUjragyartasTipus => REKLAMACIO_UJRAGYARTAS_TIPUSOK.includes(value as ReklamacioUjragyartasTipus)) : [], hibatipus: Array.isArray(dbRow.hibatipus) ? dbRow.hibatipus.filter((value): value is ReklamacioHibaTipus => REKLAMACIO_HIBA_TIPUSOK.includes(value as ReklamacioHibaTipus)) : [], kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
         rajzUrl: legacyDrawingUrl, drawings, mentesDatum: String(dbRow.mentes_datum || ""), szerkesztesZarolva: Boolean(dbRow.szerkesztes_zarolva), gyartasbaTerveDatum,
         uvegGyartasbaDatum: String(dbRow.uveg_gyartasba_datum || "").slice(0, 10), uvegGyartasbaMentveAt: String(dbRow.uveg_gyartasba_mentve_at || ""), uvegGyartasbaMentetteWorkerName: String(dbRow.uveg_gyartasba_mentette_worker_name || ""),
         keszDatum: String(dbRow.kesz_datum || ""), lezart: Boolean(dbRow.lezart), createdAt: String(dbRow.created_at || ""),
@@ -14434,9 +14445,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       };
 
       y = drawSummaryBlockAt(y);
-      const reklamacioActiveColumns = [["Sorszám", "Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"]];
+      const reklamacioActiveColumns = [["Sorszám", "Rendelésszám", "Műhely", "Gyártandó tételek", "Újragyártás típusa", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Mentés"]];
       const reklamacioActiveCells = (items: ReklamacioReportRow[]) => items.map((row, index) => [
-        index + 1, row.rendelesszam || "-", row.muhely || "-", row.gyartandoTetelek || "-",
+        index + 1, row.rendelesszam || "-", row.muhely || "-", row.gyartandoTetelek || "-", row.ujragyartasTipusa.join(", ") || "-",
         row.hibatipus.length ? row.hibatipus.join(", ") : "-", row.kertDatum || "-",
         row.createdAt ? formatDateTimeMinute(row.createdAt) : "-",
         row.createdByWorkerName || "-", row.mentesDatum ? formatDateTimeMinute(row.mentesDatum) : "-",
@@ -14446,9 +14457,9 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
 
       addReklamacioDetailTable(
         "Reklamáció lezárt",
-        [["Sorszám", "Rendelésszám", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Lezárás", "Lezárás módja"]],
+        [["Sorszám", "Rendelésszám", "Gyártandó tételek", "Újragyártás típusa", "Hibatípus", "Kért dátum", "Lezárás", "Lezárás módja"]],
         statusRows.map((row, index) => [
-          index + 1, row.rendelesszam || "-", row.gyartandoTetelek || "-",
+          index + 1, row.rendelesszam || "-", row.gyartandoTetelek || "-", row.ujragyartasTipusa.join(", ") || "-",
           row.hibatipus.length ? row.hibatipus.join(", ") : "-", row.kertDatum || "-",
           row.lezartAt ? formatDateTimeMinute(row.lezartAt) : "-",
           row.lezarasMod === "kezi" ? "Kézi" : row.lezarasMod === "automatikus" ? "Automatikus" : "-",
@@ -14485,26 +14496,29 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         ]);
         addSection("Újragyártási sorok", [["Rendelés", "Munkaállomás", "Dolgozó", "Befejezés", "Újragyártás #"]], rows);
       } else if (blockId === "scrap-replacement") {
-        let rows: Array<Array<string | number>> = visibleLogs.filter((log) => Boolean(log.selejt_potlas)).map((log) => [
-          log.order_number || "-", resolveLogStation(log, workers), getDashboardLogWorkerName(log),
-          formatDateTime(getDashboardLogEventAt(log)), getNoteBeforeContext(log.note) || "-",
-        ]);
+        let rows: Array<Array<string | number>> = visibleLogs.filter((log) => Boolean(log.selejt_potlas)).map((log) => {
+          const source = resolveLogStation(log, workers);
+          const matched = getScrapReportWorkerAndType(String(log.order_number || ""), source, visibleLogs);
+          return [log.order_number || "-", source, matched.worker, matched.type,
+            formatDateTime(getDashboardLogEventAt(log)), getNoteBeforeContext(log.note) || "-"];
+        });
         try {
           if (supabase) {
             const response = await supabase.from("asztalos_selejt_potlas").select("*")
               .gte("reported_at", range.startIso).lt("reported_at", range.endIso).order("reported_at", { ascending: false }).limit(2000);
             if (!response.error && response.data?.length) {
-              rows = (response.data as Record<string, unknown>[]).map((row) => [
-                String(row.sorszam || row.order_number || "-"),
-                String(row.selejt_forras_munkaallomas || row.source_station || "-"),
-                String(row.end_worker_name || row.worker_name || "-"),
-                row.completed_at ? formatDateTime(String(row.completed_at)) : row.reported_at ? formatDateTime(String(row.reported_at)) : "-",
-                String(row.megjegyzes || row.note || "-"),
-              ]);
+              rows = (response.data as Record<string, unknown>[]).map((row) => {
+                const order = String(row.order_number || row.sorszam || "");
+                const source = String(row.selejt_forras_munkaallomas || row.source_station || "");
+                const matched = getScrapReportWorkerAndType(order, source, visibleLogs);
+                return [String(row.sorszam || row.order_number || "-"), source || "-", matched.worker || String(row.end_worker_name || ""), matched.type,
+                  row.completed_at ? formatDateTime(String(row.completed_at)) : row.reported_at ? formatDateTime(String(row.reported_at)) : "-",
+                  String(row.megjegyzes || row.note || "-")];
+              });
             }
           }
         } catch { /* fallback to work_logs */ }
-        addSection("Selejtpótlási riport", [["Rendelés", "Forrás", "Dolgozó", "Időpont", "Megjegyzés"]], rows);
+        addSection("Selejtpótlási riport", [["Rendelés", "Forrás", "Dolgozó", "Újragyártás típusa", "Időpont", "Megjegyzés"]], rows);
       } else if (blockId === "event5-issue") {
         let rows: Array<Array<string | number>> = [];
         if (supabase) {
@@ -14724,15 +14738,15 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       ]);
       const waitingRows = rows.filter((row) => !row.gyartasbaTerveDatum);
       const inProgressRows = rows.filter((row) => Boolean(row.gyartasbaTerveDatum));
-      const reklamacioActiveHeaders = ["Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Mentés", "Állapot"];
+      const reklamacioActiveHeaders = ["Rendelésszám", "Műhely", "Gyártandó tételek", "Újragyártás típusa", "Hibatípus", "Kért dátum", "Felvétel", "Rögzítette", "Mentés", "Állapot"];
       const reklamacioActiveExcelRows = (items: ReklamacioReportRow[], state: string) =>
-        items.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.hibatipus.join(", "), row.kertDatum,
+        items.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.ujragyartasTipusa.join(", "), row.hibatipus.join(", "), row.kertDatum,
           row.createdAt ? formatDateTime(row.createdAt) : "", row.createdByWorkerName,
           row.mentesDatum ? formatDateTime(row.mentesDatum) : "", state]);
       addSheet("Reklamáció várakozik", reklamacioActiveHeaders, reklamacioActiveExcelRows(waitingRows, "Várakozik"));
       addSheet("Reklamáció folyamatban", reklamacioActiveHeaders, reklamacioActiveExcelRows(inProgressRows, "Folyamatban"));
-      addSheet("Reklamáció lezárt", ["Rendelésszám", "Műhely", "Gyártandó tételek", "Hibatípus", "Kért dátum", "Lezárás", "Lezárás módja"],
-        statusRows.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.hibatipus.join(", "), row.kertDatum,
+      addSheet("Reklamáció lezárt", ["Rendelésszám", "Műhely", "Gyártandó tételek", "Újragyártás típusa", "Hibatípus", "Kért dátum", "Lezárás", "Lezárás módja"],
+        statusRows.map((row) => [row.rendelesszam, row.muhely, row.gyartandoTetelek, row.ujragyartasTipusa.join(", "), row.hibatipus.join(", "), row.kertDatum,
           row.lezartAt ? formatDateTime(row.lezartAt) : "",
           row.lezarasMod === "kezi" ? "Kézi" : row.lezarasMod === "automatikus" ? "Automatikus" : ""]));
     } else {
@@ -14780,21 +14794,25 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
               formatDateTime(getDashboardLogEndAt(log) || getDashboardLogEventAt(log)), String(log.ujragyartas_sorszam || "")
             ]));
         } else if (block === "scrap-replacement") {
-          let scrapRows: Array<Array<string | number>> = logs.filter((log) => Boolean(log.selejt_potlas)).map((log) => [
-            String(log.order_number || ""), resolveLogStation(log, workers), getDashboardLogWorkerName(log),
-            formatDateTime(getDashboardLogEventAt(log)), getNoteBeforeContext(log.note) || "",
-          ]);
+          let scrapRows: Array<Array<string | number>> = logs.filter((log) => Boolean(log.selejt_potlas)).map((log) => {
+            const source = resolveLogStation(log, workers);
+            const matched = getScrapReportWorkerAndType(String(log.order_number || ""), source, logs);
+            return [String(log.order_number || ""), source, matched.worker, matched.type,
+              formatDateTime(getDashboardLogEventAt(log)), getNoteBeforeContext(log.note) || ""];
+          });
           const response = await supabase.from("asztalos_selejt_potlas").select("*")
             .gte("reported_at", range.startIso).lt("reported_at", range.endIso).order("reported_at", { ascending: false }).limit(2000);
           if (!response.error && response.data?.length) {
-            scrapRows = ((response.data || []) as Array<Record<string, unknown>>).map((row) => [
-              String(row.sorszam || row.order_number || ""), String(row.selejt_forras_munkaallomas || row.source_station || ""),
-              String(row.end_worker_name || row.worker_name || ""),
-              row.completed_at ? formatDateTime(String(row.completed_at)) : row.reported_at ? formatDateTime(String(row.reported_at)) : "",
-              String(row.megjegyzes || row.note || ""),
-            ]);
+            scrapRows = ((response.data || []) as Array<Record<string, unknown>>).map((row) => {
+              const order = String(row.order_number || row.sorszam || "");
+              const source = String(row.selejt_forras_munkaallomas || row.source_station || "");
+              const matched = getScrapReportWorkerAndType(order, source, logs);
+              return [String(row.sorszam || row.order_number || ""), source, matched.worker || String(row.end_worker_name || ""), matched.type,
+                row.completed_at ? formatDateTime(String(row.completed_at)) : row.reported_at ? formatDateTime(String(row.reported_at)) : "",
+                String(row.megjegyzes || row.note || "")];
+            });
           }
-          addSheet("Selejtpótlás", ["Rendelés", "Forrás", "Dolgozó", "Időpont", "Megjegyzés"], scrapRows);
+          addSheet("Selejtpótlás", ["Rendelés", "Forrás", "Dolgozó", "Újragyártás típusa", "Időpont", "Megjegyzés"], scrapRows);
         } else if (block === "station-performance" || block === "plan-vs-completed") {
           addSheet(block === "station-performance" ? "Munkaállomás teljesítmény" : "Terv vs elkészült",
             ["Munkaállomás", "Tervezett", "Elkészült", "Hátralévő", "Teljesítés %"], stationRows.map((row) => [
@@ -28276,6 +28294,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       rendelesszam: row.isNew ? row.alapRendelesszam : row.rendelesszam,
       muhely: row.muhely,
       gyartandoTetelek: row.gyartandoTetelek,
+      ujragyartasTipusa: row.ujragyartasTipusa,
+      hibatipus: row.hibatipus,
       kertDatum: row.kertDatum,
       rajzDataUrl: "",
       pendingDrawings: [],
@@ -28290,6 +28310,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         rendelesszam: row?.isNew ? (row.alapRendelesszam || "") : (row?.rendelesszam || ""),
         muhely: row?.muhely || "",
         gyartandoTetelek: row?.gyartandoTetelek || "",
+        ujragyartasTipusa: row?.ujragyartasTipusa || [],
+        hibatipus: row?.hibatipus || [],
         kertDatum: row?.kertDatum || "",
         rajzDataUrl: "",
         pendingDrawings: [],
@@ -28309,6 +28331,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       alapRendelesszam: "",
       muhely: "",
       gyartandoTetelek: "",
+      ujragyartasTipusa: [],
       hibatipus: [],
       kertDatum: "",
       rajzUrl: "",
@@ -28330,7 +28353,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     setReklamacioRows((previous) => [row, ...previous]);
     setReklamacioDrafts((previous) => ({
       ...previous,
-      [key]: { rendelesszam: "", muhely: "", gyartandoTetelek: "", hibatipus: [], kertDatum: "", rajzDataUrl: "", pendingDrawings: [], dirty: true },
+      [key]: { rendelesszam: "", muhely: "", gyartandoTetelek: "", ujragyartasTipusa: [], hibatipus: [], kertDatum: "", rajzDataUrl: "", pendingDrawings: [], dirty: true },
     }));
   }
 
@@ -28386,7 +28409,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     try {
       const response = await supabase
         .from(REKLAMACIO_TABLE)
-        .select("id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, hibatipus, kert_datum, rajz_url, mentes_datum, szerkesztes_zarolva, uveg_gyartasba_datum, uveg_gyartasba_mentve_at, uveg_gyartasba_mentette_worker_id, uveg_gyartasba_mentette_worker_name, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, lezaras_mod, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
+        .select("id, rendelesszam, alap_rendelesszam, muhely, gyartando_tetelek, hibatipus, ujragyartas_tipusa, kert_datum, rajz_url, mentes_datum, szerkesztes_zarolva, uveg_gyartasba_datum, uveg_gyartasba_mentve_at, uveg_gyartasba_mentette_worker_id, uveg_gyartasba_mentette_worker_name, kesz_datum, lezart, lezart_at, lezarta_worker_id, lezarta_worker_name, lezaras_mod, created_by_worker_id, created_by_worker_name, updated_by_worker_id, updated_by_worker_name, created_at, updated_at")
         .order("created_at", { ascending: false })
         .limit(10000);
       if (response.error) throw response.error;
@@ -28533,6 +28556,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
           alapRendelesszam: String(dbRow.alap_rendelesszam || "").trim(),
           muhely: workshop,
           gyartandoTetelek: String(dbRow.gyartando_tetelek || ""),
+          ujragyartasTipusa: Array.isArray(dbRow.ujragyartas_tipusa) ? dbRow.ujragyartas_tipusa.filter((value): value is ReklamacioUjragyartasTipus => REKLAMACIO_UJRAGYARTAS_TIPUSOK.includes(value as ReklamacioUjragyartasTipus)) : [],
           hibatipus: Array.isArray(dbRow.hibatipus) ? dbRow.hibatipus.filter((value): value is ReklamacioHibaTipus => REKLAMACIO_HIBA_TIPUSOK.includes(value as ReklamacioHibaTipus)) : [],
           kertDatum: String(dbRow.kert_datum || "").slice(0, 10),
           rajzUrl: String(dbRow.rajz_url || ""),
@@ -28595,6 +28619,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             rendelesszam: row.rendelesszam,
             muhely: row.muhely,
             gyartandoTetelek: row.gyartandoTetelek,
+            ujragyartasTipusa: row.ujragyartasTipusa,
             hibatipus: row.hibatipus,
             kertDatum: row.kertDatum,
             rajzDataUrl: "",
@@ -28707,6 +28732,10 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       setMessage({ type: "error", text: "A Gyártandó tételek mező kitöltése kötelező." });
       return;
     }
+    if ((row.isNew || draft.dirty) && draft.ujragyartasTipusa.length === 0) {
+      setMessage({ type: "error", text: "Legalább egy Újragyártás típusa kiválasztása kötelező." });
+      return;
+    }
     if ((row.isNew || draft.dirty) && draft.hibatipus.length === 0) {
       setMessage({ type: "error", text: "Legalább egy Hibatípus kiválasztása kötelező." });
       return;
@@ -28758,6 +28787,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         alap_rendelesszam: rawBase,
         muhely: draft.muhely,
         gyartando_tetelek: draft.gyartandoTetelek.trim(),
+        ujragyartas_tipusa: draft.ujragyartasTipusa,
         hibatipus: draft.hibatipus,
         kert_datum: draft.kertDatum,
         rajz_url: row.rajzUrl || null,
@@ -30188,6 +30218,15 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         content = <select value={draft.muhely} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { muhely: event.target.value as ReklamacioWorkshop })} style={tableInputStyle}><option value="">Válassz...</option><option value="Asztalos">Asztalos</option><option value="Lakatos">Lakatos</option><option value="Üveg">Üveg</option></select>;
       } else if (column.id === "gyartandoTetelek") {
         content = <textarea value={draft.gyartandoTetelek} disabled={disabled} onChange={(event) => updateReklamacioDraft(row.key, { gyartandoTetelek: event.target.value })} rows={2} placeholder="Gyártandó tételek" style={{ ...tableInputStyle, resize: "vertical", minHeight: 56 }} />;
+      } else if (column.id === "ujragyartasTipusa") {
+        content = <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: "5px 8px" }}>
+          {REKLAMACIO_UJRAGYARTAS_TIPUSOK.map((tipus) => <label key={tipus} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 800, cursor: disabled ? "default" : "pointer" }}>
+            <input type="checkbox" checked={draft.ujragyartasTipusa.includes(tipus)} disabled={disabled} onChange={(event) => {
+              const next = event.target.checked ? Array.from(new Set([...draft.ujragyartasTipusa, tipus])) : draft.ujragyartasTipusa.filter((value) => value !== tipus);
+              updateReklamacioDraft(row.key, { ujragyartasTipusa: next });
+            }} /><span>{tipus}</span>
+          </label>)}
+        </div>;
       } else if (column.id === "hibatipus") {
         content = <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: "5px 8px" }}>
           {REKLAMACIO_HIBA_TIPUSOK.map((tipus) => {
@@ -39431,6 +39470,49 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
     }
   }
 
+  function getScrapReportWorkerAndType(order: string, source: string, sourceLogs: WorkLogRow[]): { worker: string; type: string } {
+    const key = normalizeLooseText(order).replace(/_REK\d*$/i, "");
+    const candidates = sourceLogs.filter((log) => {
+      const logOrder = normalizeLooseText(String(log.order_number || "")).replace(/_REK\d*$/i, "");
+      return key && logOrder === key && (Boolean(log.selejt_potlas) || Boolean(log.kulso_lap_selejt) || Boolean(log.belso_lap_selejt) || Boolean(log.toklec_selejt));
+    }).filter((log) => !source || !String(log.selejt_forras_munkaallomas || "").trim() || normalizeLooseText(String(log.selejt_forras_munkaallomas)) === normalizeLooseText(source));
+    const completed = candidates.filter((log) => String(log.action || "").toUpperCase() === "END" || Boolean(log.end_time || log.end_timestamp));
+    completed.sort((a, b) => new Date(getDashboardLogEndAt(b) || b.created_at || "").getTime() - new Date(getDashboardLogEndAt(a) || a.created_at || "").getTime());
+    const latest = completed[0];
+    const types = [
+      candidates.some((log) => log.kulso_lap_selejt === true) ? "Külső lap" : "",
+      candidates.some((log) => log.belso_lap_selejt === true) ? "Belső lap" : "",
+      candidates.some((log) => log.toklec_selejt === true) ? "Tokléc" : "",
+    ].filter(Boolean);
+    return { worker: latest ? getDashboardLogWorkerName(latest) : "", type: types.join(", ") || "Egyéb" };
+  }
+
+  async function loadDashboardEndExportPlanData(endLogs: WorkLogRow[]): Promise<Map<string, Record<string, unknown>>> {
+    const result = new Map<string, Record<string, unknown>>();
+    if (!supabase) return result;
+    const groups = new Map<string, { station: string; orders: Set<string> }>();
+    endLogs.forEach((log) => {
+      const station = resolveLogStation(log, workers);
+      const order = String(log.order_number || "").trim();
+      if (!station || !order) return;
+      const table = buildStationPlanTableName(station);
+      if (!groups.has(table)) groups.set(table, { station, orders: new Set() });
+      groups.get(table)!.orders.add(order);
+    });
+    for (const [table, group] of groups) {
+      const orders = Array.from(group.orders);
+      for (let i = 0; i < orders.length; i += 100) {
+        const response = await supabase.from(table).select("*").in("sorszam", orders.slice(i, i + 100)).limit(5000);
+        if (response.error) { console.warn(`END export: ${table} tervlekérdezés sikertelen:`, response.error); continue; }
+        ((response.data || []) as Record<string, unknown>[]).forEach((plan) => {
+          const key = `${normalizeLooseText(group.station)}|${normalizeLooseText(String(plan.sorszam || ""))}`;
+          if (!result.has(key)) result.set(key, plan);
+        });
+      }
+    }
+    return result;
+  }
+
   async function exportDashboardEndAsExcel(): Promise<void> {
     if (!supabase) {
       setMessage({ type: "error", text: "Nincs Supabase kapcsolat." });
@@ -39483,23 +39565,39 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
         return;
       }
 
+      const planByOrder = await loadDashboardEndExportPlanData(endLogs);
+      const unmatchedOrders = new Set<string>();
       const workbook = XLSX.utils.book_new();
       const eventRows: Array<Array<string | number>> = [
-        ["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "Dolgozó", "Rendelésszám", "Esemény", "Munkaállomás", "Megjegyzés"],
+        ["Időpont", "START IDŐ", "END IDŐ", "ELTELT IDŐ", "Dolgozó", "Rendelésszám", "Típus", "Darab", "Nettó érték", "Készletrevételi érték", "Aktiválás dátuma", "Átfutási idő", "Esemény", "Munkaállomás", "Megjegyzés"],
         ...endLogs.map((log) => {
           const action = String(log.action || "").toUpperCase();
           const endAt = String(log.end_time || log.end_timestamp || (action === "END" ? log.created_at : "") || "");
           const startAt = getDashboardLogStartAt(log);
+          const station = resolveLogStation(log, workers);
+          const order = String(log.order_number || "").trim();
+          const plan = planByOrder.get(`${normalizeLooseText(station)}|${normalizeLooseText(order)}`);
+          if (!plan && order) unmatchedOrders.add(`${station}: ${order}`);
+          const elapsedMinutes = startAt && endAt ? Math.max(0, Math.round((new Date(endAt).getTime() - new Date(startAt).getTime()) / 60000)) : "";
+          const planValue = (keys: string[]): string | number => {
+            if (!plan) return "";
+            const key = keys.find((candidate) => plan[candidate] !== undefined && plan[candidate] !== null);
+            const value = key ? plan[key] : "";
+            return typeof value === "number" || typeof value === "string" ? value : "";
+          };
           return [
             formatDateTime(endAt),
-            startAt ? formatDateTime(startAt) : "-",
-            endAt ? formatDateTime(endAt) : "-",
-            getDashboardLogElapsedLabel(log),
+            startAt ? formatDateTime(startAt) : "",
+            endAt ? formatDateTime(endAt) : "",
+            Number.isFinite(elapsedMinutes) ? elapsedMinutes : "",
             getDashboardLogWorkerName(log),
-            log.order_number || "-",
-            "END",
-            resolveLogStation(log, workers),
-            getNoteBeforeContext(log.note) || "",
+            order,
+            planValue(["megnevezes"]),
+            planValue(["mennyiseg", "menny", "darab"]),
+            planValue(["netto_ertek", "nettoertek"]),
+            planValue(["keszletreveteli_ertek"]),
+            "", "",
+            "END", station, getNoteBeforeContext(log.note) || "",
           ];
         }),
       ];
@@ -39522,8 +39620,8 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       );
 
       setMessage({
-        type: "success",
-        text: `END Excel export elkészült: ${endLogs.length} teljesen lezárt END sor a ${range.label} időszakból.`,
+        type: unmatchedOrders.size ? "error" : "success",
+        text: `END Excel export elkészült: ${endLogs.length} teljesen lezárt END sor a ${range.label} időszakból.${unmatchedOrders.size ? ` Figyelem: ${unmatchedOrders.size} rendeléshez nem található tervsor (G–J üres): ${Array.from(unmatchedOrders).slice(0, 8).join(", ")}${unmatchedOrders.size > 8 ? "…" : ""}` : ""}`,
       });
     } catch (error) {
       console.error("END Excel export hiba:", error);
