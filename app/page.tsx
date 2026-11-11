@@ -39566,6 +39566,36 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
       }
 
       const planByOrder = await loadDashboardEndExportPlanData(endLogs);
+      // END export I oszlop: minden munkaállomásnál a szereles_terv.netto_ar,
+      // rendelési szám szerint, az adott rendelés legfrissebb tervsorából.
+      const nettoArByOrder = new Map<string, number>();
+      const nettoArOrderKeys = Array.from(new Set(endLogs.map((log) => String(log.order_number || "").trim()).filter(Boolean)));
+      for (let offset = 0; offset < nettoArOrderKeys.length; offset += 100) {
+        const { data: nettoRows, error: nettoError } = await supabase
+          .from("szereles_terv")
+          .select("*")
+          .in("sorszam", nettoArOrderKeys.slice(offset, offset + 100))
+          .limit(5000);
+        if (nettoError) {
+          console.warn("END export: szereles_terv nettó ár lekérdezése sikertelen:", nettoError);
+          continue;
+        }
+        const newestByOrder = new Map<string, { rank: number; value: number }>();
+        ((nettoRows || []) as Record<string, unknown>[]).forEach((row) => {
+          const key = normalizeLooseText(String(row.sorszam || ""));
+          if (!key) return;
+          const dateValue = row.created_at ?? row.updated_at ?? row.datum ?? row.tervezett_datum;
+          const dateRank = dateValue ? new Date(String(dateValue)).getTime() : NaN;
+          const sequenceRank = Number(row.futo_sorszam ?? row.id ?? 0);
+          const rank = Number.isFinite(dateRank) ? dateRank : (Number.isFinite(sequenceRank) ? sequenceRank : 0);
+          const rawValue = row.netto_ar;
+          const parsed = typeof rawValue === "number" ? rawValue : Number(String(rawValue ?? "").replace(/\s/g, "").replace(",", "."));
+          if (rawValue === null || rawValue === undefined || rawValue === "" || !Number.isFinite(parsed)) return;
+          const previous = newestByOrder.get(key);
+          if (!previous || rank >= previous.rank) newestByOrder.set(key, { rank, value: parsed });
+        });
+        newestByOrder.forEach((item, key) => nettoArByOrder.set(key, item.value));
+      }
       const unmatchedOrders = new Set<string>();
       const workbook = XLSX.utils.book_new();
       const eventRows: Array<Array<string | number>> = [
@@ -39594,7 +39624,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
             order,
             planValue(["megnevezes"]),
             planValue(["mennyiseg", "menny", "darab"]),
-            planValue(["netto_ertek", "nettoertek"]),
+            nettoArByOrder.get(normalizeLooseText(order)) ?? "",
             planValue(["keszletreveteli_ertek"]),
             "", "",
             "END", station, getNoteBeforeContext(log.note) || "",
