@@ -31863,6 +31863,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                   <th style={tableHeaderStyle}>ELTELT IDŐ</th>
                   <th style={tableHeaderStyle}>Munkatárs</th>
                   <th style={tableHeaderStyle}>Rendelésszám</th>
+                  <th style={tableHeaderStyle}>Munkaállomás</th>
                   <th style={tableHeaderStyle}>Esemény</th>
                   <th style={tableHeaderStyle}>Megjegyzés</th>
                 </tr>
@@ -31883,6 +31884,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                       <td style={{ ...tableCellStyle, whiteSpace: "nowrap", fontWeight: 800, color: elapsedLabel === "Folyamatban" ? "#93c5fd" : "#e2e8f0" }}>{elapsedLabel}</td>
                       <td style={tableCellStyle}>{getDashboardLogWorkerName(log)}</td>
                       <td style={{ ...tableCellStyle, fontWeight: 800 }}>{log.order_number || "-"}</td>
+                      <td style={tableCellStyle}>{String(log.machine_id || "").trim() || "-"}</td>
                       <td style={tableCellStyle}>
                         <span style={{ display: "inline-flex", alignItems: "center", borderRadius: 999, padding: "4px 10px", fontSize: 12, fontWeight: 900, background: isEnd ? "#064e3b" : "#1d4ed8", color: isEnd ? "#bbf7d0" : "#dbeafe" }}>
                           {isEnd ? "END" : action || "START"}
@@ -31893,7 +31895,7 @@ ${selector}[data-nivo-quarantine="true"] [data-nivo-card-state] {
                   );
                 })}
                 {visibleEventLogs.length === 0 && (
-                  <tr><td colSpan={8} style={{ padding: 14, color: officeTheme.mutedText }}>A kiválasztott időszakban, munkaállomáson és dolgozónál nincs esemény.</td></tr>
+                  <tr><td colSpan={9} style={{ padding: 14, color: officeTheme.mutedText }}>A kiválasztott időszakban, munkaállomáson és dolgozónál nincs esemény.</td></tr>
                 )}
               </tbody>
             </table>
