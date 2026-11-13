@@ -48134,11 +48134,16 @@ body {
       const readyProductionMeta = Object.fromEntries(
         readyOrders.map((order) => [order, getProductionMetaForOrder(selectedEndBatch.production_meta, order)])
       ) as Record<string, OrderProductionMeta>;
+      if (usesPlanRunSequence(currentMachineId)) {
+        for (const order of readyOrders) {
+          readyProductionMeta[order] = await attachPlanRunIdentityToMeta(currentMachineId, order, readyProductionMeta[order]);
+        }
+      }
       const scrapReplacementMap = await fetchOpenScrapReplacementMap(readyOrders);
 
       const cuttingEndLogs = readyOrders.map((order) => {
         const orderNoteClean = (endOrderNotes[order] || "").trim();
-        const orderProductionMeta = getProductionMetaForOrder(selectedEndBatch.production_meta, order);
+        const orderProductionMeta = readyProductionMeta[order];
         const reportedDarab = reportedQuantityByOrder[order] ?? finalDarab;
         return {
           worker_id: activeWorker.id,
@@ -48159,6 +48164,7 @@ body {
           ujragyartas_sorszam: orderProductionMeta.ujragyartas_sorszam,
           gyartas_tipus: orderProductionMeta.gyartas_tipus,
           gyartasi_kor: orderProductionMeta.gyartasi_kor,
+          terv_futo_sorszam: orderProductionMeta.terv_futo_sorszam ?? null,
           order_note: orderNoteClean || null,
           batch_note: batchNoteClean || null,
           note: buildStructuredNote([orderNoteClean, batchNoteClean].filter(Boolean).join(" | ") || null, {
@@ -48716,6 +48722,15 @@ body {
       const endItemsForLogs = isEventTenVisualWorker()
         ? readyBundleTenItems
         : readyOrders.map((order) => ({ orderNumber: order, itemKey: order, stateKey: order, meta: getProductionMetaForOrder(selectedEndBatch.production_meta, order) }));
+      // Régi, futósorszám nélkül indított kötegeknél az END előtt pótoljuk a tervazonosságot.
+      // A work_logs INSERT így már egyetlen műveletben tartalmazza a futósorszámot.
+      if (usesPlanRunSequence(currentMachineId)) {
+        for (const batchItem of endItemsForLogs) {
+          if (!parsePlanRunSequence(batchItem.meta.terv_futo_sorszam)) {
+            batchItem.meta = await attachPlanRunIdentityToMeta(currentMachineId, batchItem.orderNumber, batchItem.meta);
+          }
+        }
+      }
       const logs = endItemsForLogs.map((batchItem) => {
         const order = batchItem.orderNumber;
         const orderNoteClean = (endOrderNotes[batchItem.stateKey] || "").trim();
@@ -49606,6 +49621,9 @@ body {
     const currentMachineId = getCurrentMachineIdForInsert();
     const cleanOrderId = orderId.trim();
     const resolvedBatchCode = existingBatchCode || batchCode || null;
+    const planRunIdentity = usesPlanRunSequence(currentMachineId)
+      ? await resolvePlanRunIdentityForOrder(currentMachineId, cleanOrderId)
+      : null;
     const auditMetadata = {
       worker_name: workerNameForSave,
       worker_id: activeWorker.id,
@@ -49634,6 +49652,7 @@ body {
         event_code: selectedEventCard?.barcodeValue || null,
         end_timestamp: nowIso,
         end_time: nowIso,
+        terv_futo_sorszam: planRunIdentity?.runSequence ?? null,
         note: buildStructuredNote("Rendelés frissítve / készre jelentve", auditMetadata),
         scrap_qty: null,
         darab: null,
@@ -52074,7 +52093,7 @@ body {
       }
 
       committed=true;
-      if (eventFivePlanRunSequence !== null && result.saved_rows.length > 0) {
+      if (legacyClose && eventFivePlanRunSequence !== null && result.saved_rows.length > 0) {
         const savedEventFiveIds = result.saved_rows
           .map((row) => row.id)
           .filter((id) => id !== null && id !== undefined);
