@@ -48724,6 +48724,20 @@ body {
       const endItemsForLogs = isEventTenVisualWorker()
         ? readyBundleTenItems
         : readyOrders.map((order) => ({ orderNumber: order, itemKey: order, stateKey: order, meta: getProductionMetaForOrder(selectedEndBatch.production_meta, order) }));
+      // PrimaPower: az END csak egyértelműen azonosított tervsorhoz menthető.
+      // A régi, nem egyértelmű kötegeket nem kötjük találgatással másik tervsorhoz.
+      if (isPrimaPowerPlanStation(currentMachineId)) {
+        const ambiguous = endItemsForLogs.filter((item) =>
+          !parsePlanRunSequence(item.meta.terv_futo_sorszam) ||
+          !String(item.meta.terv_sor_id || "").trim()
+        );
+        if (ambiguous.length) {
+          throw new Error(
+            `PrimaPower: ${ambiguous.map((item) => item.orderNumber).join(", ")} tételhez nincs egyértelmű tervsor-ID és futósorszám a kötegben. ` +
+            "A hibás END elkerülése érdekében a lejelentés leállt. A régi köteg tervsorát külön kell egyeztetni."
+          );
+        }
+      }
       // Régi, futósorszám nélkül indított kötegeknél az END előtt pótoljuk a tervazonosságot.
       // A work_logs INSERT így már egyetlen műveletben tartalmazza a futósorszámot.
       if (usesPlanRunSequence(currentMachineId)) {
@@ -49487,6 +49501,29 @@ body {
           const dateDiff = right.completionDate.localeCompare(left.completionDate);
           return dateDiff !== 0 ? dateDiff : right.runSequence - left.runSequence;
         })[0];
+
+    // PrimaPower: azonos rendeléshez több külön tervsor is tartozhat.
+    // Ilyenkor tilos a rendezés első elemét automatikusan kiválasztani.
+    if (isPrimaPowerPlanStation(stationName)) {
+      const candidates = unused.length ? unused : planRows;
+      if (candidates.length > 1) {
+        if (typeof window === "undefined") {
+          throw new Error(`PrimaPower: a(z) ${cleanOrder} rendelés több tervsorhoz tartozik; pontos futósorszám szükséges.`);
+        }
+        const answer = window.prompt(
+          `PrimaPower – ${cleanOrder}: válaszd ki a PONTOS tervsort a futósorszám megadásával.\\n` +
+          `A többi tervsor ettől független marad.\\n\\n` +
+          candidates.map((row) => `${row.runSequence} – ${row.productName || "Nincs termék"} – ${row.completionDate || "Nincs dátum"} (tervsor ID: ${row.rowId})`).join("\\n"),
+          ""
+        );
+        if (answer === null) throw new Error("PrimaPower: a tervsor kiválasztása megszakítva; START nem történt.");
+        const chosen = candidates.find((row) => String(row.runSequence) === answer.trim());
+        if (!chosen) throw new Error("PrimaPower: érvénytelen futósorszám; START nem történt.");
+        selected = chosen;
+      } else if (candidates.length === 1) {
+        selected = candidates[0];
+      }
+    }
 
     if (getStationPlanIdentityKey(stationName) === "szereles") {
       // A kártyán kiválasztott dátumhoz tartozó tervsor az elsődleges.
