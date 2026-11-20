@@ -50575,7 +50575,18 @@ body {
 
       if (getStationPlanIdentityKey(currentMachineId) === "szinter") {
         const contexts: Record<string, QuantityPlanContext | null> = {};
-        for (const order of ordersForSave) contexts[order] = await fetchNivoSzinterStartContext(order);
+        for (const order of ordersForSave) {
+          const exactRowId = String(productionMetaForSave[order]?.terv_sor_id || "").trim();
+          if (exactRowId) {
+            const exactContext = await fetchExactQuantityPlanContextById(currentMachineId, exactRowId, order);
+            if (!exactContext) {
+              throw new Error(`${order}: a kiválasztott Szinter tervsor nem található.`);
+            }
+            contexts[order] = exactContext;
+          } else {
+            contexts[order] = await fetchNivoSzinterStartContext(order);
+          }
+        }
         ordersForSave.forEach((order) => {
           const context = contexts[order];
           // A 10-es kattintásos mód már a konkrét Lemaradás/Termelési tervsort
